@@ -204,6 +204,7 @@ conversation id — **do not pass or invent a Wax `session_id`.**
 
 Recall:
 
+- Omit `mode` unless you need an override. Hybrid is the default.
 - Omit `scope` for **project-default**: hard-filter to the resolved
   project/repo. Empty project recall is a miss, not “I have no memory.”
 - Pass `scope=global` only when you intend the whole local store (person
@@ -295,7 +296,7 @@ Wax UUID. Project-default vs `scope=global` is above.
 block:
 
 1. Call `session_open` (`project`, stable `agent_id`/`run_id`, `conversation_id` = host chat id, `recall_query` = this job). The connection remembers `session_id`; omit it after that. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open.
-2. session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
+2. session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
 3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children. Omit `session_id` on this connection after open.
 4. This job only: `task_state` (plan lock, failed path, landmine). It must `committed: true` before you spawn.
 5. Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`.

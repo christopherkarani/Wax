@@ -94,7 +94,7 @@ TOOL_SCHEMAS = {
     ),
     "wax_recall": _schema(
         "wax_recall",
-        "Recall context from Wax using RAG assembly. Use text for recent or exact facts; use hybrid only when embeddings are available.",
+        "Recall assembled context from Wax. Omit mode unless you need an override; hybrid is the default. Exact identifiers still use the lexical lane.",
         {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},

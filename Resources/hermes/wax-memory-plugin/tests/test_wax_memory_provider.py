@@ -279,8 +279,10 @@ class DiagnosticsTests(unittest.TestCase):
             "query_embedding_available": False,
         }
         provider.initialize("sess-1", platform="cli")
-        self.assertIn("with text search", provider.system_prompt_block())
-        self.assertNotIn("vector, and hybrid", provider.system_prompt_block())
+        prompt = provider.system_prompt_block()
+        self.assertIn("with text search", prompt)
+        self.assertNotIn("vector, and hybrid", prompt)
+        self.assertIn("Omit mode unless you need an override", prompt)
 
 
 class CLIDoctorTests(unittest.TestCase):
@@ -1000,9 +1002,9 @@ class ToolRoutingTests(unittest.TestCase):
         )
         self.assertIn("host injects", properties["cwd"]["description"])
         description = recall["description"].lower()
-        self.assertIn("recent", description)
-        self.assertIn("exact", description)
-        self.assertIn("embeddings", description)
+        self.assertIn("omit mode", description)
+        self.assertNotIn("use text for recent", description)
+        self.assertNotIn("hybrid only when embeddings", description)
 
     def test_native_remember_schema_does_not_ask_agent_for_session_uuid(self) -> None:
         remember = next(
