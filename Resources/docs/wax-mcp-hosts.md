@@ -294,17 +294,17 @@ Wax UUID. Project-default vs `scope=global` is above.
 **MCP hosts** (Claude, Codex, Cursor, OpenClaw, generic) follow the paste
 block:
 
-1. Call `session_open` (`project`, stable `agent_id`/`run_id`, `conversation_id` = host chat id). Keep `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
-2. Before the first answer: `recall` with `mode: text` for this job, plus `scope: global` and `memory_types: ["user_preference"]` for facts about the person. Omitted scope is current-project; empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
-3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. Write one-line corrections too. Omit `session_id` on this connection after open.
-4. This job only: `task_state` (plan lock, failed path, landmine, before spawn or stop).
-5. Close with `session_close` (short `content`, `pending_tasks`) when the job ends. Do not end between turns or after compaction. If omit-id fails after reconnect, pass the saved UUID.
+1. Call `session_open` (`project`, stable `agent_id`/`run_id`, `conversation_id` = host chat id, `recall_query` = this job). The connection remembers `session_id`; omit it after that. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open.
+2. session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
+3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children. Omit `session_id` on this connection after open.
+4. This job only: `task_state` (plan lock, failed path, landmine). It must `committed: true` before you spawn.
+5. Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`.
 
 ### Pitfalls that show up on a real store
 
 - Prefer `mode: "text"` for recent facts, exact names, and identity. Hybrid/vector can rank old embedder-test frames first.
 - `memory_get` IDs look like `durable:1695` or `episodic:<session-uuid>:0`. A bare frame number fails.
-- Do not invent a `session_id`. Use the value from `session_open` / `session_start` / `session_resume`.
+- Do not invent a `session_id`. Omit it after `session_open`. If omit-id fails, call `session_open` with the same `conversation_id`.
 - Do not manage `--store-path` or `flush` in normal agent flows.
 - If tools vanish after a burst of bad calls, check that HTTP `:3000` is still up before restarting the broker. The host MCP client can circuit-break while the server is healthy.
 

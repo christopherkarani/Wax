@@ -969,6 +969,22 @@ struct WaxCLIMemoryTests {
         #expect(readmeText.contains(WaxMCPAgentPlaybook.soulRules))
         #expect(readmeText.contains("Paste into AGENTS.md / CLAUDE.md / Cursor rules"))
         #expect(readmeText.contains("Paste into Hermes / OpenClaw SOUL.md"))
+        #expect(!readmeText.contains("keep the returned session_id, then recall"))
+        #expect(!readmeText.contains("write lessons, user_preference, and facts with session_id"))
+        #expect(readmeText.contains("session_open with recall_query is enough"))
+        #expect(readmeText.contains("committed true"))
+        #expect(readmeText.contains("leftover_reasons"))
+
+        let hostsText = try String(
+            contentsOf: repoRoot.appendingPathComponent("Resources/docs/wax-mcp-hosts.md"),
+            encoding: .utf8
+        )
+        #expect(!hostsText.contains("Before the first answer: `recall`"))
+        #expect(!hostsText.contains("Keep `session_id`."))
+        #expect(hostsText.contains("recall_query is enough"))
+        #expect(hostsText.contains("committed: true"))
+        #expect(hostsText.contains("leftover_reasons"))
+        #expect(hostsText.contains("omit it after that"))
 
         let publicOpenAI = try String(
             contentsOf: repoRoot.appendingPathComponent("Resources/skills/public/wax-mcp/agents/openai.yaml"),

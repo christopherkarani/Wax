@@ -202,15 +202,15 @@ Finally, paste this prompt into your **main (coordinator) bot**. It sets up its 
 You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
 
 Your own memory:
-- Starting any multi-step job: call session_open (project set to my name, stable agent_id/run_id), keep the returned session_id, then recall with mode text before you act. Also recall scope global for facts about me.
-- While working: write lessons, user_preference, and facts with session_id the moment they show up (including a one-line correction). Do not pass scope durable. task_state is only for this job (plan, failed path, landmine).
-- Finishing: session_close with a short summary and pending_tasks so your next session resumes cleanly.
+- Starting a host chat: call session_open (project set to my name, stable agent_id/run_id, conversation_id = this chat id, recall_query = this job). The connection remembers session_id; omit it after that. Do not invent one. session_open with recall_query is enough — do not recall again on follow-ups unless the job changed. Person prefs come back in person.
+- While working: write lessons, user_preference, and facts the moment they show up (including a one-line correction). Do not pass scope durable. A successful save has status ok and committed true. If committed is false or the call errors, the write did not land — do not spawn children. task_state is only for this job (plan, failed path, landmine) and must commit before you spawn.
+- Finishing: session_close with a short summary and pending_tasks when the host conversation is done. leftover_reasons are harvest skips — ignore them. Same conversation_id resumes this chat even after close.
 - Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
 
 Roll out to the team:
 1. List every bot we already have. For each one, add the "Your own memory" rules above to its persistent instructions/memory, then verify it can see the wax tools (have it run the wax stats tool) and report back which bots succeeded and which failed.
 2. From now on, whenever you spawn a new bot, include those same rules in its starting instructions before it begins any work.
-3. Save this whole policy in wax as memory_type user_preference with session_id so you keep enforcing it across sessions.
+3. Save this whole policy in wax as memory_type user_preference so you keep enforcing it across sessions.
 ```
 
 The `.wax` file stays on the machine. The loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
