@@ -362,7 +362,7 @@ private extension WaxMCPTools {
         sessionHint: MCPClientSessionHint?,
         perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
     ) async throws {
-        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
         guard ["remember", "recall", "memory_append"].contains(canonical) else { return }
         guard MCPAutoSessionPolicy.isEnabled() else { return }
         guard arguments["session_id"] == nil else { return }
@@ -413,7 +413,7 @@ private extension WaxMCPTools {
         sessionHint: MCPClientSessionHint?
     ) {
         guard arguments["cwd"] == nil else { return }
-        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
         guard ["remember", "recall", "memory_append", "session_open", "session_start"].contains(canonical) else {
             return
         }
@@ -437,7 +437,7 @@ private extension WaxMCPTools {
     }
 
     static func argumentsWereInjected(name: String) -> Bool {
-        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
         return ["remember", "recall", "memory_append"].contains(canonical)
     }
 
@@ -477,7 +477,7 @@ private extension WaxMCPTools {
     ) {
         guard arguments["session_id"] == nil else { return }
         guard let sessionID = sessionHint?.current() else { return }
-        switch AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name {
+        switch BrokerCommandCatalog.canonicalCommand(for: name) ?? name {
         case "stats", "recall", "search", "memory_search", "corpus_search",
              "compact_context", "session_close", "session_end", "handoff":
             arguments["session_id"] = .string(sessionID)
@@ -509,7 +509,7 @@ private extension WaxMCPTools {
     }
 
     static func validateToolAvailability(name: String, structuredMemoryEnabled: Bool) throws {
-        guard let entry = AgentBrokerCommandSurface.entry(for: name), entry.exposure == .publicCommand else {
+        guard let entry = BrokerCommandCatalog.entry(for: name), entry.exposure == .publicCommand else {
             throw ToolValidationError.invalid("Unknown tool '\(name)'.")
         }
         if entry.requiresStructuredMemory, !structuredMemoryEnabled {
@@ -519,7 +519,7 @@ private extension WaxMCPTools {
 
     static func validateArgumentSurface(name: String, arguments: [String: Value]?) throws {
         do {
-            try AgentBrokerCommandSurface.validateArgumentSurface(
+            try BrokerCommandCatalog.validateArgumentSurface(
                 command: name,
                 providedKeys: arguments.map { Set($0.keys) } ?? []
             )

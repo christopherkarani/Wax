@@ -276,11 +276,10 @@ package enum BrokerCommand: Sendable, Equatable {
         command rawCommand: String,
         arguments: [String: AgentBrokerValue]
     ) throws -> BrokerCommand {
-        let entry = try AgentBrokerCommandSurface.validateArgumentSurface(
+        let command = try BrokerCommandCatalog.validateArgumentSurface(
             command: rawCommand,
             providedKeys: Set(arguments.keys)
         )
-        let command = entry.canonicalName
         let args = BrokerArguments(arguments)
         switch command {
         case "remember":
@@ -819,7 +818,7 @@ extension BrokerCommand.CorpusSearch {
         return Self(
             query: try BrokerCommand.requireNonEmptyQuery(args),
             recursive: try args.optionalBool("recursive") ?? true,
-            rebuild: try args.optionalBool("rebuild") ?? AgentBrokerCommandSurface.corpusSearchDefaultRebuild,
+            rebuild: try args.optionalBool("rebuild") ?? BrokerCommandCatalog.corpusSearchDefaultRebuild,
             mode: try BrokerCommand.parseSearchMode(
                 modeRaw: modeRaw,
                 alpha: try args.optionalDouble("alpha")

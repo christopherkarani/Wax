@@ -254,16 +254,31 @@ func sessionOpenAndStartStillDecodeWhenConversationIDIsOmitted() throws {
 
 @Test
 func sessionOpenAndStartSchemasIncludeOptionalConversationID() throws {
-    let source = try loadPackageSource("Sources/WaxMCPServer/ToolSchemas.swift")
-    let openBlock = try #require(schemaBlock(source, named: "waxSessionOpen"))
-    let startBlock = try #require(schemaBlock(source, named: "waxSessionStart"))
-
-    #expect(openBlock.contains("\"conversation_id\""))
-    #expect(startBlock.contains("\"conversation_id\""))
-    #expect(openBlock.contains("required: []"))
-    #expect(startBlock.contains("required: []"))
-    #expect(openBlock.contains("\"project\""))
-    #expect(startBlock.contains("\"agent_id\""))
+    for name in ["session_open", "session_start"] {
+        let entry = try #require(BrokerCommandCatalog.entry(for: name))
+        let schema = BrokerCommandCatalog.schema(for: entry)
+        let root = try #require(schema.objectValue)
+        guard let propertiesValue = root["properties"],
+              let properties = propertiesValue.objectValue,
+              let requiredValue = root["required"],
+              let required = requiredValue.arrayValue
+        else {
+            Issue.record("schema for \(name) is not a well-formed object")
+            continue
+        }
+        #expect(properties["conversation_id"] != nil)
+        #expect(required.isEmpty)
+    }
+    let openEntry = try #require(BrokerCommandCatalog.entry(for: "session_open"))
+    let openProperties = try #require(
+        BrokerCommandCatalog.schema(for: openEntry).objectValue?["properties"]?.objectValue
+    )
+    #expect(openProperties["project"] != nil)
+    let startEntry = try #require(BrokerCommandCatalog.entry(for: "session_start"))
+    let startProperties = try #require(
+        BrokerCommandCatalog.schema(for: startEntry).objectValue?["properties"]?.objectValue
+    )
+    #expect(startProperties["agent_id"] != nil)
 }
 
 private func conversationManifest(
@@ -296,20 +311,4 @@ private func saveConversationManifest(_ manifest: BrokerSessionManifest, rootURL
         manifest,
         to: BrokerSessionPersistence.manifestURL(rootURL: rootURL, sessionID: manifest.sessionID)
     )
-}
-
-private func loadPackageSource(_ path: String, filePath: String = #filePath) throws -> String {
-    let packageRoot = URL(fileURLWithPath: filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    return try String(contentsOf: packageRoot.appendingPathComponent(path), encoding: .utf8)
-}
-
-private func schemaBlock(_ source: String, named: String) -> String? {
-    let marker = "static let \(named):"
-    guard let start = source.range(of: marker)?.lowerBound else { return nil }
-    let rest = source[start...]
-    let next = rest.dropFirst().range(of: "static let ")?.lowerBound ?? rest.endIndex
-    return String(source[start..<next])
 }

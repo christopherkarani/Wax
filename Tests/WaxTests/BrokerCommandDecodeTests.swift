@@ -28,17 +28,17 @@ struct BrokerCommandDecodeTests {
 
     @Test
     func commandCatalogNormalizesAliasesAndStaticFacts() throws {
-        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "  MEMORY_APPEND ") == "remember")
-        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "QUIT") == "shutdown")
-        #expect(AgentBrokerCommandSurface.canonicalCommand(for: "wax_recall") == nil)
-        #expect(AgentBrokerCommandSurface.isPublicCommand("memory_append"))
-        #expect(!AgentBrokerCommandSurface.isPublicCommand("flush"))
-        #expect(!AgentBrokerCommandSurface.isPublicCommand("memory_maintain"))
-        #expect(AgentBrokerCommandSurface.requiresStructuredMemory("facts_query"))
-        #expect(!AgentBrokerCommandSurface.requiresStructuredMemory("recall"))
+        #expect(BrokerCommandCatalog.canonicalCommand(for: "  MEMORY_APPEND ") == "remember")
+        #expect(BrokerCommandCatalog.canonicalCommand(for: "QUIT") == "shutdown")
+        #expect(BrokerCommandCatalog.canonicalCommand(for: "wax_recall") == nil)
+        #expect(BrokerCommandCatalog.isPublicCommand("memory_append"))
+        #expect(!BrokerCommandCatalog.isPublicCommand("flush"))
+        #expect(!BrokerCommandCatalog.isPublicCommand("memory_maintain"))
+        #expect(BrokerCommandCatalog.requiresStructuredMemory("facts_query"))
+        #expect(!BrokerCommandCatalog.requiresStructuredMemory("recall"))
 
-        let rememberKeys = try #require(AgentBrokerCommandSurface.allowedArguments(for: "remember"))
-        let appendKeys = try #require(AgentBrokerCommandSurface.allowedArguments(for: "memory_append"))
+        let rememberKeys = try #require(BrokerCommandCatalog.allowedArguments(for: "remember"))
+        let appendKeys = try #require(BrokerCommandCatalog.allowedArguments(for: "memory_append"))
         #expect(rememberKeys == appendKeys)
     }
 
@@ -634,7 +634,7 @@ struct BrokerCommandDecodeTests {
 
     @Test
     func everyRegisteredCommandHasTypedDecode() {
-        for command in AgentBrokerCommandSurface.commandArguments.keys.sorted() {
+        for command in BrokerCommandCatalog.commandArguments.keys.sorted() {
             do {
                 _ = try BrokerCommand.decode(command: command, arguments: [:])
             } catch let error as BrokerValidationError {
@@ -744,5 +744,53 @@ struct BrokerCommandDecodeTests {
         #expect(!AgentBrokerService.requiresRememberDrain(remember))
         #expect(!AgentBrokerService.requiresRememberDrain(.init(command: "not_a_real_command")))
         #expect(!AgentBrokerService.requiresRememberDrain(.init(command: "session_close")))
+    }
+
+    @Test
+    func catalogDerivationCoversEveryToolRow() {
+        for profile in BrokerCommandCatalog.Profile.allCases {
+            let rows = BrokerCommandCatalog.toolRows(profile: profile, structuredMemoryEnabled: true)
+            for row in rows {
+                let schema = BrokerCommandCatalog.schema(for: row.entry)
+                guard let root = schema.objectValue,
+                      let properties = root["properties"]?.objectValue,
+                      let required = root["required"]?.arrayValue
+                else {
+                    Issue.record("schema for \(row.name) is not a well-formed object")
+                    continue
+                }
+                #expect(
+                    Set(properties.keys) == row.entry.acceptedArgumentKeys,
+                    "\(row.name) schema properties drift from accepted keys"
+                )
+                #expect(
+                    Set(required.compactMap(\.stringValue)) == Set(row.entry.requiredArgumentNames),
+                    "\(row.name) required names drift"
+                )
+                #expect(
+                    (try? BrokerCommandCatalog.validateArgumentSurface(
+                        command: row.name,
+                        providedKeys: Set(row.entry.requiredArgumentNames)
+                    )) == row.entry.canonicalName,
+                    "\(row.name) fails the single validate path"
+                )
+            }
+        }
+        for profile in [BrokerCommandCatalog.Profile.daily, .legacy] {
+            for name in profile.toolNames {
+                #expect(BrokerCommandCatalog.isPublicCommand(name), "\(name) left the public catalog")
+            }
+        }
+        let fullNames = Set(
+            BrokerCommandCatalog.toolRows(profile: .full, structuredMemoryEnabled: true).map(\.name)
+        )
+        for name in BrokerCommandCatalog.Profile.daily.toolNames
+            + BrokerCommandCatalog.Profile.legacy.toolNames
+        {
+            #expect(fullNames.contains(name), "\(name) is profile-listed but missing from full")
+        }
+        let ungated = BrokerCommandCatalog.toolRows(profile: .full, structuredMemoryEnabled: false)
+        #expect(!ungated.map(\.name).contains("facts_query"))
+        #expect(ungated.map(\.name).contains("recall"))
     }
 }
