@@ -1,0 +1,35 @@
+{
+  "host": "grok",
+  "docs": "https://docs.x.ai/build/features/hooks",
+  "event_name": "SessionStart",
+  "terminal_capable": false,
+  "never_close": true,
+  "stdin": {
+    "hookEventName": "SessionStart",
+    "hook_event_name": "SessionStart",
+    "sessionId": "grok-session-001",
+    "session_id": "grok-session-001",
+    "cwd": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax",
+    "workspaceRoot": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax"
+  },
+  "stdin_notes": {
+    "session_id": "Required stdin identity for adapters. Documented Grok field is sessionId; both values must match.",
+    "GROK_SESSION_ID": "Environment consistency check only. Never the sole source of truth."
+  },
+  "environment": {
+    "GROK_HOOK_EVENT": "SessionStart",
+    "GROK_HOOK_NAME": "wax-prime",
+    "GROK_SESSION_ID": "grok-session-001",
+    "GROK_WORKSPACE_ROOT": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax"
+  },
+  "environment_roles": {
+    "GROK_SESSION_ID": "consistency_check_only"
+  },
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": true,
+    "evidence": "Grok documents SessionStart/SessionEnd with session identity on stdin. GROK_SESSION_ID is an env consistency check. MCP calls are not proven to carry this host id."
+  }
+}

@@ -23,15 +23,15 @@ Learn. Write the moment it would change the next agent's behavior — including 
 
 Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
 
-Open once per host chat: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes this chat even after close. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
+Daily tools are `remember`, `recall`, and `stats`. The server auto-opens one transport-scoped session on the first `remember` or `recall`. Do not invent a `session_id`. This is transport-owned working memory, not per-chat isolation, unless the host proves a conversation identity. Pass `cwd` when the host does not advertise roots.
 
-session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
+`recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory." Pass `scope=global` only for intentional cross-project retrieval.
 
 Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
 
 This job only (not the default write): `remember` with `memory_type: task_state`, `durability: working` before you spawn.
 
-Close is a checkpoint, not a new life: `session_close` with a short state `content` and `pending_tasks` when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. `remaining_active` is other sessions. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
+Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Durable facts come from explicit `remember`, not from transcripts. Set `WAX_MCP_TOOLS=legacy` only for the old eight-tool playbook. Follow the MCP server instructions when present.
 ```
 
 ## OpenClaw SOUL.md
@@ -53,13 +53,13 @@ Write the moment it would change how you treat them or the work — including a 
 
 Store one or two sentences. Do not store chats, status, or secrets.
 
-On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Do not open per message. Same `conversation_id` resumes this chat even after close.
+Daily tools are `remember`, `recall`, and `stats`. The server auto-opens a transport-scoped session. Do not invent a `session_id`. Do not open per message.
 
-session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
+`recall` is self-contained. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
 
 Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
 
 This job only: `remember` with `memory_type: task_state`, `durability: working`.
 
-Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
+Do not close on Stop, idle, or compaction. Durable facts come from explicit `remember`, not from transcripts. Follow the MCP server instructions when present.
 ```

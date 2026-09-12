@@ -1,0 +1,42 @@
+{
+  "host": "cursor",
+  "docs": "https://cursor.com/docs/hooks",
+  "event_name": "sessionEnd",
+  "terminal_capable": true,
+  "never_close": false,
+  "hooks_config": {
+    "version": 1,
+    "hooks": {
+      "sessionEnd": [
+        {
+          "command": "wax-cli mcp checkpoint --host cursor"
+        }
+      ]
+    }
+  },
+  "stdin": {
+    "conversation_id": "cursor-conv-host-aligned-1",
+    "generation_id": "cursor-gen-host-aligned-1",
+    "model": "grok-4-6",
+    "hook_event_name": "sessionEnd",
+    "cursor_version": "1.7.2",
+    "workspace_roots": [
+      "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax"
+    ],
+    "user_email": null,
+    "transcript_path": null,
+    "session_id": "cursor-conv-host-aligned-1",
+    "reason": "user_close",
+    "duration_ms": 45000,
+    "is_background_agent": false,
+    "final_status": "completed"
+  },
+  "stdout": {},
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": false,
+    "evidence": "Cursor documents sessionEnd as composer-conversation terminal lifecycle. Response is fire-and-forget. Level B adapters must not close Wax from this hook without Level A correlation."
+  }
+}

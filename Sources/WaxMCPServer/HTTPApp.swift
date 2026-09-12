@@ -2,6 +2,7 @@
 import Foundation
 import Logging
 import MCP
+import Wax
 @preconcurrency import NIOCore
 @preconcurrency import NIOHTTP1
 @preconcurrency import NIOPosix
@@ -39,9 +40,11 @@ actor MCPHTTPApplication {
     }
 
     typealias ServerFactory = @Sendable (String, StatefulHTTPServerTransport) async throws -> Server
+    typealias TransportTeardown = @Sendable (String, MCPTeardownReason) async -> MCPTeardownOutcome
 
     private let configuration: Configuration
     private let serverFactory: ServerFactory
+    private let onTransportTeardown: TransportTeardown?
     private let validationPipeline: (any HTTPRequestValidationPipeline)?
     private var channel: Channel?
     private var sessions: [String: SessionContext] = [:]
@@ -63,11 +66,13 @@ actor MCPHTTPApplication {
     init(
         configuration: Configuration = Configuration(),
         validationPipeline: (any HTTPRequestValidationPipeline)? = nil,
+        onTransportTeardown: TransportTeardown? = nil,
         serverFactory: @escaping ServerFactory,
         logger: Logger? = nil
     ) {
         self.configuration = configuration
         self.serverFactory = serverFactory
+        self.onTransportTeardown = onTransportTeardown
         self.validationPipeline = validationPipeline
         self.maxRequestBodyBytes = configuration.maxRequestBodyBytes
         self.logger = logger ?? Logger(
@@ -174,7 +179,7 @@ actor MCPHTTPApplication {
 
             let response = await session.transport.handleRequest(request)
             if request.method.uppercased() == "DELETE", response.statusCode == 200 {
-                sessions.removeValue(forKey: sessionID)
+                await closeSession(sessionID, reason: .httpDelete)
             }
             return response
         }
@@ -231,6 +236,7 @@ actor MCPHTTPApplication {
         )
 
         do {
+            rememberInitializeContext(sessionID: sessionID, request: request, isRecovery: false)
             let server = try await serverFactory(sessionID, transport)
             try await server.start(transport: transport)
             sessions[sessionID] = SessionContext(
@@ -242,11 +248,11 @@ actor MCPHTTPApplication {
 
             let response = await transport.handleRequest(request)
             if case .error = response {
-                sessions.removeValue(forKey: sessionID)
-                await transport.disconnect()
+                await closeSession(sessionID, reason: .recoveryReplacement)
             }
             return response
         } catch {
+            MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
             await transport.disconnect()
             return .error(statusCode: 500, .internalError("Failed to create session: \(error.localizedDescription)"))
         }
@@ -312,6 +318,7 @@ actor MCPHTTPApplication {
         )
 
         do {
+            rememberInitializeContext(sessionID: sessionID, request: nil, isRecovery: true)
             let server = try await serverFactory(sessionID, transport)
             try await server.start(transport: transport)
 
@@ -326,6 +333,7 @@ actor MCPHTTPApplication {
             )
             let initResponse = await transport.handleRequest(initRequest)
             guard await Self.consumeSuccessfulInitializeResponse(initResponse) else {
+                MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
                 await transport.disconnect()
                 logger.error(
                     "HTTP session recovery initialize failed",
@@ -359,6 +367,7 @@ actor MCPHTTPApplication {
             )
             return true
         } catch {
+            MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
             await transport.disconnect()
             logger.error(
                 "HTTP session recovery failed",
@@ -404,12 +413,41 @@ actor MCPHTTPApplication {
         }
     }
 
-    private func closeSession(_ sessionID: String) async {
+    private func rememberInitializeContext(
+        sessionID: String,
+        request: HTTPRequest?,
+        isRecovery: Bool
+    ) {
+        let identity: MCPClientIdentity
+        if isRecovery {
+            identity = MCPClientIdentity(
+                name: MCPClientIdentity.syntheticRecoveryName,
+                version: "0.0.0"
+            )
+        } else if let body = request?.body {
+            identity = MCPInitializeIdentityParser.parse(from: body)
+        } else {
+            identity = MCPClientIdentity()
+        }
+        MCPHTTPConnectionContextRegistry.shared.remember(
+            sessionID: sessionID,
+            context: MCPConnectionContext(
+                transportKey: sessionID,
+                clientIdentity: identity
+            )
+        )
+    }
+
+    private func closeSession(_ sessionID: String, reason: MCPTeardownReason = .shutdown) async {
         sessionRecoveryTasks[sessionID]?.cancel()
         sessionRecoveryTasks[sessionID] = nil
+        if let onTransportTeardown {
+            _ = await onTransportTeardown(sessionID, reason)
+        }
+        MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
         guard let session = sessions.removeValue(forKey: sessionID) else { return }
         await session.transport.disconnect()
-        logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)"])
+        logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)", "reason": "\(reason.rawValue)"])
     }
 
     private func closeAllSessions() async {
@@ -435,7 +473,7 @@ actor MCPHTTPApplication {
             }
             for (sessionID, _) in expired {
                 logger.info("HTTP session expired", metadata: ["sessionID": "\(sessionID)"])
-                await closeSession(sessionID)
+                await closeSession(sessionID, reason: .idleExpiry)
             }
         }
     }

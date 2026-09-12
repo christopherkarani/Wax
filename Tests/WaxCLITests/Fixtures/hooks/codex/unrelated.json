@@ -1,0 +1,28 @@
+{
+  "description": "team hooks",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./policy.py",
+            "statusMessage": "Checking Bash command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./stop.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

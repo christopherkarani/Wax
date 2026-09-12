@@ -1,0 +1,27 @@
+{
+  "model": "opus",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo unrelated-pre"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo unrelated-stop"
+          }
+        ]
+      }
+    ]
+  },
+  "customFlag": true
+}

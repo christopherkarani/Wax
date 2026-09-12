@@ -453,14 +453,9 @@ private final class UnixStatsResponder: @unchecked Sendable {
 @Test
 func toolsListContainsExpectedTools() {
     let expected: Set<String> = [
-        "session_open",
         "remember",
         "recall",
-        "session_close",
         "stats",
-        "memory_get",
-        "compact_context",
-        "session_resume",
     ]
     let names = Set(
         ToolSchemas.tools(
@@ -469,6 +464,11 @@ func toolsListContainsExpectedTools() {
         ).map(\.name)
     )
     #expect(MCPToolProfile.dailyNames == [
+        "remember",
+        "recall",
+        "stats",
+    ])
+    #expect(MCPToolProfile.legacyNames == [
         "session_open",
         "remember",
         "recall",
@@ -483,7 +483,13 @@ func toolsListContainsExpectedTools() {
         ToolSchemas.tools(structuredMemoryEnabled: true, profile: .daily).map(\.name)
             == MCPToolProfile.dailyNames
     )
-    #expect(names.count == 8)
+    #expect(
+        ToolSchemas.tools(structuredMemoryEnabled: true, profile: .legacy).map(\.name)
+            == MCPToolProfile.legacyNames
+    )
+    #expect(names.count == 3)
+    #expect(!names.contains("session_open"))
+    #expect(!names.contains("memory_get"))
     #expect(!names.contains("memory_append"))
     #expect(!names.contains("promote"))
     #expect(!names.contains("memory_promote"))
@@ -494,9 +500,11 @@ func toolsListContainsExpectedTools() {
 }
 
 @Test
-func mcpToolProfileFromEnvironmentSelectsDailyAndFull() {
+func mcpToolProfileFromEnvironmentSelectsDailyLegacyAndFull() {
     #expect(MCPToolProfile.fromEnvironment([:]) == .daily)
     #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "daily"]) == .daily)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "legacy"]) == .legacy)
+    #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "LEGACY"]) == .legacy)
     #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "full"]) == .full)
     #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": "FULL"]) == .full)
     #expect(MCPToolProfile.fromEnvironment(["WAX_MCP_TOOLS": " full "]) == .full)
@@ -561,34 +569,50 @@ func dailyToolNamesAreSubsetOfPublicCatalog() {
 }
 
 @Test
-func agentInstructionsDescribeSessionLifecycle() {
-    let text = MCPAgentInstructions.text(version: "9.9.9")
-    #expect(text.contains("server v9.9.9"))
-    #expect(text.contains("session_open"))
-    #expect(text.contains("handoff_latest"))
-    #expect(text.contains("session_start"))
-    #expect(text.contains("session_end"))
-    #expect(text.contains("session_id"))
-    #expect(text.contains("remaining_active"))
-    #expect(text.contains("other_sessions_active"))
-    #expect(text.contains("active_session_count"))
-    #expect(text.contains("Do not manage SESSION_STORE"))
-    #expect(!text.contains("or call handoff_latest first"))
-    #expect(text.contains("Call session_open"))
+func agentInstructionsDescribeDailyAndLegacySurfaces() {
+    let daily = MCPAgentInstructions.text(version: "9.9.9", profile: .daily)
+    #expect(daily.contains("server v9.9.9"))
+    #expect(daily.contains("remember"))
+    #expect(daily.contains("recall"))
+    #expect(daily.contains("stats"))
+    #expect(daily.contains("transport-scoped"))
+    #expect(daily.contains("self-contained"))
+    #expect(daily.contains("WAX_MCP_TOOLS=legacy"))
+    #expect(daily.contains("Do not manage SESSION_STORE"))
+    #expect(daily.contains("Omit mode unless you need an override"))
+    #expect(!daily.contains("session_open"))
+    #expect(!daily.contains("memory_get"))
+    #expect(!daily.contains("compact_context"))
+    #expect(!daily.contains("session_resume"))
+    #expect(!daily.contains("session_close"))
     for name in MCPToolProfile.dailyNames {
-        #expect(text.contains(name), "instructions must name daily tool \(name)")
+        #expect(daily.contains(name), "daily instructions must name \(name)")
     }
-    #expect(text.contains("memory_type selects the horizon"))
-    #expect(text.contains("do not call memory_promote"))
-    #expect(!text.contains("session_synthesize then memory_promote"))
-    #expect(text.contains("The same agent_id+run_id resumes"))
-    #expect(text.contains("exactly one live session"))
-    #expect(text.contains("agent_id+resolved project rebinds"))
-    #expect(text.contains("durable types stay durable even if session_id is present"))
-    #expect(!text.contains("durable types must omit session_id"))
-    #expect(text.contains("remember and memory_append inherit session_id unless scope=durable"))
-    #expect(text.contains("Omit mode unless you need an override"))
-    #expect(!text.contains("Prefer mode hybrid"))
+
+    let legacy = MCPAgentInstructions.text(version: "9.9.9", profile: .legacy)
+    #expect(legacy.contains("WAX_MCP_TOOLS=legacy"))
+    #expect(legacy.contains("Call session_open"))
+    #expect(legacy.contains("handoff_latest"))
+    #expect(legacy.contains("session_start"))
+    #expect(legacy.contains("session_end"))
+    #expect(legacy.contains("remaining_active"))
+    #expect(legacy.contains("other_sessions_active"))
+    #expect(legacy.contains("active_session_count"))
+    #expect(!legacy.contains("or call handoff_latest first"))
+    for name in MCPToolProfile.legacyNames {
+        #expect(legacy.contains(name), "legacy instructions must name \(name)")
+    }
+    #expect(legacy.contains("memory_type selects the horizon"))
+    #expect(legacy.contains("do not call memory_promote"))
+    #expect(!legacy.contains("session_synthesize then memory_promote"))
+    #expect(legacy.contains("The same agent_id+run_id resumes"))
+    #expect(legacy.contains("exactly one live session"))
+    #expect(legacy.contains("agent_id+resolved project rebinds"))
+    #expect(legacy.contains("durable types stay durable even if session_id is present"))
+    #expect(!legacy.contains("durable types must omit session_id"))
+    #expect(legacy.contains("remember and memory_append inherit session_id unless scope=durable"))
+    #expect(legacy.contains("Omit mode unless you need an override"))
+    #expect(!legacy.contains("Prefer mode hybrid"))
 }
 
 @Test
@@ -7580,20 +7604,34 @@ struct WaxMCPProcessTests {
         let toolsList = try #require(bootstrap.toolsList)
         let names = try toolNamesListedInMCPResponse(toolsList)
         let expected: Set<String> = [
-            "session_open",
             "remember",
             "recall",
-            "session_close",
             "stats",
-            "memory_get",
-            "compact_context",
-            "session_resume",
         ]
         #expect(names == expected)
         #expect(toolsList.contains(#""name":"remember""#))
         #expect(!toolsList.contains(#""name":"memory_append""#))
+        #expect(!names.contains("session_open"))
         #expect(!names.contains("memory_append"))
         #expect(!names.contains("promote"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func legacyProcessToolsListContainsEightCanonicalVerbs() async throws {
+        let harness = try MCPServerProcessHarness(
+            extraEnvironment: ["WAX_MCP_TOOLS": "legacy"]
+        )
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        let bootstrap = try await harness.bootstrap(
+            clientName: "wax-mcp-legacy-catalog-list-test",
+            includeToolsList: true
+        )
+        let toolsList = try #require(bootstrap.toolsList)
+        let names = try toolNamesListedInMCPResponse(toolsList)
+        #expect(names == Set(MCPToolProfile.legacyNames))
+        #expect(!names.contains("memory_append"))
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -7680,6 +7718,7 @@ struct WaxMCPProcessTests {
             arguments: [
                 "content": "invalid reserved metadata key",
                 "metadata": ["session_id": "not-a-real-session"],
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
             ],
             timeout: 20
         )
@@ -7731,7 +7770,11 @@ struct WaxMCPProcessTests {
         let remember = try await harness.callTool(
             id: 2,
             name: "remember",
-            arguments: ["content": marker]
+            arguments: [
+                "content": marker,
+                "memory_type": "fact",
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ]
         )
         let rememberJSON = try parseToolTextJSON(fromResponseLine: remember)
         #expect((rememberJSON["status"] as? String) == "ok")
@@ -8210,7 +8253,10 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func brokerBackedSessionResumeReopensPersistedSessionAfterRestart() async throws {
+    func brokerBackedSessionMemorySurvivesRestartButEndedSessionDoesNotResume() async throws {
+        // New contract: stdio EOF is transport teardown, which checkpoints (closes)
+        // the bound session. The closed session cannot be resumed by id, but its
+        // memory is harvested at close and stays searchable from the next process.
         let sharedStoreURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-session-resume-\(UUID().uuidString)")
             .appendingPathExtension("wax")
@@ -8251,14 +8297,14 @@ struct WaxMCPProcessTests {
             timeout: 20
         )
         let resumedJSON = try parseToolTextJSON(fromResponseLine: resumed)
-        #expect((resumedJSON["resumed"] as? Bool) == true)
+        #expect((resumedJSON["resumed"] as? Bool) == nil)
+        #expect((resumedJSON["message"] as? String)?.contains("ended") == true)
 
         let search = try await second.callTool(
             id: 34,
             name: "memory_search",
             arguments: [
                 "query": "resume anchor",
-                "session_id": sessionID,
                 "mode": "text",
             ],
             timeout: 20
@@ -8755,7 +8801,10 @@ struct WaxMCPProcessTests {
         var rememberResp = try await harness.callTool(
             id: 2,
             name: "remember",
-            arguments: ["content": longContent],
+            arguments: [
+                "content": longContent,
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ],
             timeout: 120
         )
         let rememberJSON: [String: Any]
@@ -8766,7 +8815,10 @@ struct WaxMCPProcessTests {
             rememberResp = try await harness.callTool(
                 id: 22,
                 name: "remember",
-                arguments: ["content": longContent],
+                arguments: [
+                    "content": longContent,
+                    "cwd": harness.storeURL.deletingLastPathComponent().path,
+                ],
                 timeout: 120
             )
             rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)

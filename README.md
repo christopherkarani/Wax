@@ -120,15 +120,15 @@ Learn. Write the moment it would change the next agent's behavior — including 
 
 Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
 
-Open once per host chat: call `session_open` (`project` = repo, stable `agent_id` / `run_id`, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Same `agent_id`+`run_id` resumes. Same `conversation_id` resumes this chat even after close. Same `agent_id`+project rebinds if exactly one live session exists. If more than one is live, open a new session — do not guess.
+Daily tools are `remember`, `recall`, and `stats`. The server auto-opens one transport-scoped session on the first `remember` or `recall`. Do not invent a `session_id`. This is transport-owned working memory, not per-chat isolation, unless the host proves a conversation identity. Pass `cwd` when the host does not advertise roots.
 
-session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory."
+`recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory." Pass `scope=global` only for intentional cross-project retrieval.
 
 Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
 
 This job only (not the default write): `remember` with `memory_type: task_state`, `durability: working` before you spawn.
 
-Close is a checkpoint, not a new life: `session_close` with a short state `content` and `pending_tasks` when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. `remaining_active` is other sessions. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
+Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Durable facts come from explicit `remember`, not from transcripts. Set `WAX_MCP_TOOLS=legacy` only for the old eight-tool playbook. Follow the MCP server instructions when present.
 ```
 
 </details>
@@ -153,15 +153,15 @@ Write the moment it would change how you treat them or the work — including a 
 
 Store one or two sentences. Do not store chats, status, or secrets.
 
-On every real job: call `session_open` (`project` = the repo you are in, `agent_id` = your name, `run_id` = this conversation, `conversation_id` = this host chat id, `recall_query` = this job). The MCP connection remembers `session_id`; omit it after that. Do not invent one. Do not open per message. Same `conversation_id` resumes this chat even after close.
+Daily tools are `remember`, `recall`, and `stats`. The server auto-opens a transport-scoped session. Do not invent a `session_id`. Do not open per message.
 
-session_open with recall_query is enough. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
+`recall` is self-contained. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
 
 Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
 
 This job only: `remember` with `memory_type: task_state`, `durability: working`.
 
-Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. Compaction is not close. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`. Follow the MCP server instructions when present.
+Do not close on Stop, idle, or compaction. Durable facts come from explicit `remember`, not from transcripts. Follow the MCP server instructions when present.
 ```
 
 Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`. OpenClaw still pastes the SOUL.md stanza.
@@ -196,9 +196,9 @@ Finally, paste this prompt into your **main (coordinator) bot**. It sets up its 
 You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
 
 Your own memory:
-- Starting a host chat: call session_open (project set to my name, stable agent_id/run_id, conversation_id = this chat id, recall_query = this job). The connection remembers session_id; omit it after that. Do not invent one. session_open with recall_query is enough — do not recall again on follow-ups unless the job changed. Omit mode unless you need an override. Person prefs come back in person.
+- Daily tools are remember, recall, and stats. The server auto-opens a transport-scoped session. Do not invent a session_id. recall is self-contained — do not recall again on follow-ups unless the job changed. Omit mode unless you need an override. Person prefs come back in person. WAX_MCP_TOOLS=legacy: session_open with recall_query is enough.
 - While working: write lessons, user_preference, and facts the moment they show up (including a one-line correction). Do not pass scope durable. A successful save has status ok and committed true. If committed is false or the call errors, the write did not land — do not spawn children. task_state is only for this job (plan, failed path, landmine) and must commit before you spawn.
-- Finishing: session_close with a short summary and pending_tasks when the host conversation is done. leftover_reasons are harvest skips — ignore them. Same conversation_id resumes this chat even after close.
+- Finishing: do not close on Stop, idle, or compaction. leftover_reasons are harvest skips — ignore them. Durable facts come from explicit remember, not from transcripts.
 - Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
 
 Roll out to the team:
@@ -376,7 +376,7 @@ swift run WaxDemo --mode fm --keep --store /tmp/wax-demo.wax
 | Hosted memory API | Mem0, SuperMemory, and similar | One file on disk. No account. `remember` does not call a cloud LLM to extract facts. |
 | Markdown MCP | Basic Memory and similar | Binary store with FTS5 + CoreML vectors + WAL. AirDrop the file. Same MCP session loop. |
 | Knowledge graph platform | Graphiti, Cognee | Different product: those want Neo4j/Postgres and an LLM for ingest. Wax is a local file plus an agent session loop. |
-| Single-file RAG | Memvid `.mv2` and similar | Wax adds MCP `session_open` / `remember` / `recall` / `session_close`, a native Hermes provider, and Foundation Models tools. |
+| Single-file RAG | Memvid `.mv2` and similar | Wax adds MCP `remember` / `recall` / `stats`, a native Hermes provider, and Foundation Models tools. |
 | Cloud vector DB | Pinecone, hosted Qdrant | Hybrid text + vector on Apple Silicon. p95 hybrid recall **6.1 ms** on the 2026-03-06 M-series sweep. |
 
 Wax is the shared local store. It does not replace a temporal knowledge graph, and it does not claim LoCoMo numbers it has not published.

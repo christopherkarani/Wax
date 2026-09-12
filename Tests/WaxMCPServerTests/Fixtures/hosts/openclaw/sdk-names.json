@@ -1,0 +1,52 @@
+{
+  "host": "openclaw",
+  "docs": "https://github.com/openclaw/openclaw/blob/main/docs/plugins/sdk-overview.md",
+  "pinned_sdk": ">=2026.3.24-beta.2",
+  "probe": {
+    "method": "public_docs_and_github_source",
+    "compile": false,
+    "local_node_modules": false,
+    "sources": [
+      "https://github.com/openclaw/openclaw/blob/main/docs/plugins/sdk-overview.md",
+      "https://docs.openclaw.ai/plugins/sdk-migration/removed-surfaces",
+      "https://raw.githubusercontent.com/openclaw/openclaw/main/src/plugins/memory-state.ts"
+    ],
+    "note": "No local openclaw package was present under node_modules. Names were probed from public SDK docs and the published memory-state.ts source. Not a compile probe."
+  },
+  "names": [
+    {
+      "name": "registerMemoryPromptPreparation",
+      "exposed": true,
+      "surface": "api.registerMemoryPromptPreparation(prepare)",
+      "kind": "async_prompt_preparation",
+      "note": "Documented async preparation for a memory-adjacent prompt section. Returns immutable lines for synchronous promptBuilder assembly."
+    },
+    {
+      "name": "promptBuilder",
+      "exposed": true,
+      "surface": "api.registerMemoryCapability({ promptBuilder })",
+      "kind": "synchronous_prompt_builder",
+      "note": "Documented as a registerMemoryCapability field. Synchronous and must remain side-effect free. Not an I/O hook."
+    },
+    {
+      "name": "flushPlanResolver",
+      "exposed": true,
+      "surface": "api.registerMemoryCapability({ flushPlanResolver })",
+      "kind": "flush_plan_resolver",
+      "note": "Documented as a registerMemoryCapability field. Returns a MemoryFlushPlan. It is not a terminal session-close callback."
+    }
+  ],
+  "documented_terminal_callback": {
+    "exposed": false,
+    "name": null,
+    "note": "No documented terminal lifecycle callback with stable session identity was proven. flushPlanResolver is a plan resolver. api.lifecycle.registerRuntimeLifecycle is plugin-resource cleanup on reset/delete/reload, not a Wax checkpoint. Level A remains unproven."
+  },
+  "owns_wax_runtime": false,
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": false,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": true,
+    "evidence": "registerMemoryPromptPreparation is exposed, so read-only prime is possible. Level A requires that plus a documented terminal callback and ownership of every Wax read/write. Those are not proven."
+  }
+}

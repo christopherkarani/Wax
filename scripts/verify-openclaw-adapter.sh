@@ -9,9 +9,11 @@ if [[ "${1:-}" == "--help" ]]; then
 usage: scripts/verify-openclaw-adapter.sh
 
 Runs a repeatable OpenClaw adapter verification pass:
-1. Builds the MCP server and CLI.
-2. Runs a direct stdio bootstrap smoke flow against wax-mcp and asserts the OpenClaw adapter tools are published.
-3. Runs the stable targeted MCP/unit test slices sequentially.
+1. Asserts canonical/npm OpenClaw plugin src↔dist lockstep and forbids the
+   shared-port spawn fallback.
+2. Builds the MCP server and CLI.
+3. Runs a direct stdio bootstrap smoke flow against wax-mcp and asserts the OpenClaw adapter tools are published.
+4. Runs the stable targeted MCP/unit test slices sequentially.
 
 This is intentionally not a single giant grouped process-test run because the
 shared MCP process harness is still intermittently flaky when many broker-backed
@@ -20,13 +22,65 @@ EOF
   exit 0
 fi
 
+echo "==> OpenClaw plugin src↔dist lockstep"
+python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+canonical = root / "Resources/openclaw/wax-memory-plugin"
+npm = root / "Resources/npm/waxmcp/plugins/openclaw"
+
+required = [
+    canonical / "src/index.ts",
+    canonical / "dist/index.js",
+    npm / "src/index.ts",
+    npm / "dist/index.js",
+]
+missing = [str(path) for path in required if not path.is_file()]
+if missing:
+    raise SystemExit("missing OpenClaw plugin file(s): " + ", ".join(missing))
+
+canonical_src = (canonical / "src/index.ts").read_text(encoding="utf-8")
+canonical_dist = (canonical / "dist/index.js").read_text(encoding="utf-8")
+npm_src = (npm / "src/index.ts").read_text(encoding="utf-8")
+npm_dist = (npm / "dist/index.js").read_text(encoding="utf-8")
+
+if canonical_src != canonical_dist:
+    raise SystemExit("canonical src/index.ts and dist/index.js drifted")
+if npm_src != npm_dist:
+    raise SystemExit("npm src/index.ts and dist/index.js drifted")
+if canonical_src != npm_src:
+    raise SystemExit("canonical and npm OpenClaw plugin src drifted")
+if canonical_dist != npm_dist:
+    raise SystemExit("canonical and npm OpenClaw plugin dist drifted")
+
+forbidden = (
+    "--no-embedder",
+    "pluginConfig?.command",
+    "pluginConfig?.args",
+    '"mcp",\n        "serve"',
+    "mcp serve",
+)
+for label, text in (("src", canonical_src), ("dist", canonical_dist)):
+    for needle in forbidden:
+        if needle in text:
+            raise SystemExit(f"OpenClaw plugin {label} still contains spawn fallback {needle!r}")
+    if "http://127.0.0.1:3000/mcp" not in text:
+        raise SystemExit(f"OpenClaw plugin {label} must default to the shared HTTP endpoint")
+    if 'id: PLUGIN_ID' not in text and 'id: "wax-memory"' not in text:
+        raise SystemExit(f"OpenClaw plugin {label} must keep exclusive id wax-memory")
+
+print("OpenClaw plugin src↔dist lockstep ok")
+PY
+
 TEST_FILTERS=(
   "toolsListContainsExpectedTools"
   "sessionStartEndAndScopedRecallSearchWork"
   "vectorFallbackIsSurfacedInSearchAndStats"
   "corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance"
   "brokerBackedMemorySearchAndGetExposeStableMemoryIDs"
-  "brokerBackedSessionResumeReopensPersistedSessionAfterRestart"
+  "brokerBackedSessionMemorySurvivesRestartButEndedSessionDoesNotResume"
   "brokerBackedCompactContextDoesNotLoseSessionMemoryAcrossRepeatedCheckpoints"
   "brokerBackedMarkdownExportProjectsCompatibilityFiles"
   "brokerBackedMemorySearchDoesNotLeakAcrossSessions"
@@ -130,10 +184,13 @@ def bootstrap(proc, tools_id):
     if "result" not in init_msg or "result" not in tools_msg:
         raise RuntimeError("bootstrap failed")
     tool_names = {tool["name"] for tool in tools_msg["result"]["tools"]}
-    required = {
-        "memory_append", "memory_search", "memory_get", "session_start",
-        "session_resume", "compact_context", "handoff", "markdown_export", "markdown_sync",
-    }
+    if os.environ.get("WAX_MCP_TOOLS", "daily").strip().lower() == "full":
+        required = {
+            "memory_append", "memory_search", "memory_get", "session_start",
+            "session_resume", "compact_context", "handoff", "markdown_export", "markdown_sync",
+        }
+    else:
+        required = {"remember", "recall", "stats"}
     missing = sorted(required - tool_names)
     if missing:
         raise RuntimeError(f"missing tool(s): {missing}")
@@ -182,6 +239,22 @@ try:
     bootstrap(first, 2)
 finally:
     close_proc(first)
+
+full_env_store = tmp / "openclaw-adapter-full.wax"
+env["WAX_MCP_TOOLS"] = "full"
+second = subprocess.Popen(
+    [str(wax_mcp), "--store-path", str(full_env_store), "--no-embedder"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    bufsize=1,
+    env=env,
+)
+try:
+    bootstrap(second, 2)
+finally:
+    close_proc(second)
     shutil.rmtree(tmp, ignore_errors=True)
 
 print("direct MCP bootstrap smoke passed")

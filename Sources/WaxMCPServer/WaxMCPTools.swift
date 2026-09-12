@@ -9,9 +9,10 @@ enum WaxMCPTools {
         on server: Server,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool,
-        connectionKey: String? = nil
+        connectionKey: String? = nil,
+        connectionContext: MCPConnectionContext? = nil
     ) async {
-        let sessionHint = MCPClientSessionHint(connectionKey: connectionKey)
+        let sessionHint = MCPClientSessionHint(connectionKey: connectionKey, context: connectionContext)
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(
                 tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
@@ -68,7 +69,7 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         structuredMemoryEnabled: Bool,
         sessionHint: MCPClientSessionHint?,
-        perform: (AgentBrokerRequest) async throws -> AgentBrokerResponse
+        perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
     ) async -> CallTool.Result {
         do {
             if let migration = migratedName(for: params.name) {
@@ -84,18 +85,53 @@ enum WaxMCPTools {
             if let oversize = contentLimitError(name: params.name, arguments: forwarded) {
                 return oversize
             }
+            let hadExplicitSession = forwarded["session_id"] != nil
+            do {
+                try await autoEnsureSessionIfNeeded(
+                    name: params.name,
+                    arguments: &forwarded,
+                    sessionHint: sessionHint,
+                    perform: perform
+                )
+            } catch let error as MCPAutoSessionError {
+                return autoSessionErrorResult(error)
+            }
             // The connection supplies a default, not an ownership boundary.
             // Explicit UUIDs are validated against persisted sessions by the broker.
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+            injectClientCWDIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             try validateArgumentSurface(name: params.name, arguments: forwarded)
             let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
 
-            let response = try await perform(
+            var response = try await perform(
                 AgentBrokerRequest(
                     command: params.name,
                     arguments: forwarded.mapValues(brokerValue(from:))
                 )
             )
+            if !hadExplicitSession,
+               shouldRetryInactiveBinding(name: params.name, response: response, sessionHint: sessionHint) {
+                clearStaleInjectedBinding(sessionHint: sessionHint)
+                forwarded.removeValue(forKey: "session_id")
+                do {
+                    try await autoEnsureSessionIfNeeded(
+                        name: params.name,
+                        arguments: &forwarded,
+                        sessionHint: sessionHint,
+                        perform: perform
+                    )
+                } catch let error as MCPAutoSessionError {
+                    return autoSessionErrorResult(error)
+                }
+                injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+                injectClientCWDIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+                response = try await perform(
+                    AgentBrokerRequest(
+                        command: params.name,
+                        arguments: forwarded.mapValues(brokerValue(from:))
+                    )
+                )
+            }
 
             switch response.outcome {
             case .failure(let payload, let message):
@@ -144,6 +180,8 @@ final class MCPBoundSessionRegistry: @unchecked Sendable {
     static let shared = MCPBoundSessionRegistry()
     private let lock = NSLock()
     private var ids: [String: String] = [:]
+    private var ownerships: [String: MCPMemoryOwnership] = [:]
+    private var reverse: [String: Set<String>] = [:]
 
     func current(for key: String) -> String? {
         lock.lock()
@@ -151,13 +189,41 @@ final class MCPBoundSessionRegistry: @unchecked Sendable {
         return ids[key]
     }
 
-    func remember(key: String, sessionID: String?) {
+    func ownership(for key: String) -> MCPMemoryOwnership? {
         lock.lock()
         defer { lock.unlock() }
+        return ownerships[key]
+    }
+
+    func remember(key: String, sessionID: String?, ownership: MCPMemoryOwnership? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let previous = ids[key] {
+            reverse[previous]?.remove(key)
+            if reverse[previous]?.isEmpty == true {
+                reverse.removeValue(forKey: previous)
+            }
+        }
         if let sessionID, !sessionID.isEmpty {
             ids[key] = sessionID
+            ownerships[key] = ownership ?? ownerships[key] ?? .transport
+            var keys = reverse[sessionID] ?? []
+            keys.insert(key)
+            reverse[sessionID] = keys
         } else {
             ids.removeValue(forKey: key)
+            ownerships.removeValue(forKey: key)
+        }
+    }
+
+    func invalidate(sessionID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let keys = reverse.removeValue(forKey: sessionID) ?? []
+        for key in keys {
+            ids.removeValue(forKey: key)
+            ownerships.removeValue(forKey: key)
+            MCPAutoSessionCoordinatorStore.shared.remove(for: key)
         }
     }
 
@@ -165,6 +231,9 @@ final class MCPBoundSessionRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         ids.removeAll()
+        ownerships.removeAll()
+        reverse.removeAll()
+        MCPAutoSessionCoordinatorStore.shared.resetForTests()
     }
 }
 
@@ -172,12 +241,19 @@ final class MCPBoundSessionRegistry: @unchecked Sendable {
 final class MCPClientSessionHint: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionID: String?
+    private var ownership: MCPMemoryOwnership?
     private let connectionKey: String?
+    private var context: MCPConnectionContext?
 
-    init(connectionKey: String? = nil) {
-        self.connectionKey = connectionKey
-        if let connectionKey {
-            sessionID = MCPBoundSessionRegistry.shared.current(for: connectionKey)
+    init(connectionKey: String? = nil, context: MCPConnectionContext? = nil) {
+        self.connectionKey = connectionKey ?? context?.transportKey
+        self.context = context
+        if let key = self.connectionKey {
+            sessionID = MCPBoundSessionRegistry.shared.current(for: key)
+            ownership = MCPBoundSessionRegistry.shared.ownership(for: key)
+            if self.context == nil, let stored = MCPHTTPConnectionContextRegistry.shared.current(sessionID: key) {
+                self.context = stored
+            }
         }
     }
 
@@ -191,11 +267,31 @@ final class MCPClientSessionHint: @unchecked Sendable {
         return nil
     }
 
+    func currentOwnership() -> MCPMemoryOwnership? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let ownership { return ownership }
+        if let connectionKey {
+            return MCPBoundSessionRegistry.shared.ownership(for: connectionKey)
+        }
+        return nil
+    }
+
+    func connectionContext() -> MCPConnectionContext? {
+        lock.lock()
+        defer { lock.unlock() }
+        return context
+    }
+
+    func transportKey() -> String? {
+        connectionKey
+    }
+
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
             if let sessionID = payload.objectValue?["session_id"]?.stringValue {
-                bind(sessionID)
+                bind(sessionID, ownership: ownership ?? .transport)
             }
         case "session_end", "session_close":
             if let ended = payload.objectValue?["session_id"]?.stringValue {
@@ -203,7 +299,7 @@ final class MCPClientSessionHint: @unchecked Sendable {
                 let matches = sessionID == ended
                 lock.unlock()
                 if matches {
-                    bind(nil)
+                    bind(nil, ownership: nil)
                 }
             }
         default:
@@ -211,12 +307,24 @@ final class MCPClientSessionHint: @unchecked Sendable {
         }
     }
 
-    private func bind(_ sessionID: String?) {
+    func bind(_ sessionID: String?, ownership: MCPMemoryOwnership?) {
         lock.lock()
         self.sessionID = sessionID
+        self.ownership = ownership
         lock.unlock()
         if let connectionKey {
-            MCPBoundSessionRegistry.shared.remember(key: connectionKey, sessionID: sessionID)
+            MCPBoundSessionRegistry.shared.remember(
+                key: connectionKey,
+                sessionID: sessionID,
+                ownership: ownership
+            )
+        }
+    }
+
+    func clearBinding() {
+        bind(nil, ownership: nil)
+        if let connectionKey {
+            MCPAutoSessionCoordinatorStore.shared.remove(for: connectionKey)
         }
     }
 }
@@ -246,6 +354,120 @@ private extension WaxMCPTools {
             throw ToolValidationError.invalid("verbosity must be one of: compact, verbose")
         }
         return trimmed
+    }
+
+    static func autoEnsureSessionIfNeeded(
+        name: String,
+        arguments: inout [String: Value],
+        sessionHint: MCPClientSessionHint?,
+        perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
+    ) async throws {
+        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        guard ["remember", "recall", "memory_append"].contains(canonical) else { return }
+        guard MCPAutoSessionPolicy.isEnabled() else { return }
+        guard arguments["session_id"] == nil else { return }
+        guard let hint = sessionHint, let transportKey = hint.transportKey() else { return }
+        if hint.current() != nil { return }
+
+        let context = hint.connectionContext() ?? MCPConnectionContext(transportKey: transportKey)
+        let attribution = MCPProjectAttributionResolver.resolve(
+            explicitProject: nonEmptyString(arguments["project"]),
+            explicitRepo: nonEmptyString(arguments["repo"]),
+            advertisedCWD: nonEmptyString(arguments["cwd"]) ?? context.advertisedCWD,
+            mcpRoots: context.mcpRoots
+        )
+        let memoryType = nonEmptyString(arguments["memory_type"])
+        let scope = nonEmptyString(arguments["scope"])
+        let projectGated: Bool
+        if canonical == "recall" {
+            projectGated = MCPProjectAttributionResolver.isProjectGatedRecall(scope: scope)
+        } else {
+            projectGated = MCPProjectAttributionResolver.isProjectScopedWrite(
+                memoryType: memoryType,
+                scope: scope
+            )
+        }
+        if projectGated && !attribution.isResolved {
+            throw MCPAutoSessionError.projectUnresolved(missing: ["cwd", "mcp_root", "project"])
+        }
+        if !projectGated && !attribution.isResolved {
+            return
+        }
+
+        let coordinator = MCPAutoSessionCoordinatorStore.shared.coordinator(for: transportKey)
+        let binding = try await coordinator.ensureBound(
+            transportKey: transportKey,
+            attribution: attribution,
+            context: context,
+            perform: { request in try await perform(request) }
+        )
+        hint.bind(binding.sessionID, ownership: binding.ownership)
+        if arguments["cwd"] == nil, let cwd = attribution.cwdPath {
+            arguments["cwd"] = .string(cwd)
+        }
+    }
+
+    static func injectClientCWDIfNeeded(
+        name: String,
+        arguments: inout [String: Value],
+        sessionHint: MCPClientSessionHint?
+    ) {
+        guard arguments["cwd"] == nil else { return }
+        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        guard ["remember", "recall", "memory_append", "session_open", "session_start"].contains(canonical) else {
+            return
+        }
+        guard let cwd = sessionHint?.connectionContext()?.advertisedCWD
+            ?? sessionHint?.connectionContext()?.canonicalMCPRoot else {
+            return
+        }
+        arguments["cwd"] = .string(cwd)
+    }
+
+    static func shouldRetryInactiveBinding(
+        name: String,
+        response: AgentBrokerResponse,
+        sessionHint: MCPClientSessionHint?
+    ) -> Bool {
+        guard sessionHint?.current() != nil else { return false }
+        guard argumentsWereInjected(name: name) else { return false }
+        guard case .failure(let payload, _) = response.outcome else { return false }
+        let code = payload?.objectValue?["code"]?.stringValue
+        return code == "session_ended" || code == "session_unknown" || code == "session_not_live"
+    }
+
+    static func argumentsWereInjected(name: String) -> Bool {
+        let canonical = AgentBrokerCommandSurface.entry(for: name)?.canonicalName ?? name
+        return ["remember", "recall", "memory_append"].contains(canonical)
+    }
+
+    static func clearStaleInjectedBinding(sessionHint: MCPClientSessionHint?) {
+        guard let sessionID = sessionHint?.current() else { return }
+        MCPBoundSessionRegistry.shared.invalidate(sessionID: sessionID)
+        sessionHint?.clearBinding()
+    }
+
+    static func autoSessionErrorResult(_ error: MCPAutoSessionError) -> CallTool.Result {
+        switch error {
+        case .projectUnresolved(let missing):
+            return structuredErrorResult(
+                message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+                code: "project_unresolved",
+                fields: [
+                    "committed": .bool(false),
+                    "missing": .array(missing.map(AgentBrokerValue.string)),
+                ]
+            )
+        case .openFailed(let message, let retryable):
+            return structuredErrorResult(
+                message: message,
+                code: "auto_session_failed",
+                fields: [
+                    "committed": .bool(false),
+                    "retryable": .bool(retryable),
+                ]
+            )
+        }
     }
 
     static func injectClientSessionIfNeeded(
