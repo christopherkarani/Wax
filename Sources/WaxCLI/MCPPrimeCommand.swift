@@ -9,6 +9,18 @@ enum MCPPrimeHost: String, CaseIterable, ExpressibleByArgument {
     case cursor
     case opencode
     case openclaw
+
+    /// Thin adapter over the canonical host vocabulary.
+    var registry: MCPHostRegistry.Host {
+        switch self {
+        case .claude: return .claude
+        case .codex: return .codex
+        case .grok: return .grok
+        case .cursor: return .cursor
+        case .opencode: return .opencode
+        case .openclaw: return .openclaw
+        }
+    }
 }
 
 enum MCPPrimeOutputFormat: String, CaseIterable, ExpressibleByArgument {
@@ -19,7 +31,7 @@ enum MCPPrimeOutputFormat: String, CaseIterable, ExpressibleByArgument {
     case cursor
 
     var assemblyFormat: MCPPrimeAssembly.Format {
-        MCPPrimeAssembly.Format(rawValue: rawValue) ?? .json
+        MCPHostRegistry.primeFormat(hostName: rawValue)
     }
 }
 

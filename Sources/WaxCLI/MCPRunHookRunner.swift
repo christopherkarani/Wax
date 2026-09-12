@@ -98,7 +98,7 @@ enum MCPRunHookRunner {
         noEmbedder: Bool,
         embedderChoice: String
     ) -> Outcome {
-        let format = MCPPrimeAssembly.Format(rawValue: host) ?? .json
+        let format = MCPHostRegistry.primeFormat(hostName: host)
         let outcome = MCPPrimeRunner.run(
             MCPPrimeRunner.Request(
                 host: host,

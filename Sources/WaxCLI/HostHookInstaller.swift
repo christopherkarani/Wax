@@ -1,10 +1,23 @@
 import Foundation
+import Wax
 
 enum HostHookHost: String, Sendable, CaseIterable {
     case claude
     case codex
     case grok
     case cursor
+}
+
+extension HostHookHost {
+    /// Thin adapter over the canonical host vocabulary.
+    var registry: MCPHostRegistry.Host {
+        switch self {
+        case .claude: return .claude
+        case .codex: return .codex
+        case .grok: return .grok
+        case .cursor: return .cursor
+        }
+    }
 }
 
 enum HostOwnershipLevel: String, Sendable {
@@ -100,7 +113,7 @@ enum HostHookError: Error, Equatable, LocalizedError {
         case .writeFailed(let message):
             return "Host hook write failed: \(message)"
         case .unsupportedHost(let host):
-            return "Unsupported host '\(host)'. Supported: claude, codex, grok, cursor."
+            return "Unsupported host '\(host)'. Supported: \(MCPHostRegistry.wireHookNames.joined(separator: ", "))."
         case .hostConfigCountMismatch:
             return "--host and --config must be paired one-to-one."
         case .validationFailed:
@@ -141,33 +154,14 @@ enum HostHookInstaller {
         policy: HostHookInstallPolicy = .default
     ) throws -> [HostHookDesiredEntry] {
         try HostHookCommand.requireAbsolute(wrapperPath)
-        let startName: String
-        let endName: String
-        switch host {
-        case .claude, .codex, .grok:
-            startName = "SessionStart"
-            endName = "SessionEnd"
-        case .cursor:
-            startName = "sessionStart"
-            endName = "sessionEnd"
-        }
+        let registry = host.registry
+        let startName = registry.startEventName
+        let endName = registry.endEventName
 
-        let matcher: String?
-        switch host {
-        case .codex:
-            matcher = "startup|resume"
-        case .claude, .grok, .cursor:
-            matcher = nil
-        }
+        let matcher = registry.primeMatcher
 
         var entries: [HostHookDesiredEntry] = []
-        let includePrime: Bool
-        switch host {
-        case .cursor:
-            includePrime = policy.enableCursorStartHook
-        case .claude, .codex, .grok:
-            includePrime = true
-        }
+        let includePrime = registry.includesPrime(enableCursorStartHook: policy.enableCursorStartHook)
 
         if includePrime {
             entries.append(
@@ -177,7 +171,7 @@ enum HostHookInstaller {
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: matcher,
                     timeoutSeconds: 2,
-                    requiresLiveInjectionProbe: host == .cursor && policy.requiresLiveInjectionProbe
+                    requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe
                 )
             )
         }
@@ -300,15 +294,13 @@ enum HostHookInstaller {
 
 enum HostHookSchema {
     static func seed(host: HostHookHost) -> HostHookJSON {
-        switch host {
-        case .cursor:
-            return .object([
-                HostHookJSONMember(key: "version", value: .number("1")),
-                HostHookJSONMember(key: "hooks", value: .object([])),
-            ])
-        case .claude, .codex, .grok:
+        if host.registry.usesNestedMatcherDocument {
             return .object([])
         }
+        return .object([
+            HostHookJSONMember(key: "version", value: .number("1")),
+            HostHookJSONMember(key: "hooks", value: .object([])),
+        ])
     }
 
     static func validate(_ document: HostHookJSON, host: HostHookHost) throws {
@@ -316,7 +308,7 @@ enum HostHookSchema {
             throw HostHookError.malformedJSON
         }
         let version = document.value(forKey: "version")
-        if host == .cursor, version == nil {
+        if !host.registry.usesNestedMatcherDocument, version == nil {
             throw HostHookError.unknownSchemaVersion("missing")
         }
         if let version {
