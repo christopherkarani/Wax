@@ -292,20 +292,36 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 **Native Hermes** uses `wax_remember` / `wax_recall` / `wax_stats` with no
 Wax UUID. Project-default vs `scope=global` is above.
 
-**MCP hosts** (Claude, Codex, Cursor, OpenClaw, generic) follow the paste
-block:
+**MCP hosts** follow the paste block. Default `tools/list` is `remember`,
+`recall`, and `stats`. The server auto-opens one transport-scoped session.
+This is **transport-owned** working memory, not per-chat isolation:
 
-1. Call `session_open` (`project`, stable `agent_id`/`run_id`, `conversation_id` = host chat id, `recall_query` = this job). The connection remembers `session_id`; omit it after that. Do not invent one. Do not call `handoff_latest` then `session_start` as the default open.
-2. session_open with recall_query is enough. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
-3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children. Omit `session_id` on this connection after open.
+- Claude Code, Codex, Grok, Cursor: Level C plus optional Level B prime.
+  A multiplexed connection can span more than one host chat.
+- OpenCode: Level B only. There is no shipped Level A plugin that wraps
+  every Wax read/write with the OpenCode session ID. Close is not available
+  on `session.idle` or `session.compacted`.
+- OpenClaw: Level B. The plugin talks to the shared HTTP endpoint only and
+  does not spawn a writer. The pinned SDK does not expose a proven terminal
+  lifecycle callback, so checkpoint relies on transport teardown / lease.
+- Hermes: Level A through `memory.provider: wax-memory` only.
+
+Cursor `sessionStart` prime is installed only after a live
+`additional_context` probe. Ungraceful crash recovery uses the existing
+300-second session lease and 7-day recently-closed reclaim window; SIGKILL
+does not checkpoint.
+
+1. Call `remember` and `recall` with `cwd` when roots are not advertised. Do not invent a `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
+2. `recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
+3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children.
 4. This job only: `task_state` (plan lock, failed path, landmine). It must `committed: true` before you spawn.
-5. Close with `session_close` (short `content`, `pending_tasks`) when the host conversation is done. `leftover_reasons` are harvest skips — ignore them. If omit-id fails after reconnect, call `session_open` with the same `conversation_id`.
+5. Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Set `WAX_MCP_TOOLS=legacy` to restore `session_open` / `session_close` / `memory_get` / `compact_context` / `session_resume`. In that profile, session_open with recall_query is enough. The connection remembers `session_id`; omit it after that. `WAX_MCP_AUTO_SESSION=0` restores explicit-open.
 
 ### Pitfalls that show up on a real store
 
 - Omit `mode` unless you need an override. Hybrid ranking promotes distinctive tokens and recent lexical matches; exact identifiers still route to text. `mode: vector` throws without an embedder.
-- `memory_get` IDs look like `durable:1695` or `episodic:<session-uuid>:0`. A bare frame number fails.
-- Do not invent a `session_id`. Omit it after `session_open`. If omit-id fails, call `session_open` with the same `conversation_id`.
+- Daily `recall` returns usable text. `memory_get` IDs (legacy/full) look like `durable:1695` or `episodic:<session-uuid>:0`. A bare frame number fails.
+- Do not invent a `session_id`.
 - Do not manage `--store-path` or `flush` in normal agent flows.
 - If tools vanish after a burst of bad calls, check that HTTP `:3000` is still up before restarting the broker. The host MCP client can circuit-break while the server is healthy.
 
@@ -340,10 +356,10 @@ If Hermes doctors fail to register or import, reinstall the plugin with
 
 ## Smoke test (any host)
 
-Ask the agent: “Load Wax, start a session, and tell me the latest handoff.”
+Ask the agent: “Load Wax, remember one fact, recall it, and run stats.”
 
 Pass if it:
 
-1. MCP hosts: calls `session_open` (not `handoff_latest` then `session_start` as the default open). Native Hermes: calls `wax_remember` / `wax_recall` with no Wax `session_id`.
+1. MCP hosts: calls `remember` / `recall` / `stats` (not `handoff_latest` then `session_start` as the default open). Native Hermes: calls `wax_remember` / `wax_recall` with no Wax `session_id`.
 2. Does not ask you to restate prior context that memory already contains
 3. Can `stats` / `wax_stats` and reports vector search on (or honestly says it is off)

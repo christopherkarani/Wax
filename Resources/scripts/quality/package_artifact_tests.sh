@@ -59,8 +59,16 @@ if (pkg.dependencies?.waxmcp !== pkg.version) process.exit(4);
 
 [[ -f "$OPENCLAW_DIST" ]] || fail "OpenClaw dist/index.js is missing"
 [[ -f "$OPENCLAW_SRC" ]] || fail "OpenClaw source file should remain for maintainers"
-grep -Fq 'command: api.pluginConfig?.command ?? "waxmcp"' "$OPENCLAW_DIST" \
-  || fail "OpenClaw runtime must default to the waxmcp launcher"
+grep -Fq 'http://127.0.0.1:3000/mcp' "$OPENCLAW_DIST" \
+  || fail "OpenClaw runtime must use the shared HTTP endpoint"
+grep -Fq 'no process fallback' "$OPENCLAW_DIST" \
+  || fail "OpenClaw runtime must not spawn a second writer"
+if grep -Fq 'waxmcp mcp serve' "$OPENCLAW_DIST"; then
+  fail "OpenClaw runtime must not spawn waxmcp mcp serve"
+fi
+if grep -Fq -- '--no-embedder' "$OPENCLAW_DIST"; then
+  fail "OpenClaw runtime must not disable embeddings"
+fi
 grep -Fq '"placeholder": "waxmcp"' "$OPENCLAW_PLUGIN" \
   || fail "OpenClaw plugin metadata must not suggest unavailable wax-mcp command"
 

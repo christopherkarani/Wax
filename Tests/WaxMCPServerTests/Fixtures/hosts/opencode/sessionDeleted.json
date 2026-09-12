@@ -1,0 +1,33 @@
+{
+  "host": "opencode",
+  "docs": "https://opencode.ai/docs/plugins/",
+  "event_name": "session.deleted",
+  "plugin_hook": "event",
+  "terminal_capable": true,
+  "never_close": false,
+  "event": {
+    "type": "session.deleted",
+    "properties": {
+      "info": {
+        "id": "ses_opencode_host_aligned_1",
+        "slug": "host-aligned-1",
+        "projectID": "proj_wax",
+        "directory": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax",
+        "title": "Host-aligned memory inventory",
+        "version": "1",
+        "time": {
+          "created": 1789180000000,
+          "updated": 1789183600000
+        }
+      }
+    }
+  },
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": false,
+    "all_wax_calls_share_opencode_session_id": false,
+    "evidence": "OpenCode documents session.deleted as the session-removal event. Close is allowed only on this event, and only if the plugin owns/wraps every Wax call with this session id. These fixtures do not prove that wrapping."
+  }
+}

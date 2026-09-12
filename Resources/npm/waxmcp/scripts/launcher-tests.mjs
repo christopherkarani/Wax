@@ -924,3 +924,88 @@ test("vector-health fails with useful diagnostics when query embedding is unavai
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test("install --wire-hooks delegates to staged wax-cli mcp wire-hooks", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-wire-hooks-test-"));
+  try {
+    const sourceDir = path.join(root, "source");
+    const installRoot = path.join(root, "installed");
+    const fakeHome = path.join(root, "home");
+    const argsFile = path.join(root, "wire-hooks-args.txt");
+    fs.mkdirSync(fakeHome);
+    const { server, cli } = makeRuntimeSource(
+      sourceDir,
+      "#!/bin/sh\nexit 0\n",
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WAX_WIRE_HOOKS_ARGS\"\nexit 0\n"
+    );
+    const env = {
+      ...process.env,
+      HOME: fakeHome,
+      WAX_MCP_BIN: server,
+      WAX_CLI_BIN: cli,
+      WAX_MCP_INSTALL_ROOT: installRoot,
+      WAX_WIRE_HOOKS_ARGS: argsFile,
+    };
+
+    const result = spawnSync(process.execPath, [launcher, "install", "--wire-hooks"], {
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Running: .*mcp wire-hooks/);
+    const args = fs.readFileSync(argsFile, "utf8").trim().split("\n");
+    assert.equal(args[0], "mcp");
+    assert.equal(args[1], "wire-hooks");
+    assert.equal(args.includes("--wrapper"), true);
+    assert.equal(args.includes("claude"), true);
+    assert.equal(args.includes("codex"), true);
+    assert.equal(args.includes("grok"), true);
+    assert.equal(args.includes("cursor"), true);
+    assert.equal(args.includes("--dry-run"), false);
+    const stagedCLI = path.join(installRoot, "runtime", `${os.platform()}-${os.arch()}`, "wax-cli");
+    const wrapperIndex = args.indexOf("--wrapper");
+    assert.equal(fs.realpathSync(args[wrapperIndex + 1]), fs.realpathSync(stagedCLI));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("install --wire-hooks --dry-run delegates without mutating hook configs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-wire-hooks-dry-run-"));
+  try {
+    const sourceDir = path.join(root, "source");
+    const installRoot = path.join(root, "installed");
+    const fakeHome = path.join(root, "home");
+    const argsFile = path.join(root, "wire-hooks-args.txt");
+    fs.mkdirSync(fakeHome);
+    const { server, cli } = makeRuntimeSource(
+      sourceDir,
+      "#!/bin/sh\nexit 0\n",
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WAX_WIRE_HOOKS_ARGS\"\nexit 0\n"
+    );
+    const env = {
+      ...process.env,
+      HOME: fakeHome,
+      WAX_MCP_BIN: server,
+      WAX_CLI_BIN: cli,
+      WAX_MCP_INSTALL_ROOT: installRoot,
+      WAX_WIRE_HOOKS_ARGS: argsFile,
+    };
+
+    const result = spawnSync(process.execPath, [launcher, "install", "--wire-hooks", "--dry-run"], {
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Would run: .*mcp wire-hooks/);
+    const args = fs.readFileSync(argsFile, "utf8").trim().split("\n");
+    assert.equal(args.includes("mcp"), true);
+    assert.equal(args.includes("wire-hooks"), true);
+    assert.equal(args.includes("--dry-run"), true);
+    assert.equal(fs.existsSync(path.join(fakeHome, ".claude", "settings.json")), false);
+    assert.equal(fs.existsSync(path.join(fakeHome, ".codex", "hooks.json")), false);
+    assert.equal(fs.existsSync(path.join(fakeHome, ".cursor", "hooks.json")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

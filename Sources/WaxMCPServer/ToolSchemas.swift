@@ -237,6 +237,10 @@ enum ToolSchemas {
                 "type": "boolean",
                 "description": "Lock this memory as durable and protected from freshness decay.",
             ],
+            "cwd": [
+                "type": "string",
+                "description": "Optional client working directory used to infer project/repo when not explicit. Never the MCP server process cwd.",
+            ],
         ],
         required: ["content"]
     )
@@ -309,6 +313,10 @@ enum ToolSchemas {
                 "type": "string",
                 "description": "Response verbosity. compact (default) returns one JSON text block; verbose returns the same JSON in the text block plus structuredContent. Hosts that ignore structuredContent still receive the payload.",
                 "enum": ["compact", "verbose"],
+            ],
+            "cwd": [
+                "type": "string",
+                "description": "Optional client working directory used to infer project/repo when not explicit. Never the MCP server process cwd.",
             ],
             "filters": searchFilters,
         ],

@@ -12,12 +12,14 @@ description: >
 The MCP server `instructions` field is the playbook. Do not restate a second
 lifecycle here.
 
-Daily tools: `session_open`, `remember`, `recall`, `session_close`, `stats`,
-`memory_get`, `compact_context`, `session_resume`. Aliases stay callable.
-`WAX_MCP_TOOLS=full` lists the rest.
+Daily tools: `remember`, `recall`, `stats`. The server auto-opens one
+transport-scoped session. Aliases stay callable. `WAX_MCP_TOOLS=legacy`
+restores the previous eight-tool playbook. `WAX_MCP_TOOLS=full` lists the
+rest. `WAX_MCP_AUTO_SESSION=0` restores explicit-open.
 
-Close harvests. Do not call `memory_promote` or `memory-maintain` in the agent
-loop. Never invent a `session_id` or put it in `metadata`.
+Do not call `memory_promote` or `memory-maintain` in the agent loop. Never
+invent a `session_id` or put it in `metadata`. Do not close on Stop, idle,
+or compaction.
 
 Recall defaults to the current project after project/repo resolution. Empty
 project recall is a miss, not “I have no memory.” Supplying both `project`
@@ -27,9 +29,7 @@ facts pass `memory_types: ["user_preference"]` so project lessons do not
 crowd the lane. Global searches the entire local store with no
 current-project rank boost. It is not an authorization boundary.
 
-Pass `conversation_id` (host chat/session id) on `session_open`. Do not
-close between turns or after compaction. If omit-id `session_close` fails
-after reconnect, pass the saved UUID.
+`recall` is self-contained. Do not close between turns or after compaction.
 
 Pasteable host rules: `references/project-rules.md`.
 

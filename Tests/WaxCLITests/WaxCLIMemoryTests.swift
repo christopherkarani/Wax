@@ -904,27 +904,29 @@ struct WaxCLIMemoryTests {
     }
 
     @Test func projectRulesPlaybookMentionsLifecycle() {
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_open"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("session_close"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("remember"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("recall"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("stats"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("session_id"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("task_state"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("user_preference"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("call `session_open`"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("transport-scoped"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("self-contained"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("committed"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("Do not pass `scope: durable`"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("Skip only empty chit-chat"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("even after close"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("WAX_MCP_TOOLS=legacy"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("Skip one-line Q&A"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("handoff_latest then `session_start`"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("Durable types must omit `session_id`"))
         #expect(!WaxMCPAgentPlaybook.projectRules.contains("Optional explicit `scope: durable`"))
+        #expect(!WaxMCPAgentPlaybook.projectRules.contains("call `session_open`"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("## Memory (Wax)"))
-        #expect(WaxMCPAgentPlaybook.soulRules.contains("call `session_open`"))
+        #expect(WaxMCPAgentPlaybook.soulRules.contains("remember"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("Learn this person"))
         #expect(!WaxMCPAgentPlaybook.soulRules.contains("handoff_latest"))
+        #expect(!WaxMCPAgentPlaybook.soulRules.contains("call `session_open`"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("Same `agent_id`+`run_id` resumes"))
-        #expect(WaxMCPAgentPlaybook.projectRules.contains("exactly one live session"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("Omit `mode` unless you need an override"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("Omit `mode` unless you need an override"))
         #expect(WaxMCPAgentPlaybook.hermesRules.contains("wax_remember"))
@@ -950,7 +952,9 @@ struct WaxCLIMemoryTests {
         try WaxMCPHostRuleWriter.writeIfRequested(path: target.path)
         let text = try String(contentsOf: target, encoding: .utf8)
         #expect(text == WaxMCPAgentPlaybook.projectRules)
-        #expect(text.contains("session_open"))
+        #expect(text.contains("remember"))
+        #expect(text.contains("recall"))
+        #expect(text.contains("stats"))
     }
 
     @Test func projectRulesPlaybookStaysInLockstepWithDocs() throws {
@@ -985,6 +989,7 @@ struct WaxCLIMemoryTests {
         #expect(readmeText.contains("session_open with recall_query is enough"))
         #expect(readmeText.contains("committed true"))
         #expect(readmeText.contains("leftover_reasons"))
+        #expect(readmeText.contains("Daily tools are `remember`, `recall`, and `stats`"))
 
         let hostsText = try String(
             contentsOf: repoRoot.appendingPathComponent("Resources/docs/wax-mcp-hosts.md"),
@@ -1006,6 +1011,9 @@ struct WaxCLIMemoryTests {
             encoding: .utf8
         )
         #expect(publicOpenAI == npmOpenAI)
+        #expect(publicOpenAI.contains("remember"))
+        #expect(publicOpenAI.contains("recall"))
+        #expect(publicOpenAI.contains("stats"))
         #expect(publicOpenAI.contains("session_open"))
         #expect(publicOpenAI.contains("session_close"))
         #expect(!publicOpenAI.contains("Call handoff_latest then session_start"))
@@ -1418,6 +1426,11 @@ struct WaxCLIMemoryTests {
     @Test
     func mcpDoctorDailyToolSurfaceMatchesCanonicalVerbs() {
         #expect(MCPDoctorSurface.dailyToolNames == [
+            "remember",
+            "recall",
+            "stats",
+        ])
+        #expect(MCPDoctorSurface.legacyToolNames == [
             "session_open",
             "remember",
             "recall",
@@ -1427,6 +1440,11 @@ struct WaxCLIMemoryTests {
             "compact_context",
             "session_resume",
         ])
+        #expect(MCPDoctorSurface.expectedToolNames(environment: [:]) == MCPDoctorSurface.dailyToolNames)
+        #expect(
+            MCPDoctorSurface.expectedToolNames(environment: ["WAX_MCP_TOOLS": "legacy"])
+                == MCPDoctorSurface.legacyToolNames
+        )
     }
 
     @Test
@@ -1639,8 +1657,8 @@ struct WaxCLIMemoryTests {
 
         #expect(output.status != EXIT_SUCCESS)
         #expect(output.stdout.contains("missing daily tools"))
-        #expect(output.stdout.contains("session_open"))
         #expect(output.stdout.contains("recall"))
+        #expect(output.stdout.contains("stats"))
         #expect(output.stdout.contains("Doctor passed.") == false)
         #expect(output.stdout.lowercased().contains("claude") == false)
     }

@@ -1,0 +1,31 @@
+{
+  "host": "claude",
+  "docs": "https://code.claude.com/docs/en/hooks",
+  "event_name": "Stop",
+  "terminal_capable": false,
+  "never_close": true,
+  "stdin": {
+    "session_id": "abc123",
+    "transcript_path": "/Users/chriskarani/.claude/projects/Wax/00893aaf-19fa-41d2-8238-13269b9b3ca0.jsonl",
+    "cwd": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax",
+    "permission_mode": "default",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false,
+    "last_assistant_message": "I've completed the refactoring. Here's a summary...",
+    "background_tasks": [],
+    "session_crons": []
+  },
+  "stdout": {
+    "hookSpecificOutput": {
+      "hookEventName": "Stop",
+      "additionalContext": "Stop is once per turn. Never treat this as session close."
+    }
+  },
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": false,
+    "evidence": "Claude Code documents Stop as once-per-turn after a completed response, not session termination. Adapters must never call session_close on Stop."
+  }
+}

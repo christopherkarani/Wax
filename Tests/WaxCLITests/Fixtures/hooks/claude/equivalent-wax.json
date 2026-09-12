@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/path/wax-cli mcp run-hook --host claude --role prime --wax-hook 1",
+            "timeout": 4,
+            "extraKeep": "yes",
+            "wax": {
+              "owner": "wax",
+              "version": 1,
+              "role": "prime",
+              "extraMeta": "keep"
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo unrelated-prompt"
+          }
+        ]
+      }
+    ]
+  }
+}

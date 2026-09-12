@@ -1,0 +1,37 @@
+{
+  "host": "codex",
+  "docs": "https://developers.openai.com/codex/hooks",
+  "event_name": "SessionEnd",
+  "terminal_capable": true,
+  "never_close": false,
+  "hooks_config": {
+    "hooks": {
+      "SessionEnd": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "wax-cli mcp checkpoint --host codex",
+              "timeout": 3
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "stdin": {
+    "session_id": "thr_123",
+    "transcript_path": "/workspace/.codex/rollout.jsonl",
+    "cwd": "/Users/chriskarani/CodingProjects/AIStack/Agents/Wax",
+    "hook_event_name": "SessionEnd",
+    "reason": "other"
+  },
+  "stdout": {},
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": false,
+    "evidence": "Codex documents SessionEnd as the main-thread terminal event. Output is advisory and does not keep the thread open. Level B hooks must not checkpoint from this event."
+  }
+}

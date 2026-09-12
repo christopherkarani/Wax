@@ -377,6 +377,7 @@ let package = Package(
                 ),
             ],
             path: "Tests/WaxMCPServerTests",
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),
@@ -403,6 +404,7 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxCLITests",
+            resources: [.copy("Fixtures")],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),

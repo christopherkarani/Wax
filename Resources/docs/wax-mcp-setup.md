@@ -91,8 +91,8 @@ swift run --traits MCPServer wax-cli mcp doctor
 ```
 
 `doctor` is host-name agnostic. It smoke-checks the daily tool surface
-(`session_open`, `remember`, `recall`, `session_close`, `stats`,
-`memory_get`, `compact_context`, `session_resume`).
+(`remember`, `recall`, `stats`). Set `WAX_MCP_TOOLS=legacy` to check the
+previous eight-tool catalog.
 
 Shared HTTP (LaunchAgent or the persistent launcher) is a different check:
 
@@ -134,8 +134,10 @@ swift run --traits MCPServer wax-cli mcp serve
 
 - `WAX_MCP_FEATURE_LICENSE=0` (default): license validation disabled
 - `WAX_MCP_FEATURE_LICENSE=1`: enable `LicenseValidator`
-- `WAX_MCP_TOOLS=daily` (default): `tools/list` is the eight daily verbs
+- `WAX_MCP_TOOLS=daily` (default): `tools/list` is `remember`, `recall`, `stats`
+- `WAX_MCP_TOOLS=legacy`: previous eight-tool catalog (`session_open` … `session_resume`)
 - `WAX_MCP_TOOLS=full`: list aliases, graph, and admin tools
+- `WAX_MCP_AUTO_SESSION=0`: restore explicit-open (no transport auto-session)
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=1` (default): enable graph/entity/fact tools
 - `WAX_MCP_FEATURE_STRUCTURED_MEMORY=0`: disable structured memory graph tools
 - `WAX_MCP_FEATURE_ACCESS_STATS=1` (default): enable access-stat recording + retrieval scoring
@@ -143,12 +145,12 @@ swift run --traits MCPServer wax-cli mcp serve
 
 ## MCP tool highlights
 
-- Default open: `session_open` (one-shot session_id + short handoff + optional recall). Do not start with `handoff_latest` then `session_start`.
-- Daily `tools/list`: `session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`, `compact_context`, `session_resume`. Set `WAX_MCP_TOOLS=full` for aliases, graph, and admin tools.
-- Recall scope: omitted `scope` is current-project after project/repo resolution. Empty project recall is a miss — pass `scope=global` only when you intend the whole local store (person facts). Global is not an authorization boundary. Supplying both `project` and `repo` requires both exact tags.
+- Default coding loop: `remember`, `recall`, `stats`. The server auto-opens one transport-scoped session. Do not invent a `session_id`. Do not start with `handoff_latest` then `session_start`.
+- Daily `tools/list`: `remember`, `recall`, `stats`. Set `WAX_MCP_TOOLS=legacy` for `session_open`, `session_close`, `memory_get`, `compact_context`, `session_resume`. Set `WAX_MCP_TOOLS=full` for aliases, graph, and admin tools.
+- Recall is self-contained. Omitted `scope` is current-project after project/repo resolution. Empty project recall is a miss — pass `scope=global` only when you intend the whole local store (person facts). Global is not an authorization boundary. Supplying both `project` and `repo` requires both exact tags.
 - Session scoping on reads: `recall` accepts `session_id` (merges that session with durable memory under project scope)
-- Writes: `remember` — `memory_type` selects the horizon; durable types stay durable even if `session_id` is present; `task_state` / `handoff` need `session_id`
-- Close: `session_close` harvests; do not call `memory_promote` in the agent loop
+- Writes: `remember` — `memory_type` selects the horizon; durable types stay durable even if `session_id` is present; pass `cwd` when roots are not advertised
+- Close: transport teardown checkpoints; do not close on Stop, idle, or compaction; do not call `memory_promote` in the agent loop
 - Cross-session retrieval (full catalog): `corpus_search`
 - Structured memory graph (full catalog): `entity_upsert`, `fact_assert`, `fact_retract`, `facts_query`, `entity_resolve`
 - Native Hermes uses `wax_remember` / `wax_recall` / `wax_stats` and does not take a model-visible Wax UUID.

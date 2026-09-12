@@ -1,0 +1,26 @@
+{
+  "host": "opencode",
+  "docs": "https://opencode.ai/docs/plugins/",
+  "event_name": "experimental.chat.system.transform",
+  "plugin_hook": "experimental.chat.system.transform",
+  "terminal_capable": false,
+  "never_close": true,
+  "input": {
+    "sessionID": "ses_opencode_host_aligned_1",
+    "model": {
+      "providerID": "opencode",
+      "id": "gpt-5"
+    }
+  },
+  "output": {
+    "system": []
+  },
+  "correlation": {
+    "stable_host_conversation_id_in_stdin": true,
+    "propagates_into_every_wax_read_write": false,
+    "owns_all_wax_reads_writes": false,
+    "can_inject_prime": true,
+    "all_wax_calls_share_opencode_session_id": false,
+    "evidence": "experimental.chat.system.transform can inject bounded prepared context by mutating output.system in place. The hook sees sessionID, but generic Wax MCP remember/recall are not wrapped by this plugin in these fixtures."
+  }
+}

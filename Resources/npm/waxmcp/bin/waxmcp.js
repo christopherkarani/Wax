@@ -667,6 +667,37 @@ exec "$install_root/runtime/${platformKey}/wax-mcp" \\
   return { installRoot, runtimeDir, skillDestination, launcherPath };
 }
 
+function delegateWireHooks(installation, { dryRun }) {
+  const cli = path.join(installation.runtimeDir, "wax-cli");
+  const home = os.homedir();
+  const args = ["mcp", "wire-hooks", "--wrapper", cli];
+  const hosts = [
+    ["claude", path.join(home, ".claude", "settings.json")],
+    ["codex", path.join(home, ".codex", "hooks.json")],
+    ["grok", path.join(home, ".grok", "hooks", "wax.json")],
+    ["cursor", path.join(home, ".cursor", "hooks.json")],
+  ];
+  for (const [host, config] of hosts) {
+    args.push("--host", host, "--config", config);
+  }
+  if (dryRun) {
+    args.push("--dry-run");
+  }
+  const printable = `${cli} ${args.join(" ")}`;
+  console.log(`${dryRun ? "Would run" : "Running"}: ${printable}`);
+  const result = spawnSync(cli, args, {
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (result.error) {
+    console.error(`waxmcp: failed to launch hook wiring: ${result.error.message}`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status === null ? 1 : result.status);
+  }
+}
+
 function runBinary(name, args) {
   for (const command of findBinary(name)) {
     if (path.isAbsolute(command) && !isExecutable(command)) {
@@ -720,10 +751,12 @@ if (["--help", "-h", "help"].includes(forwardedArgs[0])) {
 if (forwardedArgs[0] === "install" || forwardedArgs[0] === "setup") {
   const installArgs = forwardedArgs.slice(1);
   if (installArgs.includes("--help") || installArgs.includes("-h")) {
-    console.log("Usage: waxmcp install [--build] [--arctic]\n\nStages the complete runtime under WAX_MCP_INSTALL_ROOT or ~/.local/share/waxmcp.");
+    console.log("Usage: waxmcp install [--build] [--arctic] [--wire-hooks] [--dry-run]\n\nStages the complete runtime under WAX_MCP_INSTALL_ROOT or ~/.local/share/waxmcp.");
     process.exit(0);
   }
   const buildFromSource = installArgs.includes("--build");
+  const wireHooks = installArgs.includes("--wire-hooks");
+  const dryRun = installArgs.includes("--dry-run");
 
   if (buildFromSource) {
     console.log("Building Wax from source (this may take a few minutes)...");
@@ -744,7 +777,10 @@ if (forwardedArgs[0] === "install" || forwardedArgs[0] === "setup") {
     }
   }
   try {
-    stageInstallation(buildFromSource);
+    const installation = stageInstallation(buildFromSource);
+    if (wireHooks) {
+      delegateWireHooks(installation, { dryRun });
+    }
   } catch (error) {
     console.error(`waxmcp: ${error.message}`);
     process.exit(1);

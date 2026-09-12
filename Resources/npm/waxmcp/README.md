@@ -21,8 +21,8 @@ npx -y waxmcp@latest mcp serve
 
 This starts a WAX MCP server over stdio against `~/.wax/memory.wax`. Register
 that command as an MCP server in your agent host and it gets the daily tool set:
-`session_open`, `remember`, `recall`, `session_close`, `stats`, `memory_get`,
-`compact_context`, `session_resume`. Set `WAX_MCP_TOOLS=full` for the rest.
+`remember`, `recall`, `stats`. Set `WAX_MCP_TOOLS=legacy` for the previous
+eight-tool playbook. Set `WAX_MCP_TOOLS=full` for the rest.
 
 Running more than one agent at a time? Start exactly one HTTP server and point
 every host at the same URL:

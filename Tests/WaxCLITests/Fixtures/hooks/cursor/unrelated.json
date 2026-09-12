@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "./hooks/format.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": "./hooks/stop.sh"
+      }
+    ]
+  },
+  "extraCursor": true
+}

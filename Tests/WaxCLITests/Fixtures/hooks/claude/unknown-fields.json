@@ -1,0 +1,36 @@
+{
+  "extraRoot": "keep-me",
+  "vendor": {
+    "keep": true,
+    "count": 3
+  },
+  "hooks": {
+    "MyCustomEvent": [
+      {
+        "matcher": "custom",
+        "extraGroup": 1,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-custom",
+            "extraHandler": "yes"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-read",
+            "timeout": 9
+          }
+        ]
+      }
+    ]
+  },
+  "x-unknown-0": false,
+  "x-unknown-1": "alpha"
+}

@@ -59,6 +59,20 @@ package enum AgentBrokerClient {
         }
     }
 
+    /// Probe an already-running broker. Never starts a process or a second writer.
+    package static func probe(
+        request: AgentBrokerRequest,
+        configuration: AgentBrokerConfiguration,
+        timeoutSeconds: TimeInterval = 1.5
+    ) throws -> AgentBrokerResponse? {
+        try sendIfAvailable(
+            request,
+            socketPath: configuration.socketPath,
+            timeoutSeconds: timeoutSeconds,
+            treatTimeoutAsUnavailable: true
+        )
+    }
+
     package static func ping(configuration: AgentBrokerConfiguration) async throws -> AgentBrokerResponse {
         let _ = try await ensureAvailable(configuration: configuration)
         guard let response = try sendIfAvailable(

@@ -168,6 +168,16 @@ struct WaxMCPServerCommand: ParsableCommand {
                 runError = error
             }
 
+            _ = await MCPTransportTeardown.checkpointBoundTransportSession(
+                connectionKey: "stdio",
+                reason: .stdioEOF,
+                perform: { request in
+                    try await AgentBrokerClient.perform(
+                        request: request,
+                        configuration: brokerConfiguration
+                    )
+                }
+            )
             for source in signalSources { source.cancel() }
             await server.stop()
 
@@ -183,6 +193,9 @@ struct WaxMCPServerCommand: ParsableCommand {
                     endpoint: httpEndpoint,
                     maxRequestBodyBytes: httpMaxBodyBytes,
                     authToken: normalizedHTTPAuthToken()
+                ),
+                onTransportTeardown: MCPTransportTeardown.makeHTTPCallback(
+                    configuration: brokerConfiguration
                 ),
                 serverFactory: { sessionID, transport in
                     let server = await makeServer(
@@ -217,15 +230,22 @@ struct WaxMCPServerCommand: ParsableCommand {
         let server = Server(
             name: "wax-mcp",
             version: version,
-            instructions: MCPAgentInstructions.text(version: version),
+            instructions: MCPAgentInstructions.text(
+                version: version,
+                profile: MCPToolProfile.fromEnvironment()
+            ),
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )
+        let context = connectionKey.flatMap {
+            MCPHTTPConnectionContextRegistry.shared.current(sessionID: $0)
+        } ?? connectionKey.map { MCPConnectionContext(transportKey: $0) }
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,
             structuredMemoryEnabled: structuredMemoryEnabled,
-            connectionKey: connectionKey
+            connectionKey: connectionKey,
+            connectionContext: context
         )
         return server
     }

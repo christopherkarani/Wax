@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "hooks": {
+    "sessionEnd": [
+      {
+        "command": "./hooks/end.sh"
+      }
+    ]
+  }
+}

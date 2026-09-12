@@ -1,43 +1,59 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { registerMemoryCapability } from "openclaw/plugin-sdk/memory-core";
 
+const PLUGIN_ID = "wax-memory";
 const DEFAULT_HTTP_ENDPOINT = "http://127.0.0.1:3000/mcp";
+const EMPTY_PROMPT_LINES = Object.freeze([]);
 
-export default definePluginEntry((api) => {
-  registerMemoryCapability(api, {
-    id: "wax-memory",
-    displayName: "Wax Memory",
-    description:
-      "Uses the Wax MCP broker as the canonical memory runtime and exposes managed Markdown artifacts for MEMORY.md, daily notes, and DREAMS.md review.",
-    publicArtifacts: {
-      async listArtifacts() {
-        return [
-          {
-            id: "wax-memory-md",
-            label: "Wax MEMORY.md projection",
-            kind: "markdown",
-          },
-          {
-            id: "wax-dreams-md",
-            label: "Wax DREAMS.md review queue",
-            kind: "markdown",
-          },
-        ];
-      },
-    },
-    runtime: {
-      transport: "mcp-http",
-      endpoint: api.pluginConfig?.endpoint ?? DEFAULT_HTTP_ENDPOINT,
-      command: api.pluginConfig?.command ?? "waxmcp",
-      args: api.pluginConfig?.args ?? [
-        "mcp",
-        "serve",
-        "--no-embedder",
-        "--transport",
-        "http",
-        "--http-port",
-        "3000",
-      ],
-    },
-  });
+function resolveSharedHttpEndpoint(pluginConfig) {
+  const raw = pluginConfig?.endpoint;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return DEFAULT_HTTP_ENDPOINT;
+}
+
+function promptBuilder() {
+  // Synchronous and side-effect free (AC-018). No I/O and no memory bodies.
+  return EMPTY_PROMPT_LINES;
+}
+
+function flushPlanResolver() {
+  // Host memory-flush plan only. Not a "run checkpoint now" callback.
+  return null;
+}
+
+function registerExclusiveMemorySlot(api) {
+  if (typeof api.registerMemoryCapability === "function") {
+    api.registerMemoryCapability({
+      promptBuilder,
+      flushPlanResolver,
+    });
+    return;
+  }
+  if (typeof api.registerMemoryPromptSection === "function") {
+    api.registerMemoryPromptSection(promptBuilder);
+  }
+  if (typeof api.registerMemoryFlushPlan === "function") {
+    api.registerMemoryFlushPlan(flushPlanResolver);
+  }
+}
+
+export default definePluginEntry({
+  id: PLUGIN_ID,
+  name: "Wax Memory",
+  description:
+    "Exclusive OpenClaw memory slot for the shared Wax MCP HTTP endpoint. Never spawns a second writer.",
+  kind: "memory",
+  register(api) {
+    const endpoint = resolveSharedHttpEndpoint(api.pluginConfig);
+    if (typeof api.logger?.debug === "function") {
+      api.logger.debug(
+        `wax-memory: shared HTTP endpoint ${endpoint}; no process fallback; preserve server embeddings`,
+      );
+    }
+    registerExclusiveMemorySlot(api);
+  },
 });
