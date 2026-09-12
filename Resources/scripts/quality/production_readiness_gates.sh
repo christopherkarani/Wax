@@ -65,11 +65,15 @@ run_and_capture() {
   fi
   if [[ $timed_out -ne 0 ]]; then
     echo "FAIL: command timed out after ${timeout_secs}s: $*" >&2
+    grep -E "recorded an issue|✘|error:" "$log_file" 2>/dev/null | grep -v "skipped" | tail -n 40 >&2 || true
     tail -n 80 "$log_file" >&2 || true
     return 124
   fi
   if [[ $status -ne 0 ]]; then
     echo "FAIL: command failed with status $status: $*" >&2
+    # swift-testing writes failures mid-stream; a bare tail loses them. Surface
+    # the failing assertions first, then the tail for context.
+    grep -E "recorded an issue|✘|error:" "$log_file" 2>/dev/null | grep -v "skipped" | tail -n 40 >&2 || true
     tail -n 80 "$log_file" >&2 || true
     return "$status"
   fi

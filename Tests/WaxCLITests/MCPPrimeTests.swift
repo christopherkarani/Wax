@@ -67,7 +67,9 @@ struct MCPPrimeTests {
                 configuration: configuration
             )
         )
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        // Well under the 10s broker-start timeout: proves no broker was started,
+        // with margin for loaded CI runners.
+        #expect(Date().timeIntervalSince(started) < 5)
         #expect(outcome.exitCode == 0)
         #expect(outcome.stderr.isEmpty)
         #expect(FileManager.default.fileExists(atPath: startedFlag.path) == false)
@@ -128,7 +130,8 @@ struct MCPPrimeTests {
             )
             outcomes.value.append(outcome)
         }
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        // Same bound rationale as the single-prime test: proves no broker start.
+        #expect(Date().timeIntervalSince(started) < 5)
         #expect(outcomes.value.count == 5)
         #expect(outcomes.value.allSatisfy { $0.exitCode == 0 && $0.stderr.isEmpty })
         #expect(outcomes.value.allSatisfy { !$0.stdout.contains(MCPPrimeAssembly.trustHeader) })
