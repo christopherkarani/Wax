@@ -1009,3 +1009,32 @@ test("install --wire-hooks --dry-run delegates without mutating hook configs", (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("install --dry-run without --wire-hooks is rejected before staging", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-dry-run-reject-"));
+  try {
+    const sourceDir = path.join(root, "source");
+    const installRoot = path.join(root, "installed");
+    const { server, cli } = makeRuntimeSource(
+      sourceDir,
+      "#!/bin/sh\nexit 0\n",
+      "#!/bin/sh\nexit 0\n"
+    );
+    const env = {
+      ...process.env,
+      WAX_MCP_BIN: server,
+      WAX_CLI_BIN: cli,
+      WAX_MCP_INSTALL_ROOT: installRoot,
+    };
+
+    const result = spawnSync(process.execPath, [launcher, "install", "--dry-run"], {
+      env,
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--dry-run only applies to --wire-hooks/);
+    assert.equal(fs.existsSync(installRoot), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

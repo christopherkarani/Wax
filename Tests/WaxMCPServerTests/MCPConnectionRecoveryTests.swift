@@ -5,7 +5,7 @@ import Testing
 @testable import wax_mcp
 @testable import Wax
 
-@Suite
+@Suite(.serialized)
 struct MCPConnectionRecoveryTests {
     @Test func metadataFilterSchemaSupportsExactWrapperWithoutMixedKeys() throws {
         let metadata = try #require(ToolSchemas.searchFilters.objectValue?["properties"]?.objectValue?["metadata"])

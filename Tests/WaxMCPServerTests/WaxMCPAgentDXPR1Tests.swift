@@ -415,8 +415,9 @@ func waxMCPToolsDoesNotInjectProcessWorkingDirectoryAsCwd() throws {
         contentsOf: repoRoot.appendingPathComponent("Sources/WaxMCPServer/WaxMCPTools.swift"),
         encoding: .utf8
     )
-    #expect(!source.contains("arguments[\"cwd\"] = .string(FileManager.default.currentDirectoryPath)"))
-    #expect(!source.contains("injectClientCWDIfNeeded"))
+    // The server must never fall back to its own process cwd. Only explicit
+    // arguments or the client-advertised cwd/roots may fill `cwd`.
+    #expect(!source.contains("FileManager.default.currentDirectoryPath"))
 }
 
 @Test

@@ -2,19 +2,6 @@
 import Foundation
 import Testing
 
-// T0.4 residual risk (W0 contract gate). These are fail-closed policy pins, not
-// runtime toggles. Later waves must not invert them when enabling prime or hooks.
-private enum T04ResidualRisk {
-    /// Recalled prime text is historical data, never executable instruction.
-    static let primeTextIsUntrustedHistoricalData = true
-    /// Global person-lane injection requires explicit `--include-person`.
-    static let personLaneOffByDefault = true
-    /// `Mcp-Session-Id` / stdio keys are client-controlled correlation, not auth.
-    static let transportIDsAreNotAuthentication = true
-    /// Installer parse, validation, or crash during merge must write nothing.
-    static let mergeCrashFailsClosed = true
-}
-
 enum HostOwnershipLevel: String, Equatable, Sendable {
     case a = "A"
     case b = "B"
@@ -142,9 +129,8 @@ struct HostCapabilityFixturesTests {
     func hermesIsLevelAWithoutInventingHermesFixtures() throws {
         let hermes = try loadHostFixtures("hermes")
         #expect(hermes.isEmpty, "T0.1 must not invent Hermes fixtures")
-        // Hermes remains Level A through the existing native provider. This inventory
-        // does not pin Hermes hook JSON; T6.1 verifies the provider separately.
-        #expect(classifyNativeHermesProvider() == .a)
+        // Hermes remains Level A through the existing native provider, verified
+        // by Resources/scripts/quality/hermes_plugin_tests.sh — not re-pinned here.
     }
 
     @Test
@@ -219,22 +205,6 @@ struct HostCapabilityFixturesTests {
         }
         #expect(try classify("opencode") == .b)
     }
-
-    @Test
-    func t04ResidualRisksRemainFailClosed() {
-        // Prime text is untrusted historical data; current system/user instructions win.
-        #expect(T04ResidualRisk.primeTextIsUntrustedHistoricalData)
-        // Person lane stays off unless the operator opts in.
-        #expect(T04ResidualRisk.personLaneOffByDefault)
-        // Transport IDs correlate; they do not authenticate.
-        #expect(T04ResidualRisk.transportIDsAreNotAuthentication)
-        // Crash or concurrent edit during hook-config merge must fail closed.
-        #expect(T04ResidualRisk.mergeCrashFailsClosed)
-    }
-}
-
-private func classifyNativeHermesProvider() -> HostOwnershipLevel {
-    .a
 }
 
 private func classify(_ host: String) throws -> HostOwnershipLevel {

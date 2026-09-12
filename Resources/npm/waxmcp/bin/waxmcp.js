@@ -751,12 +751,17 @@ if (["--help", "-h", "help"].includes(forwardedArgs[0])) {
 if (forwardedArgs[0] === "install" || forwardedArgs[0] === "setup") {
   const installArgs = forwardedArgs.slice(1);
   if (installArgs.includes("--help") || installArgs.includes("-h")) {
-    console.log("Usage: waxmcp install [--build] [--arctic] [--wire-hooks] [--dry-run]\n\nStages the complete runtime under WAX_MCP_INSTALL_ROOT or ~/.local/share/waxmcp.");
+    console.log("Usage: waxmcp install [--build] [--arctic] [--wire-hooks [--dry-run]]\n\nStages the complete runtime under WAX_MCP_INSTALL_ROOT or ~/.local/share/waxmcp. --wire-hooks merges Wax host hooks into host configs; --dry-run previews that merge without writing.");
     process.exit(0);
   }
   const buildFromSource = installArgs.includes("--build");
   const wireHooks = installArgs.includes("--wire-hooks");
   const dryRun = installArgs.includes("--dry-run");
+
+  if (dryRun && !wireHooks) {
+    console.error("waxmcp: --dry-run only applies to --wire-hooks; refusing to perform a full install");
+    process.exit(1);
+  }
 
   if (buildFromSource) {
     console.log("Building Wax from source (this may take a few minutes)...");

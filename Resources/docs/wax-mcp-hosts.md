@@ -118,7 +118,8 @@ claude mcp add wax -t http -s user -- http://127.0.0.1:3000/mcp
 claude install-skill ~/.local/share/waxmcp/skills/wax-mcp
 ```
 
-Confirm: `claude mcp get wax` and a new Claude session that can see `session_open`.
+Confirm: `claude mcp get wax` and a new Claude session that can see `remember`,
+`recall`, and `stats` (the daily `tools/list`).
 
 ---
 
@@ -139,7 +140,7 @@ cp -a ~/.local/share/waxmcp/skills/wax-mcp ~/.codex/skills/wax-mcp
 
 If the host still ignores skills, paste `references/project-rules.md` into the **project** `AGENTS.md` — not into `~/.codex/AGENTS.md`. The user-global file is behavior-only.
 
-Restart Codex. Confirm `session_open` is in the tool list.
+Restart Codex. Confirm `remember`, `recall`, and `stats` are in the tool list.
 
 ---
 
@@ -243,7 +244,9 @@ change `mcp_servers` (network redirect is dropped on purpose).
 grok mcp add --transport http wax http://127.0.0.1:3000/mcp
 ```
 
-Pass `conversation_id` as the Grok session UUID on every `session_open` so
+With the default daily tool set the server auto-opens a transport-scoped
+session; there is no `session_open` to call. Under `WAX_MCP_TOOLS=legacy`, pass
+`conversation_id` as the Grok session UUID on every `session_open` so
 compaction resumes the same Wax session instead of minting a sibling. Grok
 currently requires a `search_tool` schema lookup before each MCP call; that is
 a host tax, not a Wax tool bug. Pin Wax tools in the host if the host supports
@@ -296,8 +299,17 @@ Wax UUID. Project-default vs `scope=global` is above.
 `recall`, and `stats`. The server auto-opens one transport-scoped session.
 This is **transport-owned** working memory, not per-chat isolation:
 
+Ownership levels, least to most authority:
+
+- **Level C** — transport-owned working memory. Sessions key off the MCP
+  connection, not a proven host chat. A multiplexed connection can span more
+  than one host chat.
+- **Level B** — Level C plus read-only prime injection at session start
+  (bounded, sanitized, marked as historical data) and/or host hook checkpoint.
+- **Level A** — the host wraps every Wax read/write with a proven conversation
+  identity and owns terminal close. Only Hermes ships this today.
+
 - Claude Code, Codex, Grok, Cursor: Level C plus optional Level B prime.
-  A multiplexed connection can span more than one host chat.
 - OpenCode: Level B only. There is no shipped Level A plugin that wraps
   every Wax read/write with the OpenCode session ID. Close is not available
   on `session.idle` or `session.compacted`.
@@ -306,10 +318,31 @@ This is **transport-owned** working memory, not per-chat isolation:
   lifecycle callback, so checkpoint relies on transport teardown / lease.
 - Hermes: Level A through `memory.provider: wax-memory` only.
 
-Cursor `sessionStart` prime is installed only after a live
-`additional_context` probe. Ungraceful crash recovery uses the existing
-300-second session lease and 7-day recently-closed reclaim window; SIGKILL
-does not checkpoint.
+Ungraceful crash recovery uses the existing 300-second session lease and
+7-day recently-closed reclaim window; SIGKILL does not checkpoint.
+
+### Host hooks (optional, opt-in)
+
+`wax-cli mcp wire-hooks` merges Wax-owned hook entries into host config files
+(typed JSON merge, fail-closed on malformed configs, preimage-checked writes
+with rollback, `.waxbak` backup). `waxmcp install --wire-hooks` runs it against
+the default per-host paths after staging (`--dry-run` previews without
+writing). Wired hooks call back into `wax-cli mcp run-hook`, which reads the
+host's JSON stdin and never fails the host:
+
+- `prime` (SessionStart: claude, codex, grok) prints a bounded, sanitized
+  context envelope for the host to inject. Prime is probe-only: it never opens
+  a session, never starts a broker, and exits 0 with an empty envelope when the
+  broker is down. `wax-cli mcp prime` runs it standalone.
+- `checkpoint` closes the exact session (`--session-id`) or the namespaced host
+  conversation (`--host` + `--conversation-id`), never opens one, and skips
+  cleanly when nothing is bound. `--strict` exits nonzero on skip. Stop, idle,
+  and compaction events never close. `wire-hooks` does not install checkpoint
+  hooks today (that is Level A ownership); transport teardown is the close path.
+
+Cursor's `sessionStart` prime is **not** wired by the installer: the hook
+format reserves a `requiresLiveInjectionProbe` marker for a future live
+`additional_context` probe, and the entry stays off until that probe exists.
 
 1. Call `remember` and `recall` with `cwd` when roots are not advertised. Do not invent a `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
 2. `recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.

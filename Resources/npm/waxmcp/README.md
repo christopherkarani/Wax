@@ -153,6 +153,7 @@ them in this order:
 | `npx -y waxmcp@latest vector-health` | Check the shared HTTP server; green only when `vectorSearchEnabled` and `queryEmbeddingAvailable` are both true |
 | `npx -y waxmcp@latest task-state-migrate --direct-store --store-path ~/.wax/memory.wax --destination-path /tmp/repaired.wax --dry-run` | Report and repair legacy durable `task_state` frames into a distinct, complete store copy |
 | `npx -y waxmcp@latest install` | Stage runtime, skill, Hermes provider copy, checksum manifest, and `bin/start-wax-mcp-http.sh` (does not write a LaunchAgent) |
+| `npx -y waxmcp@latest install --wire-hooks` | Also merge Wax host hooks (SessionStart prime) into claude/codex/grok configs; `--dry-run` previews the merge without writing |
 | `npx -y waxmcp@latest install-hermes-plugin` | Reuse or restage that runtime and copy the native provider to `$HERMES_HOME/plugins/wax-memory` |
 | `npx -y waxmcp@latest install-openclaw-plugin` | Print OpenClaw plugin install steps |
 | `npx -y waxmcp@latest install-all-plugins` | Install bundled host plugins (still set `memory.provider: wax-memory`; never `plugins.enabled`) |

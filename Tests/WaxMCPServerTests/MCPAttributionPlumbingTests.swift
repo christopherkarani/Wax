@@ -20,7 +20,7 @@ func rememberAndRecallSchemasAdvertiseCWD() throws {
     #expect(AgentBrokerCommandSurface.entry(for: "recall")?.acceptedArgumentKeys.contains("cwd") == true)
 }
 
-@Test
+@Test(.serialized)
 func projectScopedRememberWithoutAttributionReturnsProjectUnresolvedAndBindsNothing() async throws {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -50,7 +50,7 @@ func projectScopedRememberWithoutAttributionReturnsProjectUnresolvedAndBindsNoth
     }
 }
 
-@Test
+@Test(.serialized)
 func syntheticRecoveryIdentityIsNeverUsedAsHostIdentity() async throws {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -69,8 +69,7 @@ func syntheticRecoveryIdentityIsNeverUsedAsHostIdentity() async throws {
                 ),
                 trustedHostConversation: HostConversationKey(
                     hostNamespace: "cursor",
-                    conversationID: "should-not-apply",
-                    repoIdentity: "recover-id"
+                    conversationID: "should-not-apply"
                 )
             )
         )
@@ -94,7 +93,7 @@ func syntheticRecoveryIdentityIsNeverUsedAsHostIdentity() async throws {
     }
 }
 
-@Test
+@Test(.serialized)
 func projectScopedWriteIsRecalledByNewConnectionInSameRepoOnly() async throws {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -168,7 +167,7 @@ func projectScopedWriteIsRecalledByNewConnectionInSameRepoOnly() async throws {
     }
 }
 
-@Test
+@Test(.serialized)
 func advertisedCWDDoesNotUseServerProcessCWD() async throws {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }

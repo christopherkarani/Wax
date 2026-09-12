@@ -6,13 +6,11 @@ import Testing
 func hostConversationKeysNamespaceEqualRawIDs() {
     let claude = HostConversationKey(
         hostNamespace: "claude",
-        conversationID: "chat-1",
-        repoIdentity: "Wax"
+        conversationID: "chat-1"
     )
     let cursor = HostConversationKey(
         hostNamespace: "cursor",
-        conversationID: "chat-1",
-        repoIdentity: "Wax"
+        conversationID: "chat-1"
     )
     #expect(claude.wireConversationID == "claude:chat-1")
     #expect(cursor.wireConversationID == "cursor:chat-1")
@@ -129,6 +127,8 @@ func globalPersonRecallIsNotProjectGated() {
     #expect(MCPProjectAttributionResolver.isProjectGatedRecall(scope: nil))
     #expect(MCPProjectAttributionResolver.isProjectGatedRecall(scope: "project"))
     #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "user_preference", scope: "global"))
+    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: " global "))
+    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: "GLOBAL"))
     #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: nil))
     #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "fact", scope: nil))
 }

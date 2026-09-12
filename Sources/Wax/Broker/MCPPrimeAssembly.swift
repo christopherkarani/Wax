@@ -622,7 +622,7 @@ package enum MCPPrimeAssembly {
         } else {
             object["handoff"] = ["found": false]
         }
-        object["token_count"] = tokenizer.count(hostContext.isEmpty ? "" : hostContext)
+        object["token_count"] = tokenizer.count(hostContext)
         object["byte_count"] = hostContext.utf8.count
         return hostJSON(object)
     }

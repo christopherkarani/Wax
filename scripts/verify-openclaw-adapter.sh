@@ -80,7 +80,7 @@ TEST_FILTERS=(
   "vectorFallbackIsSurfacedInSearchAndStats"
   "corpusSearchBuildsAcrossSessionStoresAndReturnsProvenance"
   "brokerBackedMemorySearchAndGetExposeStableMemoryIDs"
-  "brokerBackedSessionResumeReopensPersistedSessionAfterRestart"
+  "brokerBackedSessionMemorySurvivesRestartButEndedSessionDoesNotResume"
   "brokerBackedCompactContextDoesNotLoseSessionMemoryAcrossRepeatedCheckpoints"
   "brokerBackedMarkdownExportProjectsCompatibilityFiles"
   "brokerBackedMemorySearchDoesNotLeakAcrossSessions"

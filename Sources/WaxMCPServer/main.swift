@@ -171,12 +171,9 @@ struct WaxMCPServerCommand: ParsableCommand {
             _ = await MCPTransportTeardown.checkpointBoundTransportSession(
                 connectionKey: "stdio",
                 reason: .stdioEOF,
-                perform: { request in
-                    try await AgentBrokerClient.perform(
-                        request: request,
-                        configuration: brokerConfiguration
-                    )
-                }
+                perform: MCPTransportTeardown.boundedPerform(
+                    configuration: brokerConfiguration
+                )
             )
             for source in signalSources { source.cancel() }
             await server.stop()

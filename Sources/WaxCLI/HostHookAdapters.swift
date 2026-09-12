@@ -557,14 +557,32 @@ private struct HostHookJSONParser {
         case "t":
             return "\t"
         case "u":
-            let scalar = try parseUnicodeScalar()
+            let lead = try parseUnicodeScalar()
+            if UTF16.isLeadSurrogate(lead) {
+                // A lead surrogate is only valid as half of a pair.
+                guard peek() == "\\" else { throw HostHookError.malformedJSON }
+                advance()
+                try expect("u")
+                let trail = try parseUnicodeScalar()
+                guard UTF16.isTrailSurrogate(trail) else {
+                    throw HostHookError.malformedJSON
+                }
+                let decoded = String(decoding: [lead, trail], as: UTF16.self)
+                guard decoded.count == 1, let combined = decoded.first else {
+                    throw HostHookError.malformedJSON
+                }
+                return combined
+            }
+            guard !UTF16.isTrailSurrogate(lead), let scalar = UnicodeScalar(UInt32(lead)) else {
+                throw HostHookError.malformedJSON
+            }
             return Character(scalar)
         default:
             throw HostHookError.malformedJSON
         }
     }
 
-    private mutating func parseUnicodeScalar() throws -> UnicodeScalar {
+    private mutating func parseUnicodeScalar() throws -> UInt16 {
         var value: UInt32 = 0
         for _ in 0..<4 {
             guard let character = peek(), let nibble = hexValue(character) else {
@@ -573,7 +591,7 @@ private struct HostHookJSONParser {
             advance()
             value = (value << 4) | nibble
         }
-        guard let scalar = UnicodeScalar(value) else {
+        guard let scalar = UInt16(exactly: value) else {
             throw HostHookError.malformedJSON
         }
         return scalar

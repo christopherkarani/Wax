@@ -102,7 +102,6 @@ enum MCPRunHookRunner {
         let outcome = MCPPrimeRunner.run(
             MCPPrimeRunner.Request(
                 host: host,
-                conversationID: event.conversationID,
                 cwd: event.cwd,
                 includePerson: false,
                 format: format,

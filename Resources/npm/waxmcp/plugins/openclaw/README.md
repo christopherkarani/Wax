@@ -11,27 +11,23 @@ This plugin does **not** spawn `waxmcp` / `wax-mcp`. It does **not** pass
 
 **Level B** (prime/slot only). Not Level A.
 
-Evidence:
+Evidence (pinned probe: `Tests/WaxMCPServerTests/Fixtures/hosts/openclaw/sdk-names.json`):
 
-- Peer floor `openclaw@2026.3.24-beta.2` does **not** export
-  `registerMemoryPromptPreparation`, capability-field `promptBuilder`, or
-  capability-field `flushPlanResolver`. That SDK only has
-  `api.registerMemoryPromptSection`.
-- OpenClaw `2026.4.1` still lacks those three names. It splits memory
-  registration into `registerMemoryPromptSection`, `registerMemoryFlushPlan`,
-  and `registerMemoryRuntime`.
-- Current docs / `openclaw@2026.8.1+` do expose
-  `api.registerMemoryPromptPreparation`, and
-  `api.registerMemoryCapability({ promptBuilder, flushPlanResolver, runtime })`.
-  This plugin feature-detects `registerMemoryCapability` / the older section and
-  flush-plan registrars. It does **not** invent missing APIs.
+- The pinned SDK probe (`>=2026.3.24-beta.2`; public docs and published source,
+  not a compile probe) marks `api.registerMemoryPromptPreparation` and the
+  `registerMemoryCapability` fields `promptBuilder` / `flushPlanResolver` as
+  documented. Current SDKs keep them; the split registrars
+  (`registerMemoryPromptSection`, `registerMemoryFlushPlan`) are the deprecated
+  path. This plugin feature-detects `registerMemoryCapability` first, then the
+  older section and flush-plan registrars. It does **not** invent missing APIs.
 - `registerMemoryPromptPreparation` is **not** wired. Loading Wax via `recall`
   would auto-open a transport session. Level A is the only ownership that may
   set `WAX_MCP_AUTO_SESSION=0`, and this plugin does not wrap every Wax
   read/write (agents still call MCP tools). Stay Level B; do not set that env.
-- Pinned `api.on("session_end")` carries OpenClaw `sessionId` / optional
-  `sessionKey`, not a broker-issued Wax UUID this plugin owns. Terminal
-  checkpoint is skipped. Transport sessions end through Wax lease expiry.
+- No documented terminal lifecycle callback with stable session identity is
+  proven: `flushPlanResolver` returns a plan, not a close, and runtime
+  lifecycle hooks are plugin-resource cleanup. Terminal checkpoint is skipped.
+  Transport sessions end through Wax lease expiry.
 
 `promptBuilder` (or `registerMemoryPromptSection`) returns frozen empty lines:
 synchronous, no I/O, no memory bodies (AC-018). `flushPlanResolver` /
@@ -86,8 +82,8 @@ openclaw plugins install /absolute/path/to/Resources/openclaw/wax-memory-plugin
 
 Restart the OpenClaw gateway after changing plugin config.
 
-`command` / `args` in older plugin metadata are **ignored**. Do not configure a
-process fallback.
+Plugin metadata accepts only `endpoint`. There is no process fallback to
+configure; the plugin never launches a Wax process.
 
 Paste the SOUL.md stanza from
 `Resources/skills/public/wax-mcp/references/project-rules.md` into workspace

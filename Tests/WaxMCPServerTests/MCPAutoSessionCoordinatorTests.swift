@@ -5,7 +5,7 @@ import Testing
 @testable import Wax
 @testable import wax_mcp
 
-@Suite
+@Suite(.serialized)
 struct MCPAutoSessionCoordinatorTests {
     @Test
     func concurrentFirstRememberCallsShareOneSession() async throws {
@@ -115,8 +115,11 @@ struct MCPAutoSessionCoordinatorTests {
                 sessionHint: b
             )
             #expect(recalled.isError != true)
-            let text = try requireAutoJSON(recalled).description
-            #expect(!text.contains(marker) || a.current() != b.current())
+            let payload = try requireAutoJSON(recalled)
+            // task_state is session-local: transport B must never see A's marker.
+            // (The response echoes the query string, so assert on results, not the body.)
+            let hits = payload["results"] as? [[String: Any]] ?? []
+            #expect(hits.allSatisfy { ($0["text"] as? String)?.contains(marker) != true })
             #expect(a.current() != nil)
             #expect(b.current() != nil)
             #expect(a.current() != b.current())
@@ -138,8 +141,7 @@ struct MCPAutoSessionCoordinatorTests {
                     clientIdentity: MCPClientIdentity(name: "cursor", version: "1"),
                     trustedHostConversation: HostConversationKey(
                         hostNamespace: "cursor",
-                        conversationID: "chat-a",
-                        repoIdentity: "host-ids"
+                        conversationID: "chat-a"
                     )
                 )
             )
@@ -151,8 +153,7 @@ struct MCPAutoSessionCoordinatorTests {
                     clientIdentity: MCPClientIdentity(name: "cursor", version: "1"),
                     trustedHostConversation: HostConversationKey(
                         hostNamespace: "cursor",
-                        conversationID: "chat-b",
-                        repoIdentity: "host-ids"
+                        conversationID: "chat-b"
                     )
                 )
             )
@@ -288,9 +289,157 @@ struct MCPAutoSessionCoordinatorTests {
     }
 
     @Test
+    func teardownDuringOpenRefusesBindingAndClosesOrphanedSession() async throws {
+        let gate = CoordinatorOpenGate()
+        let closes = CoordinatorCloseRecorder()
+        let coordinator = MCPAutoSessionCoordinator()
+        let openedID = UUID().uuidString
+
+        let openTask = Task<Result<MCPAutoSessionBinding, Error>, Never> {
+            do {
+                let binding = try await coordinator.ensureBound(
+                    transportKey: "teardown-race",
+                    attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+                    context: MCPConnectionContext(transportKey: "teardown-race"),
+                    perform: { request in
+                        switch request.command {
+                        case "session_open":
+                            await gate.markEntered()
+                            await gate.waitForRelease()
+                            return AgentBrokerResponse.success(
+                                payload: .object(["session_id": .string(openedID)])
+                            )
+                        case "session_close":
+                            if let id = request.arguments["session_id"]?.stringValue {
+                                await closes.record(id)
+                            }
+                            return AgentBrokerResponse.success(payload: .object([:]))
+                        default:
+                            return AgentBrokerResponse.success(payload: .object([:]))
+                        }
+                    }
+                )
+                return .success(binding)
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        await gate.waitForEnter()
+        await coordinator.markClosed()
+        await gate.release()
+
+        let result = await openTask.value
+        switch result {
+        case .success:
+            Issue.record("ensureBound must not bind after markClosed")
+        case .failure(let error):
+            #expect(String(describing: error).contains("transport closed"))
+        }
+        #expect(await closes.closedSessionIDs == [openedID])
+        #expect(await coordinator.currentBinding() == nil)
+    }
+
+    @Test
+    func failedOpenIsRetryableAndRecoversOnNextCall() async throws {
+        let attempts = CoordinatorAttemptCounter()
+        let coordinator = MCPAutoSessionCoordinator()
+        let sessionID = UUID().uuidString
+
+        let perform: @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse = { _ in
+            let attempt = await attempts.increment()
+            if attempt == 1 {
+                return AgentBrokerResponse(
+                    outcome: .failure(payload: nil, message: "boom"),
+                    shouldExit: false
+                )
+            }
+            return AgentBrokerResponse.success(
+                payload: .object(["session_id": .string(sessionID)])
+            )
+        }
+
+        do {
+            _ = try await coordinator.ensureBound(
+                transportKey: "fail-retry",
+                attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+                context: MCPConnectionContext(transportKey: "fail-retry"),
+                perform: perform
+            )
+            Issue.record("first open must fail")
+        } catch let error as MCPAutoSessionError {
+            guard case .openFailed(let message, let retryable) = error else {
+                Issue.record("expected openFailed, got \(error)")
+                return
+            }
+            #expect(message == "boom")
+            #expect(retryable)
+        }
+
+        let binding = try await coordinator.ensureBound(
+            transportKey: "fail-retry",
+            attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+            context: MCPConnectionContext(transportKey: "fail-retry"),
+            perform: perform
+        )
+        #expect(binding.sessionID == sessionID)
+        #expect(await attempts.count == 2)
+        #expect(await coordinator.currentBinding()?.sessionID == sessionID)
+    }
+
+    @Test
     func leaseWindowIsDocumentedForCrashFallback() {
         #expect(VirtualSessionStore.defaultSessionLeaseSeconds == 300)
         #expect(MemoryRetentionSettings.default.recentlyClosedMs == 604_800_000)
+    }
+}
+
+private actor CoordinatorOpenGate {
+    private var isEntered = false
+    private var isReleased = false
+    private var enteredContinuations: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func markEntered() {
+        isEntered = true
+        let pending = enteredContinuations
+        enteredContinuations.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    func waitForEnter() async {
+        if isEntered { return }
+        await withCheckedContinuation { enteredContinuations.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        let pending = releaseContinuations
+        releaseContinuations.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    func waitForRelease() async {
+        if isReleased { return }
+        await withCheckedContinuation { releaseContinuations.append($0) }
+    }
+}
+
+private actor CoordinatorCloseRecorder {
+    private(set) var closedSessionIDs: [String] = []
+
+    func record(_ sessionID: String) {
+        closedSessionIDs.append(sessionID)
+    }
+}
+
+private actor CoordinatorAttemptCounter {
+    private(set) var count = 0
+
+    @discardableResult
+    func increment() -> Int {
+        count += 1
+        return count
     }
 }
 

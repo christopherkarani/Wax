@@ -33,25 +33,12 @@ actor MCPAutoSessionCoordinator {
         return nil
     }
 
+    /// Teardown marker. Sticky: a late finish of an in-flight open must not
+    /// rebind a session the transport will never checkpoint.
     func markClosed() {
         openingTask?.cancel()
         openingTask = nil
         state = .closed
-    }
-
-    func clearIfMatches(_ sessionID: String) {
-        if case .bound(let binding) = state, binding.sessionID == sessionID {
-            state = .unbound
-        }
-    }
-
-    func resetForRetry() {
-        if case .failed(_, let retryable) = state, retryable {
-            state = .unbound
-        }
-        if case .closed = state {
-            state = .unbound
-        }
     }
 
     func ensureBound(
@@ -74,7 +61,17 @@ actor MCPAutoSessionCoordinator {
         }
 
         if let existing = openingTask {
-            switch await existing.value {
+            let result = await existing.value
+            if case .closed = state {
+                if case .success(let binding) = result {
+                    await Self.closeOrphanedSession(sessionID: binding.sessionID, perform: perform)
+                }
+                throw MCPAutoSessionError.openFailed(
+                    message: "transport closed during auto-session open",
+                    retryable: true
+                )
+            }
+            switch result {
             case .success(let binding):
                 return binding
             case .failure(let error):
@@ -100,6 +97,17 @@ actor MCPAutoSessionCoordinator {
         state = .opening
         let result = await task.value
         openingTask = nil
+        if case .closed = state {
+            // Teardown raced the open. Never bind the result; close the fresh
+            // session best-effort so the broker does not keep an orphan.
+            if case .success(let binding) = result {
+                await Self.closeOrphanedSession(sessionID: binding.sessionID, perform: perform)
+            }
+            throw MCPAutoSessionError.openFailed(
+                message: "transport closed during auto-session open",
+                retryable: true
+            )
+        }
         switch result {
         case .success(let binding):
             // Bind before observing caller cancellation so a successful open is not orphaned.
@@ -113,6 +121,21 @@ actor MCPAutoSessionCoordinator {
             }
             throw error
         }
+    }
+
+    private static func closeOrphanedSession(
+        sessionID: String,
+        perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
+    ) async {
+        _ = try? await perform(
+            AgentBrokerRequest(
+                command: "session_close",
+                arguments: [
+                    "session_id": .string(sessionID),
+                    "content": .string("auto-session orphaned by transport teardown"),
+                ]
+            )
+        )
     }
 
     private func autoErrorMessage(_ error: MCPAutoSessionError) -> String {
@@ -199,6 +222,14 @@ final class MCPAutoSessionCoordinatorStore: @unchecked Sendable {
         let created = MCPAutoSessionCoordinator()
         coordinators[transportKey] = created
         return created
+    }
+
+    /// Non-creating lookup. Teardown uses this to mark an in-flight coordinator
+    /// closed before the registry is read, so a late open cannot rebind.
+    func current(for transportKey: String) -> MCPAutoSessionCoordinator? {
+        lock.lock()
+        defer { lock.unlock() }
+        return coordinators[transportKey]
     }
 
     func remove(for transportKey: String) {

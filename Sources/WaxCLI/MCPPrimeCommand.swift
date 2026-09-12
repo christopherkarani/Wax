@@ -34,7 +34,6 @@ enum MCPPrimeRunner {
 
     struct Request: Sendable {
         var host: String
-        var conversationID: String
         var cwd: String
         var includePerson: Bool
         var format: MCPPrimeAssembly.Format
@@ -213,9 +212,6 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("host"), help: "Host namespace: claude, codex, grok, cursor, opencode, openclaw")
         var host: MCPPrimeHost
 
-        @Option(name: .customLong("conversation-id"), help: "Stable host conversation id")
-        var conversationID: String
-
         @Option(name: .customLong("cwd"), help: "Client working directory used to resolve project/repo")
         var cwd: String
 
@@ -241,7 +237,6 @@ extension WaxCLI.MCP {
             let outcome = MCPPrimeRunner.run(
                 MCPPrimeRunner.Request(
                     host: host.rawValue,
-                    conversationID: conversationID,
                     cwd: cwd,
                     includePerson: includePerson,
                     format: format.assemblyFormat,

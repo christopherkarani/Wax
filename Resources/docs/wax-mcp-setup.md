@@ -30,13 +30,14 @@ The npm launcher (`npx waxmcp`) **serves** MCP. It does not implement `mcp insta
 
 ### Keep checkpoint responses small
 
-`compact_context` returns budgeted `compacted_text` and memory references for
-follow-up reads. Its default response omits the full source bodies and repeated
-previews; use `memory_get` with a returned `memory_id` to read a complete memory.
-`token_budget` and `used_tokens` measure the checkpoint text, excluding the JSON
-envelope and reference metadata. For `recall` and `stats`, `verbosity: "verbose"`
-includes result details and operator paths; use it for diagnosis rather than
-routine retrieval.
+`compact_context` (legacy/full profiles) returns budgeted `compacted_text` and
+memory references for follow-up reads. Its default response omits the full
+source bodies and repeated previews; use `memory_get` (legacy/full) with a
+returned `memory_id` to read a complete memory. `token_budget` and
+`used_tokens` measure the checkpoint text, excluding the JSON envelope and
+reference metadata. For `recall` and `stats`, `verbosity: "verbose"` includes
+result details and operator paths; use it for diagnosis rather than routine
+retrieval.
 
 ### Lifecycle instructions
 

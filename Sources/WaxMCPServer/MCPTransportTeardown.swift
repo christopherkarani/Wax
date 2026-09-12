@@ -10,6 +10,10 @@ enum MCPTeardownReason: String, Sendable, Equatable {
     case stdioEOF
 }
 
+enum MCPTeardownPerformError: Error, Sendable {
+    case brokerUnavailable
+}
+
 struct MCPTeardownOutcome: Sendable, Equatable {
     var status: String
     var reason: String
@@ -30,6 +34,12 @@ enum MCPTransportTeardown {
         perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse,
         timeoutSeconds: TimeInterval = defaultTimeoutSeconds
     ) async -> MCPTeardownOutcome {
+        // Close the coordinator first: an in-flight auto-session open must
+        // observe .closed and refuse to bind before we snapshot the registry.
+        if let coordinator = MCPAutoSessionCoordinatorStore.shared.current(for: connectionKey) {
+            await coordinator.markClosed()
+        }
+        MCPAutoSessionCoordinatorStore.shared.remove(for: connectionKey)
         guard let sessionID = MCPBoundSessionRegistry.shared.current(for: connectionKey) else {
             return .skipped("no_bound_session")
         }
@@ -41,7 +51,6 @@ enum MCPTransportTeardown {
             timeoutSeconds: timeoutSeconds
         )
         MCPBoundSessionRegistry.shared.invalidate(sessionID: sessionID)
-        MCPAutoSessionCoordinatorStore.shared.remove(for: connectionKey)
         return outcome
     }
 
@@ -123,6 +132,25 @@ enum MCPTransportTeardown {
         }
     }
 
+    /// Best-effort teardown perform: probes an already-running broker with a
+    /// short socket deadline. Never starts a broker process during teardown,
+    /// so `timeoutSeconds` actually bounds the close attempt.
+    static func boundedPerform(
+        configuration: AgentBrokerConfiguration,
+        timeoutSeconds: TimeInterval = defaultTimeoutSeconds
+    ) -> @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse {
+        { request in
+            guard let response = try AgentBrokerClient.probe(
+                request: request,
+                configuration: configuration,
+                timeoutSeconds: timeoutSeconds
+            ) else {
+                throw MCPTeardownPerformError.brokerUnavailable
+            }
+            return response
+        }
+    }
+
     static func makeHTTPCallback(
         configuration: AgentBrokerConfiguration
     ) -> @Sendable (String, MCPTeardownReason) async -> MCPTeardownOutcome {
@@ -130,12 +158,7 @@ enum MCPTransportTeardown {
             await checkpointBoundTransportSession(
                 connectionKey: connectionKey,
                 reason: reason,
-                perform: { request in
-                    try await AgentBrokerClient.perform(
-                        request: request,
-                        configuration: configuration
-                    )
-                }
+                perform: boundedPerform(configuration: configuration)
             )
         }
     }

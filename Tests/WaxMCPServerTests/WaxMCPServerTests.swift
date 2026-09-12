@@ -7718,6 +7718,7 @@ struct WaxMCPProcessTests {
             arguments: [
                 "content": "invalid reserved metadata key",
                 "metadata": ["session_id": "not-a-real-session"],
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
             ],
             timeout: 20
         )
@@ -7769,7 +7770,11 @@ struct WaxMCPProcessTests {
         let remember = try await harness.callTool(
             id: 2,
             name: "remember",
-            arguments: ["content": marker]
+            arguments: [
+                "content": marker,
+                "memory_type": "fact",
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ]
         )
         let rememberJSON = try parseToolTextJSON(fromResponseLine: remember)
         #expect((rememberJSON["status"] as? String) == "ok")
@@ -8248,7 +8253,10 @@ struct WaxMCPProcessTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func brokerBackedSessionResumeReopensPersistedSessionAfterRestart() async throws {
+    func brokerBackedSessionMemorySurvivesRestartButEndedSessionDoesNotResume() async throws {
+        // New contract: stdio EOF is transport teardown, which checkpoints (closes)
+        // the bound session. The closed session cannot be resumed by id, but its
+        // memory is harvested at close and stays searchable from the next process.
         let sharedStoreURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-mcp-session-resume-\(UUID().uuidString)")
             .appendingPathExtension("wax")
@@ -8289,14 +8297,14 @@ struct WaxMCPProcessTests {
             timeout: 20
         )
         let resumedJSON = try parseToolTextJSON(fromResponseLine: resumed)
-        #expect((resumedJSON["resumed"] as? Bool) == true)
+        #expect((resumedJSON["resumed"] as? Bool) == nil)
+        #expect((resumedJSON["message"] as? String)?.contains("ended") == true)
 
         let search = try await second.callTool(
             id: 34,
             name: "memory_search",
             arguments: [
                 "query": "resume anchor",
-                "session_id": sessionID,
                 "mode": "text",
             ],
             timeout: 20
@@ -8793,7 +8801,10 @@ struct WaxMCPProcessTests {
         var rememberResp = try await harness.callTool(
             id: 2,
             name: "remember",
-            arguments: ["content": longContent],
+            arguments: [
+                "content": longContent,
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ],
             timeout: 120
         )
         let rememberJSON: [String: Any]
@@ -8804,7 +8815,10 @@ struct WaxMCPProcessTests {
             rememberResp = try await harness.callTool(
                 id: 22,
                 name: "remember",
-                arguments: ["content": longContent],
+                arguments: [
+                    "content": longContent,
+                    "cwd": harness.storeURL.deletingLastPathComponent().path,
+                ],
                 timeout: 120
             )
             rememberJSON = try parseToolTextJSON(fromResponseLine: rememberResp)

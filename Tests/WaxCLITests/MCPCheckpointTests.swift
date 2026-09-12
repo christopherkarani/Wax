@@ -92,8 +92,7 @@ struct MCPCheckpointTests {
         defer { try? FileManager.default.removeItem(at: root.url) }
         let wire = HostConversationKey(
             hostNamespace: "claude",
-            conversationID: "dup-chat",
-            repoIdentity: root.url.lastPathComponent
+            conversationID: "dup-chat"
         ).wireConversationID
         try saveManifest(
             makeManifest(
@@ -136,8 +135,7 @@ struct MCPCheckpointTests {
         let sessionID = UUID()
         let wire = HostConversationKey(
             hostNamespace: "claude",
-            conversationID: "ended-chat",
-            repoIdentity: root.url.lastPathComponent
+            conversationID: "ended-chat"
         ).wireConversationID
         try saveManifest(
             makeManifest(
@@ -168,8 +166,7 @@ struct MCPCheckpointTests {
         defer { try? FileManager.default.removeItem(at: root.url) }
         let wire = HostConversationKey(
             hostNamespace: "claude",
-            conversationID: "live-chat",
-            repoIdentity: root.url.lastPathComponent
+            conversationID: "live-chat"
         ).wireConversationID
         try saveManifest(
             makeManifest(

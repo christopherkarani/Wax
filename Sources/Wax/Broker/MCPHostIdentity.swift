@@ -5,12 +5,10 @@ import WaxCore
 package struct HostConversationKey: Hashable, Sendable, Equatable {
     package var hostNamespace: String
     package var conversationID: String
-    package var repoIdentity: String
 
-    package init(hostNamespace: String, conversationID: String, repoIdentity: String) {
+    package init(hostNamespace: String, conversationID: String) {
         self.hostNamespace = hostNamespace.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         self.conversationID = conversationID.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.repoIdentity = repoIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Namespaced conversation ID persisted on the broker manifest.
@@ -181,13 +179,10 @@ package enum MCPProjectAttributionResolver {
     }
 
     package static func isProjectScopedWrite(memoryType: String?, scope: String?) -> Bool {
-        if let scope, scope.lowercased() == "global" {
+        if let scope, scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global" {
             return false
         }
         let type = memoryType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if type == MemoryType.userPreference.rawValue, scope?.lowercased() == "global" {
-            return false
-        }
         if type == MemoryType.userPreference.rawValue {
             return false
         }

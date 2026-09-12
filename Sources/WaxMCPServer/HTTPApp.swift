@@ -252,6 +252,7 @@ actor MCPHTTPApplication {
             }
             return response
         } catch {
+            MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
             await transport.disconnect()
             return .error(statusCode: 500, .internalError("Failed to create session: \(error.localizedDescription)"))
         }
@@ -332,6 +333,7 @@ actor MCPHTTPApplication {
             )
             let initResponse = await transport.handleRequest(initRequest)
             guard await Self.consumeSuccessfulInitializeResponse(initResponse) else {
+                MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
                 await transport.disconnect()
                 logger.error(
                     "HTTP session recovery initialize failed",
@@ -365,6 +367,7 @@ actor MCPHTTPApplication {
             )
             return true
         } catch {
+            MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
             await transport.disconnect()
             logger.error(
                 "HTTP session recovery failed",

@@ -5,7 +5,7 @@ import Testing
 @testable import Wax
 @testable import wax_mcp
 
-@Test
+@Test(.serialized)
 func transportTeardownIsIdempotentAndExact() async throws {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -49,11 +49,12 @@ func transportTeardownIsIdempotentAndExact() async throws {
         reason: .httpDelete,
         perform: { request in await broker.handle(request) }
     )
-    #expect(second.alreadyEnded || second.status == "closed")
+    #expect(second.status == "closed")
+    #expect(second.alreadyEnded)
     #expect(MCPBoundSessionRegistry.shared.current(for: "http-session-1") == nil)
 }
 
-@Test
+@Test(.serialized)
 func missingBindingSkipsTeardown() async {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -70,7 +71,7 @@ func missingBindingSkipsTeardown() async {
     #expect(outcome.reason == "no_bound_session")
 }
 
-@Test
+@Test(.serialized)
 func harvestTimeoutDoesNotThrowIntoHTTPPath() async {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -87,7 +88,7 @@ func harvestTimeoutDoesNotThrowIntoHTTPPath() async {
     #expect(outcome.status == "timeout")
 }
 
-@Test
+@Test(.serialized)
 func httpDeleteInvokesTeardownWithoutChangingStatus() async throws {
     let reasons = TeardownReasonBox()
     let initializeBody = try JSONSerialization.data(withJSONObject: [
@@ -135,6 +136,54 @@ func httpDeleteInvokesTeardownWithoutChangingStatus() async throws {
     ))
     #expect(closed.statusCode == 200)
     #expect(reasons.snapshot() == [.httpDelete])
+}
+
+@Test
+func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-teardown-probe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let startedFlag = root.appendingPathComponent("started")
+    let canary = root.appendingPathComponent("canary-broker")
+    try """
+    #!/bin/sh
+    echo started > '\(startedFlag.path)'
+    exit 1
+    """.write(to: canary, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: canary.path)
+
+    let configuration = AgentBrokerConfiguration(
+        brokerExecutablePath: canary.path,
+        storePath: root.appendingPathComponent("store.wax").path,
+        sessionRootPath: root.appendingPathComponent("sessions").path,
+        socketPath: root.appendingPathComponent("missing.sock").path,
+        embedderChoice: "minilm",
+        noEmbedder: true,
+        requireVector: false,
+        embedderTuning: .fromEnvironment()
+    )
+
+    let started = Date()
+    let perform = MCPTransportTeardown.boundedPerform(
+        configuration: configuration,
+        timeoutSeconds: 0.5
+    )
+    do {
+        _ = try await perform(
+            AgentBrokerRequest(
+                command: "session_close",
+                arguments: ["session_id": .string(UUID().uuidString)]
+            )
+        )
+        Issue.record("boundedPerform must fail against a dead broker socket")
+    } catch {
+        #expect(error is MCPTeardownPerformError)
+    }
+    #expect(Date().timeIntervalSince(started) < 2)
+    #expect(!FileManager.default.fileExists(atPath: startedFlag.path))
+    #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
 }
 
 private final class TeardownReasonBox: @unchecked Sendable {

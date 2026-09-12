@@ -494,3 +494,30 @@ private func eventOrder(in text: String, events: [String]) -> [String] {
 private func keyOrder(of json: HostHookJSON) -> [String] {
     json.objectMembers?.map(\.key) ?? []
 }
+
+@Suite("HostHookJSONParser")
+struct HostHookJSONParserTests {
+    @Test func decodesEscapedSurrogatePairs() throws {
+        let parsed = try HostHookJSON.parse(Data(#"{"k":"😀","n":1}"#.utf8))
+        #expect(parsed.value(forKey: "k")?.stringValue == "😀")
+        #expect(parsed.value(forKey: "n")?.numberLexeme == "1")
+        // Round-trip stays parseable.
+        let reparsed = try HostHookJSON.parse(parsed.rendered())
+        #expect(reparsed == parsed)
+    }
+
+    @Test func rejectsLoneSurrogates() {
+        #expect(throws: HostHookError.self) {
+            _ = try HostHookJSON.parse(Data(#"{"k":"\uD83D"}"#.utf8))
+        }
+        #expect(throws: HostHookError.self) {
+            _ = try HostHookJSON.parse(Data(#"{"k":"\uDE00"}"#.utf8))
+        }
+        #expect(throws: HostHookError.self) {
+            _ = try HostHookJSON.parse(Data(#"{"k":"\uD83Dabc"}"#.utf8))
+        }
+        #expect(throws: HostHookError.self) {
+            _ = try HostHookJSON.parse(Data(#"{"k":"\uD83D\\n"}"#.utf8))
+        }
+    }
+}

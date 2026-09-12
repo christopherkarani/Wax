@@ -6,20 +6,25 @@ import Testing
 @testable import wax_cli
 
 struct MCPPrimeTests {
-    @Test func primeCommandParsesHostConversationCwdAndFormatFlags() throws {
+    @Test func primeCommandParsesHostCwdAndFormatFlags() throws {
         let command = try WaxCLI.MCP.Prime.parse([
             "--host", "claude",
-            "--conversation-id", "chat-1",
             "--cwd", "/tmp/wax-prime",
             "--format", "cursor",
             "--include-person",
         ])
         #expect(command.host == .claude)
-        #expect(command.conversationID == "chat-1")
         #expect(command.cwd == "/tmp/wax-prime")
         #expect(command.format == .cursor)
         #expect(command.includePerson)
         #expect(command.timeoutSeconds == MCPPrimeRunner.defaultTimeoutSeconds)
+
+        // The global person lane stays off unless the operator opts in.
+        let minimal = try WaxCLI.MCP.Prime.parse([
+            "--host", "claude",
+            "--cwd", "/tmp/wax-prime",
+        ])
+        #expect(!minimal.includePerson)
     }
 
     @Test func primeBrokerDownExitsZeroWithEmptyValidResultAndNoStderr() throws {
@@ -52,7 +57,6 @@ struct MCPPrimeTests {
         let outcome = MCPPrimeRunner.run(
             MCPPrimeRunner.Request(
                 host: "claude",
-                conversationID: "chat-down",
                 cwd: root.path,
                 includePerson: true,
                 format: .json,
@@ -112,7 +116,6 @@ struct MCPPrimeTests {
             let outcome = MCPPrimeRunner.run(
                 MCPPrimeRunner.Request(
                     host: "cursor",
-                    conversationID: "chat-concurrent",
                     cwd: root.path,
                     includePerson: false,
                     format: .claude,
@@ -172,7 +175,6 @@ struct MCPPrimeTests {
         let outcome = MCPPrimeRunner.run(
             MCPPrimeRunner.Request(
                 host: "claude",
-                conversationID: "chat-hits",
                 cwd: root.path,
                 includePerson: false,
                 format: .claude,
@@ -252,7 +254,6 @@ struct MCPPrimeTests {
         let outcome = MCPPrimeRunner.run(
             MCPPrimeRunner.Request(
                 host: "claude",
-                conversationID: "chat-live",
                 cwd: root.path,
                 includePerson: false,
                 format: .json,

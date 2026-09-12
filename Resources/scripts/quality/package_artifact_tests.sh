@@ -69,7 +69,10 @@ fi
 if grep -Fq -- '--no-embedder' "$OPENCLAW_DIST"; then
   fail "OpenClaw runtime must not disable embeddings"
 fi
-grep -Fq '"placeholder": "waxmcp"' "$OPENCLAW_PLUGIN" \
-  || fail "OpenClaw plugin metadata must not suggest unavailable wax-mcp command"
+if grep -Fq '"command"' "$OPENCLAW_PLUGIN" || grep -Fq '"args"' "$OPENCLAW_PLUGIN"; then
+  fail "OpenClaw plugin metadata must not advertise a process fallback the runtime ignores"
+fi
+grep -Fq '"placeholder": "http://127.0.0.1:3000/mcp"' "$OPENCLAW_PLUGIN" \
+  || fail "OpenClaw plugin metadata must point at the shared HTTP endpoint"
 
 echo "package_artifact_tests: ok"

@@ -121,8 +121,7 @@ enum MCPCheckpointRunner {
         )
         let key = HostConversationKey(
             hostNamespace: host,
-            conversationID: conversationID,
-            repoIdentity: attribution.repo ?? attribution.project ?? ""
+            conversationID: conversationID
         )
         let identity = try matchHostSession(
             wireConversationID: key.wireConversationID,
@@ -192,6 +191,11 @@ enum MCPCheckpointRunner {
         repo: String?,
         rootURL: URL
     ) throws -> Identity {
+        // A missing sessions root means no sessions exist yet — that is
+        // "nothing bound", not a broker failure.
+        guard FileManager.default.fileExists(atPath: rootURL.path) else {
+            return .none
+        }
         let manifests = try BrokerSessionPersistence.listManifests(rootURL: rootURL)
         let matching = manifests.filter { manifest in
             guard manifest.conversationID == wireConversationID else { return false }
