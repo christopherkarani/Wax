@@ -1,4 +1,5 @@
 import Foundation
+import Wax
 
 struct HostHookJSONMember: Equatable, Sendable {
     var key: String
@@ -72,12 +73,10 @@ enum HostHookAdapterRouter {
         document: HostHookJSON,
         entries: [HostHookDesiredEntry]
     ) throws -> HostHookJSON {
-        switch host {
-        case .claude, .codex, .grok:
+        if host.registry.usesNestedMatcherDocument {
             return try NestedMatcherHostAdapter.merge(document: document, entries: entries)
-        case .cursor:
-            return try CursorHostAdapter.merge(document: document, entries: entries)
         }
+        return try CursorHostAdapter.merge(document: document, entries: entries)
     }
 }
 
