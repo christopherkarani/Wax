@@ -1,6 +1,7 @@
 #if MCPServer
 import Foundation
 import MCP
+import Wax
 
 /// MCP `tools/list` profiles.
 ///
@@ -8,31 +9,24 @@ import MCP
 /// - `legacy`: previous eight-tool playbook
 /// - `full`: complete public catalog
 ///
-/// Hidden tools remain handler-callable. That is not advertised as host UX.
+/// Profile membership lives on `BrokerCommandCatalog`; this type only reads
+/// the environment and selects one of the catalog's named views. Hidden tools
+/// remain handler-callable. That is not advertised as host UX.
 enum MCPToolProfile: String, Sendable, Equatable {
     case daily
     case legacy
     case full
 
-    static let dailyNames: [String] = [
-        "remember",
-        "recall",
-        "stats",
-    ]
+    static var dailyNames: [String] {
+        BrokerCommandCatalog.Profile.daily.toolNames
+    }
 
-    static let legacyNames: [String] = [
-        "session_open",
-        "remember",
-        "recall",
-        "session_close",
-        "stats",
-        "memory_get",
-        "compact_context",
-        "session_resume",
-    ]
+    static var legacyNames: [String] {
+        BrokerCommandCatalog.Profile.legacy.toolNames
+    }
 
-    static let dailyNameSet = Set(dailyNames)
-    static let legacyNameSet = Set(legacyNames)
+    static let dailyNameSet = Set(BrokerCommandCatalog.Profile.daily.toolNames)
+    static let legacyNameSet = Set(BrokerCommandCatalog.Profile.legacy.toolNames)
 
     static func fromEnvironment(
         _ environment: [String: String] = ProcessInfo.processInfo.environment
@@ -50,24 +44,14 @@ enum MCPToolProfile: String, Sendable, Equatable {
         }
     }
 
-    var listedNames: [String] {
+    var catalogProfile: BrokerCommandCatalog.Profile {
         switch self {
         case .daily:
-            return Self.dailyNames
+            return .daily
         case .legacy:
-            return Self.legacyNames
+            return .legacy
         case .full:
-            return []
-        }
-    }
-
-    func listed(_ tools: [Tool]) -> [Tool] {
-        switch self {
-        case .full:
-            return tools
-        case .daily, .legacy:
-            let byName = Dictionary(tools.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-            return listedNames.compactMap { byName[$0] }
+            return .full
         }
     }
 }

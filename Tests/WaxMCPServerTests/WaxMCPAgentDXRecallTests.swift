@@ -36,6 +36,33 @@ private func requireObject(_ value: AgentBrokerValue?) throws -> [String: AgentB
     try #require(value?.objectValue)
 }
 
+private enum BrokerRecallTestError: Error {
+    case expectedRecallCommand
+}
+
+private func recallThroughBrokerRecallModule(
+    service: AgentBrokerService,
+    sessionID: String,
+    token: String
+) async throws -> BrokerRecall.PackedRecall {
+    let decoded = try BrokerCommand.decode(command: "recall", arguments: [
+        "query": .string(token),
+        "session_id": .string(sessionID),
+        "mode": .string("text"),
+    ])
+    guard case .recall(let command) = decoded else {
+        throw BrokerRecallTestError.expectedRecallCommand
+    }
+    return try await BrokerRecall.recall(command, in: BrokerRecall.Environment(
+        longTermMemory: service.longTermMemory,
+        sessions: service.virtualSessions,
+        endedSessions: service.endedSessions,
+        preview: { $0 ?? "" },
+        canonicalFrameID: { _, _ in nil },
+        nowMs: { Int64(Date().timeIntervalSince1970 * 1000) }
+    ))
+}
+
 private func requireString(_ object: [String: AgentBrokerValue], _ key: String) throws -> String {
     try #require(object[key]?.stringValue)
 }
@@ -314,7 +341,7 @@ struct WaxMCPAgentDXRecallTests {
                 timestampMs: 0
             )
 
-            let value = await service.renderLayeredMemoryHit(hit)
+            let value = RecallPresent.renderLayeredMemoryHit(hit, nowMs: 99)
             let rendered = try #require(value.objectValue)
             #expect(rendered["age_days"] == nil)
             #expect(rendered["created_at_ms"] == nil)
@@ -1071,6 +1098,57 @@ struct WaxMCPAgentDXRecallTests {
             #expect(document.metadata[MemoryMetadataKeys.repo] == project)
             #expect(document.metadata[MemoryMetadataKeys.type] == MemoryType.decision.rawValue)
             #expect(document.metadata[MemoryMetadataKeys.durability] == MemoryDurability.durable.rawValue)
+        }
+    }
+
+    @Test
+    func brokerRecallResnapshotsLiveSessionsPerCall() async throws {
+        try await withAgentDXRecallBroker { service, _ in
+            let project = "dx-resnapshot-\(UUID().uuidString.prefix(8))"
+            let token = "WAXDXRESNAP-\(UUID().uuidString.prefix(8))"
+            let opened = await service.handle(.init(
+                command: "session_open",
+                arguments: [
+                    "project": .string(project),
+                    "agent_id": .string("dx-resnapshot-agent"),
+                    "run_id": .string("dx-resnapshot-run"),
+                ]
+            ))
+            #expect(opened.ok == true, "session_open failed: \(opened.error ?? "nil")")
+            let sessionID = try requireString(try requireObject(opened.payload), "session_id")
+
+            let remembered = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("Working note \(token) lives in the session lane."),
+                    "session_id": .string(sessionID),
+                    "memory_type": .string("note"),
+                ]
+            ))
+            #expect(remembered.ok == true, "remember failed: \(remembered.error ?? "nil")")
+
+            let live = try await recallThroughBrokerRecallModule(
+                service: service,
+                sessionID: sessionID,
+                token: token
+            )
+            #expect(live.hits.contains {
+                $0.horizon == .working && $0.text.contains(token)
+            })
+
+            let ended = await service.handle(.init(
+                command: "session_end",
+                arguments: ["session_id": .string(sessionID)]
+            ))
+            #expect(ended.ok == true, "session_end failed: \(ended.error ?? "nil")")
+
+            // Same Environment value, fresh snapshot: the ended working lane is gone.
+            let afterEnd = try await recallThroughBrokerRecallModule(
+                service: service,
+                sessionID: sessionID,
+                token: token
+            )
+            #expect(!afterEnd.hits.contains { $0.horizon == .working })
         }
     }
 }

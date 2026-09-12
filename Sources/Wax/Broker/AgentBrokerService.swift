@@ -579,35 +579,14 @@ extension AgentBrokerService {
     }
 
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
-        let query = command.query
-        let limit = command.limit
-        let recallScope = command.scope
-        let explicitProject = command.explicitProject
-        let explicitRepo = command.explicitRepo
-        let clientCWD = command.clientCWD
         let parsedFilters = command.filters
         let mode = command.mode
-        let effectiveTopK = command.searchTopK
 
         // Rebind session lane before resolving project from session manifest (C4).
         if let sessionID = parsedFilters.sessionId {
             _ = try await memory(for: sessionID)
         }
 
-        let request = LayeredRecall.RecallRequest(
-            query: query,
-            scope: recallScope,
-            limit: limit,
-            searchTopK: effectiveTopK,
-            mode: mode,
-            sessionID: parsedFilters.sessionId,
-            explicitProject: explicitProject,
-            explicitRepo: explicitRepo,
-            clientCWD: clientCWD,
-            frameFilter: parsedFilters.frameFilter,
-            timeRange: parsedFilters.timeRange,
-            memoryTypes: command.memoryTypes
-        )
         // Session stores attach on their own follow task. After MiniLM is ready,
         // wait for that attach here so a session-scoped first recall is hybrid.
         // Skip when long-term is still loading so a timeout does not become a
@@ -616,90 +595,43 @@ extension AgentBrokerService {
            await longTermMemory.isQueryEmbedderReady() {
             await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
         }
-        let result = try await LayeredRecall.recall(request: request, stores: layeredRecallStores())
+        // Fetch + merge + pack live behind the BrokerRecall seam. The module
+        // takes no lock: this runs under commandMutex with the embedder
+        // already awaited above.
+        let packed = try await BrokerRecall.recall(
+            command,
+            in: BrokerRecall.Environment(
+                longTermMemory: longTermMemory,
+                sessions: virtualSessions,
+                endedSessions: endedSessions,
+                preview: { Wax.dehighlightedPreviewText($0 ?? "") },
+                canonicalFrameID: { frameID, memory in
+                    await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
+                },
+                nowMs: { Self.nowMs() }
+            )
+        )
 
-        var lines: [String] = []
-        if let scopeMissMessage = result.scopeMissMessage {
-            lines.append(scopeMissMessage)
-        }
-        lines.append(contentsOf: [
-            "Query: \(query)",
-            "Total tokens: \(result.hits.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) })",
-            "Results: \(result.hits.count) of \(limit) requested (orchestrator returned \(result.hits.count))",
-            "Search controls: requested_mode=\(result.requestedModeSummary) effective_mode=\(result.effectiveModeSummary) query_embedding_state=\(result.queryEmbeddingState) search_top_k=\(effectiveTopK) retrieval_top_k=\(result.retrievalTopK) limit=\(limit) scope=\(result.scope.rawValue)",
-        ])
-        if let project = result.identity.project {
-            lines.append("Resolved project: \(project)")
-        }
-        if let repo = result.identity.repo {
-            lines.append("Resolved repo: \(repo)")
-        }
-        lines.append("Applied filters: \(parsedFilters.summary.debugJSONString)")
-        for (index, hit) in result.hits.enumerated() {
-            let kind = RecallPresent.itemKindLabel(hit.kind)
-            lines.append("\(index + 1). [\(kind)] frame=\(hit.frameID) score=\(String(format: "%.4f", hit.score)) \(hit.text)")
-        }
-
-        let nowMs = Self.nowMs()
-        let verbose = command.verbosity == "verbose"
-        let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
-            RecallPresent.renderRecallHit(hit, rank: index + 1, verbose: verbose, nowMs: nowMs)
-        }
         if let sessionID = parsedFilters.sessionId {
             let sessionMemory = try await memory(for: sessionID)
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
-                query: query,
-                hits: result.hits.compactMap { hit in
+                query: command.query,
+                hits: packed.hits.compactMap { hit in
                     guard hit.explanations.contains("current session") else { return nil }
                     return (hit.frameID, hit.score)
                 },
                 memory: sessionMemory
             )
             await sessionMemory.recordImpressions(
-                frameIds: result.hits.filter { $0.horizon == .working }.map(\.frameID)
+                frameIds: packed.hits.filter { $0.horizon == .working }.map(\.frameID)
             )
         }
         await longTermMemory.recordImpressions(
-            frameIds: result.hits.filter { $0.horizon == .durable }.map(\.frameID)
+            frameIds: packed.hits.filter { $0.horizon == .durable }.map(\.frameID)
         )
-
-        var payload: [String: AgentBrokerValue] = [
-            "query": .string(query),
-            "total_tokens": .from(result.hits.reduce(0) { $0 + max(1, $1.text.split(whereSeparator: \.isWhitespace).count) }),
-            "result_count": .from(result.hits.count),
-            "limit": .from(limit),
-            "search_top_k": .from(effectiveTopK),
-            "retrieval_top_k": .from(result.retrievalTopK),
-            "requested_mode": .string(result.requestedModeSummary),
-            "effective_mode": .string(result.effectiveModeSummary),
-            "query_embedding_state": .string(result.queryEmbeddingState),
-            "scope": .string(result.scope.rawValue),
-            "project": .from(result.identity.project),
-            "repo": .from(result.identity.repo),
-            "project_miss": .bool(result.projectMiss),
-            "applied_filters": parsedFilters.summary,
-            "results": .array(results),
-            "display_text": .string(lines.joined(separator: "\n")),
-        ]
-        if let warning = Self.retrievalDowngradeWarning(
-            requestedMode: result.requestedModeSummary,
-            effectiveMode: result.effectiveModeSummary,
-            queryEmbeddingState: result.queryEmbeddingState
-        ) {
-            payload["warning"] = .string(warning)
-        }
-        if !verbose {
-            payload = RecallPresent.slimCompactRecallEnvelope(payload)
-        }
-        if let scopeMissMessage = result.scopeMissMessage {
-            payload["scope_miss_message"] = .string(scopeMissMessage)
-        }
-        if result.projectMiss {
-            payload["next_action"] = .string("retry explicitly with scope=global")
-        }
-        return .object(payload)
+        return packed.payload
     }
 
     func search(_ command: BrokerCommand.Search) async throws -> AgentBrokerValue {
@@ -2719,46 +2651,16 @@ extension AgentBrokerService {
     }
 
     func layeredRecallStores() -> LayeredRecall.Stores {
-        let sessionsSnapshot = activeSessions
-
-        return LayeredRecall.Stores(
+        // Snapshot discipline lives behind the BrokerRecall seam; the
+        // remaining layered-search path builds through the same function.
+        BrokerRecall.makeStores(
+            snapshot: activeSessions,
             longTermMemory: longTermMemory,
-            workingLane: { sessionID in
-                guard let state = sessionsSnapshot[sessionID] else { return nil }
-                return LayeredRecall.WorkingLane(
-                    sessionID: sessionID,
-                    agentID: state.manifest.agentID,
-                    runID: state.manifest.runID,
-                    updatedAtMs: state.manifest.updatedAtMs,
-                    project: state.manifest.project,
-                    repo: state.manifest.repo,
-                    memory: state.memory
-                )
-            },
-            inferWriteScope: { sessionID, clientCWD in
-                if let sessionID, let state = sessionsSnapshot[sessionID] {
-                    let project = state.manifest.project
-                    let repo = state.manifest.repo
-                    if project != nil || repo != nil {
-                        return LayeredRecall.Identity(project: project, repo: repo)
-                    }
-                }
-                if let clientCWD {
-                    let inferred = MemorySemantics.inferScopeContext(currentDirectoryPath: clientCWD)
-                    return LayeredRecall.Identity(
-                        project: inferred.projectName,
-                        repo: inferred.repoName
-                    )
-                }
-                return LayeredRecall.Identity(project: nil, repo: nil)
-            },
-            preview: { text in
-                Wax.dehighlightedPreviewText(text ?? "")
-            },
+            endedSessions: endedSessions,
+            preview: { Wax.dehighlightedPreviewText($0 ?? "") },
             canonicalFrameID: { frameID, memory in
                 await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
             },
-            endedSessions: endedSessions,
             nowMs: { Self.nowMs() }
         )
     }
@@ -3142,11 +3044,6 @@ extension AgentBrokerService {
         }
     }
 
-    /// Thin actor wrapper for MCP/DX tests that still call presentation through the broker.
-    func renderLayeredMemoryHit(_ hit: LayeredMemoryHit) -> AgentBrokerValue {
-        RecallPresent.renderLayeredMemoryHit(hit, nowMs: Self.nowMs())
-    }
-
     func corpusHitFullText(_ hit: BrokerCorpusMergeHit) async -> String {
         if let memory = memoryForCorpusHit(hit) {
             let frameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) ?? hit.frameId
@@ -3362,8 +3259,8 @@ package struct BrokerSessionInactiveError: LocalizedError, Sendable, Equatable {
     }
 }
 
-private extension AgentBrokerValue {
-    var debugJSONString: String {
+package extension AgentBrokerValue {
+    package var debugJSONString: String {
         guard let data = try? JSONEncoder().encode(self),
               let string = String(data: data, encoding: .utf8) else {
             return "{}"

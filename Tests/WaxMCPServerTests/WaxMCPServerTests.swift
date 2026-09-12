@@ -565,7 +565,7 @@ func toolsListFullProfileContainsAliases() {
 
 @Test
 func dailyToolNamesAreSubsetOfPublicCatalog() {
-    #expect(MCPToolProfile.dailyNameSet.isSubset(of: AgentBrokerCommandSurface.publicCommandNames))
+    #expect(MCPToolProfile.dailyNameSet.isSubset(of: BrokerCommandCatalog.publicCommandNames))
 }
 
 @Test
@@ -666,10 +666,10 @@ func toolsListHonorsStructuredMemoryFlag() {
 func toolSchemasStayWithinCommandCatalogSurface() {
     let tools = ToolSchemas.allPublishedTools
     let toolNames = Set(tools.map(\.name))
-    #expect(toolNames == AgentBrokerCommandSurface.publicCommandNames)
+    #expect(toolNames == BrokerCommandCatalog.publicCommandNames)
 
     for tool in tools {
-        guard let entry = AgentBrokerCommandSurface.entry(for: tool.name) else {
+        guard let entry = BrokerCommandCatalog.entry(for: tool.name) else {
             Issue.record("Tool '\(tool.name)' is missing from the command catalog")
             continue
         }

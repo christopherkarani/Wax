@@ -16,8 +16,8 @@ func rememberAndRecallSchemasAdvertiseCWD() throws {
         ToolSchemas.waxRecall.objectValue?["properties"]?.objectValue?["cwd"]
     )
     #expect(recallCWD.objectValue?["type"] == .string("string"))
-    #expect(AgentBrokerCommandSurface.entry(for: "remember")?.acceptedArgumentKeys.contains("cwd") == true)
-    #expect(AgentBrokerCommandSurface.entry(for: "recall")?.acceptedArgumentKeys.contains("cwd") == true)
+    #expect(BrokerCommandCatalog.entry(for: "remember")?.acceptedArgumentKeys.contains("cwd") == true)
+    #expect(BrokerCommandCatalog.entry(for: "recall")?.acceptedArgumentKeys.contains("cwd") == true)
 }
 
 @Test(.serialized)
