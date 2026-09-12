@@ -128,7 +128,7 @@ struct MCPPrimeTests {
                     configuration: configuration
                 )
             )
-            outcomes.value.append(outcome)
+            outcomes.mutate { $0.append(outcome) }
         }
         // Same bound rationale as the single-prime test: proves no broker start.
         #expect(Date().timeIntervalSince(started) < 5)
@@ -284,6 +284,12 @@ private final class LockBox<Value>: @unchecked Sendable {
     var value: Value {
         get { lock.lock(); defer { lock.unlock() }; return storage }
         set { lock.lock(); defer { lock.unlock() }; storage = newValue }
+    }
+    /// Atomic read-modify-write; the get/set pair of `value` is not atomic.
+    func mutate(_ body: (inout Value) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        body(&storage)
     }
 }
 
