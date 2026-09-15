@@ -417,9 +417,27 @@ package enum LayeredRecall {
     }
 
     package static func hasExplicitProjectOrRepo(_ hit: Hit) -> Bool {
-        let project = hit.metadata[MemoryMetadataKeys.project]
-        let repo = hit.metadata[MemoryMetadataKeys.repo]
+        hasExplicitProjectOrRepoStamp(hit.metadata)
+    }
+
+    package static func hasExplicitProjectOrRepoStamp(_ metadata: [String: String]) -> Bool {
+        let project = metadata[MemoryMetadataKeys.project]
+        let repo = metadata[MemoryMetadataKeys.repo]
         return (project.map { !$0.isEmpty } ?? false) || (repo.map { !$0.isEmpty } ?? false)
+    }
+
+    /// Working hits always keep. Unresolved identity drops stamped foreign durable.
+    /// Resolved identity uses `metadataMatchesScopedRetrieval`.
+    package static func matchesSessionScopedRetrieval(
+        metadata: [String: String],
+        identity: Identity,
+        isWorking: Bool
+    ) -> Bool {
+        if isWorking { return true }
+        if identity.project == nil && identity.repo == nil {
+            return !hasExplicitProjectOrRepoStamp(metadata)
+        }
+        return metadataMatchesScopedRetrieval(metadata, identity: identity)
     }
 
     package static func matchesIdentityOrUnscoped(_ hit: Hit, identity: Identity) -> Bool {

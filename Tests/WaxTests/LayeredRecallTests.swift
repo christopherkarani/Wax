@@ -944,6 +944,109 @@ struct LayeredRecallTests {
         )
         #expect(LayeredRecall.hit(from: unknown).timestampMs == 0)
     }
+
+    @Test(arguments: [
+        (
+            "unresolved durable foreign project stamp is dropped",
+            [MemoryMetadataKeys.project: "other"],
+            LayeredRecall.Identity(),
+            false,
+            false
+        ),
+        (
+            "unresolved durable foreign repo stamp is dropped",
+            [MemoryMetadataKeys.repo: "other"],
+            LayeredRecall.Identity(),
+            false,
+            false
+        ),
+        (
+            "unresolved working foreign project stamp is kept",
+            [MemoryMetadataKeys.project: "other"],
+            LayeredRecall.Identity(),
+            true,
+            true
+        ),
+        (
+            "unresolved unlabeled durable is kept",
+            [String: String](),
+            LayeredRecall.Identity(),
+            false,
+            true
+        ),
+        (
+            "unresolved durable empty stamps are unlabeled",
+            [MemoryMetadataKeys.project: "", MemoryMetadataKeys.repo: ""],
+            LayeredRecall.Identity(),
+            false,
+            true
+        ),
+        (
+            "resolved durable matching project is kept",
+            [MemoryMetadataKeys.project: "Wax"],
+            LayeredRecall.Identity(project: "Wax"),
+            false,
+            true
+        ),
+        (
+            "resolved durable foreign project is dropped",
+            [MemoryMetadataKeys.project: "other"],
+            LayeredRecall.Identity(project: "Wax"),
+            false,
+            false
+        ),
+        (
+            "resolved unlabeled durable is dropped",
+            [String: String](),
+            LayeredRecall.Identity(project: "Wax"),
+            false,
+            false
+        ),
+        (
+            "resolved working foreign stamp is kept",
+            [MemoryMetadataKeys.project: "other"],
+            LayeredRecall.Identity(project: "Wax"),
+            true,
+            true
+        ),
+        (
+            "resolved project and repo exact match is kept",
+            [MemoryMetadataKeys.project: "Wax", MemoryMetadataKeys.repo: "WaxRepo"],
+            LayeredRecall.Identity(project: "Wax", repo: "WaxRepo"),
+            false,
+            true
+        ),
+        (
+            "resolved project and repo both must match",
+            [MemoryMetadataKeys.project: "Wax", MemoryMetadataKeys.repo: "Other"],
+            LayeredRecall.Identity(project: "Wax", repo: "WaxRepo"),
+            false,
+            false
+        ),
+        (
+            "resolved repo-only identity matches repo stamp",
+            [MemoryMetadataKeys.repo: "Wax"],
+            LayeredRecall.Identity(repo: "Wax"),
+            false,
+            true
+        ),
+    ])
+    func layeredRecallSessionScopedFenceMatchesBrokerPredicate(
+        _ label: String,
+        metadata: [String: String],
+        identity: LayeredRecall.Identity,
+        isWorking: Bool,
+        expected: Bool
+    ) {
+        #expect(
+            LayeredRecall.matchesSessionScopedRetrieval(
+                metadata: metadata,
+                identity: identity,
+                isWorking: isWorking
+            ) == expected,
+            "\(label)"
+        )
+    }
 }
 
 private func layeredHit(
