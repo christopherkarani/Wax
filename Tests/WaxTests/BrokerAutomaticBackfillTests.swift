@@ -54,7 +54,7 @@ struct BrokerAutomaticBackfillTests {
         let degraded = MemoryOrchestrator.SearchExecution(
             hits: [], requestedMode: .hybrid(), effectiveMode: .textOnly, queryEmbeddingState: .timeout
         )
-        let result = AgentBrokerService.mergeSearchExecutions(
+        let result = BrokerRecall.mergeSearchExecutions(
             working: workingDegraded ? degraded : active,
             durable: workingDegraded ? active : degraded,
             topK: 3
