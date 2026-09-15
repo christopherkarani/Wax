@@ -78,6 +78,58 @@ struct RecallIdentityRankingTests {
     }
 
     @Test
+    func compactAssemblyRequestRejectsSessionWithoutSessionID() {
+        #expect(
+            throws: BrokerValidationError.invalid("scope session requires session_id")
+        ) {
+            _ = try CompactAssembly.Request(
+                query: "q",
+                sessionID: nil,
+                mode: .textOnly,
+                tokenBudget: 1,
+                maxItems: 1,
+                scope: .session
+            )
+        }
+    }
+
+    @Test
+    func compactAssemblyRequestKeepsWorkingSessionOnProjectAndGlobal() throws {
+        let sessionID = UUID()
+        let project = try CompactAssembly.Request(
+            query: "q",
+            sessionID: sessionID,
+            mode: .textOnly,
+            tokenBudget: 1,
+            maxItems: 1
+        )
+        #expect(project.identity == .project(workingSessionID: sessionID))
+        #expect(project.sessionID == sessionID)
+
+        let global = try CompactAssembly.Request(
+            query: "q",
+            sessionID: nil,
+            mode: .textOnly,
+            tokenBudget: 1,
+            maxItems: 1,
+            scope: .global
+        )
+        #expect(global.identity == .global(workingSessionID: nil))
+        #expect(global.sessionID == nil)
+
+        let session = try CompactAssembly.Request(
+            query: "q",
+            sessionID: sessionID,
+            mode: .textOnly,
+            tokenBudget: 1,
+            maxItems: 1,
+            scope: .session
+        )
+        #expect(session.identity == .session(workingSessionID: sessionID))
+        #expect(session.sessionID == sessionID)
+    }
+
+    @Test
     func recallExecutionTagsSameRepoFromRequestIdentityNotBrokerCwd() async throws {
         let token = "WAXRANKWIRE-REPO-\(UUID().uuidString.prefix(8))"
         let recallIdentity = MemoryScopeContext(

@@ -6,16 +6,18 @@ import WaxCore
 package enum CompactAssembly {
     package struct Request: Sendable {
         package var query: String
-        package var sessionID: UUID?
+        package var identity: RecallIdentity
         package var mode: Memory.RetrievalMode
         package var tokenBudget: Int
         package var maxItems: Int
-        package var scope: LayeredRecall.Scope
         package var explicitProject: String?
         package var explicitRepo: String?
         package var clientCWD: String?
         package var frameFilter: FrameFilter?
         package var timeRange: SearchTimeRange?
+
+        package var sessionID: UUID? { identity.sessionID }
+        package var scope: LayeredRecall.Scope { identity.scope }
 
         package init(
             query: String,
@@ -29,13 +31,12 @@ package enum CompactAssembly {
             clientCWD: String? = nil,
             frameFilter: FrameFilter? = nil,
             timeRange: SearchTimeRange? = nil
-        ) {
+        ) throws {
             self.query = query
-            self.sessionID = sessionID
+            self.identity = try RecallIdentity.make(scope: scope, sessionID: sessionID)
             self.mode = mode
             self.tokenBudget = tokenBudget
             self.maxItems = maxItems
-            self.scope = scope
             self.explicitProject = explicitProject
             self.explicitRepo = explicitRepo
             self.clientCWD = clientCWD
@@ -87,7 +88,7 @@ package enum CompactAssembly {
             query: request.query,
             // Apply the same project filter as recall before ranking so foreign
             // matches cannot consume the compact context candidate budget.
-            identity: try RecallIdentity.make(scope: request.scope, sessionID: request.sessionID),
+            identity: request.identity,
             limit: request.maxItems,
             searchTopK: fetchSearchTopK(maxItems: request.maxItems),
             mode: request.mode,

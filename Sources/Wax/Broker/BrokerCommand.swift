@@ -79,6 +79,9 @@ package enum BrokerCommand: Sendable, Equatable {
         package var memoryTypes: [MemoryType] = []
 
         package var scope: LayeredRecall.Scope { identity.scope }
+        /// Working-lane session. Wire `filters.sessionId` is a parse snapshot and
+        /// must not be used as a second source of truth after decode.
+        package var sessionID: UUID? { identity.sessionID }
     }
 
     package struct Search: Sendable, Equatable {

@@ -579,11 +579,10 @@ extension AgentBrokerService {
     }
 
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
-        let parsedFilters = command.filters
         let mode = command.mode
 
         // Rebind session lane before resolving project from session manifest (C4).
-        if let sessionID = parsedFilters.sessionId {
+        if let sessionID = command.sessionID {
             _ = try await memory(for: sessionID)
         }
 
@@ -591,7 +590,7 @@ extension AgentBrokerService {
         // wait for that attach here so a session-scoped first recall is hybrid.
         // Skip when long-term is still loading so a timeout does not become a
         // second 30s hold on commandMutex.
-        if mode != .textOnly, let sessionID = parsedFilters.sessionId,
+        if mode != .textOnly, let sessionID = command.sessionID,
            await longTermMemory.isQueryEmbedderReady() {
             await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
         }
@@ -612,7 +611,7 @@ extension AgentBrokerService {
             )
         )
 
-        if let sessionID = parsedFilters.sessionId {
+        if let sessionID = command.sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(

@@ -82,6 +82,19 @@ struct LayeredRecallDiagnosticsTests {
         }
     }
 
+    @Test func projectScopeWithWorkingSessionStillConsultsWorkingLane() async throws {
+        try await withLanes(workingVectorEnabled: true) { stores, id in
+            let result = try await LayeredRecall.recall(request: .init(
+                query: "memory reliability",
+                identity: .project(workingSessionID: id),
+                limit: 8,
+                searchTopK: 8,
+                mode: .hybrid()
+            ), stores: stores)
+            #expect(result.hits.contains { $0.text.contains("working investigation") })
+        }
+    }
+
     @Test func sessionScopeDoesNotReportUnqueriedDurableDegradation() async throws {
         try await withLanes(workingVectorEnabled: true) { stores, id in
             let result = try await LayeredRecall.recall(request: .init(
