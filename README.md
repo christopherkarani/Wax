@@ -110,27 +110,7 @@ Pick the file your host actually loads on every turn.
 Use the project or user `AGENTS.md`, `CLAUDE.md`, or `.cursor/rules`. Same text as `Resources/skills/public/wax-mcp/references/project-rules.md`.
 
 ```text
-Wax is shared memory. Chat dies; Wax does not.
-
-Learn. Write the moment it would change the next agent's behavior — including a one-line correction or preference:
-- user_preference — how this person works, who they are, standing corrections
-- lesson — we got burned; do not do that again
-- fact — a true thing about this repo or product the next agent needs
-- decision / constraint — a choice that should bind later work
-
-Skip only empty chit-chat. Store one or two sentences. Do not store chats, test logs, plan drafts, or secrets.
-
-Daily tools are `remember`, `recall`, and `stats`. The server auto-opens one transport-scoped session on the first `remember` or `recall`. Do not invent a `session_id`. This is transport-owned working memory, not per-chat isolation, unless the host proves a conversation identity. Pass `cwd` when the host does not advertise roots.
-
-Do not load the `wax` or `wax-mcp` skills at session start. MCP server instructions are the playbook. `wax` is Swift SDK only; `wax-mcp` is install/doctor only.
-
-`recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss, not "I have no memory." Pass `scope=global` only for intentional cross-project retrieval.
-
-Lasting writes: `remember` with `memory_type` `lesson` | `user_preference` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put `session_id` in `metadata`.
-
-This job only (not the default write): `remember` with `memory_type: task_state`, `durability: working` before you spawn.
-
-Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Durable facts come from explicit `remember`, not from transcripts. Set `WAX_MCP_TOOLS=legacy` only for the old eight-tool playbook. Follow the MCP server instructions when present.
+Follow the live Wax MCP server instructions for `remember`, `recall`, and `stats`. Do not invent a `session_id`. Do not load the `wax` or `wax-mcp` skills at session start. `wax` is Swift SDK only; `wax-mcp` is install/doctor only.
 ```
 
 </details>
@@ -145,25 +125,7 @@ SOUL.md is identity. **Append** this section if missing. If `## Memory (Wax)` al
 ```text
 ## Memory (Wax)
 
-You have Wax. Chat is not memory. Learn this person and keep it.
-
-Write the moment it would change how you treat them or the work — including a one-line correction:
-- user_preference — how they work, who they are, standing corrections
-- lesson — we got burned
-- fact — something true that should stick
-- decision / constraint — a choice that should bind later work
-
-Store one or two sentences. Do not store chats, status, or secrets.
-
-Daily tools are `remember`, `recall`, and `stats`. The server auto-opens a transport-scoped session. Do not invent a `session_id`. Do not open per message.
-
-`recall` is self-contained. Person prefs are in `person`. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override.
-
-Lasting writes: `remember` with `memory_type` `user_preference` | `lesson` | `fact` | `decision` | `constraint`. Do not pass `scope: durable`. If `committed` is false, the write did not land — do not spawn children.
-
-This job only: `remember` with `memory_type: task_state`, `durability: working`.
-
-Do not close on Stop, idle, or compaction. Durable facts come from explicit `remember`, not from transcripts. Follow the MCP server instructions when present.
+You have Wax. Follow the live MCP server instructions for `remember`, `recall`, and `stats`. Do not invent a `session_id`. Do not load wax-mcp at session start.
 ```
 
 Native Hermes already owns session lifecycle. Call `wax_remember` / `wax_recall` / `wax_stats`. Do not pass a Wax `session_id`. Do not paste the MCP `session_open` loop. Omit `mode` unless you need an override. Omit `scope` for current-project recall; pass `scope=global` for person facts. Empty project recall is a miss. Do not add `wax-memory` to `plugins.enabled`. OpenClaw still pastes the SOUL.md stanza.
@@ -195,21 +157,17 @@ Then in Grokbot: **Settings → Plugins → Add MCP server**
 Finally, paste this prompt into your **main (coordinator) bot**. It sets up its own memory and rolls Wax out to every bot on the team:
 
 ```text
-You have a memory tool server called "wax". Use it as your primary memory, and make it the primary memory for every bot on our team.
-
-Your own memory:
-- Daily tools are remember, recall, and stats. The server auto-opens a transport-scoped session. Do not invent a session_id. recall is self-contained — do not recall again on follow-ups unless the job changed. Omit mode unless you need an override. Person prefs come back in person. WAX_MCP_TOOLS=legacy: session_open with recall_query is enough.
-- While working: write lessons, user_preference, and facts the moment they show up (including a one-line correction). Do not pass scope durable. A successful save has status ok and committed true. If committed is false or the call errors, the write did not land — do not spawn children. task_state is only for this job (plan, failed path, landmine) and must commit before you spawn.
-- Finishing: do not close on Stop, idle, or compaction. leftover_reasons are harvest skips — ignore them. Durable facts come from explicit remember, not from transcripts.
-- Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
+You have a memory tool server called "wax". Follow its live MCP server instructions for remember, recall, and stats. Do not invent a session_id. Do not load the wax-mcp skill at session start. Never store passwords, tokens, or secrets. If the wax tools are missing, stop and tell me instead of improvising.
 
 Roll out to the team:
-1. List every bot we already have. For each one, add the "Your own memory" rules above to its persistent instructions/memory, then verify it can see the wax tools (have it run the wax stats tool) and report back which bots succeeded and which failed.
-2. From now on, whenever you spawn a new bot, include those same rules in its starting instructions before it begins any work.
-3. Save this whole policy in wax as memory_type user_preference so you keep enforcing it across sessions.
+1. List every bot we already have. For each one, tell it to follow the live Wax MCP server instructions, then verify it can see the wax tools (have it run the wax stats tool) and report back which bots succeeded and which failed.
+2. From now on, whenever you spawn a new bot, point it at those same live server instructions before it begins any work.
+3. Save this policy in wax as memory_type user_preference so you keep enforcing it across sessions.
 ```
 
 The `.wax` file stays on the machine. The loopback bind is unreachable from outside. Full host playbook: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
+
+Operator notes (not a third playbook): Daily tools are `remember`, `recall`, and `stats`. A successful `remember` returns committed true. Ignore `leftover_reasons` on close. `WAX_MCP_TOOLS=legacy`: session_open with recall_query is enough.
 
 </details>
 

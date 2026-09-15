@@ -41,15 +41,17 @@ retrieval.
 
 ### Lifecycle instructions
 
-Wax teaches agents at three layers:
+Hooks inject recalled facts (SessionStart prime). They are historical data, not
+tool policy. Do not put a playbook in the prime envelope.
 
 | Layer | When it applies | What it teaches |
 |-------|-----------------|-----------------|
-| MCP `instructions` + tool descriptions | Every connected host | Session lifecycle, anti-patterns |
-| `wax-mcp` skill | Hosts that load skills | Full operator playbook + install notes |
-| Project rules (`CLAUDE.md` / `AGENTS.md`) | Always-on project instructions | Same workflow rules as a paste block |
+| MCP `instructions` + tool descriptions | Every connected host | How to call remember / recall / stats |
+| SessionStart prime (`wire-hooks`) | Opt-in hosts | Recalled person + project context |
+| `wax-mcp` skill | Install / doctor / rewire only | Host setup. Do not load at session start |
+| Project rules (`CLAUDE.md` / `AGENTS.md`) | Pointer only | Follow live MCP server instructions |
 
-You usually only need the Claude one-command, or the HTTP + host snippet in [wax-mcp-hosts.md](wax-mcp-hosts.md). Use the skill or project rules when the host ignores MCP instructions.
+You usually only need the Claude one-command, or the HTTP + host snippet in [wax-mcp-hosts.md](wax-mcp-hosts.md). Do not paste a second daily loop.
 
 ### Skill: agent operator vs Swift framework
 
@@ -75,7 +77,7 @@ The published `waxmcp` npm package also ships `skills/wax-mcp` so installs do no
 Do not invent a third playbook. Copy the fences from
 [`Resources/skills/public/wax-mcp/references/project-rules.md`](../skills/public/wax-mcp/references/project-rules.md):
 
-- **AGENTS.md / CLAUDE.md / Cursor rules** — full operator block
+- **AGENTS.md / CLAUDE.md / Cursor rules** — pointer to live MCP server instructions
 - **OpenClaw `SOUL.md`** — short Memory section; append, do not replace the soul
 - **Native Hermes** — do not paste the MCP `session_open` loop. `memory.provider: wax-memory` owns lifecycle; call `wax_remember` / `wax_recall`. Omit `mode` unless you need an override.
 

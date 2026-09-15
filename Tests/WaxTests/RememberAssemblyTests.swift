@@ -50,14 +50,16 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
         metadata: durableMetadata(),
         inferredScope: MemoryScopeContext(repoName: "inferred", projectName: "inferred"),
         deduplicated: false,
-        searchable: true
+        searchable: true,
+        content: originalDecision
     )
     let object = try #require(payload.objectValue)
     #expect(Set(object.keys) == [
         "status", "committed", "frame_id", "memory_id", "framesAdded", "frameCount", "pendingFrames",
-        "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable",
+        "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable", "stored",
         "unresolved_project", "display_text", "project", "repo",
     ])
+    #expect(object["stored"]?.stringValue == originalDecision)
     #expect(object["status"]?.stringValue == "ok")
     #expect(object["committed"]?.boolValue == true)
     #expect(object["frame_id"]?.intValue == 42)
@@ -79,6 +81,48 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
 }
 
 @Test
+func rememberAssemblyPayloadEchoesStoredContent() throws {
+    let content = "C01 GitLiveProbe stays intent until this tree has the type."
+    let payload = RememberAssembly.payload(
+        frameId: 42,
+        framesAdded: 1,
+        frameCount: 9,
+        pendingFrames: 2,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: false,
+        searchable: true,
+        content: content
+    )
+    let object = try #require(payload.objectValue)
+    #expect(object["stored"]?.stringValue == content)
+    #expect(object["memory_id"]?.stringValue == "durable:42")
+    #expect(object["committed"]?.boolValue == true)
+    #expect(object["searchable"]?.boolValue == true)
+}
+
+@Test
+func rememberAssemblyPayloadTruncatesStoredEchoAt240Characters() throws {
+    let content = String(repeating: "a", count: 300)
+    let payload = RememberAssembly.payload(
+        frameId: 1,
+        framesAdded: 1,
+        frameCount: 1,
+        pendingFrames: 0,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: false,
+        searchable: true,
+        content: content
+    )
+    let stored = try #require(payload.objectValue?["stored"]?.stringValue)
+    #expect(stored == String(repeating: "a", count: 240))
+    #expect(stored.count == 240)
+}
+
+@Test
 func rememberAssemblyPayloadUsesWorkingMemoryIDForSession() throws {
     let sessionID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     let payload = RememberAssembly.payload(
@@ -90,7 +134,8 @@ func rememberAssemblyPayloadUsesWorkingMemoryIDForSession() throws {
         metadata: durableMetadata(type: MemoryType.note.rawValue, durability: MemoryDurability.working.rawValue),
         inferredScope: MemoryScopeContext(),
         deduplicated: true,
-        searchable: false
+        searchable: false,
+        content: originalDecision
     )
     let object = try #require(payload.objectValue)
     #expect(object["scope"]?.stringValue == "session")
@@ -114,7 +159,8 @@ func rememberAssemblyPayloadMarksUnresolvedProjectAndNextAction() throws {
         metadata: durableMetadata(project: nil, repo: nil),
         inferredScope: MemoryScopeContext(),
         deduplicated: false,
-        searchable: true
+        searchable: true,
+        content: originalDecision
     )
     let object = try #require(payload.objectValue)
     #expect(object["unresolved_project"]?.boolValue == true)
@@ -141,7 +187,8 @@ func rememberAssemblyPayloadFallsBackToInferredScope() throws {
         ],
         inferredScope: MemoryScopeContext(repoName: "from-repo", projectName: "from-cwd"),
         deduplicated: false,
-        searchable: true
+        searchable: true,
+        content: originalDecision
     )
     let object = try #require(payload.objectValue)
     #expect(object["project"]?.stringValue == "from-cwd")
@@ -162,7 +209,8 @@ func rememberAssemblyPayloadEchoesBoundSessionOnDurableWrite() throws {
         metadata: durableMetadata(),
         inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
         deduplicated: false,
-        searchable: true
+        searchable: true,
+        content: originalDecision
     )
     let object = try #require(payload.objectValue)
     #expect(object["scope"]?.stringValue == "durable")
@@ -279,4 +327,38 @@ func rememberAssemblyCapsSupersedeMatchesAt32() {
     )
     #expect(selected.count == RememberAssembly.autoSupersedeMaxMatches)
     #expect(selected == Array(1...32).map(UInt64.init))
+}
+
+private let identifierHolesOriginal =
+    "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
+private let identifierHolesParaphrase =
+    "Still open on this tree: GitLiveProbe (C01), UniqueRanking (C02), CompactSummary (C03) — skip if already listed."
+
+@Test
+func rememberAssemblySelectsIdentifierOverlapBelowTextJaccard() {
+    #expect(MemorySemantics.similarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase) < 0.88)
+    let selected = RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 2,
+        content: identifierHolesParaphrase,
+        metadata: durableMetadata(),
+        documents: [candidate(frameId: 1, text: identifierHolesOriginal)],
+        nowMs: 0
+    )
+    #expect(selected == [1])
+}
+
+@Test
+func rememberAssemblyIdentifierOverlapStillRequiresSameType() {
+    let selected = RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 2,
+        content: identifierHolesParaphrase,
+        metadata: durableMetadata(type: MemoryType.constraint.rawValue),
+        documents: [
+            candidate(frameId: 1, text: identifierHolesOriginal, type: MemoryType.fact.rawValue),
+        ],
+        nowMs: 0
+    )
+    #expect(selected.isEmpty)
 }

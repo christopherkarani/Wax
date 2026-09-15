@@ -116,6 +116,15 @@ struct WaxMCPSingleSurfaceDocsTests {
         #expect(!recommendsGenericMCP, "recommended Hermes YAML must not register mcp_servers.wax")
     }
 
+    @Test func hostsDocTreatsSearchToolAsHostResidual() throws {
+        let hosts = try read("Resources/docs/wax-mcp-hosts.md")
+        expectContains(hosts, "search_tool", path: "wax-mcp-hosts.md", note: "must name the Grok schema lookup")
+        expectContains(hosts, "host tax", path: "wax-mcp-hosts.md", note: "must call search_tool a host tax")
+        expectContains(hosts, "Pin Wax tools", path: "wax-mcp-hosts.md", note: "must tell operators to pin tools")
+        expectContains(hosts, "3 points", path: "wax-mcp-hosts.md", note: "must budget the schema-lookup residual")
+        expectContains(hosts, "cohort average", path: "wax-mcp-hosts.md", note: "must say 95 is a cohort average")
+    }
+
     @Test func genericSkillPointsAtNativeHermesWithoutCopyingMCPLoop() throws {
         for path in skillDocs {
             let text = try read(path)

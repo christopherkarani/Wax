@@ -58,7 +58,40 @@ package enum RecallPresent {
         if let confidence = metadata[MemoryMetadataKeys.confidence].flatMap(Double.init) {
             object["confidence"] = .double(confidence)
         }
+        if let sha = metadata[MemoryMetadataKeys.gitSHA], !sha.isEmpty {
+            object["git_sha"] = .string(sha)
+        }
+        if let branch = metadata[MemoryMetadataKeys.gitBranch], !branch.isEmpty {
+            object["git_branch"] = .string(branch)
+        }
+        if let worktree = metadata[MemoryMetadataKeys.gitWorktree], !worktree.isEmpty {
+            object["git_worktree"] = .string(worktree)
+        }
+        if let status = metadata[MemoryMetadataKeys.checkoutStatus], !status.isEmpty {
+            object["checkout_status"] = .string(status)
+        }
+        if let onThisTree = metadata[MemoryMetadataKeys.onThisTree], !onThisTree.isEmpty {
+            object["on_this_tree"] = .string(onThisTree)
+        }
         return object
+    }
+
+    package static func summaryLine(index: Int, hit: LayeredRecall.Hit) -> String {
+        let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
+        let oneLiner = MemorySemantics.summarizeCandidate(hit.text, maxLength: 80)
+        var parts = ["\(index). [\(type)] \(oneLiner)"]
+        if let sha = hit.metadata[MemoryMetadataKeys.gitSHA], sha.count >= 7 {
+            parts.append(String(sha.prefix(7)))
+        }
+        if let tree = hit.metadata[MemoryMetadataKeys.onThisTree], !tree.isEmpty {
+            parts.append(tree)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    package static func summary(for hits: [LayeredRecall.Hit]) -> String {
+        hits.enumerated().map { summaryLine(index: $0.offset + 1, hit: $0.element) }
+            .joined(separator: "\n")
     }
 
     package static func renderRecallHit(
@@ -76,6 +109,9 @@ package enum RecallPresent {
             createdAtMs: hit.timestampMs,
             nowMs: nowMs
         )
+        if hit.collapsedCount > 1 {
+            object["collapsed_count"] = .from(hit.collapsedCount)
+        }
         if verbose {
             object["rank"] = .from(rank)
             object["kind"] = .string(itemKindLabel(hit.kind))

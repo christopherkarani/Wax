@@ -250,7 +250,9 @@ session; there is no `session_open` to call. Under `WAX_MCP_TOOLS=legacy`, pass
 compaction resumes the same Wax session instead of minting a sibling. Grok
 currently requires a `search_tool` schema lookup before each MCP call; that is
 a host tax, not a Wax tool bug. Pin Wax tools in the host if the host supports
-it.
+it. Budget about 3 points of residual on hosts that force schema lookup every
+call. A 95 agent-DX score is a cohort average (Claude/Codex with pinned tools
+can land higher); it is not a guarantee for every Grok session.
 
 To point a throwaway agent at an isolated `wax-mcp` (unreleased binary, separate
 store, not `~/.wax`), use a **project** config and a **private leader**. Shared
@@ -295,9 +297,9 @@ That file is the whole always-on prompt. Do not invent a `PROMPT.md`.
 **Native Hermes** uses `wax_remember` / `wax_recall` / `wax_stats` with no
 Wax UUID. Project-default vs `scope=global` is above.
 
-**MCP hosts** follow the paste block. Default `tools/list` is `remember`,
-`recall`, and `stats`. The server auto-opens one transport-scoped session.
-This is **transport-owned** working memory, not per-chat isolation:
+**MCP hosts** follow the live server `instructions`. Default `tools/list` is
+`remember`, `recall`, and `stats`. The server auto-opens one transport-scoped
+session. This is **transport-owned** working memory, not per-chat isolation:
 
 Ownership levels, least to most authority:
 
@@ -344,11 +346,10 @@ Cursor's `sessionStart` prime is **not** wired by the installer: the hook
 format reserves a `requiresLiveInjectionProbe` marker for a future live
 `additional_context` probe, and the entry stays off until that probe exists.
 
-1. Call `remember` and `recall` with `cwd` when roots are not advertised. Do not invent a `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
-2. `recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Person prefs are in `person`. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
-3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. Do not pass `scope: durable`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land — do not spawn children.
-4. This job only: `task_state` (plan lock, failed path, landmine). It must `committed: true` before you spawn.
-5. Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Set `WAX_MCP_TOOLS=legacy` to restore `session_open` / `session_close` / `memory_get` / `compact_context` / `session_resume`. In that profile, session_open with recall_query is enough. The connection remembers `session_id`; omit it after that. `WAX_MCP_AUTO_SESSION=0` restores explicit-open.
+1. Follow the live MCP server instructions. Call `remember` and `recall` with `cwd` when roots are not advertised. Do not invent a `session_id`. Do not call `handoff_latest` then `session_start` as the default open.
+2. `recall` is self-contained. Do not recall again on follow-ups unless the job changed. Omit `mode` unless you need an override. Empty project recall is a miss. `scope=global` searches the whole local store and is not an authorization boundary.
+3. Lasting writes: `remember` with `memory_type` `lesson` / `user_preference` / `fact` / `decision` / `constraint`. A successful save has `status: ok` and `committed: true`. If `committed` is false or the call errors, the write did not land.
+4. Do not close on Stop, idle, or compaction. Transport teardown checkpoints. `leftover_reasons` are harvest skips — ignore them. Set `WAX_MCP_TOOLS=legacy` to restore `session_open` / `session_close` / `memory_get` / `compact_context` / `session_resume`. In that profile, session_open with recall_query is enough. The connection remembers `session_id`; omit it after that. `WAX_MCP_AUTO_SESSION=0` restores explicit-open.
 
 ### Pitfalls that show up on a real store
 

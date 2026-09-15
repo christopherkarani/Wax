@@ -499,7 +499,8 @@ extension AgentBrokerService {
             metadata: metadata,
             inferredScope: inferredScope,
             deduplicated: rememberResult.deduplicated,
-            searchable: rememberResult.searchable
+            searchable: rememberResult.searchable,
+            content: content
         )
     }
 

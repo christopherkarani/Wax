@@ -13,26 +13,18 @@ description: >
 The MCP server `instructions` field is the playbook. Do not restate a second
 lifecycle here. Do not invoke this skill at session start.
 
-Daily tools: `remember`, `recall`, `stats`. The server auto-opens one
-transport-scoped session. Aliases stay callable. `WAX_MCP_TOOLS=legacy`
-restores the previous eight-tool playbook. `WAX_MCP_TOOLS=full` lists the
-rest. `WAX_MCP_AUTO_SESSION=0` restores explicit-open.
+Daily tools: `remember`, `recall`, `stats`. Follow the live server
+instructions instead of restating them here. Aliases stay callable.
+`WAX_MCP_TOOLS=legacy` restores the previous eight-tool playbook.
+`WAX_MCP_TOOLS=full` lists the rest. `WAX_MCP_AUTO_SESSION=0` restores
+explicit-open.
 
-Do not call `memory_promote` or `memory-maintain` in the agent loop. Never
-invent a `session_id` or put it in `metadata`. Do not close on Stop, idle,
-or compaction.
-
-Recall defaults to the current project after project/repo resolution. Empty
-project recall is a miss, not “I have no memory.” Supplying both `project`
-and `repo` requires both exact tags. Pass `scope=global` only for
-cross-project retrieval (person facts, standing preferences). For person
-facts pass `memory_types: ["user_preference"]` so project lessons do not
-crowd the lane. Global searches the entire local store with no
+Recall defaults to the current project after project/repo resolution.
+Pass `scope=global` only for cross-project retrieval (person facts,
+standing preferences). Global searches the entire local store with no
 current-project rank boost. It is not an authorization boundary.
 
-`recall` is self-contained. Do not close between turns or after compaction.
-
-Pasteable host rules: `references/project-rules.md`.
+Pasteable host rules (pointer only): `references/project-rules.md`.
 
 This is not the Swift framework skill. For embedding Wax in Swift apps, use
 `Resources/skills/public/wax`.

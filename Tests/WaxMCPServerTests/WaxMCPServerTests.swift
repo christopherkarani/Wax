@@ -575,16 +575,38 @@ func agentInstructionsDescribeDailyAndLegacySurfaces() {
     #expect(daily.contains("remember"))
     #expect(daily.contains("recall"))
     #expect(daily.contains("stats"))
-    #expect(daily.contains("transport-scoped"))
-    #expect(daily.contains("self-contained"))
-    #expect(daily.contains("WAX_MCP_TOOLS=legacy"))
-    #expect(daily.contains("Do not manage SESSION_STORE"))
-    #expect(daily.contains("Omit mode unless you need an override"))
-    #expect(!daily.contains("session_open"))
-    #expect(!daily.contains("memory_get"))
-    #expect(!daily.contains("compact_context"))
-    #expect(!daily.contains("session_resume"))
-    #expect(!daily.contains("session_close"))
+    #expect(daily.contains("Do not invent a session_id"))
+    #expect(daily.contains("auto-opens"))
+    #expect(daily.contains("memory_id"))
+    #expect(daily.contains("stored"))
+    #expect(daily.contains("do not recall again"))
+    #expect(daily.contains("proof"))
+    #expect(daily.contains("checkout_status"))
+    #expect(daily.contains("intent"))
+    #expect(daily.contains("on_this_tree"))
+    #expect(daily.contains("label, not a skip"))
+    #expect(daily.contains("Do not treat intent as shipped"))
+    #expect(daily.contains("Pass cwd only"))
+    #expect(daily.contains("Do not close on Stop"))
+    #expect(daily.contains("do not load a second lifecycle from a skill"))
+    let dailyForbids = [
+        "session_open",
+        "memory_get",
+        "compact_context",
+        "session_resume",
+        "session_close",
+        "before you spawn",
+        "task_state",
+        "Person prefs are in person",
+        "scope: durable",
+        "leftover_reasons",
+        "always pass cwd",
+    ]
+    for phrase in dailyForbids {
+        if daily.contains(phrase) {
+            Issue.record("daily instructions still mention \(phrase): \(daily)")
+        }
+    }
     for name in MCPToolProfile.dailyNames {
         #expect(daily.contains(name), "daily instructions must name \(name)")
     }
@@ -628,8 +650,13 @@ func coreToolDescriptionsIncludeOperatorHints() {
             || tools["session_open"]?.localizedCaseInsensitiveContains("one call") == true)
     #expect(tools["session_open"]?.contains("handoff_latest then") != true)
     #expect(tools["remember"]?.contains("session_id") == true)
+    if tools["remember"]?.contains("session_open") == true {
+        Issue.record("remember description still mentions session_open: \(tools["remember"] ?? "")")
+    }
     #expect(tools["recall"]?.contains("Preferred read path") == true)
-    #expect(tools["recall"]?.contains("session_open") == true)
+    if tools["recall"]?.contains("session_open") == true {
+        Issue.record("recall description still mentions session_open: \(tools["recall"] ?? "")")
+    }
     #expect(tools["recall"]?.contains("Omit mode unless you need an override") == true)
     #expect(tools["recall"]?.contains("Default scope is the current project") == true)
     #expect(tools["recall"]?.contains("scope=global") == true)
@@ -6240,6 +6267,8 @@ func rememberReceiptIdentifiesStoredMemoryAndDeduplication() async throws {
         #expect(firstJSON["durability"] as? String == "durable")
         #expect(firstJSON["deduplicated"] as? Bool == false)
         #expect(firstJSON["searchable"] as? Bool == true)
+        #expect(firstJSON["stored"] as? String == content)
+        #expect(firstJSON["committed"] as? Bool == true)
 
         let repeated = await WaxMCPTools.handleCall(
             params: .init(

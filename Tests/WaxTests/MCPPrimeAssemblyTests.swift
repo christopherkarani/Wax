@@ -5,6 +5,17 @@ import Testing
 private let familyEmoji = "👨‍👩‍👧‍👦"
 private let trustHeader = MCPPrimeAssembly.trustHeader
 
+private enum PrimePlaybookError: Error, CustomStringConvertible {
+    case containsPlaybookPhrase(source: String, phrase: String)
+
+    var description: String {
+        switch self {
+        case .containsPlaybookPhrase(let source, let phrase):
+            return "\(source) contains playbook phrase \(phrase)"
+        }
+    }
+}
+
 private func candidate(
     _ text: String,
     type: String,
@@ -229,6 +240,43 @@ func primeAssemblyExcludesSecretHeuristicHits() {
     let envelope = assemble(project: [secret, safe])
     #expect(envelope.projectItems.map(\.text) == ["Use Swift Testing structs not XCTestCase."])
     #expect(envelope.renderedJSON.contains("sk-abcdefghijklmnopqrstuvwxyz123456") == false)
+}
+
+@Test
+func primeAssemblyIsMemoryNotAPlaybook() throws {
+    let chromePhrases = [
+        "session_open",
+        "do not invent session_id",
+        "Do not invent a session_id",
+        "before you spawn",
+        "remember with",
+        "task_state",
+    ]
+    for phrase in chromePhrases {
+        if trustHeader.contains(phrase) {
+            throw PrimePlaybookError.containsPlaybookPhrase(source: "trustHeader", phrase: phrase)
+        }
+    }
+    let empty = assemble(projectMiss: true)
+    #expect(empty.hostContext.isEmpty)
+    for phrase in chromePhrases {
+        if empty.hostContext.contains(phrase) {
+            throw PrimePlaybookError.containsPlaybookPhrase(source: "empty hostContext", phrase: phrase)
+        }
+    }
+
+    let envelope = assemble(project: [candidate("Keep hooks read-only.", type: "lesson")])
+    #expect(envelope.hostContext.hasPrefix(trustHeader))
+    #expect(envelope.hostContext.contains("Keep hooks read-only."))
+    let assembledPhrases = chromePhrases.filter { $0 != "session_open" }
+    for phrase in assembledPhrases {
+        if envelope.hostContext.contains(phrase) {
+            throw PrimePlaybookError.containsPlaybookPhrase(source: "hostContext", phrase: phrase)
+        }
+        if envelope.renderedJSON.contains(phrase) {
+            throw PrimePlaybookError.containsPlaybookPhrase(source: "renderedJSON", phrase: phrase)
+        }
+    }
 }
 
 @Test

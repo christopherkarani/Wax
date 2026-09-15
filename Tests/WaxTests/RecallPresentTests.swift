@@ -180,3 +180,35 @@ func recallPresentRenderCompactLayeredMemoryHitKeepsWireShape() throws {
     #expect(rendered["explanations"] == nil)
     #expect(rendered["metadata"] == nil)
 }
+
+@Test
+func recallPresentCompactHitObjectIncludesCollapsedCountWhenClustered() throws {
+    var hit = LayeredRecall.Hit(
+        id: .durable(frameID: 3),
+        score: 0.8,
+        text: "clustered remaining holes",
+        preview: "clustered remaining holes",
+        metadata: [MemoryMetadataKeys.type: MemoryType.note.rawValue],
+        explanations: [],
+        timestampMs: 0
+    )
+    hit.collapsedCount = 4
+    let rendered = try #require(
+        RecallPresent.renderRecallHit(hit, rank: 1, verbose: false, nowMs: 1).objectValue
+    )
+    #expect(rendered["collapsed_count"]?.intValue == 4)
+}
+
+@Test
+func recallPresentSlimCompactKeepsSummaryAndCollapsed() {
+    let slim = RecallPresent.slimCompactRecallEnvelope([
+        "summary": .string("1. [note] hello · aaaaaaa · yes"),
+        "collapsed": .from(3),
+        "display_text": .string("hide"),
+        "query_embedding_state": .string("ready"),
+    ])
+    #expect(slim["summary"]?.stringValue == "1. [note] hello · aaaaaaa · yes")
+    #expect(slim["collapsed"]?.intValue == 3)
+    #expect(slim["display_text"] == nil)
+    #expect(slim["query_embedding_state"] == nil)
+}

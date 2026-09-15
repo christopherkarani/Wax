@@ -287,7 +287,7 @@ package enum BrokerCommandCatalog {
         Entry(
             canonicalName: "remember",
             aliases: ["memory_append"],
-            summary: "Store concise text memory. memory_type selects working or durable storage. The MCP connection supplies session_id after session_open; explicit IDs belong at the top level, never in metadata.",
+            summary: "Store concise text memory. memory_type selects working or durable storage. The connection may supply session_id; explicit IDs belong at the top level, never in metadata.",
             arguments: [
                 Argument(
                     "content", .string, required: true,
@@ -297,7 +297,7 @@ package enum BrokerCommandCatalog {
                 sessionID,
                 Argument(
                     "scope", .string,
-                    description: "Write horizon. session requires session_id (inherited after session_open); durable forbids session_id. When omitted, memory_type selects the horizon and the connection session supplies project attribution.",
+                    description: "Write horizon. session requires session_id (inherited from the connection session); durable forbids session_id. When omitted, memory_type selects the horizon and the connection session supplies project attribution.",
                     enumValues: ["session", "durable"]
                 ),
                 Argument(
@@ -312,6 +312,11 @@ package enum BrokerCommandCatalog {
                 expiresInDays,
                 Argument("reviewed", .boolean, description: "Mark this durable memory as reviewed."),
                 Argument("locked", .boolean, description: "Lock this memory as durable and protected from freshness decay."),
+                Argument(
+                    "checkout_status", .string,
+                    description: "Checkout honesty. intent (default for decision/constraint) is not shipped on this tree. landed only when the named type exists on this HEAD.",
+                    enumValues: ["intent", "landed"]
+                ),
                 cwd,
             ]
         ),
@@ -341,7 +346,7 @@ package enum BrokerCommandCatalog {
         ),
         Entry(
             canonicalName: "recall",
-            summary: "Preferred read path: assemble RAG context for a query. Call after session_open when answering from memory. Omit mode unless you need an override. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
+            summary: "Preferred read path: assemble RAG context for a query. Omit mode unless you need an override. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
             arguments: [
                 Argument("query", .string, required: true, description: "Recall query text."),
                 Argument(

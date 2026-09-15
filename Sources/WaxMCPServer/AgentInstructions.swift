@@ -24,19 +24,9 @@ enum MCPAgentInstructions {
 
         Daily tools/list is remember, recall, stats. The server auto-opens one transport-scoped session on the first remember or recall. Do not invent a session_id. stats never opens a session.
 
-        1) remember: memory_type selects the horizon. Pass cwd when the host does not advertise roots. Durable types stay durable. Successful saves return status=ok and committed=true. If committed is false or the call errors, the write did not land — do not spawn children (they have no Wax tools). Never put session_id in metadata.
-        2) recall is self-contained: it returns usable text. Do not recall again on follow-ups unless the job changed. Default scope is project. Empty project lane is a miss — never auto-widen to global. Pass scope=global only for intentional cross-project retrieval. Person prefs are in person.
-        3) This is transport-owned working memory, not per-chat isolation, unless a trusted host conversation identity is present. Two chats on one MCP connection may share working state.
-        4) Do not close on Stop, idle, or compaction. Transport teardown checkpoints. Durable facts come from explicit remember, not from transcripts.
-        5) task_state is session-local working state. If that write is uncommitted, do not spawn.
-
-        Set WAX_MCP_TOOLS=legacy for the previous eight-tool playbook. WAX_MCP_TOOLS=full lists aliases, graph, and admin tools. WAX_MCP_AUTO_SESSION=0 restores explicit-open.
-
-        Do not manage SESSION_STORE, --store-path, flush, or memory-maintain in normal agent flows. The broker owns long-term memory and virtual session stores; wax-cli memory-maintain is operator-only.
-
-        Responses default to one compact JSON content block. verbosity=verbose keeps that JSON in the text block and also sets structuredContent; do not pass verbose expecting the payload to disappear.
-
-        Behavior: read recall results before asking the user to restate prior context; keep memory writes concise and task-scoped; cite provenance on cross-session hits. Omit mode unless you need an override; hybrid ranking promotes distinctive tokens and recent lexical matches. Exact identifiers still use the lexical lane.
+        1) remember: memory_type selects the horizon. Successful saves return status=ok, committed=true, memory_id, and stored — that is the proof; do not recall again to verify. Default checkout_status is intent for decision and constraint. Pass cwd only when the host does not advertise roots or CWD. Never put session_id in metadata.
+        2) recall is self-contained: it returns usable text. Do not recall again on follow-ups unless the job changed. Default scope is project. Empty project lane is a miss — never auto-widen to global. Pass scope=global only for intentional cross-project retrieval. on_this_tree is a label, not a skip. Do not treat intent as shipped.
+        3) Do not close on Stop, idle, or compaction. Transport teardown checkpoints. Durable facts come from explicit remember, not from transcripts. This is transport-owned working memory, not per-chat isolation, unless a trusted host conversation identity is present.
         """
     }
 

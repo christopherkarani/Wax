@@ -198,6 +198,8 @@ package enum BrokerRecall {
             "project_miss": .bool(result.projectMiss),
             "applied_filters": parsedFilters.summary,
             "results": .array(results),
+            "collapsed": .from(result.collapsed),
+            "summary": .string(RecallPresent.summary(for: result.hits)),
             "display_text": .string(lines.joined(separator: "\n")),
         ]
         if let warning = AgentBrokerService.retrievalDowngradeWarning(

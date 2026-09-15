@@ -40,6 +40,7 @@ package enum LayeredRecall {
         package var timestampMs: Int64
         package var kind: RAGContext.ItemKind
         package var sources: [RAGContext.Source]
+        package var collapsedCount: Int
 
         package var reference: String { id.wire }
         package var horizon: Horizon { id.horizon }
@@ -57,7 +58,8 @@ package enum LayeredRecall {
             explanations: [String],
             timestampMs: Int64,
             kind: RAGContext.ItemKind = .snippet,
-            sources: [RAGContext.Source] = []
+            sources: [RAGContext.Source] = [],
+            collapsedCount: Int = 1
         ) {
             self.id = id
             self.agentID = agentID
@@ -70,6 +72,7 @@ package enum LayeredRecall {
             self.timestampMs = timestampMs
             self.kind = kind
             self.sources = sources
+            self.collapsedCount = max(1, collapsedCount)
         }
     }
 
@@ -210,6 +213,7 @@ package enum LayeredRecall {
         package var searchTopK: Int
         package var retrievalTopK: Int
         package var limit: Int
+        package var collapsed: Int = 0
     }
 
     package struct EpisodicLaneHit: Sendable {
@@ -481,14 +485,27 @@ package enum LayeredRecall {
         )
     }
 
+    package static let recallClusterJaccardThreshold: Float = 0.55
+    package static let scorecardRankPenalty: Float = 0.40
+
+    package static func collapsedTotal(in hits: [Hit]) -> Int {
+        hits.reduce(0) { $0 + max(0, $1.collapsedCount - 1) }
+    }
+
     package static func mergeHits(
         sessionHits: [Hit],
         durableHits: [Hit],
         limit: Int,
         nowMs: Int64,
-        query: String? = nil
+        query: String? = nil,
+        liveCheckout: GitCheckoutSnapshot? = nil,
+        repoRootPath: String? = nil
     ) -> [Hit] {
         func identity(_ hit: Hit) -> String {
+            // Locked frames stay live even against an identical unlocked twin.
+            if isLockedHit(hit) {
+                return "locked:" + hit.reference
+            }
             if let hash = hit.metadata["wax.content.hash"] {
                 return hash
             }
@@ -497,7 +514,21 @@ package enum LayeredRecall {
 
         func adjustFreshness(_ hit: Hit) -> Hit {
             var copy = hit
-            let adjusted = rankingAdjustedScore(hit, nowMs: nowMs, query: query)
+            if let liveCheckout {
+                let relation = MemorySemantics.onThisTree(
+                    storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
+                    live: liveCheckout,
+                    repoRootPath: repoRootPath
+                )
+                copy.metadata[MemoryMetadataKeys.onThisTree] = relation.rawValue
+            }
+            let adjusted = rankingAdjustedScore(
+                copy,
+                nowMs: nowMs,
+                query: query,
+                liveCheckout: liveCheckout,
+                repoRootPath: repoRootPath
+            )
             if adjusted != hit.score {
                 copy.score = adjusted
                 if freshnessAdjustedScore(hit, nowMs: nowMs) != hit.score {
@@ -531,21 +562,32 @@ package enum LayeredRecall {
             return adjustFreshness(copy)
         }
 
-        var seen = Set<String>()
-        var merged: [Hit] = []
+        let queryAsks = queryAsksForRating(query)
         let candidates = sessionTagged + durableTagged
         let ranked = candidates.sorted(by: higherRank)
-        for hit in ranked {
+        let clustered = clusterHits(ranked, identity: identity)
+        var seen = Set<String>()
+        var merged: [Hit] = []
+        // Default queries drop scorecards (oracle: absent unless asked). −0.40
+        // still applies in rankingAdjustedScore so a leaked card ranks below work.
+        for hit in clustered.sorted(by: higherRank) {
+            if looksScorecard(hit.text), !queryAsks { continue }
             guard seen.insert(identity(hit)).inserted else { continue }
             merged.append(hit)
             if merged.count >= limit { break }
+        }
+
+        func shouldSkipReservation(_ extra: Hit) -> Bool {
+            if looksScorecard(extra.text), !queryAsks { return true }
+            if merged.contains(where: { sameCluster($0, extra) }) { return true }
+            return false
         }
 
         func ensureHorizon(from hits: [Hit], marker: String) {
             guard !hits.isEmpty else { return }
             guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
             guard let extra = hits
-                .filter({ !seen.contains(identity($0)) })
+                .filter({ !seen.contains(identity($0)) && !shouldSkipReservation($0) })
                 .max(by: { higherRank($1, $0) })
             else { return }
 
@@ -559,13 +601,112 @@ package enum LayeredRecall {
             seen.insert(identity(extra))
             merged.append(extra)
         }
-        ensureHorizon(from: sessionTagged, marker: "current session")
-        ensureHorizon(from: durableTagged, marker: "durable memory")
+        ensureHorizon(
+            from: clustered.filter { $0.explanations.contains("current session") },
+            marker: "current session"
+        )
+        ensureHorizon(
+            from: clustered.filter { $0.explanations.contains("durable memory") },
+            marker: "durable memory"
+        )
         if merged.count > limit {
             merged = Array(merged.prefix(limit))
         }
         merged.sort(by: higherRank)
         return merged
+    }
+
+    package static func looksScorecard(_ text: String) -> Bool {
+        if isStaleIgnoreList(text) { return false }
+        let lowered = text.lowercased()
+        let ratingDump = lowered.range(of: #"\b\d{1,3}\s*/\s*100\b"#, options: .regularExpression) != nil
+        let sessionRubric = lowered.contains("for this session")
+            && lowered.contains("would use it again")
+        return ratingDump || sessionRubric
+    }
+
+    package static func queryAsksForRating(_ query: String?) -> Bool {
+        let lowered = query?.lowercased() ?? ""
+        guard !lowered.isEmpty else { return false }
+        return lowered.contains("rating") || lowered.contains("score")
+    }
+
+    private static func clusterHits(
+        _ hits: [Hit],
+        identity: (Hit) -> String
+    ) -> [Hit] {
+        var identityCounts: [String: Int] = [:]
+        identityCounts.reserveCapacity(hits.count)
+        for hit in hits {
+            identityCounts[identity(hit), default: 0] += 1
+        }
+
+        var unique: [Hit] = []
+        unique.reserveCapacity(hits.count)
+        var seen = Set<String>()
+        for hit in hits {
+            guard seen.insert(identity(hit)).inserted else { continue }
+            unique.append(hit)
+        }
+
+        var clusters: [[Hit]] = []
+        for hit in unique {
+            if let index = clusters.firstIndex(where: { group in
+                group.contains { sameCluster($0, hit) }
+            }) {
+                clusters[index].append(hit)
+            } else {
+                clusters.append([hit])
+            }
+        }
+
+        return clusters.map { group in
+            var winner = pickClusterWinner(group)
+            let count = group.reduce(0) { $0 + max(1, identityCounts[identity($1)] ?? 1) }
+            winner.collapsedCount = max(1, count)
+            return winner
+        }
+    }
+
+    private static func isLockedHit(_ hit: Hit) -> Bool {
+        hit.metadata[MemoryMetadataKeys.durability] == MemoryDurability.locked.rawValue
+    }
+
+    private static func sameCluster(_ lhs: Hit, _ rhs: Hit) -> Bool {
+        if lhs.id == rhs.id { return true }
+        // Locked frames stay live; never fold them into another row.
+        if isLockedHit(lhs) || isLockedHit(rhs) { return false }
+        if lhs.text == rhs.text { return true }
+        if let leftHash = lhs.metadata["wax.content.hash"],
+           let rightHash = rhs.metadata["wax.content.hash"],
+           leftHash == rightHash {
+            return true
+        }
+        let leftCard = looksScorecard(lhs.text)
+        let rightCard = looksScorecard(rhs.text)
+        if leftCard != rightCard { return false }
+        if MemorySemantics.identifiersMatch(lhs.text, rhs.text) { return true }
+        return MemorySemantics.similarity(lhs: lhs.text, rhs: rhs.text) >= recallClusterJaccardThreshold
+    }
+
+    private static func pickClusterWinner(_ group: [Hit]) -> Hit {
+        group.max { lhs, rhs in
+            let leftTier = standingClusterTier(lhs)
+            let rightTier = standingClusterTier(rhs)
+            if leftTier != rightTier { return leftTier < rightTier }
+            if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs < rhs.timestampMs }
+            if lhs.score != rhs.score { return lhs.score < rhs.score }
+            return lhs.frameID < rhs.frameID
+        } ?? group[0]
+    }
+
+    private static func standingClusterTier(_ hit: Hit) -> Int {
+        switch MemoryType(rawValue: hit.metadata[MemoryMetadataKeys.type] ?? "") {
+        case .constraint, .decision, .lesson, .fact, .userPreference:
+            return 1
+        case .note, .taskState, .handoff, nil:
+            return 0
+        }
     }
 
     private static func higherRank(_ lhs: Hit, _ rhs: Hit) -> Bool {
@@ -598,9 +739,29 @@ package enum LayeredRecall {
     /// queries. Unlocked standing corrections that happen to use those phrases
     /// keep their semantic score. Fresh standing facts get a small recency
     /// boost so they can beat week-old locked constraints when both match.
-    package static func rankingAdjustedScore(_ hit: Hit, nowMs: Int64, query: String?) -> Float {
+    package static func rankingAdjustedScore(
+        _ hit: Hit,
+        nowMs: Int64,
+        query: String?,
+        liveCheckout: GitCheckoutSnapshot? = nil,
+        repoRootPath: String? = nil
+    ) -> Float {
         var score = freshnessAdjustedScore(hit, nowMs: nowMs)
+        if let liveCheckout {
+            let relation = MemorySemantics.onThisTree(
+                storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
+                live: liveCheckout,
+                repoRootPath: repoRootPath
+            )
+            if relation == .other || relation == .unknown,
+               MemorySemantics.looksLandedClaim(metadata: hit.metadata, text: hit.text) {
+                score -= 0.25
+            }
+        }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if looksScorecard(hit.text), !queryAsksForRating(trimmedQuery) {
+            score -= scorecardRankPenalty
+        }
         guard !trimmedQuery.isEmpty else { return score }
 
         let queryLooksLikeStaleLookup = isStaleIgnoreList(trimmedQuery)
@@ -943,6 +1104,10 @@ package enum LayeredRecall {
             : retrievalTopK(requested: request.searchTopK)
         let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
         let identity = lanes.identity
+        let liveCheckout = MemorySemantics.snapshotGitCheckout(startingAt: request.clientCWD)
+        let repoRootPath = request.clientCWD.flatMap {
+            MemorySemantics.inferScopeContext(currentDirectoryPath: $0).repoRootPath
+        }
 
         let typedWorking = filterHitsByMemoryTypes(lanes.working, types: request.memoryTypes)
         let typedDurable = filterHitsByMemoryTypes(lanes.durable, types: request.memoryTypes)
@@ -966,7 +1131,9 @@ package enum LayeredRecall {
                 durableHits: scopedDurable,
                 limit: request.limit,
                 nowMs: stores.nowMs(),
-                query: request.query
+                query: request.query,
+                liveCheckout: liveCheckout,
+                repoRootPath: repoRootPath
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
@@ -1003,7 +1170,9 @@ package enum LayeredRecall {
                 durableHits: personLaneDurable,
                 limit: request.limit,
                 nowMs: stores.nowMs(),
-                query: request.query
+                query: request.query,
+                liveCheckout: liveCheckout,
+                repoRootPath: repoRootPath
             )
         }
 
@@ -1038,7 +1207,8 @@ package enum LayeredRecall {
             queryEmbeddingState: laneDiagnostics.state,
             searchTopK: request.searchTopK,
             retrievalTopK: fetchRequest.searchTopK,
-            limit: request.limit
+            limit: request.limit,
+            collapsed: collapsedTotal(in: keptHits)
         )
     }
 

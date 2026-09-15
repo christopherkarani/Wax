@@ -58,6 +58,7 @@ package struct MemoryWriteSemantics: Sendable, Equatable {
     package var expiresInDays: Int?
     package var reviewed: Bool
     package var lock: Bool
+    package var checkoutStatus: MemoryCheckoutStatus?
 
     package init(
         type: MemoryType? = nil,
@@ -67,7 +68,8 @@ package struct MemoryWriteSemantics: Sendable, Equatable {
         confidence: Float? = nil,
         expiresInDays: Int? = nil,
         reviewed: Bool = false,
-        lock: Bool = false
+        lock: Bool = false,
+        checkoutStatus: MemoryCheckoutStatus? = nil
     ) {
         self.type = type
         self.durability = durability
@@ -77,6 +79,7 @@ package struct MemoryWriteSemantics: Sendable, Equatable {
         self.expiresInDays = expiresInDays
         self.reviewed = reviewed
         self.lock = lock
+        self.checkoutStatus = checkoutStatus
     }
 }
 
@@ -409,6 +412,35 @@ package enum MemoryMetadataKeys {
     package static let migrationSourceStoreHash = "wax.migration.source_store_hash"
     package static let migrationOriginalSessionID = "wax.migration.original_session_id"
     package static let migrationOriginalMemoryType = "wax.migration.original_memory_type"
+    package static let gitSHA = "wax.git.sha"
+    package static let gitBranch = "wax.git.branch"
+    package static let gitWorktree = "wax.git.worktree"
+    package static let checkoutStatus = "wax.checkout.status"
+    package static let onThisTree = "wax.git.on_this_tree"
+}
+
+package enum MemoryCheckoutStatus: String, Sendable {
+    case intent
+    case landed
+}
+
+package enum OnThisTree: String, Sendable {
+    case yes
+    case ancestor
+    case other
+    case unknown
+}
+
+package struct GitCheckoutSnapshot: Sendable, Equatable {
+    package var sha: String?
+    package var branch: String?
+    package var worktree: String?
+
+    package init(sha: String? = nil, branch: String? = nil, worktree: String? = nil) {
+        self.sha = sha
+        self.branch = branch
+        self.worktree = worktree
+    }
 }
 
 package enum SecretHeuristics {
@@ -512,6 +544,25 @@ package enum MemorySemantics {
         if let expiresInDays = semantics.expiresInDays, expiresInDays > 0 {
             let expiresAtMs = nowMs + Int64(expiresInDays) * 24 * 60 * 60 * 1000
             normalized[MemoryMetadataKeys.expiresAtMs] = String(expiresAtMs)
+        }
+
+        normalized.removeValue(forKey: MemoryMetadataKeys.onThisTree)
+        if let checkoutStatus = semantics.checkoutStatus {
+            normalized[MemoryMetadataKeys.checkoutStatus] = checkoutStatus.rawValue
+        } else if normalized[MemoryMetadataKeys.checkoutStatus] == nil,
+                  resolvedType == .decision || resolvedType == .constraint {
+            normalized[MemoryMetadataKeys.checkoutStatus] = MemoryCheckoutStatus.intent.rawValue
+        }
+
+        let git = snapshotGitCheckout(startingAt: inferredScope?.cwdPath ?? inferredScope?.repoRootPath)
+        if let sha = git.sha {
+            normalized[MemoryMetadataKeys.gitSHA] = sha
+        }
+        if let branch = git.branch {
+            normalized[MemoryMetadataKeys.gitBranch] = branch
+        }
+        if let worktree = git.worktree {
+            normalized[MemoryMetadataKeys.gitWorktree] = worktree
         }
         return normalized
     }
@@ -853,6 +904,43 @@ package enum MemorySemantics {
         return Float(overlap) / Float(union)
     }
 
+    package static let identifierJaccardThreshold: Float = 0.5
+    package static let identifierSharedCountThreshold = 3
+
+    /// PascalCase tokens, `#123`, 7+ hex SHAs, and `C01`/`T1`-style IDs.
+    package static func extractIdentifiers(_ text: String) -> Set<String> {
+        var ids = Set<String>()
+        ids.formUnion(regexMatches(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#, in: text).map { $0.lowercased() })
+        ids.formUnion(regexMatches(#"#\d+"#, in: text).map { $0.lowercased() })
+        ids.formUnion(regexMatches(#"\b[0-9a-fA-F]{7,40}\b"#, in: text).map { $0.lowercased() })
+        ids.formUnion(regexMatches(#"\b[A-Z]{1,3}\d{1,4}\b"#, in: text).map { $0.lowercased() })
+        return ids
+    }
+
+    package static func identifierOverlap(lhs: String, rhs: String) -> (jaccard: Float, shared: Int) {
+        let left = extractIdentifiers(lhs)
+        let right = extractIdentifiers(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return (0, 0) }
+        let shared = left.intersection(right).count
+        let union = left.union(right).count
+        guard union > 0 else { return (0, 0) }
+        return (Float(shared) / Float(union), shared)
+    }
+
+    package static func identifiersMatch(_ lhs: String, _ rhs: String) -> Bool {
+        let overlap = identifierOverlap(lhs: lhs, rhs: rhs)
+        return overlap.jaccard >= identifierJaccardThreshold
+            || overlap.shared >= identifierSharedCountThreshold
+    }
+
+    private static func regexMatches(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            Range(match.range, in: text).map { String(text[$0]) }
+        }
+    }
+
     package static func defaultDurability(for type: MemoryType) -> MemoryDurability {
         switch type {
         case .taskState, .handoff:
@@ -945,6 +1033,175 @@ package enum MemorySemantics {
             return gitDir
         }
         return String(gitDir[..<range.lowerBound])
+    }
+
+    /// Filesystem snapshot of the caller's checkout. Never invents a SHA.
+    package static func snapshotGitCheckout(startingAt path: String?) -> GitCheckoutSnapshot {
+        guard let path, let start = resolvedAbsoluteDirectoryPath(
+            path,
+            processDirectoryPath: ""
+        ) ?? (path.hasPrefix("/") ? normalizeAbsolutePath(path) : nil) else {
+            return GitCheckoutSnapshot()
+        }
+        guard let gitMarker = gitMarkerPath(startingAt: start) else {
+            return GitCheckoutSnapshot()
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: gitMarker, isDirectory: &isDirectory) else {
+            return GitCheckoutSnapshot()
+        }
+        let gitDir: String
+        let worktree: String?
+        if isDirectory.boolValue {
+            gitDir = gitMarker
+            worktree = nil
+        } else {
+            guard let pointed = parseGitdirPointer(at: gitMarker) else {
+                return GitCheckoutSnapshot()
+            }
+            gitDir = pointed
+            let name = lastPathComponent(parentDirectoryPath(gitMarker) ?? "")
+            worktree = (name.isEmpty || name == "/") ? nil : name
+        }
+        let (sha, branch) = readHead(gitDir: gitDir)
+        return GitCheckoutSnapshot(sha: sha, branch: branch, worktree: worktree)
+    }
+
+    package static func onThisTree(
+        storedSHA: String?,
+        live: GitCheckoutSnapshot,
+        repoRootPath: String? = nil
+    ) -> OnThisTree {
+        guard let stored = normalizeGitSHA(storedSHA), let liveSHA = normalizeGitSHA(live.sha) else {
+            return .unknown
+        }
+        if gitSHA(stored, matches: liveSHA) {
+            return .yes
+        }
+        if let repoRootPath, isGitAncestor(stored, of: liveSHA, repoRootPath: repoRootPath) {
+            return .ancestor
+        }
+        return .other
+    }
+
+    package static func looksLandedClaim(metadata: [String: String], text: String) -> Bool {
+        if metadata[MemoryMetadataKeys.checkoutStatus] == MemoryCheckoutStatus.landed.rawValue {
+            return true
+        }
+        let lowered = text.lowercased()
+        return lowered.contains("strong execute") || lowered.contains("shipped on")
+    }
+
+    private static func gitMarkerPath(startingAt path: String) -> String? {
+        var current = path
+        let fileManager = FileManager.default
+        for _ in 0..<256 {
+            let gitPath = current == "/" ? "/.git" : "\(current)/.git"
+            if fileManager.fileExists(atPath: gitPath) {
+                return gitPath
+            }
+            guard let parent = parentDirectoryPath(current) else {
+                return nil
+            }
+            current = parent
+        }
+        return nil
+    }
+
+    private static func readHead(gitDir: String) -> (sha: String?, branch: String?) {
+        let headPath = gitDir + "/HEAD"
+        guard let raw = try? String(contentsOfFile: headPath, encoding: .utf8) else {
+            return (nil, nil)
+        }
+        let line = raw.split(whereSeparator: \.isNewline).first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        if line.lowercased().hasPrefix("ref:") {
+            let ref = line.dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
+            let branch = ref.hasPrefix("refs/heads/")
+                ? String(ref.dropFirst("refs/heads/".count))
+                : nil
+            return (readRefSHA(gitDir: gitDir, ref: ref), branch)
+        }
+        return (normalizeGitSHA(line), nil)
+    }
+
+    private static func readRefSHA(gitDir: String, ref: String) -> String? {
+        if let sha = readSHAFile(gitDir + "/" + ref) {
+            return sha
+        }
+        let common = stripWorktreesSuffix(fromGitDir: gitDir)
+        if common != gitDir, let sha = readSHAFile(common + "/" + ref) {
+            return sha
+        }
+        if let sha = readPackedRef(gitDir: gitDir, ref: ref) {
+            return sha
+        }
+        if common != gitDir {
+            return readPackedRef(gitDir: common, ref: ref)
+        }
+        return nil
+    }
+
+    private static func readSHAFile(_ path: String) -> String? {
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        let line = raw.split(whereSeparator: \.isNewline).first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        return normalizeGitSHA(line)
+    }
+
+    private static func readPackedRef(gitDir: String, ref: String) -> String? {
+        guard let raw = try? String(contentsOfFile: gitDir + "/packed-refs", encoding: .utf8) else {
+            return nil
+        }
+        for line in raw.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("#") || trimmed.hasPrefix("^") { continue }
+            let parts = trimmed.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2, String(parts[1]) == ref else { continue }
+            return normalizeGitSHA(String(parts[0]))
+        }
+        return nil
+    }
+
+    private static func normalizeGitSHA(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.count >= 7, trimmed.count <= 64,
+              trimmed.allSatisfy({ $0.isHexDigit }) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func gitSHA(_ lhs: String, matches rhs: String) -> Bool {
+        if lhs == rhs { return true }
+        let prefix = min(lhs.count, rhs.count)
+        guard prefix >= 7 else { return false }
+        return lhs.prefix(prefix) == rhs.prefix(prefix)
+    }
+
+    private static func isGitAncestor(_ stored: String, of live: String, repoRootPath: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", repoRootPath, "merge-base", "--is-ancestor", stored, live]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(0.2)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            process.terminate()
+            return false
+        }
+        return process.terminationStatus == 0
     }
 
     private static func resolvedAbsoluteDirectoryPath(

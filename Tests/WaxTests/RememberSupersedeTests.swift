@@ -301,4 +301,32 @@ struct RememberSupersedeTests {
             #expect(live.contains(secondID))
         }
     }
+
+    @Test
+    func identifierOverlapSupersedesParaphrasedDurableConstraint() async throws {
+        let project = "wax-supersede-ids-\(UUID().uuidString.prefix(6))"
+        let firstText =
+            "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
+        let secondText =
+            "Still open on this tree: GitLiveProbe (C01), UniqueRanking (C02), CompactSummary (C03) — skip if already listed."
+        #expect(MemorySemantics.similarity(lhs: firstText, rhs: secondText) < 0.88)
+        try await withSupersedeBroker { service in
+            let first = try await rememberDurable(
+                service,
+                content: firstText,
+                memoryType: "constraint",
+                project: project
+            )
+            let second = try await rememberDurable(
+                service,
+                content: secondText,
+                memoryType: "constraint",
+                project: project
+            )
+            let live = try await liveFrameIDs(service)
+            #expect(live.contains(second))
+            #expect(live.contains(first) == false)
+            #expect(await supersededBy(service, frameID: first) == second)
+        }
+    }
 }

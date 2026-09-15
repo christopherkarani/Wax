@@ -966,6 +966,11 @@ extension BrokerCommand {
                 "durability must be one of: \(MemoryDurability.allCases.map(\.rawValue).joined(separator: ", "))"
             )
         }
+        let checkoutRaw = try args.optionalString("checkout_status")
+        let checkoutStatus = checkoutRaw.flatMap(MemoryCheckoutStatus.init(rawValue:))
+        if checkoutRaw != nil, checkoutStatus == nil {
+            throw BrokerValidationError.invalid("checkout_status must be one of: intent, landed")
+        }
         return MemoryWriteSemantics(
             type: type,
             durability: durability,
@@ -974,7 +979,8 @@ extension BrokerCommand {
             confidence: try args.optionalFloat("confidence"),
             expiresInDays: try args.optionalInt("expires_in_days"),
             reviewed: try args.optionalBool("reviewed") ?? false,
-            lock: try args.optionalBool("locked") ?? false
+            lock: try args.optionalBool("locked") ?? false,
+            checkoutStatus: checkoutStatus
         )
     }
 

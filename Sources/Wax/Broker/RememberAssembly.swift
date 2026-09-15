@@ -3,6 +3,7 @@ import Foundation
 /// Remember response assembly and durable auto-supersede selection policy.
 /// Store I/O (`remember`, `supersede`, `flush`, session events) stays on the broker.
 package enum RememberAssembly {
+    package static let storedEchoLimit = 240
     package static let autoSupersedeSimilarityThreshold: Float = 0.88
     package static let autoSupersedeMaxMatches = 32
     package static let autoSupersedeTypes: Set<MemoryType> = [
@@ -36,7 +37,8 @@ package enum RememberAssembly {
         metadata: [String: String],
         inferredScope: MemoryScopeContext = MemoryScopeContext(),
         deduplicated: Bool,
-        searchable: Bool
+        searchable: Bool,
+        content: String
     ) -> AgentBrokerValue {
         let scope = sessionID == nil ? "durable" : "session"
         let memoryID = sessionID.map {
@@ -63,6 +65,7 @@ package enum RememberAssembly {
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "deduplicated": .bool(deduplicated),
             "searchable": .bool(searchable),
+            "stored": .string(String(content.prefix(storedEchoLimit))),
             "unresolved_project": .bool(unresolvedProject),
             "display_text": .string(display),
         ]
@@ -71,6 +74,18 @@ package enum RememberAssembly {
         }
         if let repo, !repo.isEmpty {
             payload["repo"] = .string(repo)
+        }
+        if let sha = metadata[MemoryMetadataKeys.gitSHA], !sha.isEmpty {
+            payload["git_sha"] = .string(sha)
+        }
+        if let branch = metadata[MemoryMetadataKeys.gitBranch], !branch.isEmpty {
+            payload["git_branch"] = .string(branch)
+        }
+        if let worktree = metadata[MemoryMetadataKeys.gitWorktree], !worktree.isEmpty {
+            payload["git_worktree"] = .string(worktree)
+        }
+        if let status = metadata[MemoryMetadataKeys.checkoutStatus], !status.isEmpty {
+            payload["checkout_status"] = .string(status)
         }
         if unresolvedProject {
             payload["next_action"] = .string("pass project/repo or recall with scope=global")
@@ -91,8 +106,9 @@ package enum RememberAssembly {
         return info.project != nil
     }
 
-    /// Same-project Jaccard ≥ 0.88 retires prior unsuperseded durable twins.
-    /// Locked others stay live. Returns candidate frame IDs; broker still supersedes + flushes.
+    /// Same-project Jaccard ≥ 0.88, or identifier-set overlap, retires prior
+    /// unsuperseded durable twins. Locked others stay live. Returns candidate
+    /// frame IDs; broker still supersedes + flushes.
     package static func selectSupersedeFrameIDs(
         sessionID: UUID?,
         newFrameId: UInt64,
@@ -117,7 +133,8 @@ package enum RememberAssembly {
             guard other.project == project else { continue }
             guard other.durability == .durable else { continue }
             let similarity = MemorySemantics.similarity(lhs: content, rhs: document.text)
-            guard similarity >= autoSupersedeSimilarityThreshold else { continue }
+            let identifiersMatch = MemorySemantics.identifiersMatch(content, document.text)
+            guard similarity >= autoSupersedeSimilarityThreshold || identifiersMatch else { continue }
             selected.append(document.frameId)
         }
         return selected
