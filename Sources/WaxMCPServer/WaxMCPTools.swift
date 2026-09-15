@@ -101,7 +101,7 @@ enum WaxMCPTools {
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             try validateArgumentSurface(name: params.name, arguments: forwarded)
-            let verbosity = try responseVerbosity(from: forwarded) ?? "compact"
+            let verbosity = try responseVerbosity(from: forwarded) ?? .compact
 
             var response = try await perform(
                 AgentBrokerRequest(
@@ -344,16 +344,16 @@ private extension WaxMCPTools {
         )
     }
 
-    static func responseVerbosity(from arguments: [String: Value]) throws -> String? {
+    static func responseVerbosity(from arguments: [String: Value]) throws -> ResponseVerbosity? {
         guard let value = arguments["verbosity"] else { return nil }
         guard case .string(let raw) = value else {
             throw ToolValidationError.invalid("verbosity must be a string: compact or verbose")
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard trimmed == "compact" || trimmed == "verbose" else {
+        guard let verbosity = ResponseVerbosity(rawValue: trimmed) else {
             throw ToolValidationError.invalid("verbosity must be one of: compact, verbose")
         }
-        return trimmed
+        return verbosity
     }
 
     static func autoEnsureSessionIfNeeded(
@@ -576,10 +576,10 @@ extension WaxMCPTools {
     static func renderResult(
         name: String,
         payload: AgentBrokerValue,
-        verbosity: String? = nil
+        verbosity: ResponseVerbosity = .compact
     ) -> CallTool.Result {
         var presented = payload
-        if name == "compact_context", verbosity != "verbose", var object = payload.objectValue {
+        if name == "compact_context", verbosity != .verbose, var object = payload.objectValue {
             // The checkpoint text has already been token-budgeted. Keep memory
             // references for follow-up reads without repeating full source bodies.
             object.removeValue(forKey: "summary")
@@ -597,20 +597,18 @@ extension WaxMCPTools {
         }
         let compactPayload = mcpValue(from: removingPresentationFields(
             from: presented,
-            removing: verbosity == "verbose" ? ["display_text"] : compactPresentationKeys
+            removing: verbosity == .verbose ? ["display_text"] : compactPresentationKeys
         ))
-        if verbosity == "compact" {
-            let json = encodeJSON(compactPayload) ?? "{}"
+        let json = encodeJSON(compactPayload) ?? "{}"
+        switch verbosity {
+        case .compact:
             return CallTool.Result(
                 content: [
                     .text(text: json, annotations: nil, _meta: nil),
                 ],
                 isError: false
             )
-        }
-
-        if verbosity == "verbose" {
-            let json = encodeJSON(compactPayload) ?? "{}"
+        case .verbose:
             return CallTool.Result(
                 content: [
                     .text(text: json, annotations: nil, _meta: nil),
@@ -619,8 +617,6 @@ extension WaxMCPTools {
                 isError: false
             )
         }
-
-        return jsonResult(compactPayload)
     }
 }
 

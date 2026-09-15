@@ -17,7 +17,7 @@ import Testing
                 "text": .string(body), "preview": .string("Repeated preview."),
             ])]),
         ])
-        let result = WaxMCPTools.renderResult(name: "compact_context", payload: payload, verbosity: "compact")
+        let result = WaxMCPTools.renderResult(name: "compact_context", payload: payload, verbosity: .compact)
         let text = try #require(result.content.compactMap { block -> String? in
             if case .text(let value, _, _) = block { return value }
             return nil
@@ -33,7 +33,7 @@ import Testing
         let result = WaxMCPTools.renderResult(name: "stats", payload: .object([
             "store_path": .string("/fixture/memory.wax"),
             "display_text": .string("Duplicated narrative"),
-        ]), verbosity: "verbose")
+        ]), verbosity: .verbose)
         let text = try #require(result.content.compactMap { block -> String? in
             if case .text(let value, _, _) = block { return value }
             return nil

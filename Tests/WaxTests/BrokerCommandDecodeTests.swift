@@ -262,6 +262,64 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func recallVerbosityIsResponseVerbosityEnum() throws {
+        #expect(
+            throws: BrokerValidationError.invalid("verbosity must be one of: compact, verbose")
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "recall",
+                arguments: [
+                    "query": .string("q"),
+                    "verbosity": .string("loud"),
+                ]
+            )
+        }
+
+        #expect(try BrokerCommand.parseResponseVerbosity(BrokerArguments([:])) == .compact)
+        #expect(
+            try BrokerCommand.parseResponseVerbosity(
+                BrokerArguments(["verbosity": .string(" VERBOSE ")])
+            ) == .verbose
+        )
+
+        let verbose = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "verbosity": .string("verbose"),
+            ]
+        )
+        guard case .recall(let verbosePayload) = verbose else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(verbosePayload.verbosity == .verbose)
+
+        let compact = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "verbosity": .string("compact"),
+            ]
+        )
+        guard case .recall(let compactPayload) = compact else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(compactPayload.verbosity == .compact)
+
+        let omitted = try BrokerCommand.decode(
+            command: "recall",
+            arguments: ["query": .string("q")]
+        )
+        guard case .recall(let omittedPayload) = omitted else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(omittedPayload.verbosity == .compact)
+    }
+
+    @Test
     func searchDefaultsModeToText() throws {
         let decoded = try BrokerCommand.decode(
             command: "search",

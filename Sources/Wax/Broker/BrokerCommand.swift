@@ -75,7 +75,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var explicitProject: String?
         package var explicitRepo: String?
         package var clientCWD: String?
-        package var verbosity: String = "compact"
+        package var verbosity: ResponseVerbosity = .compact
         package var memoryTypes: [MemoryType] = []
 
         package var scope: LayeredRecall.Scope { identity.scope }
@@ -874,13 +874,13 @@ extension BrokerCommand {
         return scope
     }
 
-    package static func parseResponseVerbosity(_ args: BrokerArguments) throws -> String {
-        guard let raw = try args.optionalString("verbosity") else { return "compact" }
+    package static func parseResponseVerbosity(_ args: BrokerArguments) throws -> ResponseVerbosity {
+        guard let raw = try args.optionalString("verbosity") else { return .compact }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard trimmed == "compact" || trimmed == "verbose" else {
+        guard let verbosity = ResponseVerbosity(rawValue: trimmed) else {
             throw BrokerValidationError.invalid("verbosity must be one of: compact, verbose")
         }
-        return trimmed
+        return verbosity
     }
 
     package static func parseRecallMode(_ args: BrokerArguments) throws -> SearchMode? {
