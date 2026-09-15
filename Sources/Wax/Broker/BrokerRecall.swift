@@ -386,6 +386,64 @@ package enum BrokerRecall {
         return .object(payload)
     }
 
+    package static func get(
+        reference: MemoryID,
+        in environment: Environment
+    ) async throws -> LayeredRecall.Hit {
+        switch reference {
+        case .durable(let frameID):
+            let document = try await requireDocument(frameID: frameID, memory: environment.longTermMemory)
+            return LayeredRecall.Hit(
+                id: .durable(frameID: frameID),
+                score: 0,
+                text: document.text,
+                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                metadata: document.metadata,
+                explanations: ["durable memory"],
+                timestampMs: document.timestampMs
+            )
+        case .working(let sessionID, let frameID), .episodic(let sessionID, let frameID):
+            if let state = environment.sessions.live[sessionID] {
+                let document = try await requireDocument(frameID: frameID, memory: state.memory)
+                return LayeredRecall.Hit(
+                    id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
+                    agentID: state.manifest.agentID,
+                    runID: state.manifest.runID,
+                    score: 0,
+                    text: document.text,
+                    preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                    metadata: document.metadata,
+                    explanations: [reference.horizon == .working ? "current session" : "recent session episode"],
+                    timestampMs: document.timestampMs
+                )
+            }
+            let document = try await environment.endedSessions.document(
+                EndedSessionDocumentQuery(sessionID: sessionID, frameID: frameID)
+            )
+            return LayeredRecall.Hit(
+                id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
+                agentID: document.agentID,
+                runID: document.runID,
+                score: 0,
+                text: document.text,
+                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
+                metadata: document.metadata,
+                explanations: [reference.horizon == .working ? "current session" : "recent session episode"],
+                timestampMs: document.timestampMs
+            )
+        }
+    }
+
+    private static func requireDocument(
+        frameID: UInt64,
+        memory: MemoryOrchestrator
+    ) async throws -> MemoryOrchestrator.CorpusSourceDocument {
+        guard let document = try await memory.corpusSourceDocuments().first(where: { $0.frameId == frameID }) else {
+            throw BrokerValidationError.invalid("No memory document found for frame_id \(frameID)")
+        }
+        return document
+    }
+
     private static func worseQueryEmbeddingState(
         _ lhs: RAGContext.QueryEmbeddingState,
         _ rhs: RAGContext.QueryEmbeddingState

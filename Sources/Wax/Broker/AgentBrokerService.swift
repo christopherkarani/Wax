@@ -2549,50 +2549,28 @@ extension AgentBrokerService {
     }
 
     func layeredMemoryGet(reference: MemoryReference) async throws -> LayeredMemoryHit {
+        let hit = try await BrokerRecall.get(
+            reference: reference,
+            in: BrokerRecall.Environment(
+                longTermMemory: longTermMemory,
+                sessions: virtualSessions,
+                endedSessions: endedSessions,
+                preview: { Wax.dehighlightedPreviewText($0 ?? "") },
+                canonicalFrameID: { frameID, memory in
+                    await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
+                },
+                nowMs: { Self.nowMs() }
+            )
+        )
         switch reference {
-        case .durable(let frameID):
-            let document = try await requireDocument(frameID: frameID, memory: longTermMemory)
-            await longTermMemory.recordAccess(frameId: document.frameId)
-            return LayeredMemoryHit(
-                id: .durable(frameID: frameID),
-                score: 0,
-                text: document.text,
-                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                metadata: document.metadata,
-                explanations: ["durable memory"],
-                timestampMs: document.timestampMs
-            )
-        case .working(let sessionID, let frameID), .episodic(let sessionID, let frameID):
+        case .durable:
+            await longTermMemory.recordAccess(frameId: hit.frameID)
+        case .working(let sessionID, _), .episodic(let sessionID, _):
             if let state = activeSessions[sessionID] {
-                let document = try await requireDocument(frameID: frameID, memory: state.memory)
-                await state.memory.recordAccess(frameId: document.frameId)
-                return LayeredMemoryHit(
-                    id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
-                    agentID: state.manifest.agentID,
-                    runID: state.manifest.runID,
-                    score: 0,
-                    text: document.text,
-                    preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                    metadata: document.metadata,
-                    explanations: [reference.horizon == .working ? "current session" : "recent session episode"],
-                    timestampMs: document.timestampMs
-                )
+                await state.memory.recordAccess(frameId: hit.frameID)
             }
-            let document = try await endedSessions.document(
-                EndedSessionDocumentQuery(sessionID: sessionID, frameID: frameID)
-            )
-            return LayeredMemoryHit(
-                id: MemoryID.make(horizon: reference.horizon, sessionID: sessionID, frameID: frameID),
-                agentID: document.agentID,
-                runID: document.runID,
-                score: 0,
-                text: document.text,
-                preview: MemorySemantics.summarizeCandidate(document.text, maxLength: 180),
-                metadata: document.metadata,
-                explanations: [reference.horizon == .working ? "current session" : "recent session episode"],
-                timestampMs: document.timestampMs
-            )
         }
+        return hit
     }
 
     func memory(for sessionID: UUID?) async throws -> MemoryOrchestrator {
@@ -2689,17 +2667,15 @@ extension AgentBrokerService {
         identity: LayeredRecall.Identity,
         isWorking: Bool
     ) -> Bool {
-        if isWorking { return true }
-        if identity.project == nil && identity.repo == nil {
-            return !hasExplicitProjectOrRepoStamp(metadata)
-        }
-        return LayeredRecall.metadataMatchesScopedRetrieval(metadata, identity: identity)
+        LayeredRecall.matchesSessionScopedRetrieval(
+            metadata: metadata,
+            identity: identity,
+            isWorking: isWorking
+        )
     }
 
     static func hasExplicitProjectOrRepoStamp(_ metadata: [String: String]) -> Bool {
-        let project = metadata[MemoryMetadataKeys.project]
-        let repo = metadata[MemoryMetadataKeys.repo]
-        return (project.map { !$0.isEmpty } ?? false) || (repo.map { !$0.isEmpty } ?? false)
+        LayeredRecall.hasExplicitProjectOrRepoStamp(metadata)
     }
 
     static func filterCorpusHits(
