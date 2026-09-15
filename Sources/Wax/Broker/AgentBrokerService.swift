@@ -1578,32 +1578,47 @@ extension AgentBrokerService {
             if await longTermMemory.isQueryEmbedderReady() {
                 await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionUUID))
             }
-            var recallArgs: [String: AgentBrokerValue] = [
-                "query": .string(recallQuery),
-                "scope": .string("project"),
-                "limit": .from(5),
-            ]
-            if let resolvedProject { recallArgs["project"] = .string(resolvedProject) }
-            if let resolvedRepo { recallArgs["repo"] = .string(resolvedRepo) }
-            recallArgs["session_id"] = .string(sessionID)
-            if let cwd { recallArgs["cwd"] = .string(cwd) }
-            recallPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(recallArgs)))
+            recallPayload = try await recall(
+                BrokerCommand.Recall(
+                    query: recallQuery,
+                    limit: 5,
+                    searchTopK: 5,
+                    identity: .project(workingSessionID: sessionUUID),
+                    mode: nil,
+                    filters: BrokerCommand.ParsedSearchFilters(
+                        sessionId: sessionUUID,
+                        frameFilter: nil,
+                        timeRange: nil,
+                        summary: .object(["session_id": .string(sessionID)])
+                    ),
+                    explicitProject: resolvedProject,
+                    explicitRepo: resolvedRepo,
+                    clientCWD: cwd
+                )
+            )
         }
 
         var personPayload: AgentBrokerValue?
         do {
-            var personArgs: [String: AgentBrokerValue] = [
-                "query": .string("facts about this person standing corrections"),
-                "scope": .string("global"),
-                "limit": .from(3),
-                "mode": .string("text"),
-                "memory_types": .array([.string(MemoryType.userPreference.rawValue)]),
-                "session_id": .string(sessionID),
-            ]
-            if let resolvedProject { personArgs["project"] = .string(resolvedProject) }
-            if let resolvedRepo { personArgs["repo"] = .string(resolvedRepo) }
-            if let cwd { personArgs["cwd"] = .string(cwd) }
-            personPayload = try await recall(try BrokerCommand.Recall.decode(BrokerArguments(personArgs)))
+            personPayload = try await recall(
+                BrokerCommand.Recall(
+                    query: "facts about this person standing corrections",
+                    limit: 3,
+                    searchTopK: 3,
+                    identity: .global(workingSessionID: sessionUUID),
+                    mode: .textOnly,
+                    filters: BrokerCommand.ParsedSearchFilters(
+                        sessionId: sessionUUID,
+                        frameFilter: nil,
+                        timeRange: nil,
+                        summary: .object(["session_id": .string(sessionID)])
+                    ),
+                    explicitProject: resolvedProject,
+                    explicitRepo: resolvedRepo,
+                    clientCWD: cwd,
+                    memoryTypes: [.userPreference]
+                )
+            )
         } catch {
             personPayload = nil
         }
