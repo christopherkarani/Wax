@@ -616,7 +616,7 @@ func filterBeforeMergeKeepsProjectHitWhenForeignRanksFillLimit() {
         recallItem(
             frameId: UInt64(index),
             score: 0.99 - Float(index) * 0.01,
-            text: "FOREIGN-STARVE shared query token \(index)",
+            text: "FOREIGN-STARVE shared query token \(index) ExtraTokenAlpha\(index) UnrelatedTopic\(index) DifferentMatter\(index)",
             metadata: [MemoryMetadataKeys.project: "OtherLand"]
         )
     }
@@ -736,14 +736,14 @@ func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
         #expect((await service.handle(.init(
             command: "remember",
             arguments: [
-                "content": .string("\(token) session mention that should be recorded."),
+                "content": .string("\(token) session mention that should be recorded UniqueSessionLane."),
                 "session_id": .string(sessionID),
             ]
         ))).ok == true)
         #expect((await service.handle(.init(
             command: "remember",
             arguments: [
-                "content": .string("\(token) durable fact that shares no session store."),
+                "content": .string("\(token) durable fact that shares no session store UniqueDurableLane."),
                 "memory_type": .string("fact"),
                 "durability": .string("durable"),
             ]
@@ -778,8 +778,15 @@ func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
         #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")
         let recallPayload = try requireObject(recalled.payload)
         let recallTexts = resultTexts(recallPayload)
-        #expect(recallTexts.contains { $0.contains("durable fact") })
-        #expect(recallTexts.contains { $0.contains("session mention") })
+        let sessionText = "\(token) session mention that should be recorded UniqueSessionLane."
+        let durableText = "\(token) durable fact that shares no session store UniqueDurableLane."
+        #expect(MemorySemantics.similarity(lhs: sessionText, rhs: durableText) < 0.55)
+        #expect(MemorySemantics.identifiersMatch(sessionText, durableText) == false)
+        #expect(recallTexts.contains { $0.contains("durable fact") }, "recallTexts=\(recallTexts)")
+        #expect(
+            recallTexts.contains { $0.contains("session mention") },
+            "recallTexts=\(recallTexts) collapsed=\(String(describing: recallPayload["collapsed"]))"
+        )
 
         let manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionUUID)
         let events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))

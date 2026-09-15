@@ -495,6 +495,42 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func mergeHitsKeepsSessionMentionBesideDurableFact() {
+        let token = "HIT-SCOPE-AC1F4B6A"
+        let sessionText = "\(token) session mention that should be recorded UniqueSessionLane."
+        let durableText = "\(token) durable fact that shares no session store UniqueDurableLane."
+        #expect(MemorySemantics.similarity(lhs: sessionText, rhs: durableText) < 0.55)
+        #expect(MemorySemantics.identifiersMatch(sessionText, durableText) == false)
+        let session = uniqueHit(
+            frameID: 1,
+            score: 0.40,
+            text: sessionText,
+            horizon: .working,
+            metadata: [MemoryMetadataKeys.type: MemoryType.note.rawValue]
+        )
+        let durable = uniqueHit(
+            frameID: 2,
+            score: 0.90,
+            text: durableText,
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                MemoryMetadataKeys.project: "Wax",
+            ]
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [session],
+            durableHits: [durable],
+            limit: 10,
+            nowMs: 0,
+            query: token
+        )
+        #expect(merged.contains { $0.text.contains("session mention") })
+        #expect(merged.contains { $0.text.contains("durable fact") })
+        #expect(LayeredRecall.collapsedTotal(in: merged) == 0)
+    }
+
+    @Test
     func mergeHitsKeepsHomeAndUnscopedStandingCorrections() {
         let token = "WAXPERSONLANE-OTHER-abcd1234"
         let homeText = "\(token) home standing correction: short answers and bullets."

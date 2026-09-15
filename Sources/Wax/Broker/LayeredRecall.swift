@@ -594,7 +594,9 @@ package enum LayeredRecall {
         func shouldSkipReservation(_ extra: Hit) -> Bool {
             if looksScorecard(extra.text), !queryAsks { return true }
             if extra.explanations.contains("unlanded skip-list demoted") { return true }
-            if merged.contains(where: { sameCluster($0, extra) }) { return true }
+            if merged.contains(where: { sameCluster($0, extra) || isParaphrase($0, extra) }) {
+                return true
+            }
             return false
         }
 
@@ -691,19 +693,28 @@ package enum LayeredRecall {
         if lhs.id == rhs.id { return true }
         // Locked frames stay live; never fold them into another row.
         if isLockedHit(lhs) || isLockedHit(rhs) { return false }
-        let leftProject = lhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
-        let rightProject = rhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
-        // Project attribution is part of cluster identity. Unscoped person-lane
-        // prefs must not fold into a project-stamped twin, and foreign projects
-        // must not collapse into home.
-        if leftProject != rightProject {
-            return false
-        }
+        if isExactDuplicate(lhs, rhs) { return true }
+        // Paraphrases collapse only inside one horizon. A durable fact must not
+        // eat a current-session mention that shares a token.
+        if lhs.horizon != rhs.horizon { return false }
+        return isParaphrase(lhs, rhs)
+    }
+
+    private static func isExactDuplicate(_ lhs: Hit, _ rhs: Hit) -> Bool {
         if lhs.text == rhs.text { return true }
         if let leftHash = lhs.metadata["wax.content.hash"],
            let rightHash = rhs.metadata["wax.content.hash"],
            leftHash == rightHash {
             return true
+        }
+        return false
+    }
+
+    private static func isParaphrase(_ lhs: Hit, _ rhs: Hit) -> Bool {
+        let leftProject = lhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        let rightProject = rhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        if leftProject != rightProject {
+            return false
         }
         let leftCard = looksScorecard(lhs.text)
         let rightCard = looksScorecard(rhs.text)
