@@ -348,9 +348,9 @@ struct RecallIdentityRankingTests {
             let hasUnscoped = hits.contains { $0.text.contains("unscoped standing correction") }
             let hasForeignText = hits.contains { $0.text.contains("foreign standing correction") }
             let hasForeignProject = hits.contains { $0.metadata[MemoryMetadataKeys.project] == "foreign-project" }
-            #expect(hasHome)
-            #expect(hasUnscoped)
-            #expect(!hasForeignText)
+            #expect(hasHome, "hits=\(hits.map(\.text))")
+            #expect(hasUnscoped, "hits=\(hits.map(\.text))")
+            #expect(!hasForeignText, "hits=\(hits.map(\.text))")
             #expect(!hasForeignProject)
         }
     }

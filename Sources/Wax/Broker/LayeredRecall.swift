@@ -513,14 +513,25 @@ package enum LayeredRecall {
             return hit.text
         }
 
+        var checkoutRelationBySHA: [String: OnThisTree] = [:]
+        func checkoutRelation(storedSHA: String?) -> OnThisTree? {
+            guard let liveCheckout else { return nil }
+            let key = storedSHA ?? ""
+            if let cached = checkoutRelationBySHA[key] {
+                return cached
+            }
+            let relation = MemorySemantics.onThisTree(
+                storedSHA: storedSHA,
+                live: liveCheckout,
+                repoRootPath: repoRootPath
+            )
+            checkoutRelationBySHA[key] = relation
+            return relation
+        }
+
         func adjustFreshness(_ hit: Hit) -> Hit {
             var copy = hit
-            if let liveCheckout {
-                let relation = MemorySemantics.onThisTree(
-                    storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
-                    live: liveCheckout,
-                    repoRootPath: repoRootPath
-                )
+            if let relation = checkoutRelation(storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA]) {
                 copy.metadata[MemoryMetadataKeys.onThisTree] = relation.rawValue
             }
             let adjusted = rankingAdjustedScore(
@@ -680,6 +691,14 @@ package enum LayeredRecall {
         if lhs.id == rhs.id { return true }
         // Locked frames stay live; never fold them into another row.
         if isLockedHit(lhs) || isLockedHit(rhs) { return false }
+        let leftProject = lhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        let rightProject = rhs.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        // Project attribution is part of cluster identity. Unscoped person-lane
+        // prefs must not fold into a project-stamped twin, and foreign projects
+        // must not collapse into home.
+        if leftProject != rightProject {
+            return false
+        }
         if lhs.text == rhs.text { return true }
         if let leftHash = lhs.metadata["wax.content.hash"],
            let rightHash = rhs.metadata["wax.content.hash"],
@@ -810,16 +829,17 @@ package enum LayeredRecall {
         repoRootPath: String? = nil
     ) -> Float {
         var score = freshnessAdjustedScore(hit, nowMs: nowMs)
-        if let liveCheckout {
-            let relation = MemorySemantics.onThisTree(
-                storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
-                live: liveCheckout,
-                repoRootPath: repoRootPath
-            )
-            if relation == .other || relation == .unknown,
-               MemorySemantics.looksLandedClaim(metadata: hit.metadata, text: hit.text) {
-                score -= 0.25
+        let checkoutRelation = hit.metadata[MemoryMetadataKeys.onThisTree].flatMap(OnThisTree.init(rawValue:))
+            ?? liveCheckout.map { live in
+                MemorySemantics.onThisTree(
+                    storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
+                    live: live,
+                    repoRootPath: repoRootPath
+                )
             }
+        if let checkoutRelation, checkoutRelation == .other || checkoutRelation == .unknown,
+           MemorySemantics.looksLandedClaim(metadata: hit.metadata, text: hit.text) {
+            score -= 0.25
         }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if looksScorecard(hit.text), !queryAsksForRating(trimmedQuery) {

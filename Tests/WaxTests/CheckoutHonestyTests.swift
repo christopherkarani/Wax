@@ -151,6 +151,98 @@ struct CheckoutHonestyTests {
     }
 
     @Test
+    func writeDropsClientGitSHAWhenSnapshotMisses() {
+        let metadata = MemorySemantics.normalizeWriteMetadata(
+            metadata: [
+                MemoryMetadataKeys.gitSHA: shaA,
+                MemoryMetadataKeys.gitBranch: "spoofed",
+                MemoryMetadataKeys.gitWorktree: "spoofed-wt",
+                MemoryMetadataKeys.onThisTree: OnThisTree.yes.rawValue,
+            ],
+            semantics: MemoryWriteSemantics(type: .fact),
+            sessionID: nil,
+            inferredScope: MemoryScopeContext(),
+            nowMs: 1
+        )
+        #expect(metadata[MemoryMetadataKeys.gitSHA] == nil)
+        #expect(metadata[MemoryMetadataKeys.gitBranch] == nil)
+        #expect(metadata[MemoryMetadataKeys.gitWorktree] == nil)
+        #expect(metadata[MemoryMetadataKeys.onThisTree] == nil)
+    }
+
+    @Test
+    func writeIgnoresClientLandedFlagUnlessTyped() {
+        let fact = MemorySemantics.normalizeWriteMetadata(
+            metadata: [MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.landed.rawValue],
+            semantics: MemoryWriteSemantics(type: .fact),
+            sessionID: nil,
+            inferredScope: MemoryScopeContext(),
+            nowMs: 1
+        )
+        #expect(fact[MemoryMetadataKeys.checkoutStatus] == nil)
+
+        let decision = MemorySemantics.normalizeWriteMetadata(
+            metadata: [MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.landed.rawValue],
+            semantics: MemoryWriteSemantics(type: .decision),
+            sessionID: nil,
+            inferredScope: MemoryScopeContext(),
+            nowMs: 1
+        )
+        #expect(decision[MemoryMetadataKeys.checkoutStatus] == MemoryCheckoutStatus.intent.rawValue)
+    }
+
+    @Test
+    func rankingAdjustedScoreTrustsStampedOnThisTree() {
+        let stampedYes = LayeredRecall.Hit(
+            id: .durable(frameID: 1),
+            score: 0.90,
+            text: "C01 GitLiveProbe Strong execute",
+            preview: "C01 GitLiveProbe Strong execute",
+            metadata: [
+                MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.landed.rawValue,
+                MemoryMetadataKeys.gitSHA: shaA,
+                MemoryMetadataKeys.onThisTree: OnThisTree.yes.rawValue,
+            ],
+            explanations: [],
+            timestampMs: 0
+        )
+        let live = GitCheckoutSnapshot(sha: shaB, branch: "main", worktree: nil)
+        #expect(
+            abs(
+                LayeredRecall.rankingAdjustedScore(
+                    stampedYes,
+                    nowMs: 1,
+                    query: "GitLiveProbe",
+                    liveCheckout: live
+                ) - 0.90
+            ) < 0.0001
+        )
+
+        let unstamped = LayeredRecall.Hit(
+            id: .durable(frameID: 2),
+            score: 0.90,
+            text: "C01 GitLiveProbe Strong execute",
+            preview: "C01 GitLiveProbe Strong execute",
+            metadata: [
+                MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.landed.rawValue,
+                MemoryMetadataKeys.gitSHA: shaA,
+            ],
+            explanations: [],
+            timestampMs: 0
+        )
+        #expect(
+            abs(
+                LayeredRecall.rankingAdjustedScore(
+                    unstamped,
+                    nowMs: 1,
+                    query: "GitLiveProbe",
+                    liveCheckout: live
+                ) - 0.65
+            ) < 0.0001
+        )
+    }
+
+    @Test
     func compactHitSurfacesGitAndOnThisTree() throws {
         let object = RecallPresent.compactHitObject(
             id: "durable:1",
@@ -172,6 +264,50 @@ struct CheckoutHonestyTests {
         #expect(object["git_worktree"]?.stringValue == "rapid-river")
         #expect(object["checkout_status"]?.stringValue == "intent")
         #expect(object["on_this_tree"]?.stringValue == "other")
+    }
+
+    @Test
+    func rememberTypedLandedSurvivesBrokerWrite() async throws {
+        let repo = try plantGitRepo(named: "wax-landed-stamp", head: shaA, branch: "main")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-landed-broker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        config.enableTextSearch = true
+        let service = try await AgentBrokerService(
+            storePath: rootURL.appendingPathComponent("memory.wax").path,
+            sessionRootPath: rootURL.appendingPathComponent("sessions").path,
+            noEmbedder: true,
+            embedderChoice: "auto",
+            requireVector: false,
+            orchestratorConfig: config
+        )
+        do {
+            let project = "checkout-landed-\(UUID().uuidString.prefix(6))"
+            let write = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("C01 GitLiveProbe types exist on this HEAD."),
+                    "memory_type": .string("decision"),
+                    "checkout_status": .string("landed"),
+                    "project": .string(project),
+                    "repo": .string(project),
+                    "cwd": .string(repo.path),
+                ]
+            ))
+            #expect(write.ok == true, "remember failed: \(write.error ?? "nil")")
+            let writePayload = try #require(write.payload?.objectValue)
+            #expect(writePayload["checkout_status"]?.stringValue == "landed")
+            #expect(writePayload["git_sha"]?.stringValue == shaA)
+            try await service.close()
+        } catch {
+            try? await service.close()
+            throw error
+        }
     }
 
     @Test

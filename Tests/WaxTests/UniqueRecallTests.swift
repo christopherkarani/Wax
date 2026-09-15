@@ -49,6 +49,18 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func oneSharedPascalCaseIdentifierDoesNotMatchEvenAtJaccardOne() {
+        #expect(MemorySemantics.extractIdentifiers("AgentBroker exact").contains("agentbroker"))
+        #expect(MemorySemantics.identifiersMatch("AgentBroker exact", "AgentBroker prefix") == false)
+        #expect(
+            MemorySemantics.identifiersMatch(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa home ranking identity note",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa foreign ranking identity note"
+            ) == false
+        )
+    }
+
+    @Test
     func threeSharedIdentifiersMatchEvenWhenJaccardIsLow() {
         let left = "C01 C02 C03 ExtraOne ExtraTwo ExtraThree ExtraFour ExtraFive"
         let right = "C01 C02 C03 OtherOne OtherTwo OtherThree OtherFour OtherFive OtherSix OtherSeven"
@@ -480,6 +492,143 @@ struct UniqueRecallTests {
         )
         #expect(merged.contains { $0.frameID == 1 })
         #expect(merged.contains { $0.frameID == 2 })
+    }
+
+    @Test
+    func mergeHitsKeepsHomeAndUnscopedStandingCorrections() {
+        let token = "WAXPERSONLANE-OTHER-abcd1234"
+        let homeText = "\(token) home standing correction: short answers and bullets."
+        let unscopedText = "\(token) unscoped standing correction: prefer plain language."
+        let foreignText = "\(token) foreign standing correction: do not pick up rv tickets."
+        #expect(MemorySemantics.similarity(lhs: homeText, rhs: unscopedText) < 0.55)
+        #expect(MemorySemantics.identifiersMatch(homeText, unscopedText) == false)
+        let home = uniqueHit(
+            frameID: 1,
+            score: 0.90,
+            text: homeText,
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.project: "recall-project",
+                MemoryMetadataKeys.repo: "recall-repo",
+            ]
+        )
+        let unscoped = uniqueHit(
+            frameID: 2,
+            score: 0.88,
+            text: unscopedText,
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.userPreference.rawValue]
+        )
+        let foreign = uniqueHit(
+            frameID: 3,
+            score: 0.89,
+            text: foreignText,
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.project: "foreign-project",
+                MemoryMetadataKeys.repo: "foreign-repo",
+            ]
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [home, unscoped, foreign],
+            limit: 5,
+            nowMs: 0,
+            query: token
+        )
+        #expect(merged.contains { $0.text.contains("home standing correction") })
+        #expect(merged.contains { $0.text.contains("unscoped standing correction") })
+        #expect(merged.contains { $0.text.contains("foreign standing correction") })
+    }
+
+    @Test
+    func mergeHitsDoesNotCollapseDifferentProjects() {
+        let home = uniqueHit(
+            frameID: 1,
+            score: 0.90,
+            text: "Canonical WAXRANKWIRE home ranking identity note.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                MemoryMetadataKeys.project: "recall-project",
+            ]
+        )
+        let foreign = uniqueHit(
+            frameID: 2,
+            score: 0.89,
+            text: "Canonical WAXRANKWIRE foreign ranking identity note.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                MemoryMetadataKeys.project: "foreign-project",
+            ]
+        )
+        #expect(MemorySemantics.similarity(lhs: home.text, rhs: foreign.text) >= 0.55)
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [home, foreign],
+            limit: 5,
+            nowMs: 0,
+            query: "WAXRANKWIRE"
+        )
+        #expect(merged.count == 2)
+        #expect(merged.contains { $0.metadata[MemoryMetadataKeys.project] == "recall-project" })
+        #expect(merged.contains { $0.metadata[MemoryMetadataKeys.project] == "foreign-project" })
+    }
+
+    @Test
+    func mergeHitsDoesNotCollapseExactIdentifierAndPrefixNotes() {
+        let durable = uniqueHit(
+            frameID: 1,
+            score: 0.95,
+            text: "Canonical AgentBroker name from durable memory.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.note.rawValue]
+        )
+        let session = uniqueHit(
+            frameID: 2,
+            score: 0.40,
+            text: "AgentBroker-Client prefix from the current session.",
+            horizon: .working,
+            metadata: [MemoryMetadataKeys.type: MemoryType.note.rawValue]
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [session],
+            durableHits: [durable],
+            limit: 5,
+            nowMs: 0,
+            query: "AgentBroker"
+        )
+        #expect(merged.count == 2)
+        #expect(merged.contains { $0.text.contains("Canonical AgentBroker") })
+        #expect(merged.contains { $0.text.contains("AgentBroker-Client") })
+        #expect(merged.first?.text.contains("Canonical AgentBroker") == true)
+    }
+
+    @Test
+    func mergeHitsStampsSharedOtherSHAOnEveryHit() {
+        let live = GitCheckoutSnapshot(sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        let hits = (1...5).map { index in
+            uniqueHit(
+                frameID: UInt64(index),
+                score: 0.9,
+                text: "distinct lane \(index) ExtraToken\(index)",
+                horizon: .durable,
+                metadata: [MemoryMetadataKeys.gitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+            )
+        }
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: hits,
+            limit: 5,
+            nowMs: 0,
+            query: "distinct lane",
+            liveCheckout: live
+        )
+        #expect(merged.count == 5)
+        #expect(merged.allSatisfy { $0.metadata[MemoryMetadataKeys.onThisTree] == OnThisTree.other.rawValue })
     }
 
     @Test

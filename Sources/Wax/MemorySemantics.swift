@@ -125,7 +125,8 @@ package enum RememberDestination: Sendable, Equatable {
             repo: semantics.repo,
             confidence: semantics.confidence,
             expiresInDays: semantics.expiresInDays,
-            reviewed: semantics.reviewed
+            reviewed: semantics.reviewed,
+            checkoutStatus: semantics.checkoutStatus
         )
 
         if resolvedType == .taskState {
@@ -225,7 +226,8 @@ package enum SessionRememberWrite: Sendable, Equatable {
                 confidence: fields.confidence,
                 expiresInDays: fields.expiresInDays,
                 reviewed: fields.reviewed,
-                lock: false
+                lock: false,
+                checkoutStatus: fields.checkoutStatus
             )
         case .typed(let type, let durability, let fields):
             return MemoryWriteSemantics(
@@ -236,7 +238,8 @@ package enum SessionRememberWrite: Sendable, Equatable {
                 confidence: fields.confidence,
                 expiresInDays: fields.expiresInDays,
                 reviewed: fields.reviewed,
-                lock: false
+                lock: false,
+                checkoutStatus: fields.checkoutStatus
             )
         }
     }
@@ -348,19 +351,22 @@ package struct RememberWriteFields: Sendable, Equatable {
     package var confidence: Float?
     package var expiresInDays: Int?
     package var reviewed: Bool
+    package var checkoutStatus: MemoryCheckoutStatus?
 
     package init(
         project: String? = nil,
         repo: String? = nil,
         confidence: Float? = nil,
         expiresInDays: Int? = nil,
-        reviewed: Bool = false
+        reviewed: Bool = false,
+        checkoutStatus: MemoryCheckoutStatus? = nil
     ) {
         self.project = project
         self.repo = repo
         self.confidence = confidence
         self.expiresInDays = expiresInDays
         self.reviewed = reviewed
+        self.checkoutStatus = checkoutStatus
     }
 }
 
@@ -378,7 +384,8 @@ package struct DurableRememberWrite: Sendable, Equatable {
             confidence: fields.confidence,
             expiresInDays: fields.expiresInDays,
             reviewed: fields.reviewed,
-            lock: durability == .locked
+            lock: durability == .locked,
+            checkoutStatus: fields.checkoutStatus
         )
     }
 }
@@ -546,11 +553,16 @@ package enum MemorySemantics {
             normalized[MemoryMetadataKeys.expiresAtMs] = String(expiresAtMs)
         }
 
+        // Git honesty and checkout_status are server-stamped. Client metadata
+        // must not keep a spoofed SHA or landed flag when the snapshot misses.
         normalized.removeValue(forKey: MemoryMetadataKeys.onThisTree)
+        normalized.removeValue(forKey: MemoryMetadataKeys.gitSHA)
+        normalized.removeValue(forKey: MemoryMetadataKeys.gitBranch)
+        normalized.removeValue(forKey: MemoryMetadataKeys.gitWorktree)
+        normalized.removeValue(forKey: MemoryMetadataKeys.checkoutStatus)
         if let checkoutStatus = semantics.checkoutStatus {
             normalized[MemoryMetadataKeys.checkoutStatus] = checkoutStatus.rawValue
-        } else if normalized[MemoryMetadataKeys.checkoutStatus] == nil,
-                  resolvedType == .decision || resolvedType == .constraint {
+        } else if resolvedType == .decision || resolvedType == .constraint {
             normalized[MemoryMetadataKeys.checkoutStatus] = MemoryCheckoutStatus.intent.rawValue
         }
 
@@ -929,8 +941,11 @@ package enum MemorySemantics {
 
     package static func identifiersMatch(_ lhs: String, _ rhs: String) -> Bool {
         let overlap = identifierOverlap(lhs: lhs, rhs: rhs)
-        return overlap.jaccard >= identifierJaccardThreshold
-            || overlap.shared >= identifierSharedCountThreshold
+        if overlap.shared >= identifierSharedCountThreshold {
+            return true
+        }
+        // A single shared SHA / PascalCase token is not a remaining-holes paraphrase.
+        return overlap.shared >= 2 && overlap.jaccard >= identifierJaccardThreshold
     }
 
     private static func regexMatches(_ pattern: String, in text: String) -> [String] {

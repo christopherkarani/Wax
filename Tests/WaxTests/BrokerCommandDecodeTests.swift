@@ -84,6 +84,41 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func rememberAcceptsTypedCheckoutStatus() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "remember",
+            arguments: [
+                "content": .string("landed on this HEAD"),
+                "memory_type": .string("decision"),
+                "checkout_status": .string("landed"),
+            ]
+        )
+        guard case .remember(let remember) = decoded else {
+            Issue.record("expected remember")
+            return
+        }
+        #expect(remember.writeSemantics.checkoutStatus == .landed)
+    }
+
+    @Test
+    func rememberRejectsUnknownCheckoutStatus() throws {
+        var thrownMessage: String?
+        do {
+            _ = try BrokerCommand.decode(
+                command: "remember",
+                arguments: [
+                    "content": .string("x"),
+                    "checkout_status": .string("shipped"),
+                ]
+            )
+        } catch let error as BrokerValidationError {
+            thrownMessage = error.errorDescription ?? String(describing: error)
+        }
+        let message = try #require(thrownMessage, "unknown checkout_status must be rejected at decode")
+        #expect(message.contains("checkout_status must be one of: intent, landed"))
+    }
+
+    @Test
     func rememberScopeSessionRequiresSessionID() {
         #expect(throws: BrokerValidationError.self) {
             _ = try BrokerCommand.decode(
