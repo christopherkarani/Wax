@@ -1,4 +1,4 @@
 interface:
   display_name: "Wax MCP Memory"
-  short_description: "Use Wax MCP tools for durable agent memory"
-  default_prompt: "Use $wax-mcp remember, recall, and stats. The server auto-opens a transport-scoped session. Do not invent a session_id. WAX_MCP_TOOLS=legacy restores session_open and session_close. Native Hermes uses memory.provider wax-memory and wax_* tools instead of this MCP skill; never plugins.enabled."
+  short_description: "Install or diagnose waxmcp hosts; not for session start"
+  default_prompt: "Do not load $wax-mcp at session start. Follow live MCP server instructions for remember, recall, and stats. Load this skill only to install, doctor, or rewire waxmcp. WAX_MCP_TOOLS=legacy restores session_open and session_close. Native Hermes uses memory.provider wax-memory and wax_* tools instead of this MCP skill; never plugins.enabled."

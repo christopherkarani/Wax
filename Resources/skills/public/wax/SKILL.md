@@ -1,10 +1,11 @@
 ---
 name: wax
 description: >
-  Swift framework guidance for Wax on-device memory/RAG. Use when writing Swift code
-  with the public Memory facade, experimental PhotoMemory / VideoMemory,
-  BuiltInMultimodalEmbeddings, embedding providers, retrieval modes, or hybrid search.
-  For agent operators using the Wax MCP server tools, use the separate wax-mcp skill instead.
+  Swift client guidance for Wax's public Memory, PhotoMemory, and VideoMemory
+  APIs. Use only when writing or changing Swift app code that imports Wax.
+  Do not use at session start. Do not use for MCP remember/recall/stats —
+  those follow the live MCP server instructions. Do not use for waxmcp
+  install or doctor (that is wax-mcp).
 ---
 
 # Wax (Swift Framework)
@@ -12,10 +13,9 @@ description: >
 ## Overview
 Use this skill to design and implement correct Wax-based on-device memory flows in Swift 6.2, emphasizing deterministic retrieval, single-file persistence, and safe concurrency.
 
-If you need the agent memory operator playbook for MCP tools, use the `wax-mcp`
-skill and follow the live server instructions (`session_open` / `remember` /
-`recall` / `session_close`). Do not treat `handoff_latest` then `session_start`
-as the default open.
+Do not load this skill at session start or for MCP `remember` / `recall` /
+`stats`. Follow the live MCP server instructions for those tools. Use
+`wax-mcp` only when installing or diagnosing a host.
 
 ## Choose The API Surface
 1. Use `Memory` (public actor) for text memory and retrieval.

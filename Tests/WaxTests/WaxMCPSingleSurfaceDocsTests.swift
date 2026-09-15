@@ -129,6 +129,33 @@ struct WaxMCPSingleSurfaceDocsTests {
         }
     }
 
+    @Test func codingSkillsDoNotAdvertiseThemselvesForEveryMCPSession() throws {
+        for path in skillDocs {
+            let text = try read(path)
+            #expect(
+                !text.contains("Use when Wax MCP tools are available"),
+                "\(path) must not match every session that already has MCP tools"
+            )
+            let forbidsSessionStart = text.contains("Do not use at session start")
+                || text.contains("Do not invoke this skill at session start")
+            #expect(forbidsSessionStart, "\(path) must say not to load at session start")
+        }
+
+        let wax = try read("Resources/skills/public/wax/SKILL.md")
+        #expect(
+            wax.contains("Do not use at session start"),
+            "Swift wax skill must say not to load at session start"
+        )
+        #expect(
+            !wax.contains("follow the live server instructions (`session_open`"),
+            "Swift wax skill must not teach session_open as the MCP default"
+        )
+
+        let openai = try read("Resources/skills/public/wax-mcp/agents/openai.yaml")
+        #expect(!openai.contains("Use Wax MCP tools for durable agent memory"))
+        #expect(openai.contains("not for session start") || openai.contains("Do not load"))
+    }
+
     private func read(_ relativePath: String) throws -> String {
         try String(
             contentsOf: repoRoot.appendingPathComponent(relativePath),

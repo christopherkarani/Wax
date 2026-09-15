@@ -927,6 +927,8 @@ struct WaxCLIMemoryTests {
         #expect(!WaxMCPAgentPlaybook.soulRules.contains("handoff_latest"))
         #expect(!WaxMCPAgentPlaybook.soulRules.contains("call `session_open`"))
         #expect(WaxMCPAgentPlaybook.githubSkillURL.contains("wax-mcp"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("Do not load the `wax` or `wax-mcp` skills at session start"))
+        #expect(WaxMCPAgentPlaybook.projectRules.contains("`wax` is Swift SDK only"))
         #expect(WaxMCPAgentPlaybook.projectRules.contains("Omit `mode` unless you need an override"))
         #expect(WaxMCPAgentPlaybook.soulRules.contains("Omit `mode` unless you need an override"))
         #expect(WaxMCPAgentPlaybook.hermesRules.contains("wax_remember"))

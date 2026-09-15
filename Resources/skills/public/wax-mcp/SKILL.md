@@ -1,16 +1,17 @@
 ---
 name: wax-mcp
 description: >
-  Operator playbook pointer for the Wax MCP memory server. Follow the live
-  server instructions. Use when Wax MCP tools are available, or when
-  installing or configuring waxmcp. Prefer this skill over the Swift
-  framework skill unless the task is writing Wax Swift code.
+  Operator install and diagnose playbook for waxmcp hosts (HTTP vs stdio,
+  LaunchAgent, Hermes plugin, doctor, vector-health). Use only when installing,
+  repairing, or rewiring a host. Do not use at session start. Do not use when
+  MCP remember/recall/stats are already available — follow the live server
+  instructions instead of loading this skill.
 ---
 
 # Wax MCP
 
 The MCP server `instructions` field is the playbook. Do not restate a second
-lifecycle here.
+lifecycle here. Do not invoke this skill at session start.
 
 Daily tools: `remember`, `recall`, `stats`. The server auto-opens one
 transport-scoped session. Aliases stay callable. `WAX_MCP_TOOLS=legacy`
