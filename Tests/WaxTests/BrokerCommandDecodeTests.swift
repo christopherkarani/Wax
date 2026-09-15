@@ -661,6 +661,7 @@ struct BrokerCommandDecodeTests {
         #expect(fact.subject == EntityKey("project:wax"))
         #expect(fact.object == .string("broker memory"))
         #expect(fact.relation == .sets)
+        #expect(fact.evidence.isEmpty)
 
         let corpus = try BrokerCommand.decode(
             command: "corpus_search",
@@ -705,6 +706,100 @@ struct BrokerCommandDecodeTests {
                 ]
             )
         }
+    }
+
+    @Test
+    func factAssertDecodeRejectsEvidenceString() {
+        #expect(
+            throws: BrokerValidationError.invalid("evidence must be an array")
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "fact_assert",
+                arguments: [
+                    "subject": .string("project:wax"),
+                    "predicate": .string("owns"),
+                    "object": .string("broker memory"),
+                    "evidence": .string("not-an-array"),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func knowledgeCaptureDecodeRejectsInvalidObject() {
+        #expect(
+            throws: BrokerValidationError.invalid(
+                "object must be a string, number, bool, or typed object"
+            )
+        ) {
+            _ = try BrokerCommand.decode(
+                command: "knowledge_capture",
+                arguments: [
+                    "content": .string("Wax owns broker memory"),
+                    "object": .array([.string("nope")]),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func factAssertDecodeParsesStructuredEvidence() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "fact_assert",
+            arguments: [
+                "subject": .string("project:wax"),
+                "predicate": .string("status"),
+                "object": .string("evidence-backed"),
+                "evidence": .array([
+                    .object([
+                        "source_frame_id": .int(42),
+                        "chunk_index": .int(3),
+                        "span_start_utf8": .int(1),
+                        "span_end_utf8": .int(7),
+                        "extractor_id": .string("decode-test"),
+                        "extractor_version": .string("1"),
+                        "confidence": .double(0.75),
+                        "asserted_at_ms": .int(123_456),
+                    ]),
+                ]),
+            ]
+        )
+        guard case .factAssert(let fact) = decoded else {
+            Issue.record("expected fact_assert")
+            return
+        }
+        #expect(fact.evidence == [
+            StructuredEvidence(
+                sourceFrameId: 42,
+                chunkIndex: 3,
+                spanUTF8: 1..<7,
+                extractorId: "decode-test",
+                extractorVersion: "1",
+                confidence: 0.75,
+                assertedAtMs: 123_456
+            )
+        ])
+    }
+
+    @Test
+    func knowledgeCaptureDecodeParsesTypedObject() throws {
+        let capture = try BrokerCommand.decode(
+            command: "knowledge_capture",
+            arguments: [
+                "content": .string("Wax owns broker memory"),
+                "subject": .string("project:wax"),
+                "predicate": .string("owns"),
+                "object": .object([
+                    "type": .string("entity"),
+                    "value": .string("agent:codex"),
+                ]),
+            ]
+        )
+        guard case .knowledgeCapture(let knowledge) = capture else {
+            Issue.record("expected knowledge_capture")
+            return
+        }
+        #expect(knowledge.object == .entity(EntityKey("agent:codex")))
     }
 
     @Test

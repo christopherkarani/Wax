@@ -1019,7 +1019,6 @@ extension AgentBrokerService {
         let predicate = command.predicate
         let kind = command.kind
         let aliases = command.aliases
-        let parsedObject = try command.object.map { try BrokerCommand.parseFactValue($0) }
 
         let isSessionTaskState =
             metadata[MemoryMetadataKeys.type] == MemoryType.taskState.rawValue
@@ -1052,11 +1051,11 @@ extension AgentBrokerService {
             ).rawValue
         }
         var factID: Int64?
-        if let subject, let predicate, let parsedObject {
+        if let subject, let predicate, let object = command.object {
             factID = try await longTermMemory.assertFact(
                 subject: EntityKey(subject),
                 predicate: PredicateKey(predicate),
-                object: parsedObject,
+                object: object,
                 relation: .sets,
                 validFromMs: nil,
                 validToMs: nil,
@@ -2241,7 +2240,6 @@ extension AgentBrokerService {
     }
 
     func factAssert(_ command: BrokerCommand.FactAssert) async throws -> AgentBrokerValue {
-        let evidence = try parseStructuredEvidence(command.evidence)
         let factID = try await longTermMemory.assertFact(
             subject: command.subject,
             predicate: command.predicate,
@@ -2249,13 +2247,13 @@ extension AgentBrokerService {
             relation: command.relation,
             validFromMs: command.validFromMs,
             validToMs: command.validToMs,
-            evidence: evidence,
+            evidence: command.evidence,
             commit: true
         )
         return .object([
             "status": .string("ok"),
             "fact_id": .from(factID.rawValue),
-            "evidence_count": .from(evidence.count),
+            "evidence_count": .from(command.evidence.count),
             "committed": .bool(true),
         ])
     }
@@ -2924,90 +2922,6 @@ extension AgentBrokerService {
                 ])
             }),
         ])
-    }
-
-    func parseStructuredEvidence(_ value: AgentBrokerValue?) throws -> [StructuredEvidence] {
-        guard let value else { return [] }
-        guard let array = value.arrayValue else {
-            throw BrokerValidationError.invalid("evidence must be an array")
-        }
-        return try array.map { item in
-            guard let object = item.objectValue else {
-                throw BrokerValidationError.invalid("evidence must contain only objects")
-            }
-            let allowedKeys: Set<String> = [
-                "source_frame_id",
-                "chunk_index",
-                "span_start_utf8",
-                "span_end_utf8",
-                "extractor_id",
-                "extractor_version",
-                "confidence",
-                "asserted_at_ms",
-            ]
-            let unknownKeys = Set(object.keys).subtracting(allowedKeys)
-            guard unknownKeys.isEmpty else {
-                throw BrokerValidationError.invalid("unknown evidence fields: \(unknownKeys.sorted().joined(separator: ", "))")
-            }
-            guard let sourceFrameId = object["source_frame_id"], case .int(let sourceRaw) = sourceFrameId, sourceRaw >= 0 else {
-                throw BrokerValidationError.invalid("evidence.source_frame_id must be a non-negative integer")
-            }
-            let chunkIndex: UInt32? = try {
-                guard let value = object["chunk_index"] else { return nil }
-                guard case .int(let raw) = value, raw >= 0, raw <= Int64(UInt32.max) else {
-                    throw BrokerValidationError.invalid("evidence.chunk_index must be a non-negative integer")
-                }
-                return UInt32(raw)
-            }()
-            let span = try parseEvidenceSpan(object)
-            let extractorId = try requiredEvidenceString(object, key: "extractor_id")
-            let extractorVersion = try requiredEvidenceString(object, key: "extractor_version")
-            let confidence = try parseEvidenceConfidence(object["confidence"])
-            guard let assertedAtValue = object["asserted_at_ms"], case .int(let assertedAtMs) = assertedAtValue else {
-                throw BrokerValidationError.invalid("evidence.asserted_at_ms must be an integer")
-            }
-            return StructuredEvidence(
-                sourceFrameId: UInt64(sourceRaw),
-                chunkIndex: chunkIndex,
-                spanUTF8: span,
-                extractorId: extractorId,
-                extractorVersion: extractorVersion,
-                confidence: confidence,
-                assertedAtMs: assertedAtMs
-            )
-        }
-    }
-
-    func parseEvidenceSpan(_ object: [String: AgentBrokerValue]) throws -> Range<Int>? {
-        guard object["span_start_utf8"] != nil || object["span_end_utf8"] != nil else {
-            return nil
-        }
-        guard let startValue = object["span_start_utf8"], case .int(let startRaw) = startValue,
-              let endValue = object["span_end_utf8"], case .int(let endRaw) = endValue,
-              startRaw >= 0, endRaw > startRaw,
-              startRaw <= Int64(Int.max), endRaw <= Int64(Int.max) else {
-            throw BrokerValidationError.invalid("evidence span must include non-negative span_start_utf8 and greater span_end_utf8")
-        }
-        return Int(startRaw)..<Int(endRaw)
-    }
-
-    func requiredEvidenceString(_ object: [String: AgentBrokerValue], key: String) throws -> String {
-        guard let value = object[key], let raw = value.stringValue else {
-            throw BrokerValidationError.invalid("evidence.\(key) must be a string")
-        }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            throw BrokerValidationError.invalid("evidence.\(key) must not be empty")
-        }
-        return trimmed
-    }
-
-    func parseEvidenceConfidence(_ value: AgentBrokerValue?) throws -> Double? {
-        guard let value else { return nil }
-        guard let confidence = value.doubleValue, confidence.isFinite, (0...1).contains(confidence) else {
-            throw BrokerValidationError.invalid("evidence.confidence must be a finite number between 0 and 1")
-        }
-        return confidence
     }
 
     func renderStructuredEvidence(_ evidence: StructuredEvidence) -> AgentBrokerValue {
