@@ -59,6 +59,84 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func mergeHitsRanksIntentDecisionAboveUnlandedSkipList() throws {
+        let shaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let live = GitCheckoutSnapshot(sha: shaB, branch: "main", worktree: nil)
+        let execute = uniqueHit(
+            frameID: 1,
+            score: 0.70,
+            text: "C01 GitLiveProbe Strong execute on this checkout. Types are not on the other tree.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.intent.rawValue,
+                MemoryMetadataKeys.gitSHA: shaA,
+            ]
+        )
+        let skip = uniqueHit(
+            frameID: 2,
+            score: 0.99,
+            text: holesD,
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.fact.rawValue,
+                MemoryMetadataKeys.gitSHA: shaA,
+            ]
+        )
+        let landed = uniqueHit(
+            frameID: 3,
+            score: 0.70,
+            text: "Do not re-propose landed doors: evaluation door, Policy gate, File tool, ScanClassify world, UnlockableDeny.",
+            horizon: .durable,
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.constraint.rawValue,
+                MemoryMetadataKeys.checkoutStatus: MemoryCheckoutStatus.intent.rawValue,
+                MemoryMetadataKeys.gitSHA: shaA,
+            ]
+        )
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [execute, skip, landed],
+            limit: 5,
+            nowMs: 0,
+            query: "remaining holes GitLiveProbe",
+            liveCheckout: live
+        )
+        let texts = merged.map(\.text)
+        let executeAt = try #require(texts.firstIndex { $0.contains("Strong execute") })
+        let skipAt = try #require(texts.firstIndex { $0.contains("Do not re-run") })
+        let landedAt = try #require(texts.firstIndex { $0.contains("evaluation door") })
+        #expect(executeAt < skipAt)
+        #expect(landedAt < skipAt)
+        #expect(merged[skipAt].explanations.contains("unlanded skip-list demoted"))
+        #expect(merged[landedAt].explanations.contains("unlanded skip-list demoted") == false)
+    }
+
+    @Test
+    func mergeHitsPrefersRemainingOpenWordingOverSkipThisSession() {
+        let paraphrases = [holesA, holesB, holesC, holesD].enumerated().map { index, text in
+            uniqueHit(
+                frameID: UInt64(index + 1),
+                score: 0.90,
+                text: text,
+                horizon: .durable,
+                metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue],
+                timestampMs: Int64((index + 1) * 1_000)
+            )
+        }
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: paraphrases,
+            limit: 5,
+            nowMs: 0,
+            query: "remaining holes GitLiveProbe"
+        )
+        #expect(merged.count == 1)
+        #expect(merged.first?.text == holesC)
+    }
+
+    @Test
     func mergeHitsCollapsesRemainingHolesParaphrasesAndDropsScorecard() {
         let nowMs: Int64 = 0
         let holes = [holesA, holesB, holesC, holesD].enumerated().map { index, text in

@@ -487,6 +487,7 @@ package enum LayeredRecall {
 
     package static let recallClusterJaccardThreshold: Float = 0.55
     package static let scorecardRankPenalty: Float = 0.40
+    package static let unlandedSkipListPenalty: Float = 0.40
 
     package static func collapsedTotal(in hits: [Hit]) -> Int {
         hits.reduce(0) { $0 + max(0, $1.collapsedCount - 1) }
@@ -563,7 +564,9 @@ package enum LayeredRecall {
         }
 
         let queryAsks = queryAsksForRating(query)
-        let candidates = sessionTagged + durableTagged
+        let tagged = sessionTagged + durableTagged
+        let unlandedIDs = unlandedClaimIdentifiers(in: tagged)
+        let candidates = tagged.map { demoteUnlandedSkipList($0, unlandedIDs: unlandedIDs) }
         let ranked = candidates.sorted(by: higherRank)
         let clustered = clusterHits(ranked, identity: identity)
         var seen = Set<String>()
@@ -579,6 +582,7 @@ package enum LayeredRecall {
 
         func shouldSkipReservation(_ extra: Hit) -> Bool {
             if looksScorecard(extra.text), !queryAsks { return true }
+            if extra.explanations.contains("unlanded skip-list demoted") { return true }
             if merged.contains(where: { sameCluster($0, extra) }) { return true }
             return false
         }
@@ -694,10 +698,66 @@ package enum LayeredRecall {
             let leftTier = standingClusterTier(lhs)
             let rightTier = standingClusterTier(rhs)
             if leftTier != rightTier { return leftTier < rightTier }
+            let leftOpen = looksSkipThisSession(lhs.text) ? 0 : 1
+            let rightOpen = looksSkipThisSession(rhs.text) ? 0 : 1
+            if leftOpen != rightOpen { return leftOpen < rightOpen }
             if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs < rhs.timestampMs }
             if lhs.score != rhs.score { return lhs.score < rhs.score }
             return lhs.frameID < rhs.frameID
         } ?? group[0]
+    }
+
+    package static func looksSkipThisSession(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let skipRun = lowered.contains("do not re-run")
+            || lowered.contains("don't re-run")
+            || lowered.contains("do not rerun")
+        return skipRun && lowered.contains("this session")
+    }
+
+    package static func looksSkipList(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        if lowered.contains("do not re-run")
+            || lowered.contains("don't re-run")
+            || lowered.contains("do not rerun") {
+            return true
+        }
+        return lowered.contains("do not re-propose") || lowered.contains("don't re-propose")
+    }
+
+    private static func unlandedClaimIdentifiers(in hits: [Hit]) -> Set<String> {
+        var ids = Set<String>()
+        for hit in hits {
+            guard isUnlandedClaim(hit) else { continue }
+            ids.formUnion(MemorySemantics.extractIdentifiers(hit.text))
+        }
+        return ids
+    }
+
+    private static func isUnlandedClaim(_ hit: Hit) -> Bool {
+        // Skip-list rows must not seed their own demotion. Ancestor counts:
+        // intent on a parent SHA is still not shipped on this tree (W5 child
+        // dropped GitLiveProbe.md while skip-list said do-not-re-run C01).
+        guard !looksSkipList(hit.text) else { return false }
+        let tree = OnThisTree(rawValue: hit.metadata[MemoryMetadataKeys.onThisTree] ?? "")
+        guard tree == .other || tree == .ancestor || tree == .unknown else {
+            return false
+        }
+        return MemorySemantics.looksLandedClaim(metadata: hit.metadata, text: hit.text)
+    }
+
+    private static func demoteUnlandedSkipList(_ hit: Hit, unlandedIDs: Set<String>) -> Hit {
+        guard looksSkipList(hit.text), !unlandedIDs.isEmpty else { return hit }
+        let ids = MemorySemantics.extractIdentifiers(hit.text)
+        let shared = ids.intersection(unlandedIDs)
+        let mostlyUnlanded = !ids.isEmpty && (Float(shared.count) / Float(ids.count) >= 0.5)
+        guard shared.count >= 2 || mostlyUnlanded else { return hit }
+        var copy = hit
+        copy.score -= unlandedSkipListPenalty
+        if !copy.explanations.contains("unlanded skip-list demoted") {
+            copy.explanations.append("unlanded skip-list demoted")
+        }
+        return copy
     }
 
     private static func standingClusterTier(_ hit: Hit) -> Int {
@@ -710,6 +770,9 @@ package enum LayeredRecall {
     }
 
     private static func higherRank(_ lhs: Hit, _ rhs: Hit) -> Bool {
+        let leftDemoted = lhs.explanations.contains("unlanded skip-list demoted")
+        let rightDemoted = rhs.explanations.contains("unlanded skip-list demoted")
+        if leftDemoted != rightDemoted { return !leftDemoted }
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
         return lhs.frameID > rhs.frameID
