@@ -69,7 +69,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var query: String
         package var limit: Int
         package var searchTopK: Int
-        package var scope: LayeredRecall.Scope
+        package var identity: RecallIdentity
         package var mode: SearchMode?
         package var filters: ParsedSearchFilters
         package var explicitProject: String?
@@ -77,6 +77,8 @@ package enum BrokerCommand: Sendable, Equatable {
         package var clientCWD: String?
         package var verbosity: String = "compact"
         package var memoryTypes: [MemoryType] = []
+
+        package var scope: LayeredRecall.Scope { identity.scope }
     }
 
     package struct Search: Sendable, Equatable {
@@ -407,9 +409,7 @@ extension BrokerCommand.Recall {
         }
         let scope = try BrokerCommand.parseRecallScope(args)
         let filters = try BrokerCommand.parseSearchFilters(args)
-        if scope == .session, filters.sessionId == nil {
-            throw BrokerValidationError.invalid("scope session requires session_id")
-        }
+        let identity = try RecallIdentity.make(scope: scope, sessionID: filters.sessionId)
         let mode = try BrokerCommand.parseRecallMode(args)
         let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
         if let requestedTopK, !(1...BrokerLimits.maxTopK).contains(requestedTopK) {
@@ -421,7 +421,7 @@ extension BrokerCommand.Recall {
             query: query,
             limit: limit,
             searchTopK: requestedTopK ?? limit,
-            scope: scope,
+            identity: identity,
             mode: mode,
             filters: filters,
             explicitProject: try args.optionalString("project"),

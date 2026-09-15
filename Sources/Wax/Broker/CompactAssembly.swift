@@ -87,11 +87,10 @@ package enum CompactAssembly {
             query: request.query,
             // Apply the same project filter as recall before ranking so foreign
             // matches cannot consume the compact context candidate budget.
-            scope: request.scope,
+            identity: try RecallIdentity.make(scope: request.scope, sessionID: request.sessionID),
             limit: request.maxItems,
             searchTopK: fetchSearchTopK(maxItems: request.maxItems),
             mode: request.mode,
-            sessionID: request.sessionID,
             explicitProject: request.explicitProject,
             explicitRepo: request.explicitRepo,
             clientCWD: request.clientCWD,

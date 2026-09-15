@@ -1,6 +1,50 @@
 import Foundation
 import WaxCore
 
+/// Closed recall scope together with the working-lane session id after wire decode.
+///
+/// `.session` requires a UUID. `.project` and `.global` keep an optional working
+/// session so MCP can still consult that lane.
+package enum RecallIdentity: Sendable, Equatable {
+    case project(workingSessionID: UUID?)
+    case session(workingSessionID: UUID)
+    case global(workingSessionID: UUID?)
+
+    package var scope: LayeredRecall.Scope {
+        switch self {
+        case .project: return .project
+        case .session: return .session
+        case .global: return .global
+        }
+    }
+
+    package var sessionID: UUID? {
+        switch self {
+        case .project(let sessionID), .global(let sessionID):
+            return sessionID
+        case .session(let sessionID):
+            return sessionID
+        }
+    }
+
+    package static func make(
+        scope: LayeredRecall.Scope,
+        sessionID: UUID?
+    ) throws -> RecallIdentity {
+        switch scope {
+        case .project:
+            return .project(workingSessionID: sessionID)
+        case .session:
+            guard let sessionID else {
+                throw BrokerValidationError.invalid("scope session requires session_id")
+            }
+            return .session(workingSessionID: sessionID)
+        case .global:
+            return .global(workingSessionID: sessionID)
+        }
+    }
+}
+
 /// Broker Layered recall: scope/identity, multi-horizon fetch/merge, project filter.
 /// Feeds recall, layered search, and Compact assembly.
 /// Does not own Ranking scores, Recall assembly packing, Compact assembly packing,
@@ -106,11 +150,10 @@ package enum LayeredRecall {
     /// Coerced tool args; Layered recall owns what the fields mean.
     package struct RecallRequest: Sendable {
         package var query: String
-        package var scope: Scope
+        package var identity: RecallIdentity
         package var limit: Int
         package var searchTopK: Int
         package var mode: Memory.RetrievalMode?
-        package var sessionID: UUID?
         package var explicitProject: String?
         package var explicitRepo: String?
         package var clientCWD: String?
@@ -118,13 +161,15 @@ package enum LayeredRecall {
         package var timeRange: SearchTimeRange?
         package var memoryTypes: [MemoryType]
 
+        package var scope: Scope { identity.scope }
+        package var sessionID: UUID? { identity.sessionID }
+
         package init(
             query: String,
-            scope: Scope,
+            identity: RecallIdentity,
             limit: Int,
             searchTopK: Int,
             mode: Memory.RetrievalMode? = nil,
-            sessionID: UUID? = nil,
             explicitProject: String? = nil,
             explicitRepo: String? = nil,
             clientCWD: String? = nil,
@@ -133,11 +178,10 @@ package enum LayeredRecall {
             memoryTypes: [MemoryType] = []
         ) {
             self.query = query
-            self.scope = scope
+            self.identity = identity
             self.limit = limit
             self.searchTopK = searchTopK
             self.mode = mode
-            self.sessionID = sessionID
             self.explicitProject = explicitProject
             self.explicitRepo = explicitRepo
             self.clientCWD = clientCWD
@@ -986,7 +1030,7 @@ package enum LayeredRecall {
                 // A project-scoped typed fetch keeps current-project prefs visible
                 // the same way single-type retrieval keeps the person-lane hit.
                 var scopedRequest = request
-                scopedRequest.scope = .project
+                scopedRequest.identity = .project(workingSessionID: request.sessionID)
                 scopedRequest.searchTopK = retrievalTopK(requested: request.searchTopK)
                 let scopedLanes = try await fetchLanes(request: scopedRequest, stores: stores)
                 personLaneWorking.append(contentsOf: filterHitsByMemoryTypes(

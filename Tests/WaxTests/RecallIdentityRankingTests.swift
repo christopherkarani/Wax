@@ -50,6 +50,34 @@ private func identityStores(memory: MemoryOrchestrator) -> LayeredRecall.Stores 
 @Suite("Recall identity ranking wire")
 struct RecallIdentityRankingTests {
     @Test
+    func layeredRecallIdentityMakeRejectsSessionWithoutSessionID() {
+        #expect(
+            throws: BrokerValidationError.invalid("scope session requires session_id")
+        ) {
+            _ = try RecallIdentity.make(scope: .session, sessionID: nil)
+        }
+    }
+
+    @Test
+    func layeredRecallIdentityMakeAllowsProjectAndGlobalWithoutSessionID() throws {
+        #expect(try RecallIdentity.make(scope: .project, sessionID: nil) == .project(workingSessionID: nil))
+        #expect(try RecallIdentity.make(scope: .global, sessionID: nil) == .global(workingSessionID: nil))
+        let sessionID = UUID()
+        #expect(
+            try RecallIdentity.make(scope: .project, sessionID: sessionID)
+                == .project(workingSessionID: sessionID)
+        )
+        #expect(
+            try RecallIdentity.make(scope: .global, sessionID: sessionID)
+                == .global(workingSessionID: sessionID)
+        )
+        #expect(
+            try RecallIdentity.make(scope: .session, sessionID: sessionID)
+                == .session(workingSessionID: sessionID)
+        )
+    }
+
+    @Test
     func recallExecutionTagsSameRepoFromRequestIdentityNotBrokerCwd() async throws {
         let token = "WAXRANKWIRE-REPO-\(UUID().uuidString.prefix(8))"
         let recallIdentity = MemoryScopeContext(
@@ -99,7 +127,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: token,
-                    scope: .project,
+                    identity: .project(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 5,
                     mode: .textOnly,
@@ -143,7 +171,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: "\(token) wax operator lessons",
-                    scope: .project,
+                    identity: .project(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 5,
                     mode: .textOnly,
@@ -189,7 +217,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: token,
-                    scope: .project,
+                    identity: .project(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 5,
                     mode: .textOnly,
@@ -236,7 +264,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: token,
-                    scope: .global,
+                    identity: .global(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 5,
                     mode: .textOnly,
@@ -285,7 +313,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: "\(token) facts about this person standing corrections",
-                    scope: .global,
+                    identity: .global(workingSessionID: nil),
                     limit: 1,
                     searchTopK: 1,
                     mode: .textOnly,
@@ -333,7 +361,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: token,
-                    scope: .global,
+                    identity: .global(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 5,
                     mode: .textOnly,
@@ -393,7 +421,7 @@ struct RecallIdentityRankingTests {
             let result = try await LayeredRecall.recall(
                 request: LayeredRecall.RecallRequest(
                     query: "\(token) facts about this person standing corrections",
-                    scope: .global,
+                    identity: .global(workingSessionID: nil),
                     limit: 5,
                     searchTopK: 1,
                     mode: .textOnly,

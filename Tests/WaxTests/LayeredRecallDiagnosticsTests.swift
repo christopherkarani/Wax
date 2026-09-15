@@ -69,8 +69,11 @@ struct LayeredRecallDiagnosticsTests {
     func mixedLanesReportBothRetrievalOutcomes(workingVectorEnabled: Bool) async throws {
         try await withLanes(workingVectorEnabled: workingVectorEnabled) { stores, id in
             let result = try await LayeredRecall.recall(request: .init(
-                query: "memory reliability", scope: .global, limit: 8, searchTopK: 8,
-                mode: .hybrid(), sessionID: id
+                query: "memory reliability",
+                identity: .global(workingSessionID: id),
+                limit: 8,
+                searchTopK: 8,
+                mode: .hybrid()
             ), stores: stores)
             #expect(result.hits.contains { $0.text.contains("working investigation") })
             #expect(result.hits.contains { $0.text.contains("durable decision") })
@@ -82,8 +85,11 @@ struct LayeredRecallDiagnosticsTests {
     @Test func sessionScopeDoesNotReportUnqueriedDurableDegradation() async throws {
         try await withLanes(workingVectorEnabled: true) { stores, id in
             let result = try await LayeredRecall.recall(request: .init(
-                query: "memory reliability", scope: .session, limit: 8, searchTopK: 8,
-                mode: .hybrid(), sessionID: id
+                query: "memory reliability",
+                identity: .session(workingSessionID: id),
+                limit: 8,
+                searchTopK: 8,
+                mode: .hybrid()
             ), stores: stores)
             #expect(result.effectiveModeSummary == "hybrid(alpha=0.500)")
             #expect(result.queryEmbeddingState == "available")

@@ -70,11 +70,10 @@ package enum BrokerRecall {
     ) async throws -> PackedRecall {
         let request = LayeredRecall.RecallRequest(
             query: command.query,
-            scope: command.scope,
+            identity: command.identity,
             limit: command.limit,
             searchTopK: command.searchTopK,
             mode: command.mode,
-            sessionID: command.filters.sessionId,
             explicitProject: command.explicitProject,
             explicitRepo: command.explicitRepo,
             clientCWD: command.clientCWD,
