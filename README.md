@@ -96,7 +96,7 @@ Keep HTTP up with `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` or LaunchAge
 
 Full snippets, LaunchAgent `ai.wax.mcp-http`, `vector-health`, Hermes doctors, and a smoke test: [Resources/docs/wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md).
 
-The **wax-mcp** skill is the operator playbook. The **wax** skill is Swift framework integration. Different audience.
+The **wax-mcp** skill is install/doctor only. The **wax** skill is Swift SDK integration. Daily memory follows MCP server instructions, not either skill.
 
 </details>
 
