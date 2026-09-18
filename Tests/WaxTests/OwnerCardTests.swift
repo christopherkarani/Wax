@@ -308,6 +308,7 @@ struct OwnerCardTests {
 
         let single = OwnerCard.collapsedHit(from: [slot], preview: { $0 ?? "" })
         #expect(single?.flags.contains(.ownerCard) == true)
+        #expect(single?.explanations.contains("owner card") == true)
     }
 
     @Test

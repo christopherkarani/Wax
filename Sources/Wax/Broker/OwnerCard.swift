@@ -89,6 +89,9 @@ package enum OwnerCard {
         if hits.count == 1 {
             var only = first
             only.flags.insert(.ownerCard)
+            if !only.explanations.contains("owner card") {
+                only.explanations = ["owner card"] + only.explanations
+            }
             return only
         }
         let text = hits.map(\.text).joined(separator: " · ")
