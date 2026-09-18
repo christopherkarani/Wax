@@ -2183,7 +2183,7 @@ extension AgentBrokerService {
         // Disk rebuild skips stores held under exclusive flock. Active sessions in this
         // broker process are still part of "broker-managed session history" and must be
         // searchable via the live MemoryOrchestrator already open for each session.
-        let corpusHits: [BrokerCorpusMergeHit] = execution.hits.map { hit in
+        let corpusHits: [BrokerCorpusMergeHit] = execution.hits.compactMap { hit in
             let preview = agentFacingPreview(hit.previewText)
             return BrokerCorpusMergeHit.fromIndexedHit(
                 frameId: hit.frameId,

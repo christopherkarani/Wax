@@ -288,22 +288,61 @@ func brokerCorpusOriginDecodesHistoricalOnDiskStrings() {
     #expect(missing[BrokerCorpusMetadataKeys.origin] == "session_store")
 
     var unknown: [String: String] = [BrokerCorpusMetadataKeys.origin: "legacy_other"]
-    #expect(CorpusOrigin.decode(from: &unknown, default: .sessionStore) == .sessionStore)
-    #expect(unknown[BrokerCorpusMetadataKeys.origin] == "session_store")
+    #expect(CorpusOrigin.decode(from: &unknown, default: .sessionStore) == nil)
+    #expect(unknown[BrokerCorpusMetadataKeys.origin] == "legacy_other")
+
+    var empty: [String: String] = [BrokerCorpusMetadataKeys.origin: ""]
+    #expect(CorpusOrigin.decode(from: &empty, default: .sessionStore) == nil)
+    #expect(empty[BrokerCorpusMetadataKeys.origin] == "")
 }
 
 @Test
-func brokerCorpusFromIndexedHitDefaultsMissingOriginToSessionStore() {
-    let hit = BrokerCorpusMergeHit.fromIndexedHit(
+func brokerCorpusFromIndexedHitDefaultsMissingOriginToSessionStore() throws {
+    let hit = try #require(BrokerCorpusMergeHit.fromIndexedHit(
         frameId: 4,
         score: 0.2,
         sources: [.text, .vector],
         preview: "on disk",
-        metadata: [BrokerCorpusMetadataKeys.sourceStorePath: "/sessions/ended.wax"]
-    )
+        metadata: [BrokerCorpusMetadataKeys.sourceStorePath: "/sessions/ended.wax"],
+        defaultOrigin: .sessionStore
+    ))
     #expect(hit.origin == .sessionStore)
     #expect(hit.sources == [.text, .vector])
     #expect(hit.metadata[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.sessionStore.rawValue)
+}
+
+@Test
+func brokerCorpusFromIndexedHitDropsUnknownOriginInsteadOfForgingSessionStore() {
+    let metadata = [
+        BrokerCorpusMetadataKeys.origin: "legacy_other",
+        BrokerCorpusMetadataKeys.sourceStorePath: "/sessions/ended.wax",
+    ]
+    let hit = BrokerCorpusMergeHit.fromIndexedHit(
+        frameId: 5,
+        score: 0.2,
+        sources: [.text],
+        preview: "unknown writer",
+        metadata: metadata,
+        defaultOrigin: .sessionStore
+    )
+    #expect(hit == nil)
+}
+
+@Test
+func brokerCorpusFromIndexedHitExplicitOriginWinsOverUnknownMetadataString() {
+    let hit = BrokerCorpusMergeHit.fromIndexedHit(
+        frameId: 6,
+        score: 0.3,
+        sources: [.text],
+        preview: "live long-term",
+        metadata: [
+            BrokerCorpusMetadataKeys.origin: "legacy_other",
+            BrokerCorpusMetadataKeys.sourceStorePath: "/durable/memory.wax",
+        ],
+        origin: .longTerm
+    )
+    #expect(hit.origin == .longTerm)
+    #expect(hit.metadata[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.longTerm.rawValue)
 }
 
 @Test
@@ -347,6 +386,17 @@ func brokerCorpusSessionStoreOriginIsExplicitFetchCase() {
 
     #expect(sessionStoreHit.origin == .sessionStore)
     #expect(sessionStoreHit.origin.rawValue == "session_store")
+
+    let missingPath = BrokerCorpusMergeHit(
+        frameId: 14,
+        score: 0.4,
+        origin: .sessionStore,
+        sources: [.text],
+        preview: "ended session without source path",
+        metadata: [:],
+        dedupeKey: "nopath"
+    )
+    #expect(missingPath.fetchCase == nil)
 }
 
 @Test

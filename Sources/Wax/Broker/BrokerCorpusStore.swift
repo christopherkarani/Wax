@@ -17,16 +17,21 @@ package enum CorpusOrigin: String, Sendable, Equatable {
     case activeSession = "active_session"
     case sessionStore = "session_store"
 
-    /// Decode `wax.corpus.origin` from persisted metadata. Missing or unknown
-    /// values become `default` and are written back so the in-memory bag matches.
+    /// Decode `wax.corpus.origin` from persisted metadata.
+    ///
+    /// A missing key becomes `default` and is written back so the in-memory bag
+    /// matches the caller-known writer (disk corpus ingest is `sessionStore`).
+    /// A present but unknown string is left unchanged and returns `nil` — do
+    /// not forge `session_store` or take that fetch path.
     package static func decode(
         from metadata: inout [String: String],
         default defaultOrigin: CorpusOrigin
-    ) -> CorpusOrigin {
-        let origin = metadata[BrokerCorpusMetadataKeys.origin].flatMap(CorpusOrigin.init(rawValue:))
-            ?? defaultOrigin
-        origin.encode(into: &metadata)
-        return origin
+    ) -> CorpusOrigin? {
+        guard let raw = metadata[BrokerCorpusMetadataKeys.origin] else {
+            defaultOrigin.encode(into: &metadata)
+            return defaultOrigin
+        }
+        return CorpusOrigin(rawValue: raw)
     }
 
     package func encode(into metadata: inout [String: String]) {
@@ -80,27 +85,22 @@ package struct BrokerCorpusMergeHit: Sendable, Equatable {
         self.dedupeKey = dedupeKey
     }
 
-    /// Map a search-engine row into a merge hit. Origin is decoded from
-    /// `wax.corpus.origin` (or `origin` when the caller already knows the writer).
+    /// Map a search-engine row whose writer is already known.
     package static func fromIndexedHit(
         frameId: UInt64,
         score: Float,
         sources: [RAGContext.Source],
         preview: String,
         metadata: [String: String],
-        origin: CorpusOrigin? = nil,
-        defaultOrigin: CorpusOrigin = .sessionStore
+        origin: CorpusOrigin
     ) -> BrokerCorpusMergeHit {
         var metadata = metadata
-        let resolved = origin ?? CorpusOrigin.decode(from: &metadata, default: defaultOrigin)
-        if let origin {
-            origin.encode(into: &metadata)
-        }
+        origin.encode(into: &metadata)
         let sourcePath = metadata[BrokerCorpusMetadataKeys.sourceStorePath] ?? ""
         return BrokerCorpusMergeHit(
             frameId: frameId,
             score: score,
-            origin: resolved,
+            origin: origin,
             sources: sources,
             preview: preview,
             metadata: metadata,
@@ -109,6 +109,30 @@ package struct BrokerCorpusMergeHit: Sendable, Equatable {
                 frameId: frameId,
                 preview: preview
             )
+        )
+    }
+
+    /// Map a disk-index row. Missing `wax.corpus.origin` uses `defaultOrigin`.
+    /// Unknown origin strings fail closed (`nil`) instead of becoming `sessionStore`.
+    package static func fromIndexedHit(
+        frameId: UInt64,
+        score: Float,
+        sources: [RAGContext.Source],
+        preview: String,
+        metadata: [String: String],
+        defaultOrigin: CorpusOrigin
+    ) -> BrokerCorpusMergeHit? {
+        var metadata = metadata
+        guard let origin = CorpusOrigin.decode(from: &metadata, default: defaultOrigin) else {
+            return nil
+        }
+        return fromIndexedHit(
+            frameId: frameId,
+            score: score,
+            sources: sources,
+            preview: preview,
+            metadata: metadata,
+            origin: origin
         )
     }
 

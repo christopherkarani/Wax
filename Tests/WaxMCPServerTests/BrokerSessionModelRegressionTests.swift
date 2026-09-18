@@ -1379,6 +1379,66 @@ func sessionStoreCorpusOriginIsExplicitTrustedFetchCase() {
 }
 
 @Test
+func sessionStoreExpandFetchUsesTrustedPathNotLiveOrchestrator() async throws {
+    try await withIsolatedBroker { service, sessionRoot in
+        let trusted = sessionRoot.appendingPathComponent("ended.wax")
+        let sessionStoreHit = BrokerCorpusMergeHit(
+            frameId: 9,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "ended session note",
+            metadata: [BrokerCorpusMetadataKeys.sourceStorePath: trusted.path],
+            dedupeKey: "ended"
+        )
+        #expect(await service.memoryForCorpusHit(sessionStoreHit) == nil)
+        #expect(await service.trustedSessionStoreURL(for: sessionStoreHit) == trusted.standardizedFileURL)
+
+        let escape = BrokerCorpusMergeHit(
+            frameId: 10,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "untrusted path",
+            metadata: [BrokerCorpusMetadataKeys.sourceStorePath: "/tmp/not-a-broker-store.wax"],
+            dedupeKey: "escape"
+        )
+        switch escape.fetchCase {
+        case .sessionStore:
+            break
+        case .longTerm, .activeSession, nil:
+            Issue.record("untrusted sessionStore still has a fetchCase; trust is the service gate")
+        }
+        #expect(await service.trustedSessionStoreURL(for: escape) == nil)
+
+        let missingPath = BrokerCorpusMergeHit(
+            frameId: 12,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "no source path",
+            metadata: [:],
+            dedupeKey: "nopath"
+        )
+        #expect(missingPath.fetchCase == nil)
+        #expect(await service.trustedSessionStoreURL(for: missingPath) == nil)
+        #expect(await service.memoryForCorpusHit(missingPath) == nil)
+
+        let longTermHit = BrokerCorpusMergeHit(
+            frameId: 11,
+            score: 0.5,
+            origin: .longTerm,
+            sources: [.text],
+            preview: "durable",
+            metadata: [:],
+            dedupeKey: "lt"
+        )
+        #expect(await service.memoryForCorpusHit(longTermHit) != nil)
+        #expect(await service.trustedSessionStoreURL(for: longTermHit) == nil)
+    }
+}
+
+@Test
 func unresolvedSessionScopedSearchDoesNotReturnForeignLabDurable() async throws {
     try await withIsolatedBroker { service, _ in
         let started = await service.handle(.init(
