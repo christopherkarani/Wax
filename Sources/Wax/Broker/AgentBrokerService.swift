@@ -2183,20 +2183,15 @@ extension AgentBrokerService {
         // Disk rebuild skips stores held under exclusive flock. Active sessions in this
         // broker process are still part of "broker-managed session history" and must be
         // searchable via the live MemoryOrchestrator already open for each session.
-        let corpusHits: [BrokerCorpusMergeHit] = execution.hits.map { hit in
+        let corpusHits: [BrokerCorpusMergeHit] = execution.hits.compactMap { hit in
             let preview = agentFacingPreview(hit.previewText)
-            let sourcePath = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath] ?? ""
-            return BrokerCorpusMergeHit(
+            return BrokerCorpusMergeHit.fromIndexedHit(
                 frameId: hit.frameId,
                 score: hit.score,
-                sources: hit.sources.map(\.rawValue),
+                sources: hit.sources,
                 preview: preview,
                 metadata: hit.metadata,
-                dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
-                    sourcePath: sourcePath,
-                    frameId: hit.frameId,
-                    preview: preview
-                )
+                defaultOrigin: .sessionStore
             )
         }
 
@@ -2213,23 +2208,17 @@ extension AgentBrokerService {
         )
         let longTermHits: [BrokerCorpusMergeHit] = longTermExecution.hits.map { hit in
             let preview = agentFacingPreview(hit.previewText)
-            let storePath = longTermStoreURL.path
             var metadata = hit.metadata
-            metadata[BrokerCorpusMetadataKeys.origin] = "long_term"
-            metadata[BrokerCorpusMetadataKeys.sourceStorePath] = storePath
+            metadata[BrokerCorpusMetadataKeys.sourceStorePath] = longTermStoreURL.path
             metadata[BrokerCorpusMetadataKeys.sourceStoreName] = longTermStoreURL.lastPathComponent
             metadata[BrokerCorpusMetadataKeys.sourceFrameID] = String(hit.frameId)
-            return BrokerCorpusMergeHit(
+            return BrokerCorpusMergeHit.fromIndexedHit(
                 frameId: hit.frameId,
                 score: hit.score,
-                sources: hit.sources.map(\.rawValue),
+                sources: hit.sources,
                 preview: preview,
                 metadata: metadata,
-                dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
-                    sourcePath: storePath,
-                    frameId: hit.frameId,
-                    preview: preview
-                )
+                origin: .longTerm
             )
         }
         if !longTermHits.isEmpty {
@@ -2254,17 +2243,13 @@ extension AgentBrokerService {
                     frameId: hit.frameId,
                     sessionID: state.id.uuidString
                 )
-                return BrokerCorpusMergeHit(
+                return BrokerCorpusMergeHit.fromIndexedHit(
                     frameId: hit.frameId,
                     score: hit.score,
-                    sources: hit.sources.map(\.rawValue),
+                    sources: hit.sources,
                     preview: preview,
                     metadata: metadata,
-                    dedupeKey: BrokerCorpusMergeHit.makeDedupeKey(
-                        sourcePath: storePath,
-                        frameId: hit.frameId,
-                        preview: preview
-                    )
+                    origin: .activeSession
                 )
             }
             activeSessionHitGroups.append(group)
@@ -2292,7 +2277,7 @@ extension AgentBrokerService {
                 "rank": .from(index + 1),
                 "frameId": .from(hit.frameId),
                 "score": .double(Double(hit.score)),
-                "sources": .array(hit.sources.map { .string($0) }),
+                "sources": .array(hit.sources.map { .string($0.rawValue) }),
                 "preview": .string(hit.preview),
                 "metadata": .object(Self.publicCorpusMetadata(hit.metadata).mapValues(AgentBrokerValue.string)),
             ]
@@ -2618,19 +2603,7 @@ extension AgentBrokerService {
         _ hits: [BrokerCorpusMergeHit],
         identity: LayeredRecall.Identity
     ) -> [BrokerCorpusMergeHit] {
-        if identity.project != nil || identity.repo != nil {
-            return hits.filter {
-                LayeredRecall.metadataMatchesScopedRetrieval($0.metadata, identity: identity)
-            }
-        }
-        return hits.filter { hit in
-            let isWorking = hit.metadata[BrokerCorpusMetadataKeys.origin] == "active_session"
-            return matchesSessionScopedRetrieval(
-                metadata: hit.metadata,
-                identity: identity,
-                isWorking: isWorking
-            )
-        }
+        hits.filter { BrokerRecall.allowsCorpusSearchHit($0, identity: identity) }
     }
 
     /// Omit store paths from the MCP/broker JSON. Keep origin and frame ids.
@@ -2756,59 +2729,103 @@ extension AgentBrokerService {
     }
 
     func corpusHitFullText(_ hit: BrokerCorpusMergeHit) async -> String {
-        if let memory = memoryForCorpusHit(hit) {
-            let frameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) ?? hit.frameId
-            if let text = await frameText(frameID: frameID, memory: memory),
-               text.utf8.count >= hit.preview.utf8.count {
-                return text
-            }
-        }
-        if let path = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath], !path.isEmpty {
-            let sourceFrameID = hit.metadata[BrokerCorpusMetadataKeys.sourceFrameID].flatMap(UInt64.init) ?? hit.frameId
-            let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
-            if sourceURL.path == longTermStoreURL.standardizedFileURL.path {
-                if let text = await frameText(frameID: sourceFrameID, memory: longTermMemory) {
+        switch hit.origin {
+        case .longTerm, .activeSession:
+            if let memory = memoryForCorpusHit(hit) {
+                let frameID = await bestEffortCanonicalDocumentFrameID(for: hit.frameId, memory: memory) ?? hit.frameId
+                if let text = await frameText(frameID: frameID, memory: memory),
+                   text.utf8.count >= hit.preview.utf8.count {
                     return text
                 }
-            } else if let session = activeSessions.values.first(where: {
-                $0.storeURL.standardizedFileURL.path == sourceURL.path
-            }) {
-                if let text = await frameText(frameID: sourceFrameID, memory: session.memory) {
-                    return text
-                }
-            } else if isTrustedCorpusStoreURL(sourceURL) {
-                let fetched = try? await endedSessions.withMemory(
-                    at: sourceURL,
-                    noEmbedder: true
-                ) { memory in
-                    if let data = try? await memory.wax.frameContent(frameId: sourceFrameID),
-                       let text = String(data: data, encoding: .utf8),
-                       !text.isEmpty {
-                        return text
-                    }
-                    return (try? await memory.corpusSourceDocuments()
-                        .first(where: { $0.frameId == sourceFrameID })?.text) ?? ""
-                }
-                if let fetched, fetched.isEmpty == false {
-                    return fetched
-                }
             }
+            return await corpusHitTextFromSourceStorePath(hit) ?? hit.preview
+        case .sessionStore:
+            return await fetchTrustedSessionStoreCorpusHitText(hit) ?? hit.preview
         }
-        return hit.preview
     }
 
     func memoryForCorpusHit(_ hit: BrokerCorpusMergeHit) -> MemoryOrchestrator? {
-        switch hit.metadata[BrokerCorpusMetadataKeys.origin] {
-        case "long_term":
+        switch hit.origin {
+        case .longTerm:
             return longTermMemory
-        case "active_session":
+        case .activeSession:
             guard let raw = hit.metadata["session_id"], let sessionID = UUID(uuidString: raw) else {
                 return nil
             }
             return activeSessions[sessionID]?.memory
-        default:
+        case .sessionStore:
+            // Live orchestrators are not held for ended session stores. Expand
+            // opens `trustedSessionStoreURL` through `endedSessions.withMemory`.
             return nil
         }
+    }
+
+    func trustedSessionStoreURL(for hit: BrokerCorpusMergeHit) -> URL? {
+        guard hit.origin == .sessionStore else { return nil }
+        guard case .sessionStore(let url) = hit.fetchCase else { return nil }
+        guard isTrustedCorpusStoreURL(url) else { return nil }
+        return url
+    }
+
+    func fetchTrustedSessionStoreCorpusHitText(_ hit: BrokerCorpusMergeHit) async -> String? {
+        guard let sourceURL = trustedSessionStoreURL(for: hit) else { return nil }
+        let sourceFrameID = hit.metadata[BrokerCorpusMetadataKeys.sourceFrameID].flatMap(UInt64.init) ?? hit.frameId
+        if let session = activeSessions.values.first(where: {
+            $0.storeURL.standardizedFileURL.path == sourceURL.path
+        }) {
+            if let text = await frameText(frameID: sourceFrameID, memory: session.memory) {
+                return text
+            }
+        }
+        let fetched = try? await endedSessions.withMemory(
+            at: sourceURL,
+            noEmbedder: true
+        ) { memory in
+            if let data = try? await memory.wax.frameContent(frameId: sourceFrameID),
+               let text = String(data: data, encoding: .utf8),
+               !text.isEmpty {
+                return text
+            }
+            return (try? await memory.corpusSourceDocuments()
+                .first(where: { $0.frameId == sourceFrameID })?.text) ?? ""
+        }
+        if let fetched, fetched.isEmpty == false {
+            return fetched
+        }
+        return nil
+    }
+
+    func corpusHitTextFromSourceStorePath(_ hit: BrokerCorpusMergeHit) async -> String? {
+        guard let path = hit.metadata[BrokerCorpusMetadataKeys.sourceStorePath], !path.isEmpty else {
+            return nil
+        }
+        let sourceFrameID = hit.metadata[BrokerCorpusMetadataKeys.sourceFrameID].flatMap(UInt64.init) ?? hit.frameId
+        let sourceURL = URL(fileURLWithPath: path).standardizedFileURL
+        if sourceURL.path == longTermStoreURL.standardizedFileURL.path {
+            return await frameText(frameID: sourceFrameID, memory: longTermMemory)
+        }
+        if let session = activeSessions.values.first(where: {
+            $0.storeURL.standardizedFileURL.path == sourceURL.path
+        }) {
+            return await frameText(frameID: sourceFrameID, memory: session.memory)
+        }
+        guard isTrustedCorpusStoreURL(sourceURL) else { return nil }
+        let fetched = try? await endedSessions.withMemory(
+            at: sourceURL,
+            noEmbedder: true
+        ) { memory in
+            if let data = try? await memory.wax.frameContent(frameId: sourceFrameID),
+               let text = String(data: data, encoding: .utf8),
+               !text.isEmpty {
+                return text
+            }
+            return (try? await memory.corpusSourceDocuments()
+                .first(where: { $0.frameId == sourceFrameID })?.text) ?? ""
+        }
+        if let fetched, fetched.isEmpty == false {
+            return fetched
+        }
+        return nil
     }
 
     func isTrustedCorpusStoreURL(_ url: URL) -> Bool {

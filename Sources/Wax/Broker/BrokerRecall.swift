@@ -351,6 +351,21 @@ package enum BrokerRecall {
         return LayeredRecall.metadataMatchesScopedRetrieval(metadata, identity: identity)
     }
 
+    /// Session-scoped corpus fence. Unresolved identity still keeps live
+    /// `activeSession` rows visible; other origins follow the durable stamp rule.
+    package static func allowsCorpusSearchHit(
+        _ hit: BrokerCorpusMergeHit,
+        identity: LayeredRecall.Identity
+    ) -> Bool {
+        if identity.project != nil || identity.repo != nil {
+            return LayeredRecall.metadataMatchesScopedRetrieval(hit.metadata, identity: identity)
+        }
+        if hit.origin == .activeSession {
+            return true
+        }
+        return allowsDurableSearchHit(metadata: hit.metadata, identity: identity)
+    }
+
     package static func hasExplicitProjectOrRepoStamp(_ metadata: [String: String]) -> Bool {
         let project = metadata[MemoryMetadataKeys.project]
         let repo = metadata[MemoryMetadataKeys.repo]

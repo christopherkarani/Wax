@@ -1326,8 +1326,8 @@ func filterMemorySearchHitsUnresolvedIdentityDropsStampedForeignDurable() {
 
 @Test
 func filterCorpusHitsUnresolvedIdentityDropsStampedForeignDurable() {
-    func hit(preview: String, origin: String, project: String?) -> BrokerCorpusMergeHit {
-        var metadata = [BrokerCorpusMetadataKeys.origin: origin]
+    func hit(preview: String, origin: CorpusOrigin, project: String?) -> BrokerCorpusMergeHit {
+        var metadata: [String: String] = [:]
         if let project {
             metadata[MemoryMetadataKeys.project] = project
             metadata[MemoryMetadataKeys.repo] = project
@@ -1335,7 +1335,8 @@ func filterCorpusHitsUnresolvedIdentityDropsStampedForeignDurable() {
         return BrokerCorpusMergeHit(
             frameId: 1,
             score: 1,
-            sources: ["text"],
+            origin: origin,
+            sources: [.text],
             preview: preview,
             metadata: metadata,
             dedupeKey: preview
@@ -1343,13 +1344,98 @@ func filterCorpusHitsUnresolvedIdentityDropsStampedForeignDurable() {
     }
     let filtered = AgentBrokerService.filterCorpusHits(
         [
-            hit(preview: "live working", origin: "active_session", project: "ForeignLab"),
-            hit(preview: "unstamped durable", origin: "long_term", project: nil),
-            hit(preview: "ForeignLab durable", origin: "long_term", project: "ForeignLab"),
+            hit(preview: "live working", origin: .activeSession, project: "ForeignLab"),
+            hit(preview: "unstamped durable", origin: .longTerm, project: nil),
+            hit(preview: "ForeignLab durable", origin: .longTerm, project: "ForeignLab"),
         ],
         identity: LayeredRecall.Identity()
     )
     #expect(filtered.map(\.preview) == ["live working", "unstamped durable"])
+}
+
+@Test
+func sessionStoreCorpusOriginIsExplicitTrustedFetchCase() {
+    let path = "/sessions/ended/store.wax"
+    let hit = BrokerCorpusMergeHit(
+        frameId: 9,
+        score: 0.5,
+        origin: .sessionStore,
+        sources: [.text],
+        preview: "ended session note",
+        metadata: [BrokerCorpusMetadataKeys.sourceStorePath: path],
+        dedupeKey: "ended"
+    )
+    switch hit.origin {
+    case .sessionStore:
+        switch hit.fetchCase {
+        case .sessionStore(let url):
+            #expect(url.path == URL(fileURLWithPath: path).standardizedFileURL.path)
+        case .longTerm, .activeSession, nil:
+            Issue.record("sessionStore origin must resolve via the trusted store URL")
+        }
+    case .longTerm, .activeSession:
+        Issue.record("expected sessionStore origin")
+    }
+}
+
+@Test
+func sessionStoreExpandFetchUsesTrustedPathNotLiveOrchestrator() async throws {
+    try await withIsolatedBroker { service, sessionRoot in
+        let trusted = sessionRoot.appendingPathComponent("ended.wax")
+        let sessionStoreHit = BrokerCorpusMergeHit(
+            frameId: 9,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "ended session note",
+            metadata: [BrokerCorpusMetadataKeys.sourceStorePath: trusted.path],
+            dedupeKey: "ended"
+        )
+        #expect(await service.memoryForCorpusHit(sessionStoreHit) == nil)
+        #expect(await service.trustedSessionStoreURL(for: sessionStoreHit) == trusted.standardizedFileURL)
+
+        let escape = BrokerCorpusMergeHit(
+            frameId: 10,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "untrusted path",
+            metadata: [BrokerCorpusMetadataKeys.sourceStorePath: "/tmp/not-a-broker-store.wax"],
+            dedupeKey: "escape"
+        )
+        switch escape.fetchCase {
+        case .sessionStore:
+            break
+        case .longTerm, .activeSession, nil:
+            Issue.record("untrusted sessionStore still has a fetchCase; trust is the service gate")
+        }
+        #expect(await service.trustedSessionStoreURL(for: escape) == nil)
+
+        let missingPath = BrokerCorpusMergeHit(
+            frameId: 12,
+            score: 0.5,
+            origin: .sessionStore,
+            sources: [.text],
+            preview: "no source path",
+            metadata: [:],
+            dedupeKey: "nopath"
+        )
+        #expect(missingPath.fetchCase == nil)
+        #expect(await service.trustedSessionStoreURL(for: missingPath) == nil)
+        #expect(await service.memoryForCorpusHit(missingPath) == nil)
+
+        let longTermHit = BrokerCorpusMergeHit(
+            frameId: 11,
+            score: 0.5,
+            origin: .longTerm,
+            sources: [.text],
+            preview: "durable",
+            metadata: [:],
+            dedupeKey: "lt"
+        )
+        #expect(await service.memoryForCorpusHit(longTermHit) != nil)
+        #expect(await service.trustedSessionStoreURL(for: longTermHit) == nil)
+    }
 }
 
 @Test
