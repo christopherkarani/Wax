@@ -387,6 +387,62 @@ struct MCPAutoSessionCoordinatorTests {
     }
 
     @Test
+    func userPreferenceRememberWithGlobalScopeStillFailsParse() async throws {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        defer { MCPBoundSessionRegistry.shared.resetForTests() }
+        try await withAutoSessionBroker { broker in
+            let hint = MCPClientSessionHint(
+                connectionKey: "auto-pref-global",
+                context: MCPConnectionContext(transportKey: "auto-pref-global")
+            )
+            let result = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "remember",
+                    arguments: [
+                        "content": .string("person-lane skip must not swallow invalid write scope"),
+                        "memory_type": .string("user_preference"),
+                        "scope": .string("global"),
+                    ]
+                ),
+                broker: broker,
+                sessionHint: hint
+            )
+            #expect(result.isError == true)
+            let payload = try requireAutoJSON(result)
+            #expect(payload["code"] as? String == "invalid_arguments")
+            #expect(payload["message"] as? String == "scope must be one of: session, durable")
+            #expect(payload["code"] as? String != "project_unresolved")
+            #expect(hint.current() == nil)
+        }
+    }
+
+    @Test
+    func missingRecallScopeRemainsProjectGated() async throws {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        defer { MCPBoundSessionRegistry.shared.resetForTests() }
+        try await withAutoSessionBroker { broker in
+            let hint = MCPClientSessionHint(
+                connectionKey: "auto-recall-default-project",
+                context: MCPConnectionContext(transportKey: "auto-recall-default-project")
+            )
+            let result = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "recall",
+                    arguments: [
+                        "query": .string("missing scope must stay project gated"),
+                    ]
+                ),
+                broker: broker,
+                sessionHint: hint
+            )
+            #expect(result.isError == true)
+            let payload = try requireAutoJSON(result)
+            #expect(payload["code"] as? String == "project_unresolved")
+            #expect(hint.current() == nil)
+        }
+    }
+
+    @Test
     func unknownMemoryTypeRemainsProjectGated() async throws {
         MCPBoundSessionRegistry.shared.resetForTests()
         defer { MCPBoundSessionRegistry.shared.resetForTests() }

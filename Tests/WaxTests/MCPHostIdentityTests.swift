@@ -136,6 +136,13 @@ func globalPersonRecallIsNotProjectGated() {
     #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .fact, scope: nil))
     #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: nil, scope: nil))
     #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: nil, scope: .durable))
+
+    for type in MemoryType.allCases {
+        #expect(
+            MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: type, scope: nil)
+                == (type != .userPreference)
+        )
+    }
 }
 
 @Test
