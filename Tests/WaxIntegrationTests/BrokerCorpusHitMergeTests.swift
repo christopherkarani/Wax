@@ -9,10 +9,15 @@ private func hit(
     score: Float,
     preview: String = "preview",
     sourcePath: String = "/corpus/a.wax",
-    sources: [String] = ["text"],
+    origin: CorpusOrigin = .sessionStore,
+    sources: [RAGContext.Source] = [.text],
     metadata: [String: String] = [:],
     dedupeKey: String? = nil
 ) -> BrokerCorpusMergeHit {
+    var metadata = metadata
+    if metadata[BrokerCorpusMetadataKeys.sourceStorePath] == nil {
+        metadata[BrokerCorpusMetadataKeys.sourceStorePath] = sourcePath
+    }
     let key = dedupeKey ?? BrokerCorpusMergeHit.makeDedupeKey(
         sourcePath: sourcePath,
         frameId: frameId,
@@ -21,6 +26,7 @@ private func hit(
     return BrokerCorpusMergeHit(
         frameId: frameId,
         score: score,
+        origin: origin,
         sources: sources,
         preview: preview,
         metadata: metadata,
@@ -42,8 +48,8 @@ func brokerCorpusMergeIncludesActiveSessionHits() {
                 score: 0.9,
                 preview: "live session note",
                 sourcePath: "/sessions/active.wax",
+                origin: .activeSession,
                 metadata: [
-                    BrokerCorpusMetadataKeys.origin: "active_session",
                     "session_id": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
                 ]
             ),
@@ -59,7 +65,8 @@ func brokerCorpusMergeIncludesActiveSessionHits() {
     #expect(merged.count == 2)
     #expect(merged[0].frameId == 2)
     #expect(merged[0].score == 0.9)
-    #expect(merged[0].metadata[BrokerCorpusMetadataKeys.origin] == "active_session")
+    #expect(merged[0].origin == .activeSession)
+    #expect(merged[0].metadata[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.activeSession.rawValue)
     #expect(merged[1].frameId == 1)
 }
 
@@ -112,7 +119,8 @@ func brokerCorpusMergeDedupeKeyDropsActiveDuplicateOfCorpusHit() {
         score: 0.95,
         preview: preview,
         sourcePath: path,
-        metadata: [BrokerCorpusMetadataKeys.origin: "active_session"]
+        origin: .activeSession,
+        metadata: [BrokerCorpusMetadataKeys.origin: CorpusOrigin.activeSession.rawValue]
     )
 
     #expect(corpusHit.dedupeKey == activeHit.dedupeKey)
@@ -254,9 +262,130 @@ func brokerCorpusAnnotateActiveSessionMetadata() {
 
     #expect(annotated["existing"] == "keep")
     #expect(annotated[BrokerCorpusMetadataKeys.sourceRole] == "user")
-    #expect(annotated[BrokerCorpusMetadataKeys.origin] == "active_session")
+    #expect(annotated[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.activeSession.rawValue)
     #expect(annotated[BrokerCorpusMetadataKeys.sourceStorePath] == "/sessions/abc.wax")
     #expect(annotated[BrokerCorpusMetadataKeys.sourceStoreName] == "abc.wax")
     #expect(annotated[BrokerCorpusMetadataKeys.sourceFrameID] == "99")
     #expect(annotated["session_id"] == "11111111-2222-3333-4444-555555555555")
+}
+
+// MARK: - CorpusOrigin store-boundary + exhaustive fetch (AC-004)
+
+@Test
+func brokerCorpusOriginDecodesHistoricalOnDiskStrings() {
+    var sessionStore: [String: String] = [BrokerCorpusMetadataKeys.origin: "session_store"]
+    #expect(CorpusOrigin.decode(from: &sessionStore, default: .longTerm) == .sessionStore)
+    #expect(sessionStore[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.sessionStore.rawValue)
+
+    var active: [String: String] = [BrokerCorpusMetadataKeys.origin: "active_session"]
+    #expect(CorpusOrigin.decode(from: &active, default: .sessionStore) == .activeSession)
+
+    var longTerm: [String: String] = [BrokerCorpusMetadataKeys.origin: "long_term"]
+    #expect(CorpusOrigin.decode(from: &longTerm, default: .sessionStore) == .longTerm)
+
+    var missing: [String: String] = [:]
+    #expect(CorpusOrigin.decode(from: &missing, default: .sessionStore) == .sessionStore)
+    #expect(missing[BrokerCorpusMetadataKeys.origin] == "session_store")
+
+    var unknown: [String: String] = [BrokerCorpusMetadataKeys.origin: "legacy_other"]
+    #expect(CorpusOrigin.decode(from: &unknown, default: .sessionStore) == .sessionStore)
+    #expect(unknown[BrokerCorpusMetadataKeys.origin] == "session_store")
+}
+
+@Test
+func brokerCorpusFromIndexedHitDefaultsMissingOriginToSessionStore() {
+    let hit = BrokerCorpusMergeHit.fromIndexedHit(
+        frameId: 4,
+        score: 0.2,
+        sources: [.text, .vector],
+        preview: "on disk",
+        metadata: [BrokerCorpusMetadataKeys.sourceStorePath: "/sessions/ended.wax"]
+    )
+    #expect(hit.origin == .sessionStore)
+    #expect(hit.sources == [.text, .vector])
+    #expect(hit.metadata[BrokerCorpusMetadataKeys.origin] == CorpusOrigin.sessionStore.rawValue)
+}
+
+@Test
+func brokerCorpusSessionStoreOriginIsExplicitFetchCase() {
+    let path = "/sessions/ended/store.wax"
+    let sessionStoreHit = hit(
+        frameId: 11,
+        score: 0.4,
+        preview: "ended session note",
+        sourcePath: path,
+        origin: .sessionStore
+    )
+    let longTermHit = hit(frameId: 12, score: 0.4, origin: .longTerm)
+    let activeHit = hit(
+        frameId: 13,
+        score: 0.4,
+        origin: .activeSession,
+        metadata: ["session_id": "11111111-2222-3333-4444-555555555555"]
+    )
+
+    switch sessionStoreHit.fetchCase {
+    case .sessionStore(let url):
+        #expect(url.path == URL(fileURLWithPath: path).standardizedFileURL.path)
+    case .longTerm, .activeSession, nil:
+        Issue.record("sessionStore origin must resolve as an explicit trusted-store fetch")
+    }
+
+    switch longTermHit.fetchCase {
+    case .longTerm:
+        break
+    case .activeSession, .sessionStore, nil:
+        Issue.record("longTerm origin must stay a live long-term fetch case")
+    }
+
+    switch activeHit.fetchCase {
+    case .activeSession(let sessionID):
+        #expect(sessionID == UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+    case .longTerm, .sessionStore, nil:
+        Issue.record("activeSession origin must stay a live session fetch case")
+    }
+
+    #expect(sessionStoreHit.origin == .sessionStore)
+    #expect(sessionStoreHit.origin.rawValue == "session_store")
+}
+
+@Test
+func brokerRecallAllowsCorpusSearchHitKeepsActiveSessionWhenIdentityUnresolved() {
+    let identity = LayeredRecall.Identity()
+    let live = hit(
+        frameId: 1,
+        score: 1,
+        preview: "live working",
+        origin: .activeSession,
+        metadata: [
+            MemoryMetadataKeys.project: "ForeignLab",
+            MemoryMetadataKeys.repo: "ForeignLab",
+        ]
+    )
+    let unstamped = hit(frameId: 2, score: 1, preview: "unstamped durable", origin: .longTerm)
+    let foreign = hit(
+        frameId: 3,
+        score: 1,
+        preview: "ForeignLab durable",
+        origin: .longTerm,
+        metadata: [
+            MemoryMetadataKeys.project: "ForeignLab",
+            MemoryMetadataKeys.repo: "ForeignLab",
+        ]
+    )
+    let ended = hit(
+        frameId: 4,
+        score: 1,
+        preview: "ended session store",
+        origin: .sessionStore,
+        metadata: [
+            MemoryMetadataKeys.project: "ForeignLab",
+            MemoryMetadataKeys.repo: "ForeignLab",
+        ]
+    )
+
+    #expect(BrokerRecall.allowsCorpusSearchHit(live, identity: identity))
+    #expect(BrokerRecall.allowsCorpusSearchHit(unstamped, identity: identity))
+    #expect(BrokerRecall.allowsCorpusSearchHit(foreign, identity: identity) == false)
+    #expect(BrokerRecall.allowsCorpusSearchHit(ended, identity: identity) == false)
 }

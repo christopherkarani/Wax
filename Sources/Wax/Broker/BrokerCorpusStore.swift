@@ -11,6 +11,29 @@ package enum BrokerCorpusMetadataKeys {
     package static let sourceKind = "wax.corpus.source_kind"
 }
 
+/// Closed writers for a corpus merge hit. Wire / on-disk strings stay the raw values.
+package enum CorpusOrigin: String, Sendable, Equatable {
+    case longTerm = "long_term"
+    case activeSession = "active_session"
+    case sessionStore = "session_store"
+
+    /// Decode `wax.corpus.origin` from persisted metadata. Missing or unknown
+    /// values become `default` and are written back so the in-memory bag matches.
+    package static func decode(
+        from metadata: inout [String: String],
+        default defaultOrigin: CorpusOrigin
+    ) -> CorpusOrigin {
+        let origin = metadata[BrokerCorpusMetadataKeys.origin].flatMap(CorpusOrigin.init(rawValue:))
+            ?? defaultOrigin
+        origin.encode(into: &metadata)
+        return origin
+    }
+
+    package func encode(into metadata: inout [String: String]) {
+        metadata[BrokerCorpusMetadataKeys.origin] = rawValue
+    }
+}
+
 package struct BrokerCorpusBuildSummary: Equatable, Sendable {
     package var storesDiscovered: Int
     package var storesIndexed: Int
@@ -22,9 +45,17 @@ package struct BrokerCorpusBuildSummary: Equatable, Sendable {
 
 /// Ranked hit from disk corpus search or a live active-session search, ready for merge.
 package struct BrokerCorpusMergeHit: Sendable, Equatable {
+    /// Where expand should fetch full text. `sessionStore` is the trusted source-store URL.
+    package enum FetchCase: Sendable, Equatable {
+        case longTerm
+        case activeSession(UUID)
+        case sessionStore(URL)
+    }
+
     package var frameId: UInt64
     package var score: Float
-    package var sources: [String]
+    package var origin: CorpusOrigin
+    package var sources: [RAGContext.Source]
     package var preview: String
     package var metadata: [String: String]
     package var dedupeKey: String
@@ -32,17 +63,71 @@ package struct BrokerCorpusMergeHit: Sendable, Equatable {
     package init(
         frameId: UInt64,
         score: Float,
-        sources: [String],
+        origin: CorpusOrigin,
+        sources: [RAGContext.Source],
         preview: String,
         metadata: [String: String],
         dedupeKey: String
     ) {
         self.frameId = frameId
         self.score = score
+        self.origin = origin
         self.sources = sources
         self.preview = preview
+        var metadata = metadata
+        origin.encode(into: &metadata)
         self.metadata = metadata
         self.dedupeKey = dedupeKey
+    }
+
+    /// Map a search-engine row into a merge hit. Origin is decoded from
+    /// `wax.corpus.origin` (or `origin` when the caller already knows the writer).
+    package static func fromIndexedHit(
+        frameId: UInt64,
+        score: Float,
+        sources: [RAGContext.Source],
+        preview: String,
+        metadata: [String: String],
+        origin: CorpusOrigin? = nil,
+        defaultOrigin: CorpusOrigin = .sessionStore
+    ) -> BrokerCorpusMergeHit {
+        var metadata = metadata
+        let resolved = origin ?? CorpusOrigin.decode(from: &metadata, default: defaultOrigin)
+        if let origin {
+            origin.encode(into: &metadata)
+        }
+        let sourcePath = metadata[BrokerCorpusMetadataKeys.sourceStorePath] ?? ""
+        return BrokerCorpusMergeHit(
+            frameId: frameId,
+            score: score,
+            origin: resolved,
+            sources: sources,
+            preview: preview,
+            metadata: metadata,
+            dedupeKey: makeDedupeKey(
+                sourcePath: sourcePath,
+                frameId: frameId,
+                preview: preview
+            )
+        )
+    }
+
+    /// Exhaustive fetch routing. `sessionStore` is a trusted-path case, never a silent miss.
+    package var fetchCase: FetchCase? {
+        switch origin {
+        case .longTerm:
+            return .longTerm
+        case .activeSession:
+            guard let raw = metadata["session_id"], let sessionID = UUID(uuidString: raw) else {
+                return nil
+            }
+            return .activeSession(sessionID)
+        case .sessionStore:
+            guard let path = metadata[BrokerCorpusMetadataKeys.sourceStorePath], !path.isEmpty else {
+                return nil
+            }
+            return .sessionStore(URL(fileURLWithPath: path).standardizedFileURL)
+        }
     }
 
     /// Stable identity for cross-source corpus merge (path + frame + preview text).
@@ -110,7 +195,7 @@ package enum BrokerCorpusHitMerge {
         sessionID: String
     ) -> [String: String] {
         var metadata = base
-        metadata[BrokerCorpusMetadataKeys.origin] = "active_session"
+        CorpusOrigin.activeSession.encode(into: &metadata)
         metadata[BrokerCorpusMetadataKeys.sourceStorePath] = storePath
         metadata[BrokerCorpusMetadataKeys.sourceStoreName] = storeName
         metadata[BrokerCorpusMetadataKeys.sourceFrameID] = String(frameId)
@@ -295,7 +380,7 @@ private extension BrokerCorpusStoreBuilder {
         sourceStoreURL: URL
     ) -> [String: String] {
         var metadata = document.metadata
-        metadata[BrokerCorpusMetadataKeys.origin] = "session_store"
+        CorpusOrigin.sessionStore.encode(into: &metadata)
         metadata[BrokerCorpusMetadataKeys.sourceStorePath] = sourceStoreURL.path
         metadata[BrokerCorpusMetadataKeys.sourceStoreName] = sourceStoreURL.lastPathComponent
         metadata[BrokerCorpusMetadataKeys.sourceFrameID] = String(document.frameId)

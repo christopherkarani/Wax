@@ -188,7 +188,7 @@ enum CorpusStoreBuilder {
         sourceStoreURL: URL
     ) -> [String: String] {
         var metadata = document.metadata
-        metadata[CorpusMetadataKeys.origin] = "session_store"
+        CorpusOrigin.sessionStore.encode(into: &metadata)
         metadata[CorpusMetadataKeys.sourceStorePath] = sourceStoreURL.path
         metadata[CorpusMetadataKeys.sourceStoreName] = sourceStoreURL.lastPathComponent
         metadata[CorpusMetadataKeys.sourceFrameID] = String(document.frameId)
