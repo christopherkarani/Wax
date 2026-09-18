@@ -122,7 +122,55 @@ struct UniqueRecallTests {
         #expect(executeAt < skipAt)
         #expect(landedAt < skipAt)
         #expect(merged[skipAt].explanations.contains("unlanded skip-list demoted"))
+        #expect(merged[skipAt].flags.contains(.unlandedDemoted))
         #expect(merged[landedAt].explanations.contains("unlanded skip-list demoted") == false)
+        #expect(merged[landedAt].flags.contains(.unlandedDemoted) == false)
+    }
+
+    @Test
+    func mergeHitsReservesWorkingHorizonWithoutCurrentSessionPrefix() async throws {
+        // A durable decoy already carries the historical working-lane string.
+        // Reservation must follow horizon, not explanations.contains.
+        let durable = (1...5).map { index in
+            uniqueHit(
+                frameID: UInt64(index),
+                score: 1.0 - Float(index) * 0.01,
+                text: "durable unique lane \(index) DurableToken\(index)",
+                horizon: .durable,
+                explanations: index == 1 ? ["current session"] : []
+            )
+        }
+        let session = [
+            uniqueHit(
+                frameID: 99,
+                score: 0.05,
+                text: "working reserved without prefix WorkingToken99",
+                horizon: .working
+            )
+        ]
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: session,
+            durableHits: durable,
+            limit: 5,
+            nowMs: 0
+        )
+        #expect(merged.count == 5)
+        let reserved = try #require(merged.first { $0.frameID == 99 })
+        #expect(reserved.horizon == .working)
+        #expect(session[0].explanations.contains("current session") == false)
+        #expect(reserved.explanations.contains("current session"))
+
+        let packed = await CompactAssembly.pack(
+            query: "q",
+            working: [reserved],
+            episodic: [],
+            durable: [],
+            tokenBudget: 10_000,
+            maxItems: 4,
+            tokenizer: .character
+        )
+        #expect(packed.short.first?.explanations.contains("current session") == true)
+        #expect(packed.compactedText.contains("current session"))
     }
 
     @Test
@@ -771,7 +819,8 @@ private func uniqueHit(
     text: String,
     horizon: LayeredRecall.Horizon,
     metadata: [String: String] = [:],
-    timestampMs: Int64 = 0
+    timestampMs: Int64 = 0,
+    explanations: [String] = []
 ) -> LayeredRecall.Hit {
     let id: MemoryID
     switch horizon {
@@ -788,7 +837,7 @@ private func uniqueHit(
         text: text,
         preview: text,
         metadata: metadata,
-        explanations: [],
+        explanations: explanations,
         timestampMs: timestampMs
     )
 }

@@ -626,7 +626,7 @@ extension AgentBrokerService {
                 sessionID: sessionID,
                 query: command.query,
                 hits: packed.hits.compactMap { hit in
-                    guard hit.explanations.contains("current session") else { return nil }
+                    guard hit.horizon == .working else { return nil }
                     return (hit.frameID, hit.score)
                 },
                 memory: sessionMemory

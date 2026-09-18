@@ -117,6 +117,18 @@ package struct MemorySearchIdentity: Sendable, Equatable {
     }
 }
 
+/// Non-lane retrieval control bits. Ranking reasons stay open explanation strings.
+package struct HitFlags: OptionSet, Sendable, Hashable {
+    package let rawValue: UInt8
+
+    package init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    package static let ownerCard = HitFlags(rawValue: 1 << 0)
+    package static let unlandedDemoted = HitFlags(rawValue: 1 << 1)
+}
+
 /// Broker Layered recall: scope/identity, multi-horizon fetch/merge, project filter.
 /// Feeds recall, layered search, and Compact assembly.
 /// Does not own Ranking scores, Recall assembly packing, Compact assembly packing,
@@ -157,6 +169,7 @@ package enum LayeredRecall {
         package var kind: RAGContext.ItemKind
         package var sources: [RAGContext.Source]
         package var collapsedCount: Int
+        package var flags: HitFlags
 
         package var reference: String { id.wire }
         package var horizon: Horizon { id.horizon }
@@ -175,7 +188,8 @@ package enum LayeredRecall {
             timestampMs: Int64,
             kind: RAGContext.ItemKind = .snippet,
             sources: [RAGContext.Source] = [],
-            collapsedCount: Int = 1
+            collapsedCount: Int = 1,
+            flags: HitFlags = []
         ) {
             self.id = id
             self.agentID = agentID
@@ -189,6 +203,7 @@ package enum LayeredRecall {
             self.kind = kind
             self.sources = sources
             self.collapsedCount = max(1, collapsedCount)
+            self.flags = flags
         }
     }
 
@@ -768,23 +783,23 @@ package enum LayeredRecall {
 
         func shouldSkipReservation(_ extra: Hit) -> Bool {
             if looksScorecard(extra.text), !queryAsks { return true }
-            if extra.explanations.contains("unlanded skip-list demoted") { return true }
+            if extra.flags.contains(.unlandedDemoted) { return true }
             if merged.contains(where: { sameCluster($0, extra) || isParaphrase($0, extra) }) {
                 return true
             }
             return false
         }
 
-        func ensureHorizon(from hits: [Hit], marker: String) {
+        func ensureHorizon(from hits: [Hit], horizon: Horizon) {
             guard !hits.isEmpty else { return }
-            guard !merged.contains(where: { $0.explanations.contains(marker) }) else { return }
+            guard !merged.contains(where: { $0.horizon == horizon }) else { return }
             guard let extra = hits
                 .filter({ !seen.contains(identity($0)) && !shouldSkipReservation($0) })
                 .max(by: { higherRank($1, $0) })
             else { return }
 
             if merged.count >= limit {
-                guard let evictIndex = merged.lastIndex(where: { !$0.explanations.contains(marker) }) else {
+                guard let evictIndex = merged.lastIndex(where: { $0.horizon != horizon }) else {
                     return
                 }
                 let evicted = merged.remove(at: evictIndex)
@@ -794,12 +809,12 @@ package enum LayeredRecall {
             merged.append(extra)
         }
         ensureHorizon(
-            from: clustered.filter { $0.explanations.contains("current session") },
-            marker: "current session"
+            from: clustered.filter { $0.horizon == .working },
+            horizon: .working
         )
         ensureHorizon(
-            from: clustered.filter { $0.explanations.contains("durable memory") },
-            marker: "durable memory"
+            from: clustered.filter { $0.horizon == .durable },
+            horizon: .durable
         )
         if merged.count > limit {
             merged = Array(merged.prefix(limit))
@@ -959,6 +974,7 @@ package enum LayeredRecall {
         guard shared.count >= 2 || mostlyUnlanded else { return hit }
         var copy = hit
         copy.score -= unlandedSkipListPenalty
+        copy.flags.insert(.unlandedDemoted)
         if !copy.explanations.contains("unlanded skip-list demoted") {
             copy.explanations.append("unlanded skip-list demoted")
         }
@@ -975,8 +991,8 @@ package enum LayeredRecall {
     }
 
     private static func higherRank(_ lhs: Hit, _ rhs: Hit) -> Bool {
-        let leftDemoted = lhs.explanations.contains("unlanded skip-list demoted")
-        let rightDemoted = rhs.explanations.contains("unlanded skip-list demoted")
+        let leftDemoted = lhs.flags.contains(.unlandedDemoted)
+        let rightDemoted = rhs.flags.contains(.unlandedDemoted)
         if leftDemoted != rightDemoted { return !leftDemoted }
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.timestampMs != rhs.timestampMs { return lhs.timestampMs > rhs.timestampMs }
@@ -1452,7 +1468,7 @@ package enum LayeredRecall {
                 if let card = OwnerCard.collapsedHit(from: cardHits, preview: stores.preview) {
                     // Card leads; leftover prefs still fill the window.
                     let rest = searched.filter { hit in
-                        !hit.explanations.contains("owner card")
+                        !hit.flags.contains(.ownerCard)
                             && !OwnerCard.matchesCompiledSlot(text: hit.text, metadata: hit.metadata)
                     }
                     merged = Array(([card] + rest).prefix(request.limit))

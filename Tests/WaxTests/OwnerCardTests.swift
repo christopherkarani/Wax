@@ -157,9 +157,11 @@ struct OwnerCardTests {
                 ),
                 stores: stores
             )
-            let lead = try #require(card.hits.first?.text)
-            #expect(lead == "X handle: @ckarani7")
-            #expect(!lead.contains("GitLiveProbe"))
+            let leadHit = try #require(card.hits.first)
+            #expect(leadHit.text == "X handle: @ckarani7")
+            #expect(leadHit.flags.contains(.ownerCard))
+            #expect(leadHit.explanations.contains("owner card"))
+            #expect(!leadHit.text.contains("GitLiveProbe"))
 
             let search = try await LayeredRecall.recall(
                 request: .init(
@@ -227,12 +229,86 @@ struct OwnerCardTests {
                 stores: stores
             )
             #expect(recalled.hits.first?.text == "X handle: @ckarani7")
+            #expect(recalled.hits.first?.flags.contains(.ownerCard) == true)
+            #expect(recalled.hits.first?.explanations.contains("owner card") == true)
             #expect(recalled.hits.contains { $0.text.contains("Always allow") })
+            #expect(
+                recalled.hits.contains {
+                    $0.text.contains("Always allow") && !$0.flags.contains(.ownerCard)
+                }
+            )
             try await durable.close()
         } catch {
             try? await durable.close()
             throw error
         }
+    }
+
+    @Test
+    func personLaneLeftoverFilterUsesOwnerCardFlagNotExplanationString() {
+        let decoy = LayeredRecall.Hit(
+            id: .durable(frameID: 2),
+            score: 0.4,
+            text: "Chris wants Always allow visible as its own Mac desktop sidebar page.",
+            preview: "Chris wants Always allow visible as its own Mac desktop sidebar page.",
+            metadata: [MemoryMetadataKeys.type: MemoryType.userPreference.rawValue],
+            explanations: ["owner card"],
+            timestampMs: 0
+        )
+        let card = LayeredRecall.Hit(
+            id: .durable(frameID: 1),
+            score: 4,
+            text: "X handle: @ckarani7",
+            preview: "X handle: @ckarani7",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.userPreference.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+            ],
+            explanations: ["owner card"],
+            timestampMs: 0,
+            sources: [.structured],
+            flags: [.ownerCard]
+        )
+        #expect(OwnerCard.matchesCompiledSlot(text: decoy.text, metadata: decoy.metadata) == false)
+        let rest = [card, decoy].filter { hit in
+            !hit.flags.contains(.ownerCard)
+                && !OwnerCard.matchesCompiledSlot(text: hit.text, metadata: hit.metadata)
+        }
+        #expect(rest.map(\.frameID) == [2])
+        #expect(card.flags.contains(.ownerCard))
+        #expect(decoy.explanations.contains("owner card"))
+        #expect(decoy.flags.contains(.ownerCard) == false)
+    }
+
+    @Test
+    func collapsedHitSetsOwnerCardFlagAndKeepsDisplayString() {
+        let slot = LayeredRecall.Hit(
+            id: .durable(frameID: 1),
+            score: 4,
+            text: "X handle: @ckarani7",
+            preview: "X handle: @ckarani7",
+            metadata: [:],
+            explanations: [],
+            timestampMs: 1,
+            sources: [.structured]
+        )
+        let other = LayeredRecall.Hit(
+            id: .durable(frameID: 2),
+            score: 4,
+            text: "GitHub: ckarani",
+            preview: "GitHub: ckarani",
+            metadata: [:],
+            explanations: [],
+            timestampMs: 2,
+            sources: [.structured]
+        )
+        let collapsed = OwnerCard.collapsedHit(from: [slot, other], preview: { $0 ?? "" })
+        #expect(collapsed?.flags.contains(.ownerCard) == true)
+        #expect(collapsed?.explanations.contains("owner card") == true)
+
+        let single = OwnerCard.collapsedHit(from: [slot], preview: { $0 ?? "" })
+        #expect(single?.flags.contains(.ownerCard) == true)
+        #expect(single?.explanations.contains("owner card") == true)
     }
 
     @Test
