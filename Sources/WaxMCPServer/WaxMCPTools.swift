@@ -369,17 +369,10 @@ private extension WaxMCPTools {
             advertisedCWD: nonEmptyString(arguments["cwd"]) ?? context.advertisedCWD,
             mcpRoots: context.mcpRoots
         )
-        let memoryType = nonEmptyString(arguments["memory_type"])
-        let scope = nonEmptyString(arguments["scope"])
-        let projectGated: Bool
-        if canonical == "recall" {
-            projectGated = MCPProjectAttributionResolver.isProjectGatedRecall(scope: scope)
-        } else {
-            projectGated = MCPProjectAttributionResolver.isProjectScopedWrite(
-                memoryType: memoryType,
-                scope: scope
-            )
-        }
+        let projectGated = try projectGatedAutoSession(
+            command: canonical,
+            arguments: arguments
+        )
         if projectGated && !attribution.isResolved {
             throw MCPAutoSessionError.projectUnresolved(missing: ["cwd", "mcp_root", "project"])
         }
@@ -397,6 +390,29 @@ private extension WaxMCPTools {
         hint.bind(binding.sessionID, ownership: binding.ownership)
         if arguments["cwd"] == nil, let cwd = attribution.cwdPath {
             arguments["cwd"] = .string(cwd)
+        }
+    }
+
+    /// Parse remember/recall enums from the MCP bag, then apply typed project gates.
+    /// Invalid remember `scope` fails like `BrokerCommand.parseRememberWriteScope`.
+    static func projectGatedAutoSession(
+        command: String,
+        arguments: [String: Value]
+    ) throws -> Bool {
+        let args = BrokerArguments(arguments.mapValues(brokerValue(from:)))
+        do {
+            if command == "recall" {
+                return MCPProjectAttributionResolver.isProjectGatedRecall(
+                    scope: try BrokerCommand.parseRecallScope(args)
+                )
+            }
+            let memoryType = try args.optionalString("memory_type").flatMap(MemoryType.init(rawValue:))
+            return MCPProjectAttributionResolver.isProjectScopedWrite(
+                memoryType: memoryType,
+                scope: try BrokerCommand.parseRememberWriteScope(args)
+            )
+        } catch let error as BrokerValidationError {
+            throw ToolValidationError.invalid(error.localizedDescription)
         }
     }
 

@@ -123,14 +123,26 @@ func projectAttributionDoesNotUseProcessCWDAndRejectsAmbiguousRoots() {
 
 @Test
 func globalPersonRecallIsNotProjectGated() {
-    #expect(!MCPProjectAttributionResolver.isProjectGatedRecall(scope: "global"))
-    #expect(MCPProjectAttributionResolver.isProjectGatedRecall(scope: nil))
-    #expect(MCPProjectAttributionResolver.isProjectGatedRecall(scope: "project"))
-    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "user_preference", scope: "global"))
-    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: " global "))
-    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: "GLOBAL"))
-    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "lesson", scope: nil))
-    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: "fact", scope: nil))
+    #expect(!MCPProjectAttributionResolver.isProjectGatedRecall(scope: .global))
+    #expect(!MCPProjectAttributionResolver.isProjectGatedRecall(scope: .session))
+    #expect(MCPProjectAttributionResolver.isProjectGatedRecall(scope: .project))
+
+    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .userPreference, scope: nil))
+    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .userPreference, scope: .durable))
+    #expect(!MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .userPreference, scope: .session))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .lesson, scope: nil))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .lesson, scope: .session))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .lesson, scope: .durable))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: .fact, scope: nil))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: nil, scope: nil))
+    #expect(MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: nil, scope: .durable))
+
+    for type in MemoryType.allCases {
+        #expect(
+            MCPProjectAttributionResolver.isProjectScopedWrite(memoryType: type, scope: nil)
+                == (type != .userPreference)
+        )
+    }
 }
 
 @Test
