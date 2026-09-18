@@ -329,4 +329,57 @@ struct RememberSupersedeTests {
             #expect(await supersededBy(service, frameID: first) == second)
         }
     }
+
+    @Test
+    func thirdDecisionRetiresTwoLiveTwinsAndLeavesStoreWritable() async throws {
+        let project = "wax-supersede-star-\(UUID().uuidString.prefix(6))"
+        let firstText =
+            "Decision about UniqueRanking GitLiveProbe CompactSummary remaining work."
+        let secondText =
+            "Decision about OwnerCard SessionFence HorizonScope remaining work."
+        let mergedText =
+            "Decision about UniqueRanking GitLiveProbe CompactSummary OwnerCard SessionFence HorizonScope remaining work."
+        #expect(MemorySemantics.similarity(lhs: firstText, rhs: secondText) < 0.88)
+        #expect(MemorySemantics.identifiersMatch(firstText, secondText) == false)
+        #expect(MemorySemantics.identifiersMatch(mergedText, firstText))
+        #expect(MemorySemantics.identifiersMatch(mergedText, secondText))
+
+        try await withSupersedeBroker { service in
+            let first = try await rememberDurable(
+                service,
+                content: firstText,
+                memoryType: "decision",
+                project: project
+            )
+            let second = try await rememberDurable(
+                service,
+                content: secondText,
+                memoryType: "decision",
+                project: project
+            )
+            #expect(await supersededBy(service, frameID: first) == nil)
+            #expect(await supersededBy(service, frameID: second) == nil)
+
+            let merged = try await rememberDurable(
+                service,
+                content: mergedText,
+                memoryType: "decision",
+                project: project
+            )
+            #expect(await supersededBy(service, frameID: first) == merged)
+            #expect(await supersededBy(service, frameID: second) == merged)
+
+            let followOn = try await rememberDurable(
+                service,
+                content: "Ship the BrokerRecall deepening after the write path commits.",
+                memoryType: "decision",
+                project: project
+            )
+            #expect(followOn != merged)
+            let live = try await liveFrameIDs(service)
+            #expect(live.contains(followOn))
+            #expect(live.contains(first) == false)
+            #expect(live.contains(second) == false)
+        }
+    }
 }

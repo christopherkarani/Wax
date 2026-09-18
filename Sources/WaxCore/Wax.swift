@@ -2620,31 +2620,21 @@ package actor Wax {
             case .supersedeFrame(let supersede):
                 guard supersede.supersededId != supersede.supersedingId else { continue }
 
-                if trackedFrameIds.contains(supersede.supersededId) {
-                    guard let supersededMeta = metas[supersede.supersededId] else { continue }
-                    if let existing = supersededMeta.supersededBy,
-                       existing != supersede.supersedingId {
-                        continue
-                    }
-                }
-
-                if trackedFrameIds.contains(supersede.supersedingId) {
-                    guard let supersedingMeta = metas[supersede.supersedingId] else { continue }
-                    if let existing = supersedingMeta.supersedes,
-                       existing != supersede.supersededId {
-                        continue
-                    }
-                }
-
                 if trackedFrameIds.contains(supersede.supersededId),
                    var supersededMeta = metas[supersede.supersededId] {
-                    supersededMeta.supersededBy = supersede.supersedingId
-                    metas[supersede.supersededId] = supersededMeta
+                    if supersededMeta.supersededBy == nil
+                        || supersededMeta.supersededBy == supersede.supersedingId {
+                        supersededMeta.supersededBy = supersede.supersedingId
+                        metas[supersede.supersededId] = supersededMeta
+                    }
                 }
+
                 if trackedFrameIds.contains(supersede.supersedingId),
                    var supersedingMeta = metas[supersede.supersedingId] {
-                    supersedingMeta.supersedes = supersede.supersededId
-                    metas[supersede.supersedingId] = supersedingMeta
+                    if supersedingMeta.supersedes == nil {
+                        supersedingMeta.supersedes = supersede.supersededId
+                        metas[supersede.supersedingId] = supersedingMeta
+                    }
                 }
 
             case .putEmbedding:
@@ -3181,12 +3171,11 @@ package actor Wax {
                     frame.supersededBy = supersede.supersedingId
                 }
                 try withFrame(supersede.supersedingId) { frame in
-                    if let existing = frame.supersedes, existing != supersede.supersededId {
-                        throw WaxError.invalidToc(
-                            reason: "frame \(supersede.supersedingId) already supersedes \(existing)"
-                        )
+                    // One replacement can retire many live twins. Keep the first
+                    // predecessor pointer; additional twins still set supersededBy.
+                    if frame.supersedes == nil {
+                        frame.supersedes = supersede.supersededId
                     }
-                    frame.supersedes = supersede.supersededId
                 }
             case .putEmbedding(let embedding):
                 guard let stagedVecDimension else {
