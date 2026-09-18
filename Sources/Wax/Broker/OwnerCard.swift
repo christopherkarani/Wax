@@ -86,7 +86,11 @@ package enum OwnerCard {
         preview: @Sendable (String?) -> String
     ) -> LayeredRecall.Hit? {
         guard let first = hits.first else { return nil }
-        if hits.count == 1 { return first }
+        if hits.count == 1 {
+            var only = first
+            only.flags.insert(.ownerCard)
+            return only
+        }
         let text = hits.map(\.text).joined(separator: " · ")
         return LayeredRecall.Hit(
             id: first.id,
@@ -96,7 +100,8 @@ package enum OwnerCard {
             metadata: first.metadata,
             explanations: ["owner card"],
             timestampMs: first.timestampMs,
-            sources: [.structured]
+            sources: [.structured],
+            flags: [.ownerCard]
         )
     }
 
@@ -148,7 +153,8 @@ package enum OwnerCard {
                     ],
                     explanations: ["owner card"],
                     timestampMs: hit.system.fromMs == 0 ? nowMs : hit.system.fromMs,
-                    sources: [.structured]
+                    sources: [.structured],
+                    flags: [.ownerCard]
                 )
             )
         }
