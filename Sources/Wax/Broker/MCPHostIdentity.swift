@@ -178,20 +178,16 @@ package enum MCPProjectAttributionResolver {
         return MCPProjectAttribution(source: .unresolved)
     }
 
-    package static func isProjectScopedWrite(memoryType: String?, scope: String?) -> Bool {
-        if let scope, scope.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "global" {
-            return false
-        }
-        let type = memoryType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if type == MemoryType.userPreference.rawValue {
-            return false
-        }
-        return true
+    /// `scope` is the parsed remember horizon. It never skips project gating.
+    package static func isProjectScopedWrite(
+        memoryType: MemoryType?,
+        scope _: RememberWriteScope?
+    ) -> Bool {
+        memoryType != .userPreference
     }
 
-    package static func isProjectGatedRecall(scope: String?) -> Bool {
-        let normalizedScope = scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "project"
-        return normalizedScope == "project" || normalizedScope.isEmpty
+    package static func isProjectGatedRecall(scope: LayeredRecall.Scope) -> Bool {
+        scope == .project
     }
 
     private static func normalized(_ raw: String?) -> String? {
