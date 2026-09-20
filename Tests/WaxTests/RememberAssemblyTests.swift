@@ -30,12 +30,14 @@ private func candidate(
     text: String,
     type: String = MemoryType.decision.rawValue,
     durability: String = MemoryDurability.durable.rawValue,
-    project: String = "wax"
+    project: String = "wax",
+    supersededBy: UInt64? = nil
 ) -> RememberAssembly.Candidate {
     RememberAssembly.Candidate(
         frameId: frameId,
         text: text,
-        metadata: durableMetadata(type: type, durability: durability, project: project, repo: project)
+        metadata: durableMetadata(type: type, durability: durability, project: project, repo: project),
+        supersededBy: supersededBy
     )
 }
 
@@ -310,6 +312,22 @@ func rememberAssemblyLockedNewStillSelectsDurableOther() {
         nowMs: 0
     )
     #expect(selected == [1])
+}
+
+@Test
+func rememberAssemblySkipsAlreadySupersededTwins() {
+    let selected = RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 3,
+        content: similarDecision,
+        metadata: durableMetadata(),
+        documents: [
+            candidate(frameId: 1, text: originalDecision, supersededBy: 2),
+            candidate(frameId: 4, text: originalDecision),
+        ],
+        nowMs: 0
+    )
+    #expect(selected == [4])
 }
 
 @Test

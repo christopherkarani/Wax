@@ -15,11 +15,18 @@ package enum RememberAssembly {
         package var frameId: UInt64
         package var text: String
         package var metadata: [String: String]
+        package var supersededBy: UInt64?
 
-        package init(frameId: UInt64, text: String, metadata: [String: String]) {
+        package init(
+            frameId: UInt64,
+            text: String,
+            metadata: [String: String],
+            supersededBy: UInt64? = nil
+        ) {
             self.frameId = frameId
             self.text = text
             self.metadata = metadata
+            self.supersededBy = supersededBy
         }
     }
 
@@ -107,8 +114,9 @@ package enum RememberAssembly {
     }
 
     /// Same-project Jaccard ≥ 0.88, or identifier-set overlap, retires prior
-    /// unsuperseded durable twins. Locked others stay live. Returns candidate
-    /// frame IDs; broker still supersedes + flushes.
+    /// unsuperseded durable twins. Pending or committed `supersededBy` is a skip
+    /// so a failed flush cannot restamp the same predecessor. Locked others stay
+    /// live. Returns candidate frame IDs; broker still supersedes + flushes.
     package static func selectSupersedeFrameIDs(
         sessionID: UUID?,
         newFrameId: UInt64,
@@ -128,6 +136,7 @@ package enum RememberAssembly {
         for document in documents {
             guard selected.count < autoSupersedeMaxMatches else { break }
             guard document.frameId != newFrameId else { continue }
+            guard document.supersededBy == nil else { continue }
             let other = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
             guard other.type == info.type else { continue }
             guard other.project == project else { continue }
