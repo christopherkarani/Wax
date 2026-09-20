@@ -382,4 +382,28 @@ struct RememberSupersedeTests {
             #expect(live.contains(second) == false)
         }
     }
+
+    @Test
+    func conflictingPendingReplacementsFlushAndLeaveStoreWritable() async throws {
+        let project = "wax-supersede-conflict-\(UUID().uuidString.prefix(6))"
+        try await withSupersedeBroker { service in
+            let wax = await service.longTermMemory.wax
+            let predecessor = try await wax.put(Data("shared predecessor".utf8))
+            let firstReplacement = try await wax.put(Data("first replacement".utf8))
+            let secondReplacement = try await wax.put(Data("second replacement".utf8))
+            try await wax.supersede(supersededId: predecessor, supersedingId: firstReplacement)
+            try await wax.supersede(supersededId: predecessor, supersedingId: secondReplacement)
+
+            try await service.longTermMemory.flush()
+            #expect(try await wax.frameMeta(frameId: predecessor).supersededBy == firstReplacement)
+
+            let followOn = try await rememberDurable(
+                service,
+                content: "Ship durable remember after a poisoned many-replacement WAL commits.",
+                memoryType: "decision",
+                project: project
+            )
+            #expect(try await wax.frameMeta(frameId: followOn).status == .active)
+        }
+    }
 }

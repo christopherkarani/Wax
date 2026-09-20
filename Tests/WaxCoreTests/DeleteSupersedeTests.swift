@@ -241,6 +241,40 @@ import Testing
     try await wax.close()
 }
 
+@Test func twoReplacementsOfOnePredecessorKeepFirstAndStayWritable() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let predecessor = try await wax.put(Data("predecessor".utf8))
+    let firstReplacement = try await wax.put(Data("first-replacement".utf8))
+    let secondReplacement = try await wax.put(Data("second-replacement".utf8))
+
+    try await wax.supersede(supersededId: predecessor, supersedingId: firstReplacement)
+    try await wax.supersede(supersededId: predecessor, supersedingId: secondReplacement)
+
+    let pendingPredecessor = try await wax.frameMetaIncludingPending(frameId: predecessor)
+    let pendingFirst = try await wax.frameMetaIncludingPending(frameId: firstReplacement)
+    let pendingSecond = try await wax.frameMetaIncludingPending(frameId: secondReplacement)
+    #expect(pendingPredecessor.supersededBy == firstReplacement)
+    #expect(pendingFirst.supersedes == predecessor)
+    #expect(pendingSecond.supersedes == predecessor)
+
+    try await wax.commit()
+
+    let predecessorMeta = try await wax.frameMeta(frameId: predecessor)
+    let firstMeta = try await wax.frameMeta(frameId: firstReplacement)
+    let secondMeta = try await wax.frameMeta(frameId: secondReplacement)
+    #expect(predecessorMeta.supersededBy == firstReplacement)
+    #expect(firstMeta.supersedes == predecessor)
+    #expect(secondMeta.supersedes == predecessor)
+
+    let followOn = try await wax.put(Data("follow-on".utf8))
+    try await wax.commit()
+    #expect(try await wax.frameMeta(frameId: followOn).status == .active)
+    try await wax.close()
+}
+
 @Test func supersedeAfterDeletedFrameStillWorks() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }

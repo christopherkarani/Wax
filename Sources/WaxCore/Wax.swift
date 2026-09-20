@@ -3163,12 +3163,12 @@ package actor Wax {
                     throw WaxError.invalidToc(reason: "supersedeFrame requires distinct ids")
                 }
                 try withFrame(supersede.supersededId) { frame in
-                    if let existing = frame.supersededBy, existing != supersede.supersedingId {
-                        throw WaxError.invalidToc(
-                            reason: "frame \(supersede.supersededId) already superseded by \(existing)"
-                        )
+                    // A poisoned WAL can record several replacements for one
+                    // predecessor. Keep the first supersededBy; later links
+                    // still set supersedes on the newer frames.
+                    if frame.supersededBy == nil {
+                        frame.supersededBy = supersede.supersedingId
                     }
-                    frame.supersededBy = supersede.supersedingId
                 }
                 try withFrame(supersede.supersedingId) { frame in
                     // One replacement can retire many live twins. Keep the first

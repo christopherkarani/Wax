@@ -512,7 +512,9 @@ extension AgentBrokerService {
     }
 
     /// Same-project Jaccard ≥ threshold retires prior unsuperseded durable twins. Locked stays live.
-    /// Selection policy lives in ``RememberAssembly``; this method still owns corpus I/O + supersede + flush.
+    /// Pending `supersededBy` is passed into selection so a swallowed supersede
+    /// flush cannot restamp the same predecessor. Selection lives in
+    /// ``RememberAssembly``; this method still owns corpus I/O + supersede + flush.
     private func autoSupersedeSimilarDurableFrames(
         memory: MemoryOrchestrator,
         newFrameId: UInt64,
@@ -541,6 +543,9 @@ extension AgentBrokerService {
             return
         }
 
+        let pendingByID = await memory.wax.frameMetasIncludingPending(
+            frameIds: documents.map(\.frameId)
+        )
         let frameIDs = RememberAssembly.selectSupersedeFrameIDs(
             sessionID: sessionID,
             newFrameId: newFrameId,
@@ -550,7 +555,8 @@ extension AgentBrokerService {
                 RememberAssembly.Candidate(
                     frameId: $0.frameId,
                     text: $0.text,
-                    metadata: $0.metadata
+                    metadata: $0.metadata,
+                    supersededBy: pendingByID[$0.frameId]?.supersededBy
                 )
             },
             nowMs: nowMs
