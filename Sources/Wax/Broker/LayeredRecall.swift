@@ -690,7 +690,7 @@ package enum LayeredRecall {
         nowMs: Int64,
         query: String? = nil,
         liveCheckout: GitCheckoutSnapshot? = nil,
-        repoRootPath: String? = nil
+        relations: [String: OnThisTree] = [:]
     ) -> [Hit] {
         func identity(_ hit: Hit) -> String {
             // Locked frames stay live even against an identical unlocked twin.
@@ -703,20 +703,12 @@ package enum LayeredRecall {
             return hit.text
         }
 
-        var checkoutRelationBySHA: [String: OnThisTree] = [:]
         func checkoutRelation(storedSHA: String?) -> OnThisTree? {
-            guard let liveCheckout else { return nil }
-            let key = storedSHA ?? ""
-            if let cached = checkoutRelationBySHA[key] {
-                return cached
+            if let storedSHA, let mapped = relations[storedSHA] {
+                return mapped
             }
-            let relation = MemorySemantics.onThisTree(
-                storedSHA: storedSHA,
-                live: liveCheckout,
-                repoRootPath: repoRootPath
-            )
-            checkoutRelationBySHA[key] = relation
-            return relation
+            guard let liveCheckout else { return nil }
+            return MemorySemantics.classifyCheckout(storedSHA: storedSHA, live: liveCheckout)
         }
 
         func adjustFreshness(_ hit: Hit) -> Hit {
@@ -728,8 +720,7 @@ package enum LayeredRecall {
                 copy,
                 nowMs: nowMs,
                 query: query,
-                liveCheckout: liveCheckout,
-                repoRootPath: repoRootPath
+                liveCheckout: liveCheckout
             )
             if adjusted != hit.score {
                 copy.score = adjusted
@@ -1027,16 +1018,14 @@ package enum LayeredRecall {
         _ hit: Hit,
         nowMs: Int64,
         query: String?,
-        liveCheckout: GitCheckoutSnapshot? = nil,
-        repoRootPath: String? = nil
+        liveCheckout: GitCheckoutSnapshot? = nil
     ) -> Float {
         var score = freshnessAdjustedScore(hit, nowMs: nowMs)
         let checkoutRelation = hit.metadata[MemoryMetadataKeys.onThisTree].flatMap(OnThisTree.init(rawValue:))
             ?? liveCheckout.map { live in
-                MemorySemantics.onThisTree(
+                MemorySemantics.classifyCheckout(
                     storedSHA: hit.metadata[MemoryMetadataKeys.gitSHA],
-                    live: live,
-                    repoRootPath: repoRootPath
+                    live: live
                 )
             }
         if let checkoutRelation, checkoutRelation == .other || checkoutRelation == .unknown,
@@ -1378,6 +1367,33 @@ package enum LayeredRecall {
         }
     }
 
+    /// Git ancestry for the hits about to be merged. Call once per recall, before `mergeHits`.
+    private static func resolvedCheckoutRelations(
+        for hits: [Hit],
+        live: GitCheckoutSnapshot,
+        repoRootPath: String?
+    ) -> [String: OnThisTree] {
+        MemorySemantics.checkoutRelations(
+            storedSHAs: distinctStoredGitSHAs(in: hits),
+            live: live,
+            repoRootPath: repoRootPath
+        )
+    }
+
+    private static func distinctStoredGitSHAs(in hits: [Hit]) -> [String] {
+        var seen = Set<String>()
+        var stored: [String] = []
+        for hit in hits {
+            guard let sha = hit.metadata[MemoryMetadataKeys.gitSHA],
+                  !sha.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seen.insert(sha).inserted else {
+                continue
+            }
+            stored.append(sha)
+        }
+        return stored
+    }
+
     package static func recall(
         request: RecallRequest,
         stores: Stores
@@ -1418,7 +1434,11 @@ package enum LayeredRecall {
                 nowMs: stores.nowMs(),
                 query: request.query,
                 liveCheckout: liveCheckout,
-                repoRootPath: repoRootPath
+                relations: resolvedCheckoutRelations(
+                    for: scopedSession + scopedDurable,
+                    live: liveCheckout,
+                    repoRootPath: repoRootPath
+                )
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
@@ -1457,7 +1477,11 @@ package enum LayeredRecall {
                 nowMs: stores.nowMs(),
                 query: request.query,
                 liveCheckout: liveCheckout,
-                repoRootPath: repoRootPath
+                relations: resolvedCheckoutRelations(
+                    for: personLaneWorking + personLaneDurable,
+                    live: liveCheckout,
+                    repoRootPath: repoRootPath
+                )
             )
             if personLane {
                 let cardHits = await OwnerCard.hits(
