@@ -425,7 +425,7 @@ func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
     #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
     #expect(recallBody.contains("awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))"))
     #expect(searchBody.contains("awaitQueryEmbedderIfNeeded(memory: sessionMemory)"))
-    #expect(source.contains("isQueryEmbedderWaitRequest(request)"))
+    #expect(source.contains("case .embedderThenCommand:"))
 }
 
 @Test
