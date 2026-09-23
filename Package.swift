@@ -375,6 +375,11 @@ let package = Package(
                     package: "swift-nio",
                     condition: .when(traits: ["MCPServer"])
                 ),
+                .product(
+                    name: "NIOPosix",
+                    package: "swift-nio",
+                    condition: .when(traits: ["MCPServer"])
+                ),
             ],
             path: "Tests/WaxMCPServerTests",
             resources: [.copy("Fixtures")],

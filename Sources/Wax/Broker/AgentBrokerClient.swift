@@ -167,7 +167,8 @@ package enum AgentBrokerClient {
         // shared descriptor while it configures the child process stdio actions.
         guard let nullInput = FileHandle(forReadingAtPath: "/dev/null"),
               let nullOutput = FileHandle(forWritingAtPath: "/dev/null") else {
-            throw BrokerClientError("Unable to open /dev/null for broker stdio")
+            let reason = String(cString: strerror(errno))
+            throw BrokerClientError("Unable to open /dev/null for broker stdio: \(reason)")
         }
         let stderrPipe = Pipe()
         process.standardInput = nullInput
