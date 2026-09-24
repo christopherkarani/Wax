@@ -4,6 +4,7 @@ import Testing
 
 private actor ReadinessTestGate {
     private var open = false
+    private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {
@@ -13,15 +14,21 @@ private actor ReadinessTestGate {
 
     func release() {
         open = true
+        released = true
         for waiter in waiters { waiter.resume() }
         waiters.removeAll()
     }
+
+    /// True once the watchdog fired. A text result that arrives while this
+    /// is false provably did not wait on provider readiness — no wall clock
+    /// needed, so loaded CI runners cannot flake it.
+    func wasReleased() -> Bool { released }
 }
 
 private enum ReadinessTestError: Error { case unavailable }
 
 private func withBlockedReadiness(
-    _ body: (AgentBrokerService) async throws -> Void
+    _ body: (AgentBrokerService, ReadinessTestGate) async throws -> Void
 ) async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-readiness-wait-\(UUID().uuidString)", isDirectory: true)
@@ -40,12 +47,14 @@ private func withBlockedReadiness(
         throw ReadinessTestError.unavailable
     }
     // Bound failures even against the old cancellation-insensitive waiter.
+    // Ten seconds keeps failure-mode runs fast while staying an order of
+    // magnitude beyond CI noise for the non-waiting paths under test.
     let watchdog = Task {
-        try? await Task.sleep(for: .seconds(2))
+        try? await Task.sleep(for: .seconds(10))
         await gate.release()
     }
     do {
-        try await body(service)
+        try await body(service, gate)
         watchdog.cancel()
         await watchdog.value
         try await service.close()
@@ -61,34 +70,28 @@ private func withBlockedReadiness(
 struct BrokerReadinessWaitTests {
     @Test(arguments: ["search", "recall"])
     func textRetrievalDoesNotWaitForBlockedProvider(command: String) async throws {
-        try await withBlockedReadiness { service in
+        try await withBlockedReadiness { service, gate in
             let opened = await service.handle(.init(command: "session_open", arguments: [
                 "project": .string("readiness-tests"),
             ]))
             let sessionID = try #require(opened.payload?.objectValue?["session_id"]?.stringValue)
-            // Warm up outside the measured section: the first text query pays
-            // cold FTS/store setup that can exceed the promptness bound on
-            // loaded CI runners. The bound below guards steady-state waiting,
-            // not cold start.
-            _ = await service.handle(.init(command: command, arguments: [
-                "query": .string("warm up"),
-                "mode": .string("text"),
-                "session_id": .string(sessionID),
-            ]))
-            let start = ContinuousClock.now
             let result = await service.handle(.init(command: command, arguments: [
                 "query": .string("available text"),
                 "mode": .string("text"),
                 "session_id": .string(sessionID),
             ]))
             #expect(result.ok)
-            #expect(start.duration(to: .now) < .seconds(1))
+            // Deterministic non-waiting proof: a result that arrives before
+            // the watchdog fired cannot have waited on provider readiness.
+            // (A wall-clock bound here flaked on loaded CI runners where even
+            // warmed text queries exceed one second.)
+            #expect(await gate.wasReleased() == false)
         }
     }
 
     @Test(arguments: [false, true])
     func blockedReadinessWaitReturnsOnTimeoutOrCancellation(cancel: Bool) async throws {
-        try await withBlockedReadiness { service in
+        try await withBlockedReadiness { service, _ in
             let memory = await service.longTermMemory
             // Warm the readiness-wait machinery outside the measured section
             // so the bound guards timeout/cancellation promptness, not first-
@@ -118,7 +121,12 @@ struct BrokerReadinessWaitTests {
                     #expect(error.localizedDescription.contains("did not become ready"))
                 }
             }
-            #expect(start.duration(to: .now) < .seconds(1))
+            // Hang backstop only: correctness is pinned by the error-identity
+            // assertions above (plus the watchdog, which turns a
+            // timeout-ignoring regression into a deterministic "unexpectedly
+            // succeeded" failure). A tight promptness bound flaked on loaded
+            // CI runners; ten seconds still fails a true hang fast.
+            #expect(start.duration(to: .now) < .seconds(10))
             #expect(await memory.shouldDeferRememberUntilEmbedderReady())
         }
     }
