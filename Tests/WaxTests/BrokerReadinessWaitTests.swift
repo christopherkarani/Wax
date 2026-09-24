@@ -66,19 +66,18 @@ private func withBlockedReadiness(
     }
 }
 
-@Suite("BrokerReadinessWaitTests")
+@Suite("BrokerReadinessWaitTests", .timeLimit(.minutes(2)))
 struct BrokerReadinessWaitTests {
     @Test(arguments: ["search", "recall"])
     func textRetrievalDoesNotWaitForBlockedProvider(command: String) async throws {
         try await withBlockedReadiness { service, gate in
-            let opened = await service.handle(.init(command: "session_open", arguments: [
-                "project": .string("readiness-tests"),
-            ]))
-            let sessionID = try #require(opened.payload?.objectValue?["session_id"]?.stringValue)
+            // No session_open: session stores open through the same readiness
+            // binding, which waits (by design) up to the watchdog before
+            // degrading. The durable lane isolates the retrieval operation
+            // under test from session-setup waiting.
             let result = await service.handle(.init(command: command, arguments: [
                 "query": .string("available text"),
                 "mode": .string("text"),
-                "session_id": .string(sessionID),
             ]))
             #expect(result.ok)
             // Deterministic non-waiting proof: a result that arrives before
