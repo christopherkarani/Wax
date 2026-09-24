@@ -36,9 +36,13 @@ func abortedGETStreamDoesNotLeaveClosedSockets() async throws {
         .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
         .bind(host: "127.0.0.1", port: 0)
         .get()
+    // Await-in-defer is rejected by older Swift toolchains; Task-wrapped
+    // teardown matches the convention used across the MCP test targets.
     defer {
-        try? await server.close()
-        try? await group.shutdownGracefully()
+        Task {
+            try? await server.close()
+            try? await group.shutdownGracefully()
+        }
     }
     let port = try #require(server.localAddress?.port)
 
@@ -85,9 +89,13 @@ func abortedGETStreamDoesNotCloseTheMCPSession() async throws {
         .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
         .bind(host: "127.0.0.1", port: 0)
         .get()
+    // Await-in-defer is rejected by older Swift toolchains; Task-wrapped
+    // teardown matches the convention used across the MCP test targets.
     defer {
-        try? await server.close()
-        try? await group.shutdownGracefully()
+        Task {
+            try? await server.close()
+            try? await group.shutdownGracefully()
+        }
     }
     let port = try #require(server.localAddress?.port)
     let sessionID = try initializeMCPSession(port: port)
@@ -132,9 +140,13 @@ func abortedGETWithUnreadBytesDoesNotLeaveClosedSockets() async throws {
         .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
         .bind(host: "127.0.0.1", port: 0)
         .get()
+    // Await-in-defer is rejected by older Swift toolchains; Task-wrapped
+    // teardown matches the convention used across the MCP test targets.
     defer {
-        try? await server.close()
-        try? await group.shutdownGracefully()
+        Task {
+            try? await server.close()
+            try? await group.shutdownGracefully()
+        }
     }
     let port = try #require(server.localAddress?.port)
     let sessionID = try initializeMCPSession(port: port)
