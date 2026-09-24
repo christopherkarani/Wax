@@ -1285,7 +1285,7 @@ func corpusSearchWithLiveSessionIDDoesNotReturnForeignProjectDurable() async thr
 }
 
 @Test
-func filterMemorySearchHitsUnresolvedIdentityDropsStampedForeignDurable() {
+func allowsMemorySearchHitUnresolvedIdentityDropsStampedForeignDurable() {
     let sessionID = UUID()
     let working = LayeredRecall.Hit(
         id: .working(sessionID: sessionID, frameID: 1),
@@ -1317,10 +1317,9 @@ func filterMemorySearchHitsUnresolvedIdentityDropsStampedForeignDurable() {
         explanations: [],
         timestampMs: 0
     )
-    let filtered = AgentBrokerService.filterMemorySearchHits(
-        [working, unstamped, foreign],
-        identity: LayeredRecall.Identity()
-    )
+    let filtered = [working, unstamped, foreign].filter {
+        BrokerRecall.allowsMemorySearchHit($0, identity: LayeredRecall.Identity())
+    }
     #expect(filtered.map(\.text) == ["live working note", "unstamped durable token"])
 }
 

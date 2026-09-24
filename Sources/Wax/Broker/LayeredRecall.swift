@@ -1568,6 +1568,8 @@ package enum LayeredRecall {
         }
     }
 
+    /// Horizon fetch for the memory_search rank law. Only `BrokerRecall`
+    /// invokes this in Sources; tests pin fetch shape directly.
     package static func search(
         request: SearchRequest,
         stores: Stores

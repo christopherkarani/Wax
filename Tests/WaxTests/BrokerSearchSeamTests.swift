@@ -92,6 +92,28 @@ private func brokerSearchPayloadPreviews(_ packed: BrokerRecall.PackedSearch) ->
     }
 }
 
+private func brokerMemorySearchCommand(query: String, sessionID: UUID) throws -> BrokerCommand.MemorySearch {
+    let decoded = try BrokerCommand.decode(
+        command: "memory_search",
+        arguments: [
+            "query": .string(query),
+            "mode": .string("text"),
+            "topK": .int(10),
+            "session_id": .string(sessionID.uuidString),
+        ]
+    )
+    guard case .memorySearch(let command) = decoded else {
+        throw BrokerValidationError.invalid("expected memory_search command")
+    }
+    return command
+}
+
+private func brokerMemorySearchTexts(_ packed: BrokerRecall.PackedMemorySearch) -> [String] {
+    packed.hits.map(\.text) + (packed.payload.objectValue?["results"]?.arrayValue ?? []).compactMap { row in
+        row.objectValue?["text"]?.stringValue
+    }
+}
+
 @Test
 func sessionScopedBrokerSearchDropsForeignProjectDurableWhenIdentityIsResolved() async throws {
     try await withBrokerSearchSeam(project: "home-project", repo: "home-repo") { environment, sessionID in
@@ -177,5 +199,73 @@ func sessionScopedBrokerSearchEmptyIdentityDoesNotLeakStampedForeignDurable() as
             unstampedPreviews.contains { $0.contains(unstampedToken) },
             "empty identity must keep unstamped durable; got \(unstampedPreviews)"
         )
+    }
+}
+
+@Test
+func sessionScopedBrokerMemorySearchDropsForeignProjectDurable() async throws {
+    try await withBrokerSearchSeam(project: "home-project", repo: "home-repo") { environment, sessionID in
+        let homeToken = "zxqMHome\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+        let foreignToken = "zxqMForeign\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10))"
+        _ = try await environment.longTermMemory.remember(
+            "Home durable lesson \(homeToken) must stay visible to session-scoped memory_search.",
+            metadata: [
+                MemoryMetadataKeys.project: "home-project",
+                MemoryMetadataKeys.repo: "home-repo",
+                MemoryMetadataKeys.type: MemoryType.lesson.rawValue,
+            ]
+        )
+        _ = try await environment.longTermMemory.remember(
+            "Foreign durable \(foreignToken) must stay out of session-scoped memory_search.",
+            metadata: [
+                MemoryMetadataKeys.project: "Foreign-home-project",
+                MemoryMetadataKeys.repo: "Foreign-home-repo",
+                MemoryMetadataKeys.type: MemoryType.lesson.rawValue,
+            ]
+        )
+        try await environment.longTermMemory.flush()
+
+        let homePacked = try await BrokerRecall.memorySearch(
+            try brokerMemorySearchCommand(query: homeToken, sessionID: sessionID),
+            sessionID: sessionID,
+            horizons: [.durable],
+            in: environment
+        )
+        let homeTexts = brokerMemorySearchTexts(homePacked)
+        #expect(
+            homeTexts.contains { $0.contains(homeToken) },
+            "resolved identity must keep home-project durable; got \(homeTexts)"
+        )
+        let homePayload = try #require(homePacked.payload.objectValue)
+        #expect(homePayload["query"]?.stringValue == homeToken)
+        #expect(homePayload["topK"]?.intValue == 10)
+
+        let foreignPacked = try await BrokerRecall.memorySearch(
+            try brokerMemorySearchCommand(query: foreignToken, sessionID: sessionID),
+            sessionID: sessionID,
+            horizons: [.durable],
+            in: environment
+        )
+        let foreignTexts = brokerMemorySearchTexts(foreignPacked)
+        #expect(
+            foreignTexts.contains { $0.contains(foreignToken) } == false,
+            "resolved identity must drop foreign wax.project durable; got \(foreignTexts)"
+        )
+    }
+}
+
+@Test
+func brokerMemorySearchEmptyHorizonsPacksNoResults() async throws {
+    try await withBrokerSearchSeam(project: "home-project", repo: "home-repo") { environment, sessionID in
+        let packed = try await BrokerRecall.memorySearch(
+            try brokerMemorySearchCommand(query: "anything", sessionID: sessionID),
+            sessionID: sessionID,
+            horizons: [],
+            in: environment
+        )
+        #expect(packed.hits.isEmpty)
+        let payload = try #require(packed.payload.objectValue)
+        #expect(payload["results"]?.arrayValue?.isEmpty == true)
+        #expect(payload["display_text"]?.stringValue == "No results.")
     }
 }
