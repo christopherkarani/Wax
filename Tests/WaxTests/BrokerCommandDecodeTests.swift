@@ -1316,6 +1316,62 @@ struct BrokerCommandDecodeTests {
         #expect(payload.searchTopK == 7)
     }
 
+    @Test(arguments: [2.5, -1.0, Double.nan, Double.infinity])
+    func sessionSynthesizeRejectsOutOfRangeMinimumConfidence(_ value: Double) {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "session_synthesize",
+                arguments: ["minimum_confidence": .double(value)]
+            )
+        }
+    }
+
+    @Test(arguments: [2.5, -1.0])
+    func memoryPromoteRejectsOutOfRangeMinimumConfidence(_ value: Double) {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "memory_promote",
+                arguments: ["minimum_confidence": .double(value)]
+            )
+        }
+    }
+
+    @Test(arguments: [0.0, 0.72, 1.0])
+    func sessionSynthesizeAcceptsBoundaryMinimumConfidence(_ value: Double) throws {
+        let decoded = try BrokerCommand.decode(
+            command: "session_synthesize",
+            arguments: ["minimum_confidence": .double(value)]
+        )
+        guard case .sessionSynthesize(let payload) = decoded else {
+            Issue.record("expected session_synthesize")
+            return
+        }
+        #expect(payload.minimumConfidence == Float(value))
+    }
+
+    @Test
+    func sessionSynthesizeRejectsNegativeMinimumRecallCount() {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "session_synthesize",
+                arguments: ["minimum_recall_count": .int(-1)]
+            )
+        }
+    }
+
+    @Test
+    func sessionSynthesizeAcceptsZeroMinimumRecallCount() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "session_synthesize",
+            arguments: ["minimum_recall_count": .int(0)]
+        )
+        guard case .sessionSynthesize(let payload) = decoded else {
+            Issue.record("expected session_synthesize")
+            return
+        }
+        #expect(payload.minimumRecallCount == 0)
+    }
+
     @Test
     func recallLegacyFilterHintForMetadata() {
         do {

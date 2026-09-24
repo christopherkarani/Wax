@@ -166,8 +166,6 @@ package enum AccessFrequencyRanker {
     }
 
     private static func dehighlightedPreviewText(_ preview: String) -> String {
-        preview
-            .replacingOccurrences(of: "[", with: "")
-            .replacingOccurrences(of: "]", with: "")
+        UnifiedRanking.dehighlightedPreviewText(preview)
     }
 }

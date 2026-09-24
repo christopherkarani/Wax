@@ -1,4 +1,5 @@
 import Foundation
+import WaxTextSearch
 
 /// Deterministic query-aware answer extractor over retrieved RAG items.
 /// Keeps Wax fully offline while producing concise answer spans for benchmarking
@@ -189,8 +190,8 @@ package struct DeterministicAnswerExtractor: Sendable {
 
     private static func cleanText(_ text: String) -> String {
         let dehighlighted = text
-            .replacingOccurrences(of: "[", with: "")
-            .replacingOccurrences(of: "]", with: "")
+            .replacingOccurrences(of: FTS5SearchEngine.snippetOpenMarker, with: "")
+            .replacingOccurrences(of: FTS5SearchEngine.snippetCloseMarker, with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let collapsed = dehighlighted.replacingOccurrences(
             of: #"\s+"#,

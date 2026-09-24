@@ -645,8 +645,8 @@ extension BrokerCommand.SessionSynthesize {
         }
         return Self(
             sessionID: try BrokerCommand.parseOptionalSessionID(args),
-            minimumConfidence: try args.optionalFloat("minimum_confidence").map { min(max($0, 0), 1) },
-            minimumRecallCount: try args.optionalInt("minimum_recall_count").map { max(0, $0) },
+            minimumConfidence: try BrokerCommand.parseMinimumConfidence(args),
+            minimumRecallCount: try BrokerCommand.parseMinimumRecallCount(args),
             maxCandidates: maxCandidates
         )
     }
@@ -813,8 +813,8 @@ extension BrokerCommand.MemoryPromote {
             metadata: try BrokerCommand.coerceMetadata(try args.optionalObject("metadata")),
             writeSemantics: try BrokerCommand.parseWriteSemantics(args),
             cwd: try args.optionalString("cwd"),
-            minimumConfidence: try args.optionalFloat("minimum_confidence").map { min(max($0, 0), 1) },
-            minimumRecallCount: try args.optionalInt("minimum_recall_count").map { max(0, $0) },
+            minimumConfidence: try BrokerCommand.parseMinimumConfidence(args),
+            minimumRecallCount: try BrokerCommand.parseMinimumRecallCount(args),
             maxCandidates: maxCandidates
         )
     }
@@ -1028,6 +1028,28 @@ extension BrokerCommand {
             lock: try args.optionalBool("locked") ?? false,
             checkoutStatus: checkoutStatus
         )
+    }
+
+    /// Promotion/synthesis confidence threshold. Rejects out-of-range values
+    /// like `remember` does instead of silently clamping: these thresholds
+    /// select which items qualify, so a clamped value would promote a
+    /// different set than the caller asked for.
+    package static func parseMinimumConfidence(_ args: BrokerArguments) throws -> Float? {
+        guard let raw = try args.optionalDouble("minimum_confidence") else { return nil }
+        guard raw.isFinite, (0...1).contains(raw) else {
+            throw BrokerValidationError.invalid("minimum_confidence must be a finite number between 0 and 1")
+        }
+        return Float(raw)
+    }
+
+    /// Promotion/synthesis recall-count threshold. Negative counts are
+    /// rejected rather than clamped to zero for the same reason.
+    package static func parseMinimumRecallCount(_ args: BrokerArguments) throws -> Int? {
+        guard let value = try args.optionalInt("minimum_recall_count") else { return nil }
+        guard value >= 0 else {
+            throw BrokerValidationError.invalid("minimum_recall_count must be a non-negative integer")
+        }
+        return value
     }
 
     package static func parseMemoryTypes(_ args: BrokerArguments) throws -> [MemoryType] {

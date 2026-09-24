@@ -5,6 +5,12 @@ import WaxCore
 package actor FTS5SearchEngine {
     private static let maxResults = 10_000
     private static let bm25ScoreSaturation = 0.000_000_14
+    /// FTS5 snippet highlight markers. Private-use codepoints (not '[' ']')
+    /// so matched-token highlights never collide with user brackets.
+    /// Consumers strip these via the shared dehighlight helper, which
+    /// preserves legitimate user brackets.
+    package static let snippetOpenMarker = "\u{E000}"
+    package static let snippetCloseMarker = "\u{E001}"
     /// Upper bound on queued writes before forcing a flush to SQLite.
     ///
     /// Too small => many transactions (slow). Too large => unbounded memory.
@@ -174,7 +180,7 @@ package actor FTS5SearchEngine {
                 let sql = """
                     SELECT m.frame_id AS frame_id,
                            bm25(frames_fts) AS rank,
-                           snippet(frames_fts, 0, '[', ']', '...', 10) AS snippet
+                           snippet(frames_fts, 0, '\(Self.snippetOpenMarker)', '\(Self.snippetCloseMarker)', '...', 10) AS snippet
                     FROM frames_fts
                     JOIN frame_mapping m ON m.rowid_ref = frames_fts.rowid
                     WHERE frames_fts MATCH ?
