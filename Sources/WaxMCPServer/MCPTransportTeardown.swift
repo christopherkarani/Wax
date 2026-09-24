@@ -8,7 +8,6 @@ enum MCPTeardownReason: String, Sendable, Equatable {
     case shutdown
     case recoveryReplacement
     case stdioEOF
-    case peerClosed
 }
 
 enum MCPTeardownPerformError: Error, Sendable {
