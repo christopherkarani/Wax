@@ -655,9 +655,6 @@ extension AgentBrokerService {
     }
 
     func memorySearch(_ command: BrokerCommand.MemorySearch) async throws -> AgentBrokerValue {
-        let query = command.query
-        let topK = command.topK
-        let mode = command.mode
         let requested = command.horizons
         let sessionLanes = requested.intersection([.working, .episodic])
         let policy: SessionResolutionPolicy
@@ -674,50 +671,38 @@ extension AgentBrokerService {
             sessionID = nil
         }
         let horizons = Self.scopedHorizons(scope: scope, requested: requested)
-        var hits: [LayeredMemoryHit] = []
-        if !horizons.isEmpty {
-            let identity = try MemorySearchIdentity.make(sessionID: sessionID, horizons: horizons)
-            hits = try await layeredMemorySearch(
-                query: query,
-                mode: mode,
-                topK: topK,
-                identity: identity
+        // Fetch + merge + fence + pack live behind the BrokerRecall seam. The
+        // module takes no lock: this runs under commandMutex, like recall.
+        let packed = try await BrokerRecall.memorySearch(
+            command,
+            sessionID: sessionID,
+            horizons: horizons,
+            in: BrokerRecall.Environment(
+                longTermMemory: longTermMemory,
+                sessions: virtualSessions,
+                endedSessions: endedSessions,
+                preview: { Wax.dehighlightedPreviewText($0 ?? "") },
+                canonicalFrameID: { frameID, memory in
+                    await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
+                },
+                nowMs: { Self.nowMs() }
             )
-        }
-        if let sessionID {
-            let writeScope = writeScope(for: sessionID)
-            hits = Self.filterMemorySearchHits(
-                hits,
-                identity: LayeredRecall.Identity(
-                    project: writeScope.projectName,
-                    repo: writeScope.repoName
-                )
-            )
-        }
+        )
 
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
-                query: query,
-                hits: hits.compactMap { hit in
+                query: command.query,
+                hits: packed.hits.compactMap { hit in
                     guard hit.horizon == .working else { return nil }
                     return (hit.frameID, hit.score)
                 },
                 memory: sessionMemory
             )
         }
-
-        let nowMs = Self.nowMs()
-        let rows = hits.map { RecallPresent.renderLayeredMemoryHit($0, nowMs: nowMs) }
-        let text = rows.isEmpty ? "No results." : rows.map(\.debugJSONString).joined(separator: "\n")
-        return .object([
-            "query": .string(query),
-            "topK": .from(topK),
-            "results": .array(rows),
-            "display_text": .string(text),
-        ])
+        return packed.payload
     }
 
     func memoryGet(_ command: BrokerCommand.MemoryGet) async throws -> AgentBrokerValue {
@@ -2403,26 +2388,9 @@ extension AgentBrokerService {
         )
     }
 
-    func layeredMemorySearch(
-        query: String,
-        mode: Memory.RetrievalMode,
-        topK: Int,
-        identity: MemorySearchIdentity
-    ) async throws -> [LayeredMemoryHit] {
-        try await LayeredRecall.search(
-            request: LayeredRecall.SearchRequest(
-                query: query,
-                mode: mode,
-                topK: topK,
-                identity: identity
-            ),
-            stores: layeredRecallStores()
-        )
-    }
-
     func layeredRecallStores() -> LayeredRecall.Stores {
-        // Snapshot discipline lives behind the BrokerRecall seam; the
-        // remaining layered-search path builds through the same function.
+        // Snapshot discipline lives behind the BrokerRecall seam; Compact
+        // assembly builds through the same function.
         BrokerRecall.makeStores(
             snapshot: activeSessions,
             longTermMemory: longTermMemory,
@@ -2551,33 +2519,6 @@ extension AgentBrokerService {
         case session(UUID)
         case durableOnly
         case none
-    }
-
-    /// Keep working-lane hits. Resolved identity drops durable/episodic that would
-    /// fail `search`'s scoped frame filter. Unresolved identity keeps unstamped
-    /// durable and drops stamped foreign, matching `LayeredRecall.matchesProjectScope`.
-    static func filterMemorySearchHits(
-        _ hits: [LayeredMemoryHit],
-        identity: LayeredRecall.Identity
-    ) -> [LayeredMemoryHit] {
-        hits.filter { hit in
-            matchesSessionScopedRetrieval(
-                metadata: hit.metadata,
-                identity: identity,
-                isWorking: hit.horizon == .working
-            )
-        }
-    }
-
-    /// Unresolved session scope: working + unstamped durable; drop stamped foreign.
-    /// Resolved: exact `wax.project` / `wax.repo` (working always kept).
-    static func matchesSessionScopedRetrieval(
-        metadata: [String: String],
-        identity: LayeredRecall.Identity,
-        isWorking: Bool
-    ) -> Bool {
-        if isWorking { return true }
-        return BrokerRecall.allowsDurableSearchHit(metadata: metadata, identity: identity)
     }
 
     static func filterCorpusHits(

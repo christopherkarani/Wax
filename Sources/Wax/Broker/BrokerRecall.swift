@@ -1,21 +1,24 @@
 import Foundation
 
-/// Broker-owned recall and MCP search pipeline: fetch + merge + pack.
+/// Broker-owned recall, MCP search, and memory_search pipeline: fetch + merge + pack.
 ///
 /// Recall: session snapshot → multi-horizon fetch → merge → scope select → pack.
-/// Search: the same snapshot and identity fence, with today's search rank law
-/// (not `LayeredRecall.search`'s +0.25 / topK 6/8). `RecallPresent` stays a
-/// separate module for wire rendering; impression side effects stay with the
-/// broker.
+/// Search: the same snapshot and identity fence, with the MCP search rank law
+/// (score desc, working before durable on ties).
+/// MemorySearch: resolved session scope in; snapshot → horizon fetch → the
+/// memory_search rank law (+0.25 working / +0.10 durable, episodic recency) →
+/// session fence → pack. The two search rank laws stay distinct entry points,
+/// never a rank-law flag. `RecallPresent` stays a separate module for wire
+/// rendering; impression side effects stay with the broker.
 ///
 /// Interface invariants (caller-enforced, documented here):
 /// - Caller guarantees remember drain. The module takes no lock; call the
 ///   recall/search entry under `commandMutex` after teardown serialization,
 ///   exactly as `handle` routes non-drain commands today. Concurrent `remember`
 ///   during retrieval degrades to stale reads, never corruption.
-/// - Caller runs the embedder wait first. The module never waits on readiness;
-///   an unready embedder degrades inside the orchestrator lanes and surfaces
-///   via the effective-mode diagnostics in the pack.
+/// - Recall/search callers run the embedder wait first. memory_search relies on
+///   in-lane degradation instead (admission takes no embedder wait); the module
+///   itself never waits on readiness in any entry point.
 package enum BrokerRecall {
     /// Live handles. The module snapshots sessions once per retrieval behind
     /// the seam; callers never build `LayeredRecall.Stores` for this path.
@@ -208,8 +211,71 @@ package enum BrokerRecall {
         )
     }
 
-    /// Shared `Stores` construction behind the seam. Search and recall both
-    /// build through this function so the snapshot cannot drift.
+    /// Packed memory_search. `payload` is wire-ready; `hits` are fenced and
+    /// exist so the caller can record working-lane retrieval hits (a broker
+    /// side effect, outside the module).
+    package struct PackedMemorySearch: Sendable {
+        package var payload: AgentBrokerValue
+        package var hits: [LayeredRecall.Hit]
+
+        package init(payload: AgentBrokerValue, hits: [LayeredRecall.Hit]) {
+            self.payload = payload
+            self.hits = hits
+        }
+    }
+
+    /// memory_search fetch + merge + fence + pack. The caller resolves the
+    /// session scope (explicit id, sole-live inference, or durable-only
+    /// fallback) and passes it in; the module snapshots once and never
+    /// re-resolves, so fetch and fence cannot skew. Only `query`/`mode`/`topK`
+    /// are read from `command`; the wire session/horizons are ignored in
+    /// favor of the resolved arguments.
+    package static func memorySearch(
+        _ command: BrokerCommand.MemorySearch,
+        sessionID: UUID?,
+        horizons: HorizonSet,
+        in environment: Environment
+    ) async throws -> PackedMemorySearch {
+        let stores = makeStores(
+            snapshot: environment.sessions.live,
+            longTermMemory: environment.longTermMemory,
+            endedSessions: environment.endedSessions,
+            preview: environment.preview,
+            canonicalFrameID: environment.canonicalFrameID,
+            nowMs: environment.nowMs
+        )
+        var hits: [LayeredRecall.Hit] = []
+        if !horizons.isEmpty {
+            let identity = try MemorySearchIdentity.make(sessionID: sessionID, horizons: horizons)
+            hits = try await LayeredRecall.search(
+                request: LayeredRecall.SearchRequest(
+                    query: command.query,
+                    mode: command.mode,
+                    topK: command.topK,
+                    identity: identity
+                ),
+                stores: stores
+            )
+            if sessionID != nil {
+                let fence = stores.inferWriteScope(sessionID, nil)
+                hits = hits.filter { allowsMemorySearchHit($0, identity: fence) }
+            }
+        }
+        return packMemorySearch(command: command, hits: hits, nowMs: environment.nowMs())
+    }
+
+    /// memory_search fence: working-lane hits are always kept; durable and
+    /// episodic follow the durable stamp rule.
+    package static func allowsMemorySearchHit(
+        _ hit: LayeredRecall.Hit,
+        identity: LayeredRecall.Identity
+    ) -> Bool {
+        if hit.horizon == .working { return true }
+        return allowsDurableSearchHit(metadata: hit.metadata, identity: identity)
+    }
+
+    /// Shared `Stores` construction behind the seam. All three entries build
+    /// through this function so the snapshot cannot drift.
     package static func makeStores(
         snapshot sessionsSnapshot: [UUID: VirtualSessionStore.SessionState],
         longTermMemory: MemoryOrchestrator,
@@ -429,6 +495,24 @@ package enum BrokerRecall {
             }
         }
         return rank(lhs) >= rank(rhs) ? lhs : rhs
+    }
+
+    private static func packMemorySearch(
+        command: BrokerCommand.MemorySearch,
+        hits: [LayeredRecall.Hit],
+        nowMs: Int64
+    ) -> PackedMemorySearch {
+        let rows = hits.map { RecallPresent.renderLayeredMemoryHit($0, nowMs: nowMs) }
+        let text = rows.isEmpty ? "No results." : rows.map(\.debugJSONString).joined(separator: "\n")
+        return PackedMemorySearch(
+            payload: .object([
+                "query": .string(command.query),
+                "topK": .from(command.topK),
+                "results": .array(rows),
+                "display_text": .string(text),
+            ]),
+            hits: hits
+        )
     }
 
     private static func packSearch(
