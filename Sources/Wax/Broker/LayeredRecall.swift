@@ -1184,11 +1184,21 @@ package enum LayeredRecall {
     }
 
     package static func hit(from item: RAGContext.Item, id: MemoryID) -> Hit {
-        Hit(
+        // FTS5 snippet() wraps matched tokens in '[' ']' markers. Snippet-kind
+        // text carries those markers; expanded/surrogate text is full-frame
+        // and must keep legitimate user brackets. Dehighlight snippets only,
+        // matching the agentFacingPreview path used for preview closures.
+        let text: String
+        if item.kind == .snippet {
+            text = UnifiedRanking.dehighlightedPreviewText(item.text)
+        } else {
+            text = item.text
+        }
+        return Hit(
             id: id,
             score: item.score,
-            text: item.text,
-            preview: MemorySemantics.summarizeCandidate(item.text, maxLength: 180),
+            text: text,
+            preview: MemorySemantics.summarizeCandidate(text, maxLength: 180),
             metadata: item.metadata,
             explanations: item.explanations,
             timestampMs: item.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init) ?? 0,

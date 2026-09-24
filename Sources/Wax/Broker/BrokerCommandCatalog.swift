@@ -380,7 +380,7 @@ package enum BrokerCommandCatalog {
                 hybridAlpha,
                 Argument(
                     "search_top_k", .integer,
-                    description: "Optional retrieval top-k for recall search stage. Defaults to limit. Legacy alias: topK.",
+                    description: "Optional retrieval top-k for recall search stage. Defaults to limit; values below limit are floored at limit. Legacy alias: topK.",
                     minimumInt: 1, maximumInt: 200
                 ),
                 Argument(
@@ -814,9 +814,18 @@ package enum BrokerCommandCatalog {
         let unknown = providedKeys.subtracting(entry.acceptedArgumentKeys)
         guard unknown.isEmpty else {
             let valid = entry.acceptedArgumentKeys.sorted().joined(separator: ", ")
-            throw BrokerValidationError.invalid(
+            var message =
                 "unsupported argument(s): \(unknown.sorted().joined(separator: ", ")); valid argument(s): \(valid)"
-            )
+            let legacyFilterKeys: Set<String> = [
+                "labels", "frame_ids", "time_after_ms", "time_before_ms",
+                "include_deleted", "include_superseded", "include_surrogates",
+            ]
+            let legacyHit = unknown.intersection(legacyFilterKeys)
+            if !legacyHit.isEmpty, entry.acceptedArgumentKeys.contains("filters") {
+                let hint = legacyHit.sorted().map { "filters.\($0)" }.joined(separator: ", ")
+                message += ". Did you mean \(hint)? Pass filter keys nested under filters."
+            }
+            throw BrokerValidationError.invalid(message)
         }
         return entry.canonicalName
     }

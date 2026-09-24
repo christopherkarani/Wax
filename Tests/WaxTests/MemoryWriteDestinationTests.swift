@@ -181,14 +181,36 @@ struct MemoryWriteDestinationTests {
         #expect(destination.sessionID == nil)
     }
 
-    @Test(arguments: [MemoryDurability.working, MemoryDurability.ephemeral, MemoryDurability.durable])
-    func rememberDestinationDurableTypeIgnoresSessionDurabilityWhenSessionIDPresent(
+    @Test(arguments: [MemoryDurability.working, MemoryDurability.ephemeral])
+    func rememberDestinationDurableTypeHonorsTransientDurabilityViaSession(
         _ durability: MemoryDurability
     ) throws {
+        let sessionID = UUID()
+        let destination = try RememberDestination.decode(
+            sessionID: sessionID,
+            writeScope: nil,
+            semantics: MemoryWriteSemantics(type: .decision, durability: durability),
+            metadata: [:]
+        )
+        guard case .session(let decodedSessionID, let write) = destination else {
+            Issue.record("expected session destination for transient durability \(durability.rawValue)")
+            return
+        }
+        #expect(decodedSessionID == sessionID)
+        guard case .typed(let type, let sessionDurability, _) = write else {
+            Issue.record("expected typed session write")
+            return
+        }
+        #expect(type == .decision)
+        #expect(sessionDurability.memoryDurability == durability)
+    }
+
+    @Test
+    func rememberDestinationDurableTypeWithDurableDurabilityStaysDurableWhenSessionIDPresent() throws {
         let destination = try RememberDestination.decode(
             sessionID: UUID(),
             writeScope: nil,
-            semantics: MemoryWriteSemantics(type: .decision, durability: durability),
+            semantics: MemoryWriteSemantics(type: .decision, durability: .durable),
             metadata: [:]
         )
         guard case .durable(let write) = destination else {
@@ -198,6 +220,25 @@ struct MemoryWriteDestinationTests {
         #expect(write.type == .decision)
         #expect(write.durability == .durable)
         #expect(destination.sessionID == nil)
+    }
+
+    @Test(arguments: [MemoryDurability.working, MemoryDurability.ephemeral])
+    func rememberDestinationTransientDurabilityWithoutSessionThrows(
+        _ durability: MemoryDurability
+    ) {
+        do {
+            _ = try RememberDestination.decode(
+                sessionID: nil,
+                writeScope: nil,
+                semantics: MemoryWriteSemantics(type: .decision, durability: durability),
+                metadata: [:]
+            )
+            Issue.record("expected throw for \(durability.rawValue) without session")
+        } catch let error as BrokerValidationError {
+            #expect(String(describing: error).contains("requires scope session"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
     }
 
     @Test

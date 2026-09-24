@@ -435,10 +435,15 @@ extension BrokerCommand.Recall {
                 "search_top_k must be between 1 and \(BrokerLimits.maxTopK)"
             )
         }
+        // search_top_k is the retrieval-stage width; limit is the final
+        // assembly cap. A narrower retrieval than the requested limit would
+        // under-fill by construction, so floor retrieval at limit. The lane
+        // still inflates via retrievalTopK for project hard-filter headroom.
+        let searchTopK = max(requestedTopK ?? limit, limit)
         return Self(
             query: query,
             limit: limit,
-            searchTopK: requestedTopK ?? limit,
+            searchTopK: searchTopK,
             identity: identity,
             mode: mode,
             filters: filters,
@@ -990,13 +995,25 @@ extension BrokerCommand {
         if checkoutRaw != nil, checkoutStatus == nil {
             throw BrokerValidationError.invalid("checkout_status must be one of: intent, landed")
         }
+        let confidence = try args.optionalFloat("confidence")
+        if let confidence {
+            guard confidence.isFinite, (0...1).contains(Double(confidence)) else {
+                throw BrokerValidationError.invalid("confidence must be a finite number between 0 and 1")
+            }
+        }
+        let expiresInDays = try args.optionalInt("expires_in_days")
+        if let expiresInDays {
+            guard (1...3650).contains(expiresInDays) else {
+                throw BrokerValidationError.invalid("expires_in_days must be between 1 and 3650")
+            }
+        }
         return MemoryWriteSemantics(
             type: type,
             durability: durability,
             project: try args.optionalString("project"),
             repo: try args.optionalString("repo"),
-            confidence: try args.optionalFloat("confidence"),
-            expiresInDays: try args.optionalInt("expires_in_days"),
+            confidence: confidence,
+            expiresInDays: expiresInDays,
             reviewed: try args.optionalBool("reviewed") ?? false,
             lock: try args.optionalBool("locked") ?? false,
             checkoutStatus: checkoutStatus
