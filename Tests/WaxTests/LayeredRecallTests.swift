@@ -946,15 +946,17 @@ struct LayeredRecallTests {
     }
 
     @Test
-    func layeredRecallHitStripsFTSSnippetBracketsForSnippetKindOnly() {
+    func layeredRecallHitStripsFTSSnippetMarkersForSnippetKindOnly() {
+        // FTS5 snippet() wraps matched tokens in private-use markers
+        // (U+E000/U+E001); user brackets must survive dehighlighting.
         let snippet = RAGContext.Item(
             kind: .snippet,
             frameId: 21,
             score: 1,
             sources: [.text],
-            text: "[STRESS]_[TEST]_LOCKED_FLAG_[TEST]"
+            text: "\u{E000}STRESS\u{E001}_\u{E000}TEST\u{E001}_LOCKED_FLAG_\u{E000}TEST\u{E001} keep [user] brackets"
         )
-        #expect(LayeredRecall.hit(from: snippet).text == "STRESS_TEST_LOCKED_FLAG_TEST")
+        #expect(LayeredRecall.hit(from: snippet).text == "STRESS_TEST_LOCKED_FLAG_TEST keep [user] brackets")
 
         let expanded = RAGContext.Item(
             kind: .expanded,

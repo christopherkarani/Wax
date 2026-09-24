@@ -1184,7 +1184,8 @@ package enum LayeredRecall {
     }
 
     package static func hit(from item: RAGContext.Item, id: MemoryID) -> Hit {
-        // FTS5 snippet() wraps matched tokens in '[' ']' markers. Snippet-kind
+        // FTS5 snippet() wraps matched tokens in private-use markers
+        // (FTS5SearchEngine.snippetOpenMarker/CloseMarker). Snippet-kind
         // text carries those markers; expanded/surrogate text is full-frame
         // and must keep legitimate user brackets. Dehighlight snippets only,
         // matching the agentFacingPreview path used for preview closures.

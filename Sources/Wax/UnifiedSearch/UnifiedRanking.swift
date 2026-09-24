@@ -1,4 +1,5 @@
 import Foundation
+import WaxTextSearch
 
 /// Pure rerank transforms over fused unified-search hits.
 ///
@@ -637,10 +638,12 @@ package enum UnifiedRanking {
         return true
     }
 
+    /// Strips FTS5 snippet highlight markers (private-use codepoints owned by
+    /// `FTS5SearchEngine`). Legitimate user brackets are preserved.
     package static func dehighlightedPreviewText(_ text: String) -> String {
         text
-            .replacingOccurrences(of: "[", with: "")
-            .replacingOccurrences(of: "]", with: "")
+            .replacingOccurrences(of: FTS5SearchEngine.snippetOpenMarker, with: "")
+            .replacingOccurrences(of: FTS5SearchEngine.snippetCloseMarker, with: "")
     }
 
     /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.

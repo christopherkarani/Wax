@@ -217,10 +217,11 @@ struct UnifiedRankingTests {
         )
         // Highlight markers sit inside identifier glue; ranking must strip
         // them or the contiguous identifier needle never matches.
+        // Markers are private-use codepoints so user brackets are preserved.
         let exact = SearchResponse.Result(
             frameId: 2,
             score: 0.4,
-            previewText: "id=build.[agent]_v2 in the rollout note",
+            previewText: "id=build.\u{E000}agent\u{E001}_v2 in the rollout note [verified]",
             sources: [.text]
         )
 
@@ -231,6 +232,7 @@ struct UnifiedRankingTests {
         )
 
         #expect(UnifiedRanking.dehighlightedPreviewText(exact.previewText ?? "").contains("build.agent_v2"))
+        #expect(UnifiedRanking.dehighlightedPreviewText(exact.previewText ?? "").contains("[verified]"))
         #expect(ranked.map(\.frameId) == [2, 1])
         #expect(ranked[0].explanations.contains("exact identifier match"))
     }
