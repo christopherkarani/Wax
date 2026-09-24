@@ -1082,10 +1082,10 @@ package enum MemorySemantics {
         return GitCheckoutSnapshot(sha: sha, branch: branch, worktree: worktree)
     }
 
-    package static func onThisTree(
+    /// SHA compare only. Returns `.yes`, `.other`, or `.unknown`. Never `.ancestor`, and never starts a process.
+    package static func classifyCheckout(
         storedSHA: String?,
-        live: GitCheckoutSnapshot,
-        repoRootPath: String? = nil
+        live: GitCheckoutSnapshot
     ) -> OnThisTree {
         guard let stored = normalizeGitSHA(storedSHA), let liveSHA = normalizeGitSHA(live.sha) else {
             return .unknown
@@ -1093,10 +1093,44 @@ package enum MemorySemantics {
         if gitSHA(stored, matches: liveSHA) {
             return .yes
         }
-        if let repoRootPath, isGitAncestor(stored, of: liveSHA, repoRootPath: repoRootPath) {
-            return .ancestor
-        }
         return .other
+    }
+
+    /// One relation per stored SHA. `git merge-base --is-ancestor` runs only for unequal SHAs when `repoRootPath` is set.
+    package static func checkoutRelations(
+        storedSHAs: some Sequence<String>,
+        live: GitCheckoutSnapshot,
+        repoRootPath: String?
+    ) -> [String: OnThisTree] {
+        var relations: [String: OnThisTree] = [:]
+        let liveSHA = normalizeGitSHA(live.sha)
+        for storedSHA in storedSHAs {
+            if relations[storedSHA] != nil { continue }
+            let classified = classifyCheckout(storedSHA: storedSHA, live: live)
+            if classified == .other,
+               let repoRootPath,
+               let stored = normalizeGitSHA(storedSHA),
+               let liveSHA,
+               isGitAncestor(stored, of: liveSHA, repoRootPath: repoRootPath) {
+                relations[storedSHA] = .ancestor
+            } else {
+                relations[storedSHA] = classified
+            }
+        }
+        return relations
+    }
+
+    package static func onThisTree(
+        storedSHA: String?,
+        live: GitCheckoutSnapshot,
+        repoRootPath: String? = nil
+    ) -> OnThisTree {
+        guard let storedSHA else { return .unknown }
+        return checkoutRelations(
+            storedSHAs: [storedSHA],
+            live: live,
+            repoRootPath: repoRootPath
+        )[storedSHA] ?? .unknown
     }
 
     package static func looksLandedClaim(metadata: [String: String], text: String) -> Bool {
