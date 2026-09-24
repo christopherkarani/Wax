@@ -6,6 +6,11 @@ import Wax
 @preconcurrency import NIOCore
 @preconcurrency import NIOHTTP1
 @preconcurrency import NIOPosix
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 actor MCPHTTPApplication {
     struct Configuration: Sendable {
@@ -90,9 +95,7 @@ actor MCPHTTPApplication {
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(HTTPHandler(app: self))
-                }
+                MCPHTTPServerPipeline.configure(channel, app: self)
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
@@ -479,6 +482,108 @@ actor MCPHTTPApplication {
     }
 }
 
+enum MCPHTTPServerPipeline {
+    static func configure(_ channel: Channel, app: MCPHTTPApplication) -> EventLoopFuture<Void> {
+        // The pipeline handler stops reading while an SSE response is open.
+        // A client reset is then invisible and the accepted socket stays in
+        // TCP CLOSED with its fd held. The watcher polls that socket and
+        // closes the channel. It does not read into the pipeline: those
+        // bytes would sit in the handler's buffer until the response ended.
+        channel.pipeline.addHandler(MCPHTTPPeerCloseWatch(), position: .first).flatMap {
+            channel.pipeline.configureHTTPServerPipeline()
+        }.flatMap {
+            channel.pipeline.addHandler(HTTPHandler(app: app))
+        }
+    }
+}
+
+enum MCPHTTPPeerReset {
+    /// Hangup, reset, or any inbound byte. Inbound bytes are not delivered:
+    /// the HTTP pipeline is paused for the open SSE response, and reading
+    /// them here would store them without a bound.
+    static func shouldClose(_ handle: NIOBSDSocket.Handle) -> Bool {
+        var pollFD = pollfd(fd: handle, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&pollFD, 1, 0)
+        guard ready > 0 else { return false }
+        let events = Int32(pollFD.revents)
+        if events & (POLLHUP | POLLERR | POLLNVAL) != 0 {
+            return true
+        }
+        guard events & Int32(POLLIN) != 0 else { return false }
+        var byte: UInt8 = 0
+        let peeked = recv(handle, &byte, 1, Int32(MSG_PEEK))
+        if peeked == 0 || peeked > 0 { return true }
+        let error = errno
+        if error == EAGAIN || error == EWOULDBLOCK || error == EINTR { return false }
+        return error == ECONNRESET || error == EPIPE || error == ENOTCONN
+            || error == ECONNABORTED || error == ETIMEDOUT
+    }
+}
+
+final class MCPHTTPPeerCloseWatch: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+
+    private var pump: RepeatedTask?
+    private var context: ChannelHandlerContext?
+
+    func handlerAdded(context: ChannelHandlerContext) {
+        self.context = context
+    }
+
+    func handlerRemoved(context: ChannelHandlerContext) {
+        disarm()
+        if self.context === context {
+            self.context = nil
+        }
+    }
+
+    func arm() {
+        guard pump == nil, let context else { return }
+        pump = context.eventLoop.scheduleRepeatedTask(
+            initialDelay: .milliseconds(50),
+            delay: .milliseconds(50)
+        ) { [weak self] _ in
+            self?.closeIfPeerGone()
+        }
+    }
+
+    func disarm() {
+        pump?.cancel()
+        pump = nil
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        context.fireChannelRead(data)
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        disarm()
+        self.context = nil
+        context.fireChannelInactive()
+    }
+
+    private func closeIfPeerGone() {
+        guard let context, context.channel.isActive else { return }
+        let gone: Bool
+        do {
+            gone = try context.channel.pipeline.syncOperations.withUnsafeTransportIfAvailable(
+                of: NIOBSDSocket.Handle.self
+            ) { handle in
+                MCPHTTPPeerReset.shouldClose(handle)
+            } ?? false
+        } catch {
+            return
+        }
+        if gone {
+            context.close(promise: nil)
+        }
+    }
+}
+
 enum HTTPAuthPolicy {
     private static let loopbackNames: Set<String> = ["localhost", "127.0.0.1", "::1"]
 
@@ -572,6 +677,34 @@ enum HTTPRequestBodyLimit {
     }
 }
 
+private final class HopResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func succeed() {
+        take()?.resume()
+    }
+
+    deinit {
+        guard let pending = take() else { return }
+        // NIO can drop the scheduled callback while this object is still
+        // inside withCheckedContinuation. Resume on a follow-up turn.
+        Task { pending.resume() }
+    }
+
+    private func take() -> CheckedContinuation<Void, Never>? {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        return pending
+    }
+}
+
 final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
@@ -599,6 +732,17 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         if channelContext === context {
             channelContext = nil
         }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        // A dropped GET is one HTTP connection. The MCP session stays up so
+        // the client's next POST still finds it. DELETE and idle expiry close it.
+        channelContext = nil
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -648,7 +792,12 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     exceededBodyLimit: exceededBodyLimit,
                     request: request
                 )
-                await self.writeResponse(response, version: version, eventLoop: eventLoop)
+                await self.writeResponse(
+                    response,
+                    version: version,
+                    eventLoop: eventLoop,
+                    request: request
+                )
             }
         }
     }
@@ -711,14 +860,19 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     private func writeResponse(
         _ response: HTTPResponse,
         version: HTTPVersion,
-        eventLoop: EventLoop
+        eventLoop: EventLoop,
+        request: HTTPRequest
     ) async {
         let statusCode = response.statusCode
         let headers = response.headers
 
         switch response {
         case .stream(let stream, _):
+            let method = request.method
             await hop(eventLoop) {
+                if method.uppercased() == "GET" {
+                    self.armPeerCloseWatch()
+                }
                 self.writeHeadAndFlush(statusCode: statusCode, headers: headers, version: version)
             }
 
@@ -729,10 +883,11 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     }
                 }
             } catch {
-                // Let the connection drain naturally.
+                // The peer watcher closes the channel. Finish the write if it is still open.
             }
 
             await hop(eventLoop) {
+                self.disarmPeerCloseWatch()
                 self.writeEnd()
             }
 
@@ -749,11 +904,36 @@ final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         }
     }
 
+    private func armPeerCloseWatch() {
+        guard let context = channelContext,
+              let watch = try? context.pipeline.syncOperations.context(
+                handlerType: MCPHTTPPeerCloseWatch.self
+              ).handler as? MCPHTTPPeerCloseWatch
+        else { return }
+        watch.arm()
+    }
+
+    private func disarmPeerCloseWatch() {
+        guard let context = channelContext,
+              let watch = try? context.pipeline.syncOperations.context(
+                handlerType: MCPHTTPPeerCloseWatch.self
+              ).handler as? MCPHTTPPeerCloseWatch
+        else { return }
+        watch.disarm()
+    }
+
     private func hop(_ eventLoop: EventLoop, _ body: @escaping @Sendable () -> Void) async {
+        if eventLoop.inEventLoop {
+            body()
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // If the loop is already shut down, NIO drops this callback.
+            // HopResume resumes from deinit so the waiter is not stranded.
+            let resume = HopResume(continuation)
             eventLoop.execute {
                 body()
-                continuation.resume()
+                resume.succeed()
             }
         }
     }
