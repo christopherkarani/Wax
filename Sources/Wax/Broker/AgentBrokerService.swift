@@ -170,7 +170,21 @@ package actor AgentBrokerService {
     }
 
     package func handle(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
-        if Self.requiresRememberDrain(request) {
+        let command: BrokerCommand
+        do {
+            command = try BrokerCommand.decode(
+                command: request.command,
+                arguments: request.arguments
+            )
+        } catch {
+            let message = error.localizedDescription
+            return await commandMutex.withLock {
+                AgentBrokerResponse.failure(id: request.id, message: message)
+            }
+        }
+
+        switch BrokerAdmission.admission(for: command) {
+        case .rememberDrain:
             // Migration snapshots and mutates a copy of the long-term store. It
             // must hold both locks: remember intentionally uses its own mutex so
             // deferred embedding waits do not block reads, but a migration must
@@ -180,65 +194,27 @@ package actor AgentBrokerService {
             // capable of appending to an ended session.
             return await commandMutex.withLock { [self] in
                 await rememberMutex.withLock { [self] in
-                    await handleSerialized(request)
+                    await dispatch(command, request: request)
                 }
             }
-        }
-        // Wait for MiniLM outside commandMutex so a cold first recall does not
-        // stall unrelated commands the way remember already uses rememberMutex.
-        // Do not wait again inside recall/search — a timeout here must not
-        // become a second 30s hold on the serialized path.
-        if Self.isQueryEmbedderWaitRequest(request) {
+        case .embedderThenCommand:
+            // Wait for MiniLM outside commandMutex so a cold first recall does not
+            // stall unrelated commands the way remember already uses rememberMutex.
+            // Do not wait again inside recall/search — a timeout here must not
+            // become a second 30s hold on the serialized path.
             await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
+            return await commandMutex.withLock { [self] in
+                await dispatch(command, request: request)
+            }
+        case .remember:
+            return await rememberMutex.withLock { [self] in
+                await dispatch(command, request: request)
+            }
+        case .command:
+            return await commandMutex.withLock { [self] in
+                await dispatch(command, request: request)
+            }
         }
-        let mutex = Self.isRememberRequest(request) ? rememberMutex : commandMutex
-        return await mutex.withLock { [self] in
-            await handleSerialized(request)
-        }
-    }
-
-    private static func isQueryEmbedderWaitRequest(_ request: AgentBrokerRequest) -> Bool {
-        guard let command = try? BrokerCommand.decode(
-            command: request.command,
-            arguments: request.arguments
-        ) else {
-            return false
-        }
-        switch command {
-        case .recall(let recall):
-            return recall.mode != .textOnly
-        case .search(let search):
-            return search.mode != .textOnly
-        case .sessionOpen(let open):
-            let query = open.recallQuery?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return !query.isEmpty
-        default:
-            return false
-        }
-    }
-
-    private static func isRememberRequest(_ request: AgentBrokerRequest) -> Bool {
-        guard let command = try? BrokerCommand.decode(
-            command: request.command,
-            arguments: request.arguments
-        ) else {
-            return false
-        }
-        if case .remember = command {
-            return true
-        }
-        return false
-    }
-
-    /// Invalid decode does not take the remember-drain lock.
-    package static func requiresRememberDrain(_ request: AgentBrokerRequest) -> Bool {
-        guard let command = try? BrokerCommand.decode(
-            command: request.command,
-            arguments: request.arguments
-        ) else {
-            return false
-        }
-        return requiresRememberDrain(command)
     }
 
     /// New `BrokerCommand` cases must pick true (teardown) or false.
@@ -256,16 +232,15 @@ package actor AgentBrokerService {
         }
     }
 
-    private func handleSerialized(_ request: AgentBrokerRequest) async -> AgentBrokerResponse {
+    private func dispatch(
+        _ command: BrokerCommand,
+        request: AgentBrokerRequest
+    ) async -> AgentBrokerResponse {
         do {
-            let decoded = try BrokerCommand.decode(
-                command: request.command,
-                arguments: request.arguments
-            )
             let payload: AgentBrokerValue
             let shouldExit: Bool
 
-            switch decoded {
+            switch command {
             case .remember(let command):
                 payload = try await remember(command)
                 shouldExit = false
