@@ -227,7 +227,9 @@ package enum BrokerRecall {
     /// memory_search fetch + merge + fence + pack. The caller resolves the
     /// session scope (explicit id, sole-live inference, or durable-only
     /// fallback) and passes it in; the module snapshots once and never
-    /// re-resolves, so fetch and fence cannot skew.
+    /// re-resolves, so fetch and fence cannot skew. Only `query`/`mode`/`topK`
+    /// are read from `command`; the wire session/horizons are ignored in
+    /// favor of the resolved arguments.
     package static func memorySearch(
         _ command: BrokerCommand.MemorySearch,
         sessionID: UUID?,
