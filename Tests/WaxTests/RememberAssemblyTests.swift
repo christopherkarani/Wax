@@ -152,6 +152,51 @@ func rememberAssemblyPayloadTruncatesStoredEchoAt240Characters() throws {
 }
 
 @Test
+func rememberAssemblyPayloadTruncationBoundaryIsExact() throws {
+    for count in [240, 241] {
+        let content = String(repeating: "b", count: count)
+        let payload = RememberAssembly.payload(
+            frameId: 1,
+            framesAdded: 1,
+            frameCount: 1,
+            pendingFrames: 0,
+            sessionID: nil,
+            metadata: durableMetadata(),
+            inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+            deduplicated: false,
+            searchable: true,
+            content: content
+        )
+        let object = try #require(payload.objectValue)
+        let expectedTruncated = count > RememberAssembly.storedEchoLimit
+        #expect(object["stored_truncated"]?.boolValue == expectedTruncated)
+        #expect(object["stored"]?.stringValue?.count == min(count, RememberAssembly.storedEchoLimit))
+    }
+}
+
+@Test
+func rememberAssemblyPayloadHandlesZeroFramesAdded() throws {
+    let content = "deduped"
+    let payload = RememberAssembly.payload(
+        frameId: 9,
+        framesAdded: 0,
+        frameCount: 9,
+        pendingFrames: 0,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: true,
+        searchable: true,
+        content: content
+    )
+    let object = try #require(payload.objectValue)
+    #expect(object["chunked"]?.boolValue == false)
+    #expect(object["chunk_count"]?.intValue == 0)
+    #expect(object["stored_truncated"]?.boolValue == false)
+    #expect(object["content_bytes"]?.intValue == Int64(content.utf8.count))
+}
+
+@Test
 func rememberAssemblyPayloadUsesWorkingMemoryIDForSession() throws {
     let sessionID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     let payload = RememberAssembly.payload(

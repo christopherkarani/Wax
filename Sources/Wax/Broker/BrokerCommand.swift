@@ -429,7 +429,14 @@ extension BrokerCommand.Recall {
         let filters = try BrokerCommand.parseSearchFilters(args)
         let identity = try RecallIdentity.make(scope: scope, sessionID: filters.sessionId)
         let mode = try BrokerCommand.parseRecallMode(args)
-        let requestedTopK = try args.optionalInt("search_top_k") ?? (try args.optionalInt("topK"))
+        let searchTopKRaw = try args.optionalInt("search_top_k")
+        let topKAliasRaw = try args.optionalInt("topK")
+        if let searchTopKRaw, let topKAliasRaw, searchTopKRaw != topKAliasRaw {
+            throw BrokerValidationError.invalid(
+                "search_top_k and topK alias conflict (\(searchTopKRaw) vs \(topKAliasRaw)); pass only search_top_k"
+            )
+        }
+        let requestedTopK = searchTopKRaw ?? topKAliasRaw
         if let requestedTopK, !(1...BrokerLimits.maxTopK).contains(requestedTopK) {
             throw BrokerValidationError.invalid(
                 "search_top_k must be between 1 and \(BrokerLimits.maxTopK)"
@@ -995,11 +1002,14 @@ extension BrokerCommand {
         if checkoutRaw != nil, checkoutStatus == nil {
             throw BrokerValidationError.invalid("checkout_status must be one of: intent, landed")
         }
-        let confidence = try args.optionalFloat("confidence")
-        if let confidence {
-            guard confidence.isFinite, (0...1).contains(Double(confidence)) else {
+        let confidence: Float?
+        if let rawConfidence = try args.optionalDouble("confidence") {
+            guard rawConfidence.isFinite, (0...1).contains(rawConfidence) else {
                 throw BrokerValidationError.invalid("confidence must be a finite number between 0 and 1")
             }
+            confidence = Float(rawConfidence)
+        } else {
+            confidence = nil
         }
         let expiresInDays = try args.optionalInt("expires_in_days")
         if let expiresInDays {

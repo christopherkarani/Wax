@@ -469,6 +469,11 @@ private extension WaxMCPTools {
     ) {
         let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
         guard ["recall", "search"].contains(canonical) else { return }
+        // Don't hide a filters type error: if filters exists and is neither
+        // object nor null, leave everything alone so validation reports it.
+        if let existingFilters = arguments["filters"], existingFilters != .null {
+            guard case .object = existingFilters else { return }
+        }
         let legacyKeys = [
             "labels",
             "frame_ids",
@@ -478,6 +483,11 @@ private extension WaxMCPTools {
             "include_superseded",
             "include_surrogates",
         ]
+        // Explicit nulls mean absent (consistent with BrokerArguments); drop
+        // them so they don't trip unknown-arg validation or pollute filters.
+        for key in legacyKeys where arguments[key] == .null {
+            arguments.removeValue(forKey: key)
+        }
         let present = legacyKeys.filter { arguments[$0] != nil }
         guard !present.isEmpty else { return }
         var merged: [String: Value]

@@ -819,6 +819,7 @@ package enum BrokerCommandCatalog {
             let legacyFilterKeys: Set<String> = [
                 "labels", "frame_ids", "time_after_ms", "time_before_ms",
                 "include_deleted", "include_superseded", "include_surrogates",
+                "metadata",
             ]
             let legacyHit = unknown.intersection(legacyFilterKeys)
             if !legacyHit.isEmpty, entry.acceptedArgumentKeys.contains("filters") {

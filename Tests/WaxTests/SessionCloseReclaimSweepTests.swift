@@ -69,7 +69,7 @@ struct SessionCloseReclaimSweepTests {
                 let remembered = await service.handle(.init(command: "remember", arguments: [
                     "content": .string(canary),
                     "memory_type": .string(MemoryType.note.rawValue),
-                    "durability": .string(MemoryDurability.working.rawValue),
+                    "durability": .string(MemoryDurability.durable.rawValue),
                     "metadata": .object([
                         MemoryMetadataKeys.createdAtMs: .string(String(createdAtMs)),
                     ]),
