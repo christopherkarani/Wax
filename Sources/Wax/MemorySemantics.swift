@@ -161,10 +161,15 @@ package enum RememberDestination: Sendable, Equatable {
 
         // Type selects horizon. session_id does not hijack durable types;
         // explicit scope=session still forces a session write where legal.
+        // Explicit ephemeral/working durability is a session intent: honor it
+        // via session when a session exists instead of silently escalating
+        // to durable. Without a session, reject with guidance.
         let typeSelectsSession = resolvedType == .note
             || resolvedType == .handoff
             || resolvedType == .taskState
-        if let sessionID, writeScope == .session || typeSelectsSession {
+        let requestsTransientDurability = requestedDurability == .ephemeral
+            || requestedDurability == .working
+        if let sessionID, writeScope == .session || typeSelectsSession || requestsTransientDurability {
             let sessionDurability: SessionRememberDurability
             switch requestedDurability {
             case .durable, .locked:
@@ -180,6 +185,12 @@ package enum RememberDestination: Sendable, Equatable {
             return .session(
                 sessionID: sessionID,
                 write: .typed(type: sessionType, durability: sessionDurability, fields: fields)
+            )
+        }
+
+        if requestsTransientDurability {
+            throw BrokerValidationError.invalid(
+                "durability \(requestedDurability?.rawValue ?? "ephemeral") requires scope session with an active session_id; pass scope session or omit durability to use the memory_type default"
             )
         }
 

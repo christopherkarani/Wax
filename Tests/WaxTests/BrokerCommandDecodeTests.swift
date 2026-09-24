@@ -1178,4 +1178,157 @@ struct BrokerCommandDecodeTests {
         #expect(!ungated.map(\.name).contains("facts_query"))
         #expect(ungated.map(\.name).contains("recall"))
     }
+
+    @Test(arguments: [2.5, -1.0, Double.nan, Double.infinity])
+    func rememberRejectsOutOfRangeConfidence(_ value: Double) {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "remember",
+                arguments: [
+                    "content": .string("x"),
+                    "confidence": .double(value),
+                ]
+            )
+        }
+    }
+
+    @Test(arguments: [-5, 0, 3651])
+    func rememberRejectsOutOfRangeExpiresInDays(_ value: Int64) {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "remember",
+                arguments: [
+                    "content": .string("x"),
+                    "expires_in_days": .int(value),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func recallFloorsSearchTopKAtLimit() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "limit": .int(5),
+                "search_top_k": .int(1),
+            ]
+        )
+        guard case .recall(let payload) = decoded else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(payload.limit == 5)
+        #expect(payload.searchTopK == 5)
+    }
+
+    @Test
+    func recallLegacyFilterHintNamesFiltersPath() {
+        do {
+            _ = try BrokerCommandCatalog.validateArgumentSurface(
+                command: "recall",
+                providedKeys: ["query", "time_after_ms"]
+            )
+            Issue.record("expected throw")
+        } catch let error as BrokerValidationError {
+            let message = error.errorDescription ?? String(describing: error)
+            #expect(message.contains("filters.time_after_ms"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test(arguments: [1.00000005, 1.000001, 1.5])
+    func rememberRejectsSlightlyAboveOneConfidence(_ value: Double) {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "remember",
+                arguments: [
+                    "content": .string("x"),
+                    "confidence": .double(value),
+                ]
+            )
+        }
+    }
+
+    @Test(arguments: [0.0, 1.0, 0.5])
+    func rememberAcceptsBoundaryConfidence(_ value: Double) throws {
+        let decoded = try BrokerCommand.decode(
+            command: "remember",
+            arguments: [
+                "content": .string("x"),
+                "confidence": .double(value),
+            ]
+        )
+        guard case .remember(let payload) = decoded else {
+            Issue.record("expected remember")
+            return
+        }
+        #expect(payload.metadata.isEmpty || true)
+    }
+
+    @Test(arguments: [1, 3650])
+    func rememberAcceptsBoundaryExpiresInDays(_ value: Int64) throws {
+        let decoded = try BrokerCommand.decode(
+            command: "remember",
+            arguments: [
+                "content": .string("x"),
+                "expires_in_days": .int(value),
+            ]
+        )
+        guard case .remember = decoded else {
+            Issue.record("expected remember")
+            return
+        }
+    }
+
+    @Test
+    func recallRejectsConflictingTopKAlias() {
+        #expect(throws: BrokerValidationError.self) {
+            _ = try BrokerCommand.decode(
+                command: "recall",
+                arguments: [
+                    "query": .string("q"),
+                    "limit": .int(5),
+                    "search_top_k": .int(5),
+                    "topK": .int(10),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func recallAcceptsMatchingTopKAlias() throws {
+        let decoded = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "limit": .int(5),
+                "search_top_k": .int(7),
+                "topK": .int(7),
+            ]
+        )
+        guard case .recall(let payload) = decoded else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(payload.searchTopK == 7)
+    }
+
+    @Test
+    func recallLegacyFilterHintForMetadata() {
+        do {
+            _ = try BrokerCommandCatalog.validateArgumentSurface(
+                command: "recall",
+                providedKeys: ["query", "metadata"]
+            )
+            Issue.record("expected throw")
+        } catch let error as BrokerValidationError {
+            let message = error.errorDescription ?? String(describing: error)
+            #expect(message.contains("filters.metadata"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
 }

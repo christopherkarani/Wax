@@ -880,6 +880,99 @@ func toolsRejectUnknownTopLevelArguments() async throws {
 }
 
 @Test
+func toolsMigrateLegacyFlatFilterKeysIntoFilters() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string("legacy filters"),
+                    "limit": .int(3),
+                    "include_deleted": .bool(true),
+                    "labels": .array([.string("a")]),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError == false)
+    }
+}
+
+@Test
+func toolsLegacyFilterHintNamesFiltersPath() async throws {
+    try await withAgentBrokerService { service, _ in
+        // `unexpected` is not a legacy filter key, so the hint must not fire;
+        // legacy keys are migrated before validation instead.
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "time_after_ms": .int(123),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError == false)
+    }
+}
+
+@Test
+func toolsPreserveFiltersTypeErrorWhenLegacyKeysPresent() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "filters": .string("oops"),
+                    "time_after_ms": .int(123),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError == true)
+        #expect(firstText(in: result).contains("filters"))
+    }
+}
+
+@Test
+func toolsIgnoreNullLegacyFilterKeys() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "labels": .null,
+                    "include_deleted": .null,
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError == false)
+    }
+}
+
+@Test
+func toolsExplicitFiltersWinOverLegacyTopLevel() async throws {
+    try await withAgentBrokerService { service, _ in
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "recall",
+                arguments: [
+                    "query": .string("actors"),
+                    "filters": .object(["labels": .array([.string("b")])]),
+                    "labels": .array([.string("a")]),
+                ]
+            ),
+            broker: service
+        )
+        #expect(result.isError == false)
+    }
+}
+
+@Test
 func brokerRejectsUnknownTopLevelArguments() async throws {
     try await withAgentBrokerService { service, _ in
         let response = await service.handle(

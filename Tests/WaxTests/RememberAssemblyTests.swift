@@ -59,6 +59,7 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
     #expect(Set(object.keys) == [
         "status", "committed", "frame_id", "memory_id", "framesAdded", "frameCount", "pendingFrames",
         "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable", "stored",
+        "stored_truncated", "chunked", "chunk_count", "content_bytes",
         "unresolved_project", "display_text", "project", "repo",
     ])
     #expect(object["stored"]?.stringValue == originalDecision)
@@ -75,11 +76,37 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
     #expect(object["durability"]?.stringValue == "durable")
     #expect(object["deduplicated"]?.boolValue == false)
     #expect(object["searchable"]?.boolValue == true)
+    #expect(object["stored_truncated"]?.boolValue == false)
+    #expect(object["chunked"]?.boolValue == false)
+    #expect(object["chunk_count"]?.intValue == 1)
     #expect(object["unresolved_project"]?.boolValue == false)
     #expect(object["project"]?.stringValue == "wax")
     #expect(object["repo"]?.stringValue == "wax")
     #expect(object["display_text"]?.stringValue == "Remembered. 1 frame(s) added (9 total, 2 pending).")
     #expect(object["next_action"] == nil)
+}
+
+@Test
+func rememberAssemblyPayloadFlagsChunkedLargeWrites() throws {
+    let content = String(repeating: "a", count: 300)
+    let payload = RememberAssembly.payload(
+        frameId: 1,
+        framesAdded: 15,
+        frameCount: 30,
+        pendingFrames: 0,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: false,
+        searchable: true,
+        content: content
+    )
+    let object = try #require(payload.objectValue)
+    #expect(object["chunked"]?.boolValue == true)
+    #expect(object["chunk_count"]?.intValue == 15)
+    #expect(object["stored_truncated"]?.boolValue == true)
+    #expect(object["content_bytes"]?.intValue == Int64(content.utf8.count))
+    #expect((object["display_text"]?.stringValue ?? "").contains("chunked into 15 frames"))
 }
 
 @Test
@@ -122,6 +149,51 @@ func rememberAssemblyPayloadTruncatesStoredEchoAt240Characters() throws {
     let stored = try #require(payload.objectValue?["stored"]?.stringValue)
     #expect(stored == String(repeating: "a", count: 240))
     #expect(stored.count == 240)
+}
+
+@Test
+func rememberAssemblyPayloadTruncationBoundaryIsExact() throws {
+    for count in [240, 241] {
+        let content = String(repeating: "b", count: count)
+        let payload = RememberAssembly.payload(
+            frameId: 1,
+            framesAdded: 1,
+            frameCount: 1,
+            pendingFrames: 0,
+            sessionID: nil,
+            metadata: durableMetadata(),
+            inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+            deduplicated: false,
+            searchable: true,
+            content: content
+        )
+        let object = try #require(payload.objectValue)
+        let expectedTruncated = count > RememberAssembly.storedEchoLimit
+        #expect(object["stored_truncated"]?.boolValue == expectedTruncated)
+        #expect(object["stored"]?.stringValue?.count == min(count, RememberAssembly.storedEchoLimit))
+    }
+}
+
+@Test
+func rememberAssemblyPayloadHandlesZeroFramesAdded() throws {
+    let content = "deduped"
+    let payload = RememberAssembly.payload(
+        frameId: 9,
+        framesAdded: 0,
+        frameCount: 9,
+        pendingFrames: 0,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: true,
+        searchable: true,
+        content: content
+    )
+    let object = try #require(payload.objectValue)
+    #expect(object["chunked"]?.boolValue == false)
+    #expect(object["chunk_count"]?.intValue == 0)
+    #expect(object["stored_truncated"]?.boolValue == false)
+    #expect(object["content_bytes"]?.intValue == Int64(content.utf8.count))
 }
 
 @Test

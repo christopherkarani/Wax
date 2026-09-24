@@ -944,6 +944,27 @@ struct LayeredRecallTests {
         )
         #expect(LayeredRecall.hit(from: unknown).timestampMs == 0)
     }
+
+    @Test
+    func layeredRecallHitStripsFTSSnippetBracketsForSnippetKindOnly() {
+        let snippet = RAGContext.Item(
+            kind: .snippet,
+            frameId: 21,
+            score: 1,
+            sources: [.text],
+            text: "[STRESS]_[TEST]_LOCKED_FLAG_[TEST]"
+        )
+        #expect(LayeredRecall.hit(from: snippet).text == "STRESS_TEST_LOCKED_FLAG_TEST")
+
+        let expanded = RAGContext.Item(
+            kind: .expanded,
+            frameId: 22,
+            score: 1,
+            sources: [.text],
+            text: "keep [user] brackets"
+        )
+        #expect(LayeredRecall.hit(from: expanded).text == "keep [user] brackets")
+    }
 }
 
 private func layeredHit(

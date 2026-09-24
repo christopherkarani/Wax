@@ -100,6 +100,7 @@ enum WaxMCPTools {
             // Explicit UUIDs are validated against persisted sessions by the broker.
             injectClientSessionIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
+            migrateLegacyFilterKeysIfNeeded(name: params.name, arguments: &forwarded)
             try validateArgumentSurface(name: params.name, arguments: forwarded)
             let verbosity = try responseVerbosity(from: forwarded) ?? .compact
 
@@ -454,6 +455,55 @@ private extension WaxMCPTools {
         guard let sessionID = sessionHint?.current() else { return }
         MCPBoundSessionRegistry.shared.invalidate(sessionID: sessionID)
         sessionHint?.clearBinding()
+    }
+
+    /// Backward compat for pre-filters clients (e.g. v0.1.47) that send
+    /// recall/search filter keys top-level instead of nested under `filters`.
+    /// Migrates `labels`, `frame_ids`, `time_after_ms`, `time_before_ms`,
+    /// `include_deleted`, `include_superseded`, `include_surrogates` into
+    /// `filters` so old tool definitions keep working. New clients should
+    /// pass `filters` directly.
+    static func migrateLegacyFilterKeysIfNeeded(
+        name: String,
+        arguments: inout [String: Value]
+    ) {
+        let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
+        guard ["recall", "search"].contains(canonical) else { return }
+        // Don't hide a filters type error: if filters exists and is neither
+        // object nor null, leave everything alone so validation reports it.
+        if let existingFilters = arguments["filters"], existingFilters != .null {
+            guard case .object = existingFilters else { return }
+        }
+        let legacyKeys = [
+            "labels",
+            "frame_ids",
+            "time_after_ms",
+            "time_before_ms",
+            "include_deleted",
+            "include_superseded",
+            "include_surrogates",
+        ]
+        // Explicit nulls mean absent (consistent with BrokerArguments); drop
+        // them so they don't trip unknown-arg validation or pollute filters.
+        for key in legacyKeys where arguments[key] == .null {
+            arguments.removeValue(forKey: key)
+        }
+        let present = legacyKeys.filter { arguments[$0] != nil }
+        guard !present.isEmpty else { return }
+        var merged: [String: Value]
+        if case .object(let existing) = arguments["filters"] {
+            merged = existing
+        } else {
+            merged = [:]
+        }
+        for key in present {
+            // Explicit `filters.*` wins over legacy top-level on conflict.
+            if merged[key] == nil, let value = arguments[key] {
+                merged[key] = value
+            }
+            arguments.removeValue(forKey: key)
+        }
+        arguments["filters"] = .object(merged)
     }
 
     static func autoSessionErrorResult(_ error: MCPAutoSessionError) -> CallTool.Result {

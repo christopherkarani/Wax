@@ -54,7 +54,16 @@ package enum RememberAssembly {
         let project = metadata[MemoryMetadataKeys.project] ?? inferredScope.projectName
         let repo = metadata[MemoryMetadataKeys.repo] ?? inferredScope.repoName
         let unresolvedProject = project?.isEmpty != false
+        let contentBytes = content.utf8.count
+        let storedTruncated = content.count > storedEchoLimit
+        let chunked = framesAdded > 1
         var display = "Remembered. \(framesAdded) frame(s) added (\(frameCount) total, \(pendingFrames) pending)."
+        if chunked {
+            display += " Large content chunked into \(framesAdded) frames; memory_id names the document frame."
+        }
+        if storedTruncated {
+            display += " Stored echo truncated to \(storedEchoLimit) chars."
+        }
         if unresolvedProject {
             display += " Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
         }
@@ -73,6 +82,10 @@ package enum RememberAssembly {
             "deduplicated": .bool(deduplicated),
             "searchable": .bool(searchable),
             "stored": .string(String(content.prefix(storedEchoLimit))),
+            "stored_truncated": .bool(storedTruncated),
+            "chunked": .bool(chunked),
+            "chunk_count": .from(framesAdded),
+            "content_bytes": .from(Int64(contentBytes)),
             "unresolved_project": .bool(unresolvedProject),
             "display_text": .string(display),
         ]
