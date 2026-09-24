@@ -491,9 +491,10 @@ func itemWithOnlyWhitespaceIsFilteredOut() {
 @Test
 func highlightBracketsAreStrippedBeforeMatching() {
     let extractor = DeterministicAnswerExtractor()
-    // The extractor strips "[" and "]" from item text before applying regexes.
-    // Simulate a highlighted item like: "[allergic] to [peanuts]"
-    let item = makeItem(text: "[allergic] to [peanuts] according to the medical file.")
+    // The extractor strips FTS5 highlight markers (U+E000/U+E001) from item
+    // text before applying regexes. Simulate a highlighted item; user
+    // brackets elsewhere in the text are preserved.
+    let item = makeItem(text: "\u{E000}allergic\u{E001} to \u{E000}peanuts\u{E001} according to the medical file.")
     let answer = extractor.extractAnswer(
         query: "Does the patient have any known allergy?",
         items: [item]
