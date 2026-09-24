@@ -9,7 +9,7 @@ struct WaxCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "wax-cli",
         abstract: "Wax developer CLI",
-        version: "0.1.47",
+        version: "0.1.48",
         subcommands: [
             RememberCommand.self,
             RecallCommand.self,
