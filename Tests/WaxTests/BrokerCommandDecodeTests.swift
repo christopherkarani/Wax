@@ -588,6 +588,25 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
+    func sessionCloseRecordHandoffDefaultsTrue() throws {
+        let plain = try BrokerCommand.decode(command: "session_close", arguments: ["content": .string("x")])
+        guard case .sessionClose(let a) = plain else {
+            Issue.record("expected session_close")
+            return
+        }
+        #expect(a.recordHandoff)
+        let skipped = try BrokerCommand.decode(
+            command: "session_close",
+            arguments: ["content": .string(""), "record_handoff": .bool(false)]
+        )
+        guard case .sessionClose(let b) = skipped else {
+            Issue.record("expected session_close")
+            return
+        }
+        #expect(!b.recordHandoff)
+    }
+
+    @Test
     func stage2bSessionCloseOpenAndFactsQueryDecode() throws {
         let close = try BrokerCommand.decode(
             command: "session_close",

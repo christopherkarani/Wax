@@ -42,11 +42,13 @@ Then wire the **host**, not a new prompt:
 | Host | What to do |
 |------|------------|
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
-| Codex | HTTP URL in `~/.codex/config.toml` + copy this skill to `~/.codex/skills/wax-mcp` |
-| Cursor | HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
+| Codex | `wax-cli mcp install` prints the stdio block (writes it with `--write-toml-config`) + copies the skill; manual: HTTP URL in `~/.codex/config.toml` |
+| Cursor | `wax-cli mcp install` merges the stdio entry automatically; manual: HTTP URL in `~/.cursor/mcp.json` + paste `references/project-rules.md` |
 | Hermes | Native `memory.provider: wax-memory` only (`npx -y waxmcp@latest install-hermes-plugin`). Never `plugins.enabled`. Never also `mcp_servers.wax`; do not also register generic MCP or this generic skill. Call `wax_remember` / `wax_recall` / `wax_stats` with no Wax UUID. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into workspace `SOUL.md` (replace existing `## Memory (Wax)`) |
-| Grok CLI | HTTP URL `http://127.0.0.1:3000/mcp`. Do not use `GROK_CONFIG` / `GROK_CONFIG_PATH` to retarget Wax. Isolated labs: project `.grok/config.toml` + `--leader-socket` (or `--no-leader` / `GROK_HOME`) — see `Resources/docs/wax-mcp-hosts.md`. |
+| Grok CLI | `wax-cli mcp install --hosts grok` prints the stdio block (writes it with `--write-toml-config`); daily: HTTP URL `http://127.0.0.1:3000/mcp`. Do not use `GROK_CONFIG` / `GROK_CONFIG_PATH` to retarget Wax. Isolated labs: project `.grok/config.toml` + `--leader-socket` (or `--no-leader` / `GROK_HOME`) — see `Resources/docs/wax-mcp-hosts.md`. |
+| OpenCode | `wax-cli mcp install --hosts opencode` merges the stdio entry automatically (JSONC stays manual); manual: HTTP URL in `opencode.json` + paste `references/project-rules.md` |
+| Muse Code | `wax-cli mcp install` registers Muse automatically (unless `--skip-muse`); manual: `mcp_servers.wax` in `~/.config/muse/settings.json` (`schema_version: 1`): stdio `wax-cli mcp serve` when solo, shared `http://127.0.0.1:3000/mcp` with two or more clients + paste the AGENTS.md fence from `references/project-rules.md` |
 | Other | HTTP URL + paste the AGENTS.md fence from `references/project-rules.md` |
 
 Optional: `wax-cli mcp install --write-host-rule PATH` writes the generated

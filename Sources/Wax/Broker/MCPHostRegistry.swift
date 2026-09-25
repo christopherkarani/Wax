@@ -13,11 +13,12 @@ package enum MCPHostRegistry {
         case cursor
         case opencode
         case openclaw
+        case muse
 
         /// Hosts the wire-hooks path can merge configs for.
         package var supportsWireHooks: Bool {
             switch self {
-            case .claude, .codex, .grok, .cursor:
+            case .claude, .codex, .grok, .cursor, .muse:
                 return true
             case .opencode, .openclaw:
                 return false
@@ -28,7 +29,7 @@ package enum MCPHostRegistry {
             switch self {
             case .cursor:
                 return "sessionStart"
-            case .claude, .codex, .grok, .opencode, .openclaw:
+            case .claude, .codex, .grok, .opencode, .openclaw, .muse:
                 return "SessionStart"
             }
         }
@@ -37,7 +38,7 @@ package enum MCPHostRegistry {
             switch self {
             case .cursor:
                 return "sessionEnd"
-            case .claude, .codex, .grok, .opencode, .openclaw:
+            case .claude, .codex, .grok, .opencode, .openclaw, .muse:
                 return "SessionEnd"
             }
         }
@@ -47,7 +48,7 @@ package enum MCPHostRegistry {
             switch self {
             case .codex:
                 return "startup|resume"
-            case .claude, .grok, .cursor, .opencode, .openclaw:
+            case .claude, .grok, .cursor, .opencode, .openclaw, .muse:
                 return nil
             }
         }
@@ -57,7 +58,7 @@ package enum MCPHostRegistry {
             switch self {
             case .cursor:
                 return enableCursorStartHook
-            case .claude, .codex, .grok, .opencode, .openclaw:
+            case .claude, .codex, .grok, .opencode, .openclaw, .muse:
                 return true
             }
         }

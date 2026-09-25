@@ -4,13 +4,14 @@ import Testing
 @Suite("MCPHostRegistry")
 struct MCPHostRegistryTests {
     @Test func canonicalHostsCoverPrimeAndWireSurfaces() {
-        #expect(MCPHostRegistry.Host.allCases.map(\.rawValue) == ["claude", "codex", "grok", "cursor", "opencode", "openclaw"])
+        #expect(MCPHostRegistry.Host.allCases.map(\.rawValue) == ["claude", "codex", "grok", "cursor", "opencode", "openclaw", "muse"])
     }
 
-    @Test func wireHookSurfaceIsClaudeCodexGrokCursor() {
-        #expect(MCPHostRegistry.wireHookNames == ["claude", "codex", "grok", "cursor"])
+    @Test func wireHookSurfaceIsClaudeCodexGrokCursorMuse() {
+        #expect(MCPHostRegistry.wireHookNames == ["claude", "codex", "grok", "cursor", "muse"])
         #expect(MCPHostRegistry.Host.claude.supportsWireHooks)
         #expect(MCPHostRegistry.Host.cursor.supportsWireHooks)
+        #expect(MCPHostRegistry.Host.muse.supportsWireHooks)
         #expect(!MCPHostRegistry.Host.opencode.supportsWireHooks)
         #expect(!MCPHostRegistry.Host.openclaw.supportsWireHooks)
     }
@@ -21,6 +22,8 @@ struct MCPHostRegistryTests {
         #expect(MCPHostRegistry.Host.cursor.startEventName == "sessionStart")
         #expect(MCPHostRegistry.Host.cursor.endEventName == "sessionEnd")
         #expect(MCPHostRegistry.Host.opencode.startEventName == "SessionStart")
+        #expect(MCPHostRegistry.Host.muse.startEventName == "SessionStart")
+        #expect(MCPHostRegistry.Host.muse.endEventName == "SessionEnd")
     }
 
     @Test func onlyCodexScopesPrimeWithMatcher() {
@@ -28,12 +31,20 @@ struct MCPHostRegistryTests {
         #expect(MCPHostRegistry.Host.claude.primeMatcher == nil)
         #expect(MCPHostRegistry.Host.grok.primeMatcher == nil)
         #expect(MCPHostRegistry.Host.cursor.primeMatcher == nil)
+        #expect(MCPHostRegistry.Host.muse.primeMatcher == nil)
     }
 
     @Test func cursorPrimeIsOptInOthersAlwaysPrime() {
         #expect(MCPHostRegistry.Host.claude.includesPrime(enableCursorStartHook: false))
+        #expect(MCPHostRegistry.Host.muse.includesPrime(enableCursorStartHook: false))
+        #expect(MCPHostRegistry.Host.muse.includesPrime(enableCursorStartHook: true))
         #expect(!MCPHostRegistry.Host.cursor.includesPrime(enableCursorStartHook: false))
         #expect(MCPHostRegistry.Host.cursor.includesPrime(enableCursorStartHook: true))
+    }
+
+    @Test func musePrimeNeedsNoLiveInjectionProbe() {
+        #expect(!MCPHostRegistry.Host.muse.requiresLiveInjectionProbeForPrime)
+        #expect(MCPHostRegistry.Host.cursor.requiresLiveInjectionProbeForPrime)
     }
 
     @Test func primeFormatFallsBackToJSONWithoutRenderTarget() {
@@ -41,12 +52,14 @@ struct MCPHostRegistryTests {
         #expect(MCPHostRegistry.Host.codex.primeFormat == .codex)
         #expect(MCPHostRegistry.Host.grok.primeFormat == .grok)
         #expect(MCPHostRegistry.Host.cursor.primeFormat == .cursor)
+        #expect(MCPHostRegistry.Host.muse.primeFormat == .muse)
         #expect(MCPHostRegistry.Host.opencode.primeFormat == .json)
         #expect(MCPHostRegistry.Host.openclaw.primeFormat == .json)
     }
 
     @Test func unknownHostNameFallsBackToJSON() {
         #expect(MCPHostRegistry.primeFormat(hostName: "claude") == .claude)
+        #expect(MCPHostRegistry.primeFormat(hostName: "muse") == .muse)
         #expect(MCPHostRegistry.primeFormat(hostName: "openclaw") == .json)
         #expect(MCPHostRegistry.primeFormat(hostName: "nope") == .json)
     }
@@ -55,6 +68,7 @@ struct MCPHostRegistryTests {
         #expect(MCPHostRegistry.Host.claude.usesNestedMatcherDocument)
         #expect(MCPHostRegistry.Host.codex.usesNestedMatcherDocument)
         #expect(MCPHostRegistry.Host.grok.usesNestedMatcherDocument)
+        #expect(MCPHostRegistry.Host.muse.usesNestedMatcherDocument)
         #expect(!MCPHostRegistry.Host.cursor.usesNestedMatcherDocument)
     }
 }

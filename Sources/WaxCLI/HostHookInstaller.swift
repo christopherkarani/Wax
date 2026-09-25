@@ -6,6 +6,7 @@ enum HostHookHost: String, Sendable, CaseIterable {
     case codex
     case grok
     case cursor
+    case muse
 }
 
 extension HostHookHost {
@@ -16,6 +17,7 @@ extension HostHookHost {
         case .codex: return .codex
         case .grok: return .grok
         case .cursor: return .cursor
+        case .muse: return .muse
         }
     }
 }
@@ -35,6 +37,16 @@ struct HostHookInstallPolicy: Equatable, Sendable {
     var ownership: HostOwnershipLevel = .b
     var enableCursorStartHook: Bool = false
     var requiresLiveInjectionProbe: Bool = true
+    /// Also wire a read-only prime hook on `UserPromptSubmit` so every
+    /// prompt prefetches project recall. Consulted only for nested-matcher
+    /// hosts (claude, codex, grok, muse); default off. Verified live on
+    /// Muse; other nested-matcher hosts accept the same event shape but a
+    /// host that does not fire it simply never runs the hook.
+    var enablePromptPrefetch: Bool = false
+
+    /// Event the prompt-prefetch hook wires to. Shared by desired-entry
+    /// construction and stale-hook detection so the two cannot drift.
+    static let promptPrefetchEventName = "UserPromptSubmit"
 
     static let `default` = HostHookInstallPolicy()
 }
@@ -52,6 +64,8 @@ struct HostHookDesiredEntry: Equatable, Sendable {
     var matcher: String?
     var timeoutSeconds: Int?
     var requiresLiveInjectionProbe: Bool
+    /// Muse skips handlers with unrecognized keys, so muse handlers omit the `wax` marker.
+    var includeOwnershipMarker: Bool = true
 }
 
 struct HostHookPreview: Equatable, Sendable {
@@ -78,6 +92,8 @@ enum HostHookError: Error, Equatable, LocalizedError {
     case unsupportedHost(String)
     case hostConfigCountMismatch
     case validationFailed
+    case museSettingsSeedRefused
+    case stalePromptPrefetch
 
     var isUnknownSchemaVersion: Bool {
         if case .unknownSchemaVersion = self { return true }
@@ -118,6 +134,10 @@ enum HostHookError: Error, Equatable, LocalizedError {
             return "--host and --config must be paired one-to-one."
         case .validationFailed:
             return "Rendered hook config failed validation before write."
+        case .museSettingsSeedRefused:
+            return "Refusing to create settings.json for muse: create settings.json with schema_version 1 first, then re-run wire-hooks."
+        case .stalePromptPrefetch:
+            return "Wax prime already exists on UserPromptSubmit, likely from a previous --with-prompt-prefetch run. Re-run wire-hooks with --with-prompt-prefetch to keep it, or remove that hook manually."
         }
     }
 }
@@ -162,6 +182,7 @@ enum HostHookInstaller {
 
         var entries: [HostHookDesiredEntry] = []
         let includePrime = registry.includesPrime(enableCursorStartHook: policy.enableCursorStartHook)
+        let includeOwnershipMarker = host != .muse
 
         if includePrime {
             entries.append(
@@ -171,7 +192,22 @@ enum HostHookInstaller {
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: matcher,
                     timeoutSeconds: 2,
-                    requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe
+                    requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe,
+                    includeOwnershipMarker: includeOwnershipMarker
+                )
+            )
+        }
+
+        if host.registry.usesNestedMatcherDocument, policy.enablePromptPrefetch {
+            entries.append(
+                HostHookDesiredEntry(
+                    eventName: HostHookInstallPolicy.promptPrefetchEventName,
+                    role: .prime,
+                    command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
+                    matcher: nil,
+                    timeoutSeconds: 2,
+                    requiresLiveInjectionProbe: false,
+                    includeOwnershipMarker: includeOwnershipMarker
                 )
             )
         }
@@ -184,7 +220,8 @@ enum HostHookInstaller {
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .checkpoint),
                     matcher: nil,
                     timeoutSeconds: 2,
-                    requiresLiveInjectionProbe: false
+                    requiresLiveInjectionProbe: false,
+                    includeOwnershipMarker: includeOwnershipMarker
                 )
             )
         }
@@ -239,6 +276,9 @@ enum HostHookInstaller {
                 originalBytes = bytes
                 document = try HostHookJSON.parse(bytes)
             } else {
+                if target.host == .muse, target.configURL.lastPathComponent == "settings.json" {
+                    throw HostHookError.museSettingsSeedRefused
+                }
                 originalBytes = nil
                 document = HostHookSchema.seed(host: target.host)
             }
@@ -294,6 +334,14 @@ enum HostHookInstaller {
 
 enum HostHookSchema {
     static func seed(host: HostHookHost) -> HostHookJSON {
+        if host == .muse {
+            // Muse rejects files without schema_version; seed it so custom
+            // (non-settings.json) muse targets start valid. settings.json
+            // itself is never seeded (museSettingsSeedRefused).
+            return .object([
+                HostHookJSONMember(key: "schema_version", value: .number("1"))
+            ])
+        }
         if host.registry.usesNestedMatcherDocument {
             return .object([])
         }
@@ -306,6 +354,9 @@ enum HostHookSchema {
     static func validate(_ document: HostHookJSON, host: HostHookHost) throws {
         guard document.objectMembers != nil else {
             throw HostHookError.malformedJSON
+        }
+        if host == .muse {
+            try MuseSetup.requireSupportedSchema(document)
         }
         let version = document.value(forKey: "version")
         if !host.registry.usesNestedMatcherDocument, version == nil {

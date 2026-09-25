@@ -261,8 +261,11 @@ private func connectedSockets(port: Int) throws -> Int {
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     try process.run()
-    process.waitUntilExit()
+    // Read pipe before waitUntilExit: lsof lists every fd in this process,
+    // and under --parallel that output can exceed the 64KB pipe buffer,
+    // deadlocking lsof on write while the parent waits for exit.
     let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let text = String(decoding: data, as: UTF8.self)
     let marker = ":\(port)->"
     return text.split(separator: "\n").filter { line in

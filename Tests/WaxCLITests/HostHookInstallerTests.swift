@@ -432,6 +432,319 @@ struct HostHookInstallerTests {
             #expect(!rendered.contains("SessionEnd"))
         }
     }
+
+    @Test func museMergeIntoHooksDocOmitsOwnershipMarker() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated.json", to: root.appendingPathComponent("settings.json"))
+            let result = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            #expect(result.mutated)
+            let rendered = try String(contentsOf: config, encoding: .utf8)
+            #expect(rendered.contains("echo unrelated-pre"))
+            #expect(rendered.contains("echo unrelated-stop"))
+            #expect(rendered.contains("SessionStart"))
+            #expect(waxHookCount(in: rendered) == 1)
+            #expect(rendered.contains("\(wrapper.path) mcp run-hook --host muse --role prime --wax-hook 1"))
+            #expect(rendered.contains(#""wax""#) == false)
+            #expect(rendered.contains(#""trusted""#) == false)
+            #expect(eventOrder(in: rendered, events: ["PreToolUse", "Stop", "SessionStart"]) == ["PreToolUse", "Stop", "SessionStart"])
+
+            let parsed = try HostHookJSON.parse(Data(contentsOf: config))
+            let start = try #require(parsed.value(forKey: "hooks")?.value(forKey: "SessionStart")?.arrayValue)
+            let handler = try #require(start.first?.value(forKey: "hooks")?.arrayValue?.first)
+            #expect(handler.value(forKey: "wax") == nil)
+            #expect(handler.value(forKey: "command")?.stringValue?.contains("--host muse") == true)
+            #expect(HostHookOwnership.role(of: handler) == .prime)
+        }
+    }
+
+    @Test func museRepeatedInstallIsIdempotent() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated.json", to: root.appendingPathComponent("settings.json"))
+            let first = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            #expect(first.mutated)
+            let afterFirst = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: afterFirst) == 1)
+
+            let second = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            let afterSecond = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: afterSecond) == 1)
+            #expect(afterSecond.contains("echo unrelated-pre"))
+            #expect(afterSecond.contains(#""wax""#) == false)
+            #expect(second.mutated == false || afterSecond == afterFirst)
+        }
+    }
+
+    @Test func museEquivalentWaxHookUpdatesViaCommandSubstring() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/equivalent-wax.json", to: root.appendingPathComponent("settings.json"))
+            // Ownership is detected from the --wax-hook command substring:
+            // this fixture carries no "wax" marker key by design.
+            let before = try HostHookJSON.parse(Data(contentsOf: config))
+            let beforeHandler = try #require(
+                before.value(forKey: "hooks")?.value(forKey: "SessionStart")?.arrayValue?.first?
+                    .value(forKey: "hooks")?.arrayValue?.first
+            )
+            #expect(beforeHandler.value(forKey: "wax") == nil)
+            #expect(HostHookOwnership.role(of: beforeHandler) == .prime)
+
+            _ = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            let rendered = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: rendered) == 1)
+            #expect(rendered.contains(wrapper.path))
+            #expect(!rendered.contains("/old/path/wax-cli"))
+            #expect(rendered.contains(#""extraKeep""#))
+            #expect(rendered.contains("echo unrelated-prompt"))
+            #expect(rendered.contains(#""wax""#) == false)
+
+            let parsed = try HostHookJSON.parse(Data(contentsOf: config))
+            let handler = try #require(
+                parsed.value(forKey: "hooks")?.value(forKey: "SessionStart")?.arrayValue?.first?
+                    .value(forKey: "hooks")?.arrayValue?.first
+            )
+            #expect(handler.value(forKey: "wax") == nil)
+            #expect(HostHookOwnership.role(of: handler) == .prime)
+        }
+    }
+
+    @Test func museDuplicateWaxHooksAreRejected() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/duplicate-wax.json", to: root.appendingPathComponent("settings.json"))
+            let before = try Data(contentsOf: config)
+            #expect(throws: HostHookError.self) {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+            }
+            #expect(try Data(contentsOf: config) == before)
+        }
+    }
+
+    @Test func museMalformedJSONFailsClosed() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/malformed.json", to: root.appendingPathComponent("settings.json"))
+            let before = try Data(contentsOf: config)
+            do {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+                Issue.record("malformed JSON must fail closed")
+            } catch let error as HostHookError {
+                #expect(error.isMalformedJSON)
+            }
+            #expect(try Data(contentsOf: config) == before)
+        }
+    }
+
+    @Test func museRefusesToCreateSettingsJSON() throws {
+        try withTempRoot { root, wrapper in
+            let config = root.appendingPathComponent("settings.json")
+            #expect(FileManager.default.fileExists(atPath: config.path) == false)
+            do {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+                Issue.record("muse must refuse to seed settings.json")
+            } catch let error as HostHookError {
+                #expect(error == .museSettingsSeedRefused)
+            }
+            #expect(FileManager.default.fileExists(atPath: config.path) == false)
+        }
+    }
+
+    @Test func promptPrefetchFlagCoversNestedMatcherHostsAndDefaultsOff() throws {
+        let wrapper = "/tmp/wax-cli"
+        let policy = HostHookInstallPolicy(enablePromptPrefetch: true)
+        for host in [HostHookHost.claude, .codex, .grok, .muse] {
+            let entries = try HostHookInstaller.desiredEntries(host: host, wrapperPath: wrapper, policy: policy)
+            #expect(entries.map(\.eventName) == ["SessionStart", "UserPromptSubmit"])
+            #expect(entries.allSatisfy { $0.role == .prime })
+        }
+        let muse = try HostHookInstaller.desiredEntries(host: .muse, wrapperPath: wrapper, policy: policy)
+        #expect(muse.allSatisfy { $0.includeOwnershipMarker == false })
+        let claude = try HostHookInstaller.desiredEntries(host: .claude, wrapperPath: wrapper, policy: policy)
+        #expect(claude.allSatisfy { $0.includeOwnershipMarker })
+        let cursor = try HostHookInstaller.desiredEntries(host: .cursor, wrapperPath: wrapper, policy: policy)
+        #expect(cursor.map(\.eventName).contains("UserPromptSubmit") == false)
+        let off = try HostHookInstaller.desiredEntries(host: .muse, wrapperPath: wrapper)
+        #expect(off.map(\.eventName) == ["SessionStart"])
+    }
+
+    @Test func museDefaultOmitsPromptPrefetch() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated-with-prompt.json", to: root.appendingPathComponent("settings.json"))
+            let result = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            #expect(result.mutated)
+            let rendered = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: rendered) == 1)
+            #expect(waxRoleCount(in: rendered, role: "prime") == 1)
+            #expect(rendered.contains("echo unrelated-prompt"))
+
+            let parsed = try HostHookJSON.parse(Data(contentsOf: config))
+            let prompt = try #require(parsed.value(forKey: "hooks")?.value(forKey: "UserPromptSubmit")?.arrayValue)
+            #expect(prompt.count == 1)
+            let handlers = try #require(prompt.first?.value(forKey: "hooks")?.arrayValue)
+            #expect(handlers.count == 1)
+            #expect(handlers.first?.value(forKey: "command")?.stringValue == "echo unrelated-prompt")
+        }
+    }
+
+    @Test func musePromptPrefetchWiresUserPromptSubmitPrime() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated-with-prompt.json", to: root.appendingPathComponent("settings.json"))
+            let result = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false,
+                policy: HostHookInstallPolicy(enablePromptPrefetch: true)
+            )
+            #expect(result.mutated)
+            let rendered = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: rendered) == 2)
+            #expect(waxRoleCount(in: rendered, role: "prime") == 2)
+            #expect(rendered.contains("\(wrapper.path) mcp run-hook --host muse --role prime --wax-hook 1"))
+            #expect(rendered.contains(#""wax""#) == false)
+            #expect(rendered.contains(#""trusted""#) == false)
+            #expect(eventOrder(in: rendered, events: ["PreToolUse", "UserPromptSubmit", "Stop", "SessionStart"]) == [
+                "PreToolUse", "UserPromptSubmit", "Stop", "SessionStart",
+            ])
+
+            let parsed = try HostHookJSON.parse(Data(contentsOf: config))
+            let prompt = try #require(parsed.value(forKey: "hooks")?.value(forKey: "UserPromptSubmit")?.arrayValue)
+            #expect(prompt.count == 2)
+            #expect(prompt.first?.value(forKey: "hooks")?.arrayValue?.first?.value(forKey: "command")?.stringValue == "echo unrelated-prompt")
+            let waxGroup = try #require(prompt.last)
+            #expect(waxGroup.value(forKey: "matcher") == nil)
+            let waxHandler = try #require(waxGroup.value(forKey: "hooks")?.arrayValue?.first)
+            #expect(waxHandler.value(forKey: "command")?.stringValue?.contains("--host muse --role prime") == true)
+            #expect(waxHandler.value(forKey: "wax") == nil)
+            #expect(HostHookOwnership.role(of: waxHandler) == .prime)
+        }
+    }
+
+    @Test func musePromptPrefetchRepeatedInstallIsIdempotent() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated-with-prompt.json", to: root.appendingPathComponent("settings.json"))
+            let policy = HostHookInstallPolicy(enablePromptPrefetch: true)
+            let first = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false,
+                policy: policy
+            )
+            #expect(first.mutated)
+            let afterFirst = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: afterFirst) == 2)
+
+            let second = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false,
+                policy: policy
+            )
+            let afterSecond = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: afterSecond) == 2)
+            #expect(afterSecond.contains("echo unrelated-prompt"))
+            #expect(afterSecond.contains(#""wax""#) == false)
+            #expect(second.mutated == false || afterSecond == afterFirst)
+        }
+    }
+
+    @Test func musePromptPrefetchUpdatesStaleInPlace() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/equivalent-wax-prefetch.json", to: root.appendingPathComponent("settings.json"))
+            _ = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false,
+                policy: HostHookInstallPolicy(enablePromptPrefetch: true)
+            )
+            let rendered = try String(contentsOf: config, encoding: .utf8)
+            #expect(waxHookCount(in: rendered) == 2)
+            #expect(rendered.contains(wrapper.path))
+            #expect(!rendered.contains("/old/path/wax-cli"))
+            #expect(rendered.contains(#""extraKeep""#))
+            #expect(rendered.contains("echo unrelated-prompt"))
+            #expect(rendered.contains("echo unrelated-stop"))
+            #expect(rendered.contains(#""wax""#) == false)
+        }
+    }
+
+    @Test func musePromptPrefetchDuplicateOnSameEventRejected() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/duplicate-wax-prefetch.json", to: root.appendingPathComponent("settings.json"))
+            let before = try Data(contentsOf: config)
+            #expect(throws: HostHookError.self) {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false,
+                    policy: HostHookInstallPolicy(enablePromptPrefetch: true)
+                )
+            }
+            #expect(try Data(contentsOf: config) == before)
+        }
+    }
+
+    @Test func musePrefetchDowngradeFailsClosed() throws {
+        try withTempRoot { root, wrapper in
+            let config = try copyFixture("muse/unrelated-with-prompt.json", to: root.appendingPathComponent("settings.json"))
+            _ = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false,
+                policy: HostHookInstallPolicy(enablePromptPrefetch: true)
+            )
+            let afterPrefetch = try Data(contentsOf: config)
+            // The installer never deletes: disabling the flag after wiring
+            // the extra entry must fail closed with downgrade guidance,
+            // not silently drop it.
+            #expect(throws: HostHookError.stalePromptPrefetch) {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+            }
+            #expect(try Data(contentsOf: config) == afterPrefetch)
+        }
+    }
+
+    @Test func museWireHooksRefusesSchemaLessSettings() throws {
+        try withTempRoot { root, wrapper in
+            let config = root.appendingPathComponent("settings.json")
+            try Data(#"{"hooks": {}}"#.utf8).write(to: config)
+            #expect(throws: MuseSetupError.missingSchemaVersion) {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+            }
+            #expect(try Data(contentsOf: config) == Data(#"{"hooks": {}}"#.utf8))
+        }
+    }
+
+    @Test func museCustomPathSeedsSchemaVersion() throws {
+        try withTempRoot { root, wrapper in
+            let config = root.appendingPathComponent("custom.json")
+            let result = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            #expect(result.mutated)
+            #expect(try String(contentsOf: config, encoding: .utf8).contains("schema_version"))
+        }
+    }
 }
 
 private struct FileSnapshot: Equatable {

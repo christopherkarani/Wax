@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/path/wax-cli mcp run-hook --host muse --role prime --wax-hook 1",
+            "timeout": 4,
+            "extraKeep": "yes"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo unrelated-prompt"
+          }
+        ]
+      }
+    ]
+  }
+}

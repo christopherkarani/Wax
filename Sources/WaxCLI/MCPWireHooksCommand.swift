@@ -8,7 +8,7 @@ extension WaxCLI.MCP {
             abstract: "Opt-in typed merge of Wax host hooks into host config files"
         )
 
-        @Option(name: .customLong("host"), help: "Host: claude, codex, grok, or cursor. Repeatable, paired with --config.")
+        @Option(name: .customLong("host"), help: "Host: claude, codex, grok, cursor, or muse. Repeatable, paired with --config.")
         var hosts: [String] = []
 
         @Option(name: .customLong("config"), help: "Host hook config path. Repeatable, paired with --host.")
@@ -16,6 +16,9 @@ extension WaxCLI.MCP {
 
         @Flag(name: .customLong("dry-run"), help: "Detect and merge in memory; write nothing.")
         var dryRun = false
+
+        @Flag(name: .customLong("with-prompt-prefetch"), help: "Also wire a read-only prime hook on UserPromptSubmit (nested-matcher hosts).")
+        var withPromptPrefetch = false
 
         @Option(name: .customLong("wrapper"), help: "Absolute Wax wrapper that reads JSON stdin and passes typed argv.")
         var wrapper: String?
@@ -44,7 +47,9 @@ extension WaxCLI.MCP {
                 )
             }
 
-            let result = try HostHookInstaller.install(targets: targets, dryRun: dryRun)
+            var policy = HostHookInstallPolicy.default
+            policy.enablePromptPrefetch = withPromptPrefetch
+            let result = try HostHookInstaller.install(targets: targets, dryRun: dryRun, policy: policy)
             if result.dryRun {
                 for preview in result.previews {
                     print("Dry-run: would wire \(preview.host.rawValue) at \(preview.configURL.path). No files written.")

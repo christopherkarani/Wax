@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/wax-cli mcp run-hook --host muse --role prime --wax-hook 1"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/old/wax-cli mcp run-hook --host muse --role prime --wax-hook 1"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/other/wax-cli mcp run-hook --host muse --role prime --wax-hook 1"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -223,6 +223,49 @@ func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let canary = root.appendingPathComponent("lock-broker")
+    try """
+    #!/bin/sh
+    echo "Error: Lock unavailable: timed out waiting for exclusive lock on store.wax after 2.00s" >&2
+    exit 1
+    """.write(to: canary, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: canary.path)
+
+    var configuration = testBrokerConfiguration(
+        root: root,
+        socketPath: root.appendingPathComponent("broker.sock").path
+    )
+    configuration = AgentBrokerConfiguration(
+        brokerExecutablePath: canary.path,
+        storePath: configuration.storePath,
+        sessionRootPath: configuration.sessionRootPath,
+        socketPath: configuration.socketPath,
+        embedderChoice: configuration.embedderChoice,
+        noEmbedder: configuration.noEmbedder,
+        requireVector: configuration.requireVector,
+        embedderTuning: configuration.embedderTuning
+    )
+
+    let started = Date()
+    do {
+        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        Issue.record("expected lock contention to throw")
+    } catch {
+        // Well under the 10s start timeout: the dead peer fails fast
+        // instead of waiting out the deadline.
+        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(error.localizedDescription.contains("http://127.0.0.1:3000/mcp"))
+        #expect(error.localizedDescription.contains("identical server settings"))
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
 func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)

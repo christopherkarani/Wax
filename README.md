@@ -53,7 +53,7 @@ Hermes ──────── native wax-memory provider ─↗
 iPhone / Mac app ── Memory + Foundation Models tools ─↗
 ```
 
-The store is one file. Documents, FTS5 text search, CoreML vectors, and a WAL live inside it. iCloud or AirDrop the file to another Mac or iPhone. A second MCP process on the same path will lock, so two or more hosts share `http://127.0.0.1:3000/mcp`.
+The store is one file. Documents, FTS5 text search, CoreML vectors, and a WAL live inside it. iCloud or AirDrop the file to another Mac or iPhone. Identical MCP servers share one broker daemon automatically; a differently-configured second process fails fast with sharing guidance, so two or more hosts share `http://127.0.0.1:3000/mcp`.
 
 **What you get that a host scratchpad does not:**
 
@@ -68,7 +68,7 @@ Host playbook: [wax-mcp-hosts.md](Resources/docs/wax-mcp-hosts.md)
 
 ## Agent Quick Start
 
-Give Claude Code, Cursor, Codex, Hermes, OpenClaw, or Windsurf a memory that survives the chat.
+Give Claude Code, Cursor, Codex, Hermes, OpenClaw, Muse Code, or Windsurf a memory that survives the chat.
 
 Installing the server is not enough. Hosts ignore MCP tool descriptions unless an always-on file says **when** to write. Paste a block below after you wire the host.
 
@@ -78,18 +78,19 @@ Installing the server is not enough. Hosts ignore MCP tool descriptions unless a
 npx -y waxmcp@latest install
 ```
 
-**Claude-only** can use stdio. **Two or more clients must share one HTTP server** on `http://127.0.0.1:3000/mcp`. A second process on `~/.wax/memory.wax` will lock.
+**Claude-only** can use stdio. **Two or more clients must share one HTTP server** on `http://127.0.0.1:3000/mcp`. A differently-configured second process on `~/.wax/memory.wax` fails fast instead of locking silently.
 
 <details>
-<summary><strong>Host wire-up (Claude, Codex, Cursor, Hermes, OpenClaw)</strong></summary>
+<summary><strong>Host wire-up (Claude, Codex, Cursor, Hermes, OpenClaw, Muse)</strong></summary>
 
 | Host | Wire-up |
 |------|---------|
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
-| Codex | `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` + copy the skill to `~/.codex/skills/wax-mcp` |
-| Cursor | `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
+| Codex | `wax-cli mcp install` prints the stdio block (writes it with `--write-toml-config`) + copies the skill; manual: `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` |
+| Cursor | `wax-cli mcp install` merges the stdio entry automatically; manual: `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
 | Hermes | Native `memory.provider: wax-memory` only. `npx -y waxmcp@latest install-hermes-plugin`, then `hermes config set memory.provider wax-memory`. Daily tools: `wax_remember` / `wax_recall` (no Wax UUID). Do not add `wax-memory` to `plugins.enabled`. Do not also register `mcp_servers.wax`. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into the workspace `SOUL.md`; replace an existing `## Memory (Wax)` section |
+| Muse Code | `wax-cli mcp install` registers Muse automatically (unless `--skip-muse`); manual: `mcp_servers.wax` in `~/.config/muse/settings.json` (`schema_version: 1`): stdio `wax-cli mcp serve` when solo, shared `http://127.0.0.1:3000/mcp` when two or more clients + paste the AGENTS.md block |
 | Anything else | HTTP URL + paste the AGENTS.md block into project `AGENTS.md` |
 
 Keep HTTP up with `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` or LaunchAgent `ai.wax.mcp-http`. Prove it with `npx -y waxmcp@latest vector-health`, `npx -y waxmcp@latest doctor` (`wax-cli mcp doctor`), `hermes wax-memory doctor`, and `hermes plugins doctor wax-memory`. Native recall defaults to the current project; pass `scope=global` for person facts. Global is not an authorization boundary.

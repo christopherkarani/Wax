@@ -27,7 +27,7 @@ struct MCPPrimeTests {
         #expect(!minimal.includePerson)
     }
 
-    @Test func primeBrokerDownExitsZeroWithEmptyValidResultAndNoStderr() throws {
+    @Test func primeBrokerDownExitsZeroWithSignaledFailureAndNoStderr() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-prime-down-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -84,9 +84,12 @@ struct MCPPrimeTests {
         #expect((object["person"] as? [Any])?.isEmpty == true)
         #expect((object["project_memories"] as? [Any])?.isEmpty == true)
         #expect(outcome.stdout.contains(MCPPrimeAssembly.trustHeader) == false)
+        // Broker-down must be distinguishable from genuinely empty recall.
+        #expect(object["probe_failed"] as? Bool == true)
+        #expect((object["probe_error"] as? String)?.isEmpty == false)
     }
 
-    @Test func fiveConcurrentPrimesWithBrokerDownStaySilentAndStartNothing() throws {
+    @Test func fiveConcurrentPrimesWithBrokerDownSignalFailureAndStartNothing() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-prime-concurrent-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -135,6 +138,7 @@ struct MCPPrimeTests {
         #expect(outcomes.value.count == 5)
         #expect(outcomes.value.allSatisfy { $0.exitCode == 0 && $0.stderr.isEmpty })
         #expect(outcomes.value.allSatisfy { !$0.stdout.contains(MCPPrimeAssembly.trustHeader) })
+        #expect(outcomes.value.allSatisfy { $0.stdout.contains(MCPPrimeAssembly.probeFailureLine) })
         #expect(FileManager.default.fileExists(atPath: startedFlag.path) == false)
     }
 
@@ -203,6 +207,164 @@ struct MCPPrimeTests {
         let context = try #require(hook["additionalContext"] as? String)
         #expect(context.hasPrefix(MCPPrimeAssembly.trustHeader))
         #expect(context.contains("Keep prime read-only."))
+    }
+
+    @Test func primePartialProbeFailureKeepsItemsAndFlagsFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-partial-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        struct ProbeBlast: Error {}
+        let calls = LockBox(0)
+        let personPayload = AgentBrokerResponse.success(
+            payload: .object([
+                "results": .array([
+                    .object([
+                        "text": .string("Prefers tabs."),
+                        "memory_type": .string("user_preference"),
+                        "score": .double(1.0),
+                        "created_at_ms": .int(1),
+                    ]),
+                ]),
+            ])
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: true,
+                format: .json,
+                timeoutSeconds: 1.5,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    if request.command == "recall", calls.value == 0 {
+                        calls.value += 1
+                        throw ProbeBlast()
+                    }
+                    if request.command == "recall" {
+                        return personPayload
+                    }
+                    return AgentBrokerResponse.success(payload: .object(["found": .bool(false)]))
+                }
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == true)
+        #expect((object["probe_error"] as? String)?.isEmpty == false)
+        #expect((object["person"] as? [Any])?.count == 1)
+    }
+
+    @Test func primeBrokerFailureOutcomeSurfacesMessage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-failmsg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: true,
+                format: .json,
+                timeoutSeconds: 1.5,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { _, _, _ in
+                    AgentBrokerResponse.failure(message: "recall exploded")
+                }
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == true)
+        #expect(object["probe_error"] as? String == "recall exploded")
+    }
+
+    @Test func primeProjectRecallKeepsNotesEligibleWithoutQueryKeyword() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-types-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let seen = LockBox<[AgentBrokerRequest]>([])
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        _ = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: false,
+                format: .json,
+                timeoutSeconds: 1.5,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    seen.mutate { $0.append(request) }
+                    return AgentBrokerResponse.success(payload: .object(["results": .array([])]))
+                }
+            )
+        )
+        let recalls = seen.value.filter { $0.command == "recall" }
+        let project = try #require(recalls.first)
+        guard case .array(let types) = project.arguments["memory_types"] else {
+            Issue.record("project recall must carry a memory_types filter")
+            return
+        }
+        let names = types.compactMap { value -> String? in
+            if case .string(let name) = value { name } else { nil }
+        }
+        #expect(names.contains("note"))
+        guard case .string(let query) = project.arguments["query"] else {
+            Issue.record("project recall must carry a query")
+            return
+        }
+        // Notes stay eligible via the types filter, but the text query must
+        // not bias broker-side scoring toward them.
+        #expect(query.split(separator: " ").contains("notes") == false)
     }
 
     @Test func primeLiveBrokerProbeDoesNotStartASecondWriter() async throws {
