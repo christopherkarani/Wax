@@ -311,6 +311,62 @@ struct MCPPrimeTests {
         #expect(object["probe_error"] as? String == "recall exploded")
     }
 
+    @Test func primeProjectRecallKeepsNotesEligibleWithoutQueryKeyword() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-types-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let seen = LockBox<[AgentBrokerRequest]>([])
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        _ = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: false,
+                format: .json,
+                timeoutSeconds: 1.5,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    seen.mutate { $0.append(request) }
+                    return AgentBrokerResponse.success(payload: .object(["results": .array([])]))
+                }
+            )
+        )
+        let recalls = seen.value.filter { $0.command == "recall" }
+        let project = try #require(recalls.first)
+        guard case .array(let types) = project.arguments["memory_types"] else {
+            Issue.record("project recall must carry a memory_types filter")
+            return
+        }
+        let names = types.compactMap { value -> String? in
+            if case .string(let name) = value { name } else { nil }
+        }
+        #expect(names.contains("note"))
+        guard case .string(let query) = project.arguments["query"] else {
+            Issue.record("project recall must carry a query")
+            return
+        }
+        // Notes stay eligible via the types filter, but the text query must
+        // not bias broker-side scoring toward them.
+        #expect(query.split(separator: " ").contains("notes") == false)
+    }
+
     @Test func primeLiveBrokerProbeDoesNotStartASecondWriter() async throws {
         let binary = try #require(waxCLIBinary())
         let root = FileManager.default.temporaryDirectory

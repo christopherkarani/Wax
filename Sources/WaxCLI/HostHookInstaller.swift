@@ -44,6 +44,10 @@ struct HostHookInstallPolicy: Equatable, Sendable {
     /// host that does not fire it simply never runs the hook.
     var enablePromptPrefetch: Bool = false
 
+    /// Event the prompt-prefetch hook wires to. Shared by desired-entry
+    /// construction and stale-hook detection so the two cannot drift.
+    static let promptPrefetchEventName = "UserPromptSubmit"
+
     static let `default` = HostHookInstallPolicy()
 }
 
@@ -89,6 +93,7 @@ enum HostHookError: Error, Equatable, LocalizedError {
     case hostConfigCountMismatch
     case validationFailed
     case museSettingsSeedRefused
+    case stalePromptPrefetch
 
     var isUnknownSchemaVersion: Bool {
         if case .unknownSchemaVersion = self { return true }
@@ -131,6 +136,8 @@ enum HostHookError: Error, Equatable, LocalizedError {
             return "Rendered hook config failed validation before write."
         case .museSettingsSeedRefused:
             return "Refusing to create settings.json for muse: create settings.json with schema_version 1 first, then re-run wire-hooks."
+        case .stalePromptPrefetch:
+            return "Wax prime already exists on UserPromptSubmit, likely from a previous --with-prompt-prefetch run. Re-run wire-hooks with --with-prompt-prefetch to keep it, or remove that hook manually."
         }
     }
 }
@@ -194,7 +201,7 @@ enum HostHookInstaller {
         if host.registry.usesNestedMatcherDocument, policy.enablePromptPrefetch {
             entries.append(
                 HostHookDesiredEntry(
-                    eventName: "UserPromptSubmit",
+                    eventName: HostHookInstallPolicy.promptPrefetchEventName,
                     role: .prime,
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: nil,
@@ -327,6 +334,14 @@ enum HostHookInstaller {
 
 enum HostHookSchema {
     static func seed(host: HostHookHost) -> HostHookJSON {
+        if host == .muse {
+            // Muse rejects files without schema_version; seed it so custom
+            // (non-settings.json) muse targets start valid. settings.json
+            // itself is never seeded (museSettingsSeedRefused).
+            return .object([
+                HostHookJSONMember(key: "schema_version", value: .number("1"))
+            ])
+        }
         if host.registry.usesNestedMatcherDocument {
             return .object([])
         }
@@ -339,6 +354,9 @@ enum HostHookSchema {
     static func validate(_ document: HostHookJSON, host: HostHookHost) throws {
         guard document.objectMembers != nil else {
             throw HostHookError.malformedJSON
+        }
+        if host == .muse {
+            try MuseSetup.requireSupportedSchema(document)
         }
         let version = document.value(forKey: "version")
         if !host.registry.usesNestedMatcherDocument, version == nil {

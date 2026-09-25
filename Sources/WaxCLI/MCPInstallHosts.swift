@@ -213,13 +213,23 @@ enum MCPInstallHosts {
         }
     }
 
+    /// Reject server names that could inject structure into host configs.
+    /// Names render into TOML table headers (`[mcp_servers.<name>]`), where
+    /// bare segments allow ASCII letters, numbers, `-`, and `_` only.
+    static func validateName(_ name: String) throws {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        guard !name.isEmpty, name.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw InstallHostError.invalidName(name)
+        }
+    }
+
     /// True when the server binary answers `--version` with exit 0. Catches
     /// traitless builds (wax-mcp without the MCPServer trait exits 1) before
     /// install registers a dead server into host configs.
     static func validateServerBinary(
         serverPath: String,
         run: (String, [String]) throws -> CapturedProcessOutput = {
-            try ProcessRunner.runCaptured(command: $0, arguments: $1)
+            try ProcessRunner.runCaptured(command: $0, arguments: $1, timeoutSeconds: 10)
         }
     ) -> Bool {
         guard let output = try? run(serverPath, ["--version"]) else {
@@ -274,6 +284,7 @@ enum MCPInstallHosts {
 enum InstallHostError: Error, Equatable, LocalizedError {
     case unknownHost(String)
     case emptySpec
+    case invalidName(String)
     case noHostsDetected(String)
     case noHostsSelected
     case conflictingMuseFlags
@@ -284,6 +295,8 @@ enum InstallHostError: Error, Equatable, LocalizedError {
             return "Unknown host '\(name)'. \(MCPInstallHosts.specHelp)."
         case .emptySpec:
             return "Empty --hosts spec. \(MCPInstallHosts.specHelp)."
+        case .invalidName(let name):
+            return "Invalid server name '\(name)'. Use ASCII letters, numbers, '-' or '_' only."
         case .noHostsDetected(let details):
             return "No supported hosts detected (\(details)). Pass --hosts explicitly to set one up anyway."
         case .noHostsSelected:

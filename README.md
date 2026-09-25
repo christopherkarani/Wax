@@ -86,7 +86,7 @@ npx -y waxmcp@latest install
 | Host | Wire-up |
 |------|---------|
 | Claude Code | `swift run --traits MCPServer wax-cli mcp install --scope user` then `claude install-skill ~/.local/share/waxmcp/skills/wax-mcp` |
-| Codex | `wax-cli mcp install` prints the stdio block (writes it with `--write-codex-config`) + copies the skill; manual: `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` |
+| Codex | `wax-cli mcp install` prints the stdio block (writes it with `--write-toml-config`) + copies the skill; manual: `[mcp_servers.wax] url = "http://127.0.0.1:3000/mcp"` in `~/.codex/config.toml` |
 | Cursor | `wax-cli mcp install` merges the stdio entry automatically; manual: `{ "mcpServers": { "wax": { "url": "http://127.0.0.1:3000/mcp" } } }` in `~/.cursor/mcp.json` + paste the AGENTS.md block |
 | Hermes | Native `memory.provider: wax-memory` only. `npx -y waxmcp@latest install-hermes-plugin`, then `hermes config set memory.provider wax-memory`. Daily tools: `wax_remember` / `wax_recall` (no Wax UUID). Do not add `wax-memory` to `plugins.enabled`. Do not also register `mcp_servers.wax`. |
 | OpenClaw | HTTP + memory plugin + paste the SOUL.md stanza into the workspace `SOUL.md`; replace an existing `## Memory (Wax)` section |

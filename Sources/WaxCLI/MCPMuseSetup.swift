@@ -225,6 +225,13 @@ enum MuseSetup {
         return servers.value(forKey: name) != nil
     }
 
+    /// Require a supported `schema_version` on an existing settings
+    /// document. Shared by install-merge and wire-hooks so both writers
+    /// refuse files Muse itself would reject.
+    static func requireSupportedSchema(_ document: HostHookJSON) throws {
+        try validateSchema(document, existed: true)
+    }
+
     private static func validateSchema(_ document: HostHookJSON, existed: Bool) throws {
         guard let version = document.value(forKey: "schema_version")?.numberLexeme else {
             if existed {

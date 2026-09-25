@@ -104,6 +104,9 @@ enum NestedMatcherHostAdapter {
         // desired sets with one event per role behave exactly as before.
         let desiredEvents = Set(allEntries.filter { $0.role == entry.role }.map(\.eventName))
         for hit in sameRole where !desiredEvents.contains(hit.eventName) {
+            if hit.eventName == HostHookInstallPolicy.promptPrefetchEventName, entry.role == .prime {
+                throw HostHookError.stalePromptPrefetch
+            }
             throw HostHookError.duplicateWaxHooks(
                 "Wax \(entry.role.rawValue) already exists on \(hit.eventName)"
             )

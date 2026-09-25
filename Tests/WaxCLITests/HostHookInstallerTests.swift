@@ -708,20 +708,41 @@ struct HostHookInstallerTests {
             )
             let afterPrefetch = try Data(contentsOf: config)
             // The installer never deletes: disabling the flag after wiring
-            // the extra entry must fail closed, not silently drop it.
-            do {
+            // the extra entry must fail closed with downgrade guidance,
+            // not silently drop it.
+            #expect(throws: HostHookError.stalePromptPrefetch) {
                 _ = try HostHookInstaller.install(
                     targets: [target(.muse, config, wrapper)],
                     dryRun: false
                 )
-                Issue.record("prefetch downgrade must fail closed")
-            } catch let error as HostHookError {
-                guard case .duplicateWaxHooks = error else {
-                    Issue.record("expected duplicateWaxHooks, got \(error)")
-                    return
-                }
             }
             #expect(try Data(contentsOf: config) == afterPrefetch)
+        }
+    }
+
+    @Test func museWireHooksRefusesSchemaLessSettings() throws {
+        try withTempRoot { root, wrapper in
+            let config = root.appendingPathComponent("settings.json")
+            try Data(#"{"hooks": {}}"#.utf8).write(to: config)
+            #expect(throws: MuseSetupError.missingSchemaVersion) {
+                _ = try HostHookInstaller.install(
+                    targets: [target(.muse, config, wrapper)],
+                    dryRun: false
+                )
+            }
+            #expect(try Data(contentsOf: config) == Data(#"{"hooks": {}}"#.utf8))
+        }
+    }
+
+    @Test func museCustomPathSeedsSchemaVersion() throws {
+        try withTempRoot { root, wrapper in
+            let config = root.appendingPathComponent("custom.json")
+            let result = try HostHookInstaller.install(
+                targets: [target(.muse, config, wrapper)],
+                dryRun: false
+            )
+            #expect(result.mutated)
+            #expect(try String(contentsOf: config, encoding: .utf8).contains("schema_version"))
         }
     }
 }

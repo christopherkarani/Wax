@@ -183,6 +183,7 @@ extension WaxCLI.MCP {
         mutating func run() throws {
             let selection = try MCPInstallHosts.parseSpec(hosts)
             let resolved = try MCPInstallHosts.resolve(spec: selection, skipMuse: skipMuse)
+            try MCPInstallHosts.validateName(name)
             let selected = resolved.selected
             let explicitOnly: Bool
             if case .only = selection {
@@ -362,12 +363,18 @@ extension WaxCLI.MCP {
                         allowNonZeroExit: true
                     )
                     if addStatus != EXIT_SUCCESS {
-                        throw ExitCode(addStatus)
-                    }
-                    handled = true
+                        if explicitOnly {
+                            throw ExitCode(addStatus)
+                        }
+                        writeStderr(
+                            "warning: Claude Code setup failed: 'claude mcp add' exited with code \(addStatus)"
+                        )
+                    } else {
+                        handled = true
 
-                    print("Installed MCP server '\(name)' in scope '\(scope.rawValue)'.")
-                    print("Run: claude mcp get \(name)")
+                        print("Installed MCP server '\(name)' in scope '\(scope.rawValue)'.")
+                        print("Run: claude mcp get \(name)")
+                    }
                 } else if explicitOnly {
                     throw CLIError("Required tool not found on PATH or common locations: claude")
                 } else {
@@ -417,9 +424,9 @@ extension WaxCLI.MCP {
                             print("Codex registration already up to date (\(configFile.path)).")
                         }
                     } catch {
-                        try failHost("Codex", error)
                         print("Add this block to \(configFile.path) manually:")
                         print(redactedCodexSnippet(for: serverEntry))
+                        try failHost("Codex", error)
                     }
                 } else {
                     handled = true
@@ -440,9 +447,9 @@ extension WaxCLI.MCP {
                             print("Grok registration already up to date (\(configFile.path)).")
                         }
                     } catch {
-                        try failHost("Grok", error)
                         print("Add this block to \(configFile.path) manually:")
                         print(redactedGrokSnippet(for: serverEntry))
+                        try failHost("Grok", error)
                     }
                 } else {
                     handled = true
@@ -997,7 +1004,8 @@ enum ProcessRunner {
         command: String,
         arguments: [String],
         environment: [String: String]? = nil,
-        input: String? = nil
+        input: String? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) throws -> CapturedProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -1027,7 +1035,25 @@ enum ProcessRunner {
             try? stdinPipe.fileHandleForWriting.close()
         }
 
-        process.waitUntilExit()
+        if let timeoutSeconds {
+            let deadline = Date().addingTimeInterval(timeoutSeconds)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning {
+                // Bound the hang: SIGTERM, then a short grace wait. A child
+                // that ignores SIGTERM may briefly outlive this call, but the
+                // caller never blocks past timeout + grace.
+                process.terminate()
+                let grace = Date().addingTimeInterval(2.0)
+                while process.isRunning, Date() < grace {
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                throw CLIError("'\(command)' timed out after \(timeoutSeconds) seconds")
+            }
+        } else {
+            process.waitUntilExit()
+        }
 
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
@@ -1944,7 +1970,11 @@ private func claudeRegistrationStatus(name: String) -> String {
     guard let claudePath = try? resolveToolPath("claude") else {
         return "claude not installed"
     }
-    guard let get = try? ProcessRunner.runCaptured(command: claudePath, arguments: ["mcp", "get", name]) else {
+    guard let get = try? ProcessRunner.runCaptured(
+        command: claudePath,
+        arguments: ["mcp", "get", name],
+        timeoutSeconds: 15
+    ) else {
         return "check failed"
     }
     let claudeSkills = FileManager.default.homeDirectoryForCurrentUser

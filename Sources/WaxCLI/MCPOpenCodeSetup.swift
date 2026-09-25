@@ -72,6 +72,9 @@ enum OpenCodeSetup {
         guard FileManager.default.fileExists(atPath: configFile.path) else {
             return MuseSetup.MergeResult(mutated: false, settingsURL: configFile)
         }
+        if configFile.pathExtension.lowercased() == "jsonc" {
+            throw OpenCodeSetupError.jsoncManualRemove(configFile.path)
+        }
         let bytes = try Data(contentsOf: configFile)
         guard let document = try? HostHookJSON.parse(bytes), document.objectMembers != nil else {
             throw OpenCodeSetupError.malformedJSON
@@ -99,6 +102,9 @@ enum OpenCodeSetup {
     static func hasEntry(name: String, at configFile: URL) throws -> Bool {
         guard FileManager.default.fileExists(atPath: configFile.path) else {
             return false
+        }
+        if configFile.pathExtension.lowercased() == "jsonc" {
+            throw OpenCodeSetupError.jsoncManual(configFile.path)
         }
         let bytes = try Data(contentsOf: configFile)
         guard let document = try? HostHookJSON.parse(bytes), document.objectMembers != nil else {
@@ -163,6 +169,7 @@ enum OpenCodeSetup {
 enum OpenCodeSetupError: Error, Equatable, LocalizedError {
     case malformedJSON
     case jsoncManual(String)
+    case jsoncManualRemove(String)
 
     var errorDescription: String? {
         switch self {
@@ -170,6 +177,8 @@ enum OpenCodeSetupError: Error, Equatable, LocalizedError {
             return "OpenCode opencode.json is not valid JSON."
         case .jsoncManual(let path):
             return "OpenCode uses \(path) (JSONC with comments); add the wax entry there manually instead of overwriting."
+        case .jsoncManualRemove(let path):
+            return "OpenCode uses \(path) (JSONC with comments); remove the wax entry there manually instead of overwriting."
         }
     }
 }

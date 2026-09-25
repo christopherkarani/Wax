@@ -125,6 +125,20 @@ struct MCPInstallHostsTests {
         #expect(resolved.selected == [.claude, .muse, .cursor, .codex, .grok, .opencode])
         #expect(resolved.skipped.isEmpty)
     }
+
+    @Test func validateNameAcceptsBareTOMLAnchors() throws {
+        try MCPInstallHosts.validateName("wax")
+        try MCPInstallHosts.validateName("wax-2")
+        try MCPInstallHosts.validateName("WAX_1")
+    }
+
+    @Test func validateNameRejectsStructureAndBlanks() {
+        for bad in ["", "my.wax", "wax]", "a b", "a/b", "wax\nx", "café"] {
+            #expect(throws: InstallHostError.invalidName(bad)) {
+                try MCPInstallHosts.validateName(bad)
+            }
+        }
+    }
 }
 
 private final class ArgsBox: @unchecked Sendable {

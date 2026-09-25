@@ -148,8 +148,12 @@ enum MCPPrimeRunner {
                 AgentBrokerRequest(
                     command: "recall",
                     arguments: [
+                        // Notes stay eligible via the types filter below but get no
+                        // query keyword: assembly already ranks them last, and
+                        // a keyword would bias broker-side top-8 scoring so
+                        // notes could displace higher-signal hits.
                         "query": .string(
-                            "\(attribution.project ?? attribution.repo ?? "project") lessons facts decisions constraints notes"
+                            "\(attribution.project ?? attribution.repo ?? "project") lessons facts decisions constraints"
                         ),
                         "limit": .from(8),
                         "scope": .string("project"),

@@ -172,19 +172,6 @@ struct MCPHostSetupTests {
         }
     }
 
-    @Test func codexUnmergeRemovesVerbatimBlockOnly() throws {
-        try withHostTempRoot { root in
-            let config = root.appendingPathComponent("config.toml")
-            try Data("[other]\nkey = 1\n".utf8).write(to: config)
-            _ = try CodexSetup.write(entry: hostSampleEntry(), at: config)
-            let result = try CodexSetup.unmerge(name: "wax", entry: hostSampleEntry(), at: config)
-            #expect(result.mutated)
-            let rendered = try String(contentsOf: config, encoding: .utf8)
-            #expect(rendered.contains("[other]"))
-            #expect(!rendered.contains("mcp_servers.wax"))
-        }
-    }
-
     @Test func codexHasEntryReadsTablePresence() throws {
         try withHostTempRoot { root in
             let missing = root.appendingPathComponent("missing.toml")
@@ -276,16 +263,22 @@ struct MCPHostSetupTests {
         }
     }
 
-    @Test func codexUnmergeFailsClosedOnEditedBlock() throws {
+    @Test func openCodeUnmergeAndHasEntryRefuseJSONC() throws {
         try withHostTempRoot { root in
-            let config = root.appendingPathComponent("config.toml")
-            _ = try CodexSetup.write(entry: hostSampleEntry(), at: config)
-            let edited = try String(contentsOf: config, encoding: .utf8)
-                .replacingOccurrences(of: "[mcp_servers.wax]\n", with: "[mcp_servers.wax]\n# operator note\n")
-            try Data(edited.utf8).write(to: config)
-            #expect(throws: CodexSetupError.self) {
-                try CodexSetup.unmerge(name: "wax", entry: hostSampleEntry(), at: config)
+            let jsonc = root.appendingPathComponent("opencode.jsonc")
+            try Data("{ // comment\n}\n".utf8).write(to: jsonc)
+            #expect(throws: OpenCodeSetupError.jsoncManualRemove(jsonc.path)) {
+                try OpenCodeSetup.unmerge(name: "wax", at: jsonc)
             }
+            #expect(throws: OpenCodeSetupError.jsoncManual(jsonc.path)) {
+                try OpenCodeSetup.hasEntry(name: "wax", at: jsonc)
+            }
+            // The JSONC file is left untouched.
+            #expect(try String(contentsOf: jsonc, encoding: .utf8).contains("// comment"))
+            // Missing files stay a quiet no-op regardless of extension.
+            let missing = root.appendingPathComponent("missing.jsonc")
+            #expect(try OpenCodeSetup.unmerge(name: "wax", at: missing).mutated == false)
+            #expect(try OpenCodeSetup.hasEntry(name: "wax", at: missing) == false)
         }
     }
 }
