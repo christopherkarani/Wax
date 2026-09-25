@@ -1336,6 +1336,12 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
         try makeExecutableStub(at: fakeServer)
+        // Hermetic host selection: explicit --hosts avoids auto-detection
+        // (which throws on host-less machines), and a stub `claude` on PATH
+        // keeps the dry-run on the command-printing path. Dry-run never
+        // executes the stub.
+        try makeExecutableStub(at: tempRoot.appendingPathComponent("claude"))
+        let path = "\(tempRoot.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")"
 
         let cli = try builtProductPath(named: "wax-cli")
         let secret = "wax_secret_\(UUID().uuidString)"
@@ -1347,7 +1353,9 @@ struct WaxCLIMemoryTests {
                 "--skip-build",
                 "--server-path", fakeServer.path,
                 "--license-key", secret,
+                "--hosts", "claude",
             ],
+            environment: ["PATH": path],
             timeout: 20
         )
 
