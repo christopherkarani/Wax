@@ -1301,14 +1301,19 @@ extension AgentBrokerService {
         try await validateActiveSession(sessionID)
         let project = BrokerCommand.normalizedOrNil(command.project)
             ?? writeScope(for: sessionID).projectName
-        let frameId = try await longTermMemory.rememberHandoff(
-            content: content,
-            project: project,
-            pendingTasks: pendingTasks,
-            sessionId: sessionID,
-            commit: false
-        )
-        try await recordHandoff(sessionID: sessionID, content: content)
+        let frameId: UInt64?
+        if command.recordHandoff {
+            frameId = try await longTermMemory.rememberHandoff(
+                content: content,
+                project: project,
+                pendingTasks: pendingTasks,
+                sessionId: sessionID,
+                commit: false
+            )
+            try await recordHandoff(sessionID: sessionID, content: content)
+        } else {
+            frameId = nil
+        }
         try await longTermMemory.flush()
         let result = try await virtualSessions.end(sessionID: sessionID, afterFlush: makeHarvestCallback())
         let payload = sessionClosePayload(

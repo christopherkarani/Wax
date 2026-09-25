@@ -34,7 +34,7 @@ package enum StoreLockProbe {
         let timeoutLabel = timeout.map(formatDuration(_:)) ?? "the configured timeout"
         return WaxError.lockUnavailable(
             "\(details). Wax \(operation) failed fast after \(timeoutLabel) because another process is already using \(url.path). " +
-                "Use a unique --store-path per client or agent, or stop the existing Wax process before retrying."
+                "Run one shared HTTP server (http://127.0.0.1:3000/mcp) across clients instead of a second process on this store, or stop the existing Wax process before retrying."
         )
     }
 

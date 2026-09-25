@@ -71,7 +71,7 @@ private func assemble(
 func primeAssemblySelectsAtMostFiveProjectDurableTypesInPriorityOrder() {
     let input = [
         candidate("fact-low", type: "fact", score: 0.99, createdAtMs: 9_000),
-        candidate("note-skip", type: "note", score: 1.0),
+        candidate("note-ranked-last", type: "note", score: 1.0),
         candidate("task-skip", type: "task_state", score: 1.0),
         candidate("handoff-skip", type: "handoff", score: 1.0),
         candidate("pref-skip", type: "user_preference", score: 1.0),
@@ -91,9 +91,18 @@ func primeAssemblySelectsAtMostFiveProjectDurableTypesInPriorityOrder() {
         "fact-d",
     ])
     #expect(envelope.projectItems.count == MCPPrimeAssembly.maxProjectItems)
-    #expect(envelope.omittedProjectCount == 2)
+    #expect(envelope.omittedProjectCount == 3)
     #expect(envelope.personItems.isEmpty)
     #expect(envelope.projectMiss == false)
+}
+
+@Test
+func primeAssemblyIncludesNotesBelowFactsWhenSlotsFree() {
+    let envelope = assemble(project: [
+        candidate("note-b", type: "note", score: 0.99),
+        candidate("fact-a", type: "fact", score: 0.1),
+    ])
+    #expect(envelope.projectItems.map(\.text) == ["fact-a", "note-b"])
 }
 
 @Test
@@ -305,6 +314,7 @@ func primeAssemblyAttachesProvenanceAndOmitsLifecyclePlaybookFields() throws {
     .codex,
     .grok,
     .cursor,
+    .muse,
 ])
 func primeAssemblyHostRenderersBeginWithTrustHeader(_ format: MCPPrimeAssembly.Format) throws {
     let envelope = assemble(project: [candidate("Keep hooks read-only.", type: "lesson")])
@@ -316,7 +326,7 @@ func primeAssemblyHostRenderersBeginWithTrustHeader(_ format: MCPPrimeAssembly.F
     switch format {
     case .json:
         context = envelope.hostContext
-    case .claude:
+    case .claude, .muse:
         let hook = try #require(object["hookSpecificOutput"] as? [String: Any])
         context = try #require(hook["additionalContext"] as? String)
         #expect(hook["hookEventName"] as? String == "SessionStart")
@@ -330,11 +340,27 @@ func primeAssemblyHostRenderersBeginWithTrustHeader(_ format: MCPPrimeAssembly.F
 }
 
 @Test
+func primeAssemblyMuseRenderEqualsClaudeEnvelopeShape() throws {
+    let envelope = assemble(project: [candidate("Keep hooks read-only.", type: "lesson")])
+    let muse = MCPPrimeAssembly.render(envelope, format: .muse)
+    let claude = MCPPrimeAssembly.render(envelope, format: .claude)
+    #expect(muse == claude)
+    let raw = try JSONSerialization.jsonObject(with: Data(muse.utf8))
+    let object = try #require(raw as? [String: Any])
+    let hook = try #require(object["hookSpecificOutput"] as? [String: Any])
+    #expect(hook["hookEventName"] as? String == "SessionStart")
+    let context = try #require(hook["additionalContext"] as? String)
+    #expect(context.hasPrefix(trustHeader))
+    #expect(context.contains("Keep hooks read-only."))
+}
+
+@Test
 func primeAssemblyEmptyHostRenderInjectsNothing() throws {
     let envelope = assemble(projectMiss: true)
     #expect(envelope.hostContext.isEmpty)
     let claude = MCPPrimeAssembly.render(envelope, format: .claude)
     #expect(claude.contains(trustHeader) == false)
+    #expect(MCPPrimeAssembly.render(envelope, format: .muse) == claude)
     let parsed = try JSONSerialization.jsonObject(with: Data(claude.utf8)) as? [String: Any]
     let hook = parsed?["hookSpecificOutput"] as? [String: Any]
     let context = hook?["additionalContext"] as? String ?? parsed?["additionalContext"] as? String
@@ -349,4 +375,75 @@ func primeAssemblyPerItemCapsNeverSplitGraphemes() throws {
     #expect(text.utf8.count <= MCPPrimeAssembly.maxItemBytes)
     #expect(MCPPrimeAssembly.Tokenizer.character.count(text) <= MCPPrimeAssembly.maxItemTokens)
     #expect(String(text.prefix(1)) == familyEmoji)
+}
+
+@Test
+func primeAssemblyProbeFailureRendersFixedLineWhenEmpty() {
+    let envelope = MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "muse",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: [],
+            handoff: nil,
+            probeFailed: true,
+            probeError: "broker did not respond"
+        )
+    )
+    #expect(envelope.hostContext == MCPPrimeAssembly.probeFailureLine)
+    #expect(envelope.probeFailed)
+    #expect(envelope.probeError == "broker did not respond")
+}
+
+@Test
+func primeAssemblyProbeFailureKeepsItemsWithoutFailureLine() {
+    let envelope = MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "muse",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: [candidate("Keep it.", type: "lesson", score: 1.0)],
+            handoff: nil,
+            probeFailed: true,
+            probeError: "handoff timed out"
+        )
+    )
+    #expect(envelope.hostContext.contains("Keep it."))
+    #expect(!envelope.hostContext.contains(MCPPrimeAssembly.probeFailureLine))
+    #expect(envelope.probeFailed)
+}
+
+@Test
+func primeAssemblyProbeFailureJSONKeys() throws {
+    let failed = MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "muse",
+            includePerson: false,
+            projectMiss: false,
+            project: nil,
+            repo: nil,
+            personCandidates: [],
+            projectCandidates: [],
+            handoff: nil,
+            probeFailed: true,
+            probeError: "boom"
+        )
+    )
+    let rawFailed = try JSONSerialization.jsonObject(with: Data(failed.renderedJSON.utf8))
+    let failedObject = try #require(rawFailed as? [String: Any])
+    #expect(failedObject["probe_failed"] as? Bool == true)
+    #expect(failedObject["probe_error"] as? String == "boom")
+
+    let clean = assemble()
+    let rawClean = try JSONSerialization.jsonObject(with: Data(clean.renderedJSON.utf8))
+    let cleanObject = try #require(rawClean as? [String: Any])
+    #expect(cleanObject["probe_failed"] as? Bool == false)
+    #expect(cleanObject["probe_error"] == nil)
+    #expect(clean.hostContext == "")
 }

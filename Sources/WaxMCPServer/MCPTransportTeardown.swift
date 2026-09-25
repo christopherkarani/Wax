@@ -73,7 +73,11 @@ enum MCPTransportTeardown {
                             command: "session_close",
                             arguments: [
                                 "session_id": .string(sessionID.uuidString),
-                                "content": .string("transport \(reason.rawValue)"),
+                                // No human-authored handoff exists at teardown:
+                                // send empty content with recording disabled so
+                                // no "transport …" handoff pollutes the store.
+                                "content": .string(""),
+                                "record_handoff": .bool(false),
                             ]
                         )
                     )

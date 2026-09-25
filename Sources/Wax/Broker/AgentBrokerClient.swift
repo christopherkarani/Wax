@@ -37,6 +37,16 @@ package enum AgentBrokerClient {
     )
     private static let maxSocketResponseBytes = 1_048_576
 
+    /// Silence window after our spawned peer exits before startup fails.
+    /// A bind-race winner answers within milliseconds; anything longer
+    /// means no broker will ever serve this socket.
+    private static let peerExitGraceSeconds: TimeInterval = 1.0
+
+    private static func isLockContention(_ stderr: String) -> Bool {
+        let lowered = stderr.lowercased()
+        return lowered.contains("lock unavailable") || lowered.contains("exclusive lock")
+    }
+
     package static func perform(
         request: AgentBrokerRequest,
         configuration: AgentBrokerConfiguration,
@@ -184,6 +194,8 @@ package enum AgentBrokerClient {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var observedExitStatus: Int32?
         var observedStderr: String?
+        var peerExitNotedAt: Date?
+        var failedFast = false
         while Date() < deadline {
             if let response = try sendIfAvailable(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
@@ -202,6 +214,21 @@ package enum AgentBrokerClient {
                 if observedStderr == nil {
                     observedStderr = readPipeText(stderrPipe)
                 }
+                if peerExitNotedAt == nil {
+                    peerExitNotedAt = Date()
+                }
+            } else {
+                peerExitNotedAt = nil
+            }
+            // Fail fast once our peer is dead and silent past the grace
+            // window: no broker will ever serve this socket. The grace
+            // preserves the bind-first-loser race (a concurrent winner
+            // answers within milliseconds), and the post-loop ping below
+            // remains the last chance for a slow winner.
+            if let noted = peerExitNotedAt,
+               Date().timeIntervalSince(noted) > peerExitGraceSeconds {
+                failedFast = true
+                break
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -223,9 +250,14 @@ package enum AgentBrokerClient {
             } else {
                 stderrSuffix = ""
             }
-            throw BrokerClientError(
-                "Timed out waiting for broker startup after a peer exited with status \(observedExitStatus)\(stderrSuffix)"
-            )
+            let lead = failedFast
+                ? "Broker startup failed: peer exited with status \(observedExitStatus)\(stderrSuffix)"
+                : "Timed out waiting for broker startup after a peer exited with status \(observedExitStatus)\(stderrSuffix)"
+            var message = lead
+            if let observedStderr, Self.isLockContention(observedStderr) {
+                message += " Another Wax server holds this store with a different configuration. Use identical server settings so both attach to one broker daemon, or share a single HTTP server (http://127.0.0.1:3000/mcp) across clients."
+            }
+            throw BrokerClientError(message)
         }
 
         throw BrokerClientError("Timed out waiting for broker startup.")

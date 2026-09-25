@@ -130,7 +130,7 @@ extension WaxCLI.MCP {
 extension WaxCLI.MCP {
     struct Install: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Build and register Wax MCP server in Claude Code, and stage the wax-mcp agent skill"
+            abstract: "Build and register Wax MCP server in detected hosts (Claude Code, Muse Code, Cursor, Codex, Grok, OpenCode), and stage the wax-mcp agent skill"
         )
 
         @Option(name: .shortAndLong, help: "MCP server name")
@@ -160,6 +160,15 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("skip-skill"), help: "Skip staging/installing the wax-mcp operator skill")
         var skipSkill = false
 
+        @Flag(name: .customLong("skip-muse"), help: "Skip Muse Code registration (legacy; prefer --hosts)")
+        var skipMuse = false
+
+        @Option(name: .customLong("hosts"), help: "Hosts: auto (default), all, or comma list: claude,muse,cursor,codex,grok,opencode")
+        var hosts = "auto"
+
+        @Flag(name: .customLong("write-toml-config"), help: "Write TOML config blocks for Codex/Grok (default: print the snippet)")
+        var writeTOMLConfig = false
+
         @Flag(name: .customLong("dry-run"), help: "Print commands without executing")
         var dryRun = false
 
@@ -172,11 +181,17 @@ extension WaxCLI.MCP {
         @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
 
         mutating func run() throws {
-            let claudePath = if dryRun {
-                "claude"
+            let selection = try MCPInstallHosts.parseSpec(hosts)
+            let resolved = try MCPInstallHosts.resolve(spec: selection, skipMuse: skipMuse)
+            let selected = resolved.selected
+            let explicitOnly: Bool
+            if case .only = selection {
+                explicitOnly = true
             } else {
-                try resolveToolPath("claude")
+                explicitOnly = false
             }
+
+            let claudePath: String? = try? resolveToolPath("claude")
 
             let resolvedServer = if dryRun {
                 Pathing.normalizePath(serverPath)
@@ -185,21 +200,25 @@ extension WaxCLI.MCP {
             }
             let resolvedCLI = try Pathing.resolveSelfExecutablePath()
             let bundledRuntime = Pathing.bundledRuntimeDirectory(forExecutablePath: resolvedCLI) != nil
+            // One env list feeds every host so all registrations share the same server environment.
+            var mcpEnv: [(String, String)] = [
+                ("WAX_MCP_FEATURE_LICENSE", featureLicense ? "1" : "0")
+            ]
+            if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
+                mcpEnv.append(("WAX_LICENSE_KEY", key))
+            }
+            let embedderTuning = embedderRuntime.resolvedTuning()
+            for (key, value) in embedderTuning.environmentOverrides().sorted(by: { $0.key < $1.key }) {
+                mcpEnv.append((key, value))
+            }
             // Name must precede -e flags; claude mcp add treats positional args after -e as env vars.
             var addArguments = [
                 "mcp", "add",
                 name,
                 "-t", "stdio",
                 "-s", scope.rawValue,
-                "-e", "WAX_MCP_FEATURE_LICENSE=\(featureLicense ? "1" : "0")",
             ]
-
-            if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
-                addArguments.append(contentsOf: ["-e", "WAX_LICENSE_KEY=\(key)"])
-            }
-
-            let embedderTuning = embedderRuntime.resolvedTuning()
-            for (key, value) in embedderTuning.environmentOverrides().sorted(by: { $0.key < $1.key }) {
+            for (key, value) in mcpEnv {
                 addArguments.append(contentsOf: ["-e", "\(key)=\(value)"])
             }
 
@@ -225,18 +244,22 @@ extension WaxCLI.MCP {
                 serverPath: resolvedServer,
                 dryRun: dryRun
             )
+            if !dryRun, !MCPInstallHosts.validateServerBinary(serverPath: installRuntime.serverPath) {
+                throw CLIError(
+                    "MCP server binary at \(installRuntime.serverPath) does not answer --version. " +
+                    "It was likely built without the MCPServer trait; re-run install without --skip-build."
+                )
+            }
 
-            addArguments.append(contentsOf: [
-                "--",
-                installRuntime.serverPath,
-                "--store-path", Pathing.expandPath(storePath),
-            ])
-            if noEmbedder {
-                addArguments.append("--no-embedder")
-            }
-            if featureLicense {
-                addArguments.append("--feature-license")
-            }
+            let serverEntry = MuseSetup.makeEntry(
+                name: name,
+                serverPath: installRuntime.serverPath,
+                storePath: Pathing.expandPath(storePath),
+                env: mcpEnv,
+                noEmbedder: noEmbedder,
+                featureLicense: featureLicense
+            )
+            addArguments.append(contentsOf: ["--", serverEntry.command] + serverEntry.args)
 
             let removeArguments = ["mcp", "remove", "-s", scope.rawValue, name]
             let skillInstall = try Pathing.prepareWaxMCPSkill(
@@ -253,8 +276,48 @@ extension WaxCLI.MCP {
                 if installRuntime.staged {
                     print("# Staging bundled waxmcp runtime into a stable install path before registration.")
                 }
-                print("claude \(removeArguments.joined(separator: " "))")
-                print("claude \(redactedArgumentsForDisplay(addArguments).joined(separator: " "))")
+                print("# Would verify \(installRuntime.serverPath) answers --version before registering.")
+                if selected.contains(.claude) {
+                    if claudePath != nil {
+                        print("claude \(removeArguments.joined(separator: " "))")
+                        print("claude \(redactedArgumentsForDisplay(addArguments).joined(separator: " "))")
+                    } else {
+                        print("# 'claude' not found; would skip Claude Code registration.")
+                    }
+                }
+                if selected.contains(.muse) {
+                    print("# Would merge mcp_servers.\(name) (stdio \(serverEntry.command)) into \(MuseSetup.settingsURL().path)")
+                    if let staged = skillInstall.stagedPath {
+                        print("# Would run: muse skills install \(staged) --scope user (best effort)")
+                    }
+                }
+                if selected.contains(.cursor) {
+                    print("# Would merge mcpServers.\(name) (stdio \(serverEntry.command)) into \(MCPInstallHosts.cursorConfigURL().path)")
+                }
+                if selected.contains(.codex) {
+                    let configFile = MCPInstallHosts.codexConfigURL()
+                    if writeTOMLConfig {
+                        print("# Would append [mcp_servers.\(name)] to \(configFile.path)")
+                    } else {
+                        print("# Would print the Codex snippet for \(configFile.path) (pass --write-toml-config to write it):")
+                        print(redactedCodexSnippet(for: serverEntry))
+                    }
+                }
+                if selected.contains(.grok) {
+                    let configFile = MCPInstallHosts.grokConfigURL()
+                    if writeTOMLConfig {
+                        print("# Would append [mcp_servers.\(name)] to \(configFile.path)")
+                    } else {
+                        print("# Would print the Grok snippet for \(configFile.path) (pass --write-toml-config to write it):")
+                        print(redactedGrokSnippet(for: serverEntry))
+                    }
+                }
+                if selected.contains(.opencode) {
+                    print("# Would merge mcp.\(name) (local \(serverEntry.command)) into \(MCPInstallHosts.openCodeConfigURL().path)")
+                }
+                for skip in resolved.skipped {
+                    print("# Skipping \(skip.host.rawValue): \(skip.reason).")
+                }
                 if let writeHostRule {
                     print("# Would write host-rule playbook to \(Pathing.expandPath(writeHostRule))")
                 }
@@ -263,36 +326,164 @@ extension WaxCLI.MCP {
             }
 
             try WaxMCPHostRuleWriter.writeIfRequested(path: writeHostRule)
-
-            // Remove the existing registration before re-adding. Exit code 1 is expected
-            // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
-            // Any other non-zero exit code indicates an unexpected error (e.g. permissions).
-            let removeStatus = try ProcessRunner.run(
-                command: claudePath,
-                arguments: removeArguments,
-                passthrough: false,
-                allowNonZeroExit: true
-            )
-            if removeStatus != EXIT_SUCCESS && removeStatus != 1 {
-                writeStderr("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)")
+            for skip in resolved.skipped {
+                print("# Skipping \(skip.host.rawValue): \(skip.reason).")
             }
 
-            let addStatus = try ProcessRunner.run(
-                command: claudePath,
-                arguments: addArguments,
-                passthrough: true,
-                allowNonZeroExit: true
-            )
-            if addStatus != EXIT_SUCCESS {
-                throw ExitCode(addStatus)
+            // Explicitly named hosts fail loud; auto/all warn and continue so
+            // one broken host cannot block the others.
+            func failHost(_ host: String, _ error: Error) throws {
+                if explicitOnly {
+                    throw error
+                }
+                writeStderr("warning: \(host) setup failed: \(error.localizedDescription)")
             }
 
-            print("Installed MCP server '\(name)' in scope '\(scope.rawValue)'.")
-            print("Run: claude mcp get \(name)")
-            try installWaxMCPSkillWithClaudeIfPossible(
-                claudePath: claudePath,
-                skillInstall: skillInstall
-            )
+            var handled = false
+            if selected.contains(.claude) {
+                if let claudePath {
+                    // Remove the existing registration before re-adding. Exit code 1 is expected
+                    // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
+                    // Any other non-zero exit code indicates an unexpected error (e.g. permissions).
+                    let removeStatus = try ProcessRunner.run(
+                        command: claudePath,
+                        arguments: removeArguments,
+                        passthrough: false,
+                        allowNonZeroExit: true
+                    )
+                    if removeStatus != EXIT_SUCCESS && removeStatus != 1 {
+                        writeStderr("warning: 'claude mcp remove' exited with unexpected code \(removeStatus)")
+                    }
+
+                    let addStatus = try ProcessRunner.run(
+                        command: claudePath,
+                        arguments: addArguments,
+                        passthrough: true,
+                        allowNonZeroExit: true
+                    )
+                    if addStatus != EXIT_SUCCESS {
+                        throw ExitCode(addStatus)
+                    }
+                    handled = true
+
+                    print("Installed MCP server '\(name)' in scope '\(scope.rawValue)'.")
+                    print("Run: claude mcp get \(name)")
+                } else if explicitOnly {
+                    throw CLIError("Required tool not found on PATH or common locations: claude")
+                } else {
+                    writeStderr("warning: 'claude' not found; skipping Claude Code registration.")
+                }
+            }
+
+            if selected.contains(.muse) {
+                let settingsFile = MuseSetup.settingsURL()
+                do {
+                    let result = try MuseSetup.merge(entry: serverEntry, at: settingsFile)
+                    handled = true
+                    if result.mutated {
+                        print("Registered MCP server '\(name)' in Muse Code (\(settingsFile.path)).")
+                    } else {
+                        print("Muse Code registration already up to date (\(settingsFile.path)).")
+                    }
+                } catch {
+                    try failHost("Muse Code", error)
+                }
+            }
+
+            if selected.contains(.cursor) {
+                let configFile = MCPInstallHosts.cursorConfigURL()
+                do {
+                    let result = try CursorSetup.merge(entry: serverEntry, at: configFile)
+                    handled = true
+                    if result.mutated {
+                        print("Registered MCP server '\(name)' in Cursor (\(configFile.path)).")
+                    } else {
+                        print("Cursor registration already up to date (\(configFile.path)).")
+                    }
+                } catch {
+                    try failHost("Cursor", error)
+                }
+            }
+
+            if selected.contains(.codex) {
+                let configFile = MCPInstallHosts.codexConfigURL()
+                if writeTOMLConfig {
+                    do {
+                        let result = try CodexSetup.write(entry: serverEntry, at: configFile)
+                        handled = true
+                        if result.mutated {
+                            print("Registered MCP server '\(name)' in Codex (\(configFile.path)).")
+                        } else {
+                            print("Codex registration already up to date (\(configFile.path)).")
+                        }
+                    } catch {
+                        try failHost("Codex", error)
+                        print("Add this block to \(configFile.path) manually:")
+                        print(redactedCodexSnippet(for: serverEntry))
+                    }
+                } else {
+                    handled = true
+                    print("Codex uses \(configFile.path). Add this block (or re-run with --write-toml-config):")
+                    print(redactedCodexSnippet(for: serverEntry))
+                }
+            }
+
+            if selected.contains(.grok) {
+                let configFile = MCPInstallHosts.grokConfigURL()
+                if writeTOMLConfig {
+                    do {
+                        let result = try GrokSetup.write(entry: serverEntry, at: configFile)
+                        handled = true
+                        if result.mutated {
+                            print("Registered MCP server '\(name)' in Grok (\(configFile.path)).")
+                        } else {
+                            print("Grok registration already up to date (\(configFile.path)).")
+                        }
+                    } catch {
+                        try failHost("Grok", error)
+                        print("Add this block to \(configFile.path) manually:")
+                        print(redactedGrokSnippet(for: serverEntry))
+                    }
+                } else {
+                    handled = true
+                    print("Grok uses \(configFile.path). Add this block (or re-run with --write-toml-config):")
+                    print(redactedGrokSnippet(for: serverEntry))
+                }
+            }
+
+            if selected.contains(.opencode) {
+                let configFile = MCPInstallHosts.openCodeConfigURL()
+                do {
+                    let result = try OpenCodeSetup.merge(entry: serverEntry, at: configFile)
+                    handled = true
+                    if result.mutated {
+                        print("Registered MCP server '\(name)' in OpenCode (\(configFile.path)).")
+                    } else {
+                        print("OpenCode registration already up to date (\(configFile.path)).")
+                    }
+                } catch {
+                    try failHost("OpenCode", error)
+                }
+            }
+
+            if !handled {
+                throw CLIError("MCP install handled no hosts; see warnings above.")
+            }
+
+            // Best-effort skill installs run after all host registrations so
+            // a slow or prompting skill step cannot block another host.
+            if selected.contains(.claude), let claudePath {
+                try installWaxMCPSkillWithClaudeIfPossible(
+                    claudePath: claudePath,
+                    skillInstall: skillInstall
+                )
+            }
+            if selected.contains(.muse) {
+                try installWaxMCPSkillWithMuseIfPossible(skillInstall: skillInstall)
+            }
+            if selected.contains(.codex) {
+                installWaxMCPSkillForCodexIfPossible(skillInstall: skillInstall)
+            }
             printWaxMCPSkillGuidance(skillInstall, dryRun: false)
         }
     }
@@ -318,6 +509,9 @@ extension WaxCLI.MCP {
 
         @Flag(name: .customLong("feature-license"), help: "Enable license validation during smoke check")
         var featureLicense = false
+
+        @Option(name: .shortAndLong, help: "MCP server name to look up in host configs")
+        var name = "wax"
 
         @OptionGroup var embedderRuntime: EmbedderRuntimeOptions
 
@@ -427,6 +621,8 @@ extension WaxCLI.MCP {
                 }
             }
 
+            printHostRegistrationMatrix(name: name)
+
             for warning in warnings {
                 print("WARN: \(warning)")
             }
@@ -447,7 +643,7 @@ extension WaxCLI.MCP {
 extension WaxCLI.MCP {
     struct Uninstall: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Remove Wax MCP server from Claude Code"
+            abstract: "Remove Wax MCP server from hosts (Claude Code, Muse Code, Cursor, Codex, Grok, OpenCode)"
         )
 
         @Option(name: .shortAndLong, help: "MCP server name")
@@ -456,16 +652,150 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("scope"), help: "Claude config scope: local, user, project")
         var scope: WaxCLI.MCPScope = .user
 
+        @Option(name: .customLong("hosts"), help: "Hosts: auto (default), all, or comma list: claude,muse,cursor,codex,grok,opencode")
+        var hosts = "auto"
+
+        @Flag(name: .customLong("dry-run"), help: "Print what would be removed without removing")
+        var dryRun = false
+
         mutating func run() throws {
-            let claudePath = try resolveToolPath("claude")
-            let status = try ProcessRunner.run(
-                command: claudePath,
-                arguments: ["mcp", "remove", "-s", scope.rawValue, name],
-                passthrough: true,
-                allowNonZeroExit: true
-            )
-            if status != EXIT_SUCCESS {
-                throw ExitCode(status)
+            let selection = try MCPInstallHosts.parseSpec(hosts)
+            let resolved = try MCPInstallHosts.resolve(spec: selection, skipMuse: false)
+            let selected = resolved.selected
+            let explicitOnly: Bool
+            if case .only = selection {
+                explicitOnly = true
+            } else {
+                explicitOnly = false
+            }
+
+            func failHost(_ host: String, _ error: Error) throws {
+                if explicitOnly {
+                    throw error
+                }
+                writeStderr("warning: \(host) removal failed: \(error.localizedDescription)")
+            }
+
+            if dryRun {
+                for host in selected {
+                    switch host {
+                    case .claude:
+                        print("# Would run: claude mcp remove -s \(scope.rawValue) \(name)")
+                    case .muse:
+                        print("# Would remove mcp_servers.\(name) from \(MuseSetup.settingsURL().path)")
+                    case .cursor:
+                        print("# Would remove mcpServers.\(name) from \(MCPInstallHosts.cursorConfigURL().path)")
+                    case .codex:
+                        print("# Would check [mcp_servers.\(name)] in \(MCPInstallHosts.codexConfigURL().path) (removal is manual)")
+                    case .grok:
+                        print("# Would check [mcp_servers.\(name)] in \(MCPInstallHosts.grokConfigURL().path) (removal is manual)")
+                    case .opencode:
+                        print("# Would remove mcp.\(name) from \(MCPInstallHosts.openCodeConfigURL().path)")
+                    }
+                }
+                for skip in resolved.skipped {
+                    print("# Skipping \(skip.host.rawValue): \(skip.reason).")
+                }
+                return
+            }
+
+            for skip in resolved.skipped {
+                print("# Skipping \(skip.host.rawValue): \(skip.reason).")
+            }
+
+            if selected.contains(.claude) {
+                if let claudePath = try? resolveToolPath("claude") {
+                    let status = try ProcessRunner.run(
+                        command: claudePath,
+                        arguments: ["mcp", "remove", "-s", scope.rawValue, name],
+                        passthrough: false,
+                        allowNonZeroExit: true
+                    )
+                    if status == EXIT_SUCCESS {
+                        print("Removed MCP server '\(name)' from Claude Code.")
+                    } else if status == 1 {
+                        print("Claude Code has no '\(name)' registration to remove.")
+                    } else if explicitOnly {
+                        throw ExitCode(status)
+                    } else {
+                        writeStderr("warning: 'claude mcp remove' exited with code \(status)")
+                    }
+                } else if explicitOnly {
+                    throw CLIError("Required tool not found on PATH or common locations: claude")
+                } else {
+                    writeStderr("warning: 'claude' not found; skipping Claude Code removal.")
+                }
+            }
+
+            if selected.contains(.muse) {
+                let settingsFile = MuseSetup.settingsURL()
+                do {
+                    let result = try MuseSetup.unmerge(name: name, at: settingsFile)
+                    print(
+                        result.mutated
+                            ? "Removed MCP server '\(name)' from Muse Code (\(settingsFile.path))."
+                            : "Muse Code has no '\(name)' registration to remove."
+                    )
+                } catch {
+                    try failHost("Muse Code", error)
+                }
+            }
+
+            if selected.contains(.cursor) {
+                let configFile = MCPInstallHosts.cursorConfigURL()
+                do {
+                    let result = try CursorSetup.unmerge(name: name, at: configFile)
+                    print(
+                        result.mutated
+                            ? "Removed MCP server '\(name)' from Cursor (\(configFile.path))."
+                            : "Cursor has no '\(name)' registration to remove."
+                    )
+                } catch {
+                    try failHost("Cursor", error)
+                }
+            }
+
+            if selected.contains(.codex) {
+                // Uninstall cannot reconstruct the installed entry (server path
+                // and store are unknown here), so only a file without any wax
+                // table is a clean no-op; anything present needs a human look.
+                let configFile = MCPInstallHosts.codexConfigURL()
+                do {
+                    if try CodexSetup.hasEntry(name: name, at: configFile) {
+                        print("Codex still lists [mcp_servers.\(name)] in \(configFile.path); remove that block manually.")
+                    } else {
+                        print("Codex has no '\(name)' registration to remove.")
+                    }
+                } catch {
+                    try failHost("Codex", error)
+                }
+            }
+
+            if selected.contains(.grok) {
+                let configFile = MCPInstallHosts.grokConfigURL()
+                do {
+                    if try GrokSetup.hasEntry(name: name, at: configFile) {
+                        print("Grok still lists [mcp_servers.\(name)] in \(configFile.path); remove that block manually.")
+                    } else {
+                        print("Grok has no '\(name)' registration to remove.")
+                    }
+                } catch {
+                    try failHost("Grok", error)
+                }
+            }
+
+            if selected.contains(.opencode) {
+                let configFile = MCPInstallHosts.openCodeConfigURL()
+                do {
+                    let result = try OpenCodeSetup.unmerge(name: name, at: configFile)
+                    print(
+                        result.mutated
+                            ? "Removed MCP server '\(name)' from OpenCode (\(configFile.path))."
+                            : "OpenCode has no '\(name)' registration to remove."
+                    )
+                } catch {
+                    try failHost("OpenCode", error)
+                }
             }
         }
     }
@@ -506,7 +836,7 @@ private func lowDiskWarning(forStorePath rawPath: String) -> String? {
     return "Low disk space on the store volume (\(formatted) available). Wax store creation or flushes may fail."
 }
 
-private struct CapturedProcessOutput {
+struct CapturedProcessOutput {
     let status: Int32
     let stdout: String
     let stderr: String
@@ -633,7 +963,7 @@ private func smokeCheckFailureContext(_ output: MCPSmokeCheckOutput) -> String {
     return "No server output captured."
 }
 
-private enum ProcessRunner {
+enum ProcessRunner {
     @discardableResult
     static func run(
         command: String,
@@ -707,7 +1037,7 @@ private enum ProcessRunner {
         return CapturedProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
-    static func runMCPSmokeCheck(
+    fileprivate static func runMCPSmokeCheck(
         command: String,
         arguments: [String],
         environment: [String: String]? = nil,
@@ -1527,9 +1857,177 @@ private func installWaxMCPSkillWithClaudeIfPossible(
     }
 }
 
+private func installWaxMCPSkillWithMuseIfPossible(skillInstall: MCPSkillInstall) throws {
+    guard !skillInstall.skipped, skillInstall.staged, let stagedPath = skillInstall.stagedPath else {
+        return
+    }
+
+    guard let musePath = try? resolveToolPath("muse") else {
+        writeStderr(
+            "warning: 'muse' not found; install the wax-mcp skill manually: muse skills install \(stagedPath) --scope user"
+        )
+        return
+    }
+
+    let status = try ProcessRunner.run(
+        command: musePath,
+        arguments: ["skills", "install", stagedPath, "--scope", "user"],
+        passthrough: false,
+        allowNonZeroExit: true
+    )
+    if status == EXIT_SUCCESS {
+        print("Installed wax-mcp skill into Muse Code from \(stagedPath).")
+    } else {
+        writeStderr(
+            "warning: 'muse skills install \(stagedPath) --scope user' exited with code \(status); install the skill manually if needed."
+        )
+    }
+}
+
+private func installWaxMCPSkillForCodexIfPossible(skillInstall: MCPSkillInstall) {
+    guard !skillInstall.skipped, skillInstall.staged, let stagedPath = skillInstall.stagedPath else {
+        return
+    }
+    let target = MCPInstallHosts.codexSkillsDirectory().appendingPathComponent("wax-mcp")
+    if FileManager.default.fileExists(atPath: target.path) {
+        print("Codex skill already present at \(target.path).")
+        return
+    }
+    do {
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.copyItem(atPath: stagedPath, toPath: target.path)
+        print("Installed wax-mcp skill for Codex at \(target.path).")
+    } catch {
+        writeStderr(
+            "warning: Codex skill copy failed: \(error.localizedDescription); copy \(stagedPath) to \(target.path) manually."
+        )
+    }
+}
+
+private func redactedCodexSnippet(for entry: MuseSetup.ServerEntry) -> String {
+    CodexSetup.snippet(for: redactedSnippetEntry(entry))
+}
+
+private func redactedGrokSnippet(for entry: MuseSetup.ServerEntry) -> String {
+    GrokSetup.snippet(for: redactedSnippetEntry(entry))
+}
+
+private func redactedSnippetEntry(_ entry: MuseSetup.ServerEntry) -> MuseSetup.ServerEntry {
+    MuseSetup.ServerEntry(
+        name: entry.name,
+        command: entry.command,
+        args: entry.args,
+        env: entry.env.map { key, value in
+            key == "WAX_LICENSE_KEY" ? (key, "***") : (key, value)
+        },
+        mode: entry.mode
+    )
+}
+
 /// Resolve a tool to its full path, checking PATH first and then well-known locations.
 @discardableResult
-private func resolveToolPath(_ tool: String) throws -> String {
+private func printHostRegistrationMatrix(name: String) {
+    print("")
+    print("## Host registrations (\(name))")
+    print("claude: \(claudeRegistrationStatus(name: name))")
+    print("muse: \(museRegistrationStatus(name: name))")
+    print("cursor: \(cursorRegistrationStatus(name: name))")
+    print("codex: \(codexRegistrationStatus(name: name))")
+    print("grok: \(grokRegistrationStatus(name: name))")
+    print("opencode: \(opencodeRegistrationStatus(name: name))")
+}
+
+private func claudeRegistrationStatus(name: String) -> String {
+    guard let claudePath = try? resolveToolPath("claude") else {
+        return "claude not installed"
+    }
+    guard let get = try? ProcessRunner.runCaptured(command: claudePath, arguments: ["mcp", "get", name]) else {
+        return "check failed"
+    }
+    let claudeSkills = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude", isDirectory: true)
+        .appendingPathComponent("skills", isDirectory: true)
+    let skill = skillPresenceNote(skillsDir: claudeSkills)
+    if get.status == EXIT_SUCCESS {
+        return "registered · skill \(skill)"
+    }
+    if get.status == 1 {
+        return "not registered · skill \(skill)"
+    }
+    return "check failed (code \(get.status))"
+}
+
+private func museRegistrationStatus(name: String) -> String {
+    let settingsFile = MuseSetup.settingsURL()
+    let skill = skillPresenceNote(skillsDir: MuseSetup.skillsDirectory())
+    do {
+        if try MuseSetup.hasEntry(name: name, at: settingsFile) {
+            return "registered (\(settingsFile.path)) · skill \(skill)"
+        }
+        return "not registered · skill \(skill)"
+    } catch {
+        return "unreadable: \(error.localizedDescription)"
+    }
+}
+
+private func cursorRegistrationStatus(name: String) -> String {
+    let configFile = MCPInstallHosts.cursorConfigURL()
+    do {
+        if try CursorSetup.hasEntry(name: name, at: configFile) {
+            return "registered (\(configFile.path))"
+        }
+        return "not registered"
+    } catch {
+        return "unreadable: \(error.localizedDescription)"
+    }
+}
+
+private func codexRegistrationStatus(name: String) -> String {
+    let configFile = MCPInstallHosts.codexConfigURL()
+    let skill = skillPresenceNote(skillsDir: MCPInstallHosts.codexSkillsDirectory())
+    do {
+        if try CodexSetup.hasEntry(name: name, at: configFile) {
+            return "registered (\(configFile.path)) · skill \(skill)"
+        }
+        return "not registered · skill \(skill)"
+    } catch {
+        return "unreadable: \(error.localizedDescription)"
+    }
+}
+
+private func grokRegistrationStatus(name: String) -> String {
+    let configFile = MCPInstallHosts.grokConfigURL()
+    do {
+        if try GrokSetup.hasEntry(name: name, at: configFile) {
+            return "registered (\(configFile.path))"
+        }
+        return "not registered"
+    } catch {
+        return "unreadable: \(error.localizedDescription)"
+    }
+}
+
+private func opencodeRegistrationStatus(name: String) -> String {
+    let configFile = MCPInstallHosts.openCodeConfigURL()
+    do {
+        if try OpenCodeSetup.hasEntry(name: name, at: configFile) {
+            return "registered (\(configFile.path))"
+        }
+        return "not registered"
+    } catch {
+        return "unreadable: \(error.localizedDescription)"
+    }
+}
+
+private func skillPresenceNote(skillsDir: URL) -> String {
+    let marker = skillsDir.appendingPathComponent("wax-mcp").appendingPathComponent("SKILL.md")
+    return FileManager.default.fileExists(atPath: marker.path) ? "present" : "missing"
+}
+
+func resolveToolPath(_ tool: String) throws -> String {
     let output = try ProcessRunner.runCaptured(command: "which", arguments: [tool])
     if output.status == EXIT_SUCCESS {
         let path = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)

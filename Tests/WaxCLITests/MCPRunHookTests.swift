@@ -103,6 +103,52 @@ struct MCPRunHookTests {
         #expect(outcome.stdout.contains("session_id") == false)
     }
 
+    @Test func musePrimeSessionStartExitsZeroWithAdditionalContext() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-run-hook-muse-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let data = Data("""
+        {"hook_event_name":"SessionStart","session_id":"chat-muse-1","cwd":"\(root.path)"}
+        """.utf8)
+        let outcome = MCPRunHookRunner.run(
+            host: "muse",
+            role: "prime",
+            stdin: data,
+            storePath: root.appendingPathComponent("missing.wax").path,
+            noEmbedder: true
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.stderr.isEmpty)
+        #expect(outcome.stdout.contains("hookSpecificOutput"))
+        #expect(outcome.stdout.contains("additionalContext"))
+        #expect(outcome.stdout.contains("session_id") == false)
+    }
+
+    @Test func musePrimeOnUserPromptSubmitExitsZeroWithAdditionalContext() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-run-hook-muse-prompt-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let data = Data("""
+        {"hook_event_name":"UserPromptSubmit","session_id":"chat-muse-2","cwd":"\(root.path)"}
+        """.utf8)
+        let outcome = MCPRunHookRunner.run(
+            host: "muse",
+            role: "prime",
+            stdin: data,
+            storePath: root.appendingPathComponent("missing.wax").path,
+            noEmbedder: true
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.stderr.isEmpty)
+        #expect(outcome.stdout.contains("hookSpecificOutput"))
+        #expect(outcome.stdout.contains("additionalContext"))
+        #expect(outcome.stdout.contains("session_id") == false)
+    }
+
     @Test func unknownRoleIsSilentSuccess() {
         let outcome = MCPRunHookRunner.run(host: "claude", role: "unknown", stdin: Data())
         #expect(outcome.exitCode == 0)

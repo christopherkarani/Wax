@@ -6,6 +6,7 @@ enum HostHookHost: String, Sendable, CaseIterable {
     case codex
     case grok
     case cursor
+    case muse
 }
 
 extension HostHookHost {
@@ -16,6 +17,7 @@ extension HostHookHost {
         case .codex: return .codex
         case .grok: return .grok
         case .cursor: return .cursor
+        case .muse: return .muse
         }
     }
 }
@@ -35,6 +37,12 @@ struct HostHookInstallPolicy: Equatable, Sendable {
     var ownership: HostOwnershipLevel = .b
     var enableCursorStartHook: Bool = false
     var requiresLiveInjectionProbe: Bool = true
+    /// Also wire a read-only prime hook on `UserPromptSubmit` so every
+    /// prompt prefetches project recall. Consulted only for nested-matcher
+    /// hosts (claude, codex, grok, muse); default off. Verified live on
+    /// Muse; other nested-matcher hosts accept the same event shape but a
+    /// host that does not fire it simply never runs the hook.
+    var enablePromptPrefetch: Bool = false
 
     static let `default` = HostHookInstallPolicy()
 }
@@ -52,6 +60,8 @@ struct HostHookDesiredEntry: Equatable, Sendable {
     var matcher: String?
     var timeoutSeconds: Int?
     var requiresLiveInjectionProbe: Bool
+    /// Muse skips handlers with unrecognized keys, so muse handlers omit the `wax` marker.
+    var includeOwnershipMarker: Bool = true
 }
 
 struct HostHookPreview: Equatable, Sendable {
@@ -78,6 +88,7 @@ enum HostHookError: Error, Equatable, LocalizedError {
     case unsupportedHost(String)
     case hostConfigCountMismatch
     case validationFailed
+    case museSettingsSeedRefused
 
     var isUnknownSchemaVersion: Bool {
         if case .unknownSchemaVersion = self { return true }
@@ -118,6 +129,8 @@ enum HostHookError: Error, Equatable, LocalizedError {
             return "--host and --config must be paired one-to-one."
         case .validationFailed:
             return "Rendered hook config failed validation before write."
+        case .museSettingsSeedRefused:
+            return "Refusing to create settings.json for muse: create settings.json with schema_version 1 first, then re-run wire-hooks."
         }
     }
 }
@@ -162,6 +175,7 @@ enum HostHookInstaller {
 
         var entries: [HostHookDesiredEntry] = []
         let includePrime = registry.includesPrime(enableCursorStartHook: policy.enableCursorStartHook)
+        let includeOwnershipMarker = host != .muse
 
         if includePrime {
             entries.append(
@@ -171,7 +185,22 @@ enum HostHookInstaller {
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: matcher,
                     timeoutSeconds: 2,
-                    requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe
+                    requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe,
+                    includeOwnershipMarker: includeOwnershipMarker
+                )
+            )
+        }
+
+        if host.registry.usesNestedMatcherDocument, policy.enablePromptPrefetch {
+            entries.append(
+                HostHookDesiredEntry(
+                    eventName: "UserPromptSubmit",
+                    role: .prime,
+                    command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
+                    matcher: nil,
+                    timeoutSeconds: 2,
+                    requiresLiveInjectionProbe: false,
+                    includeOwnershipMarker: includeOwnershipMarker
                 )
             )
         }
@@ -184,7 +213,8 @@ enum HostHookInstaller {
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .checkpoint),
                     matcher: nil,
                     timeoutSeconds: 2,
-                    requiresLiveInjectionProbe: false
+                    requiresLiveInjectionProbe: false,
+                    includeOwnershipMarker: includeOwnershipMarker
                 )
             )
         }
@@ -239,6 +269,9 @@ enum HostHookInstaller {
                 originalBytes = bytes
                 document = try HostHookJSON.parse(bytes)
             } else {
+                if target.host == .muse, target.configURL.lastPathComponent == "settings.json" {
+                    throw HostHookError.museSettingsSeedRefused
+                }
                 originalBytes = nil
                 document = HostHookSchema.seed(host: target.host)
             }

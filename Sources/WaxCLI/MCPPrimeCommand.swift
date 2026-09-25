@@ -9,6 +9,7 @@ enum MCPPrimeHost: String, CaseIterable, ExpressibleByArgument {
     case cursor
     case opencode
     case openclaw
+    case muse
 
     /// Thin adapter over the canonical host vocabulary.
     var registry: MCPHostRegistry.Host {
@@ -19,6 +20,7 @@ enum MCPPrimeHost: String, CaseIterable, ExpressibleByArgument {
         case .cursor: return .cursor
         case .opencode: return .opencode
         case .openclaw: return .openclaw
+        case .muse: return .muse
         }
     }
 }
@@ -29,6 +31,7 @@ enum MCPPrimeOutputFormat: String, CaseIterable, ExpressibleByArgument {
     case codex
     case grok
     case cursor
+    case muse
 
     var assemblyFormat: MCPPrimeAssembly.Format {
         MCPHostRegistry.primeFormat(hostName: rawValue)
@@ -64,19 +67,22 @@ enum MCPPrimeRunner {
             advertisedCWD: request.cwd,
             mcpRoots: []
         )
-        let empty = MCPPrimeAssembly.assemble(
-            MCPPrimeAssembly.Input(
-                host: request.host,
-                includePerson: false,
-                projectMiss: !attribution.isResolved,
-                project: attribution.project,
-                repo: attribution.repo,
-                personCandidates: [],
-                projectCandidates: [],
-                handoff: nil
+        func failureEnvelope(_ error: Error) -> MCPPrimeAssembly.Envelope {
+            MCPPrimeAssembly.assemble(
+                MCPPrimeAssembly.Input(
+                    host: request.host,
+                    includePerson: false,
+                    projectMiss: !attribution.isResolved,
+                    project: attribution.project,
+                    repo: attribution.repo,
+                    personCandidates: [],
+                    projectCandidates: [],
+                    handoff: nil,
+                    probeFailed: true,
+                    probeError: sanitizeProbeError(error)
+                )
             )
-        )
-        let renderedEmpty = MCPPrimeAssembly.render(empty, format: request.format)
+        }
 
         do {
             let configuration = try request.configuration ?? AgentBrokerCLI.configuration(
@@ -105,7 +111,14 @@ enum MCPPrimeRunner {
                 stderr: ""
             )
         } catch {
-            return MCPPrimeOutcome(exitCode: 0, stdout: renderedEmpty, stderr: "")
+            // Hooks must never fail: exit 0 with the failure recorded in
+            // the envelope (probe_failed/probe_error JSON, fixed model line).
+            let envelope = failureEnvelope(error)
+            return MCPPrimeOutcome(
+                exitCode: 0,
+                stdout: MCPPrimeAssembly.render(envelope, format: request.format),
+                stderr: ""
+            )
         }
     }
 
@@ -125,14 +138,18 @@ enum MCPPrimeRunner {
         var projectMiss = !attribution.isResolved
         var handoff: MCPPrimeAssembly.Handoff?
         var sawBroker = false
+        // One failing probe must not abort the others: record the first
+        // error and keep whatever partial results arrive.
+        var probeError: String?
 
         if attribution.isResolved, remaining() > 0.02 {
-            let response = try probe(
+            let response = probeCatching(
+                probe,
                 AgentBrokerRequest(
                     command: "recall",
                     arguments: [
                         "query": .string(
-                            "\(attribution.project ?? attribution.repo ?? "project") lessons facts decisions constraints"
+                            "\(attribution.project ?? attribution.repo ?? "project") lessons facts decisions constraints notes"
                         ),
                         "limit": .from(8),
                         "scope": .string("project"),
@@ -144,12 +161,14 @@ enum MCPPrimeRunner {
                             .string(MemoryType.fact.rawValue),
                             .string(MemoryType.decision.rawValue),
                             .string(MemoryType.constraint.rawValue),
+                            .string(MemoryType.note.rawValue),
                         ]),
                         "mode": .string("text"),
                     ]
                 ),
                 configuration,
-                remaining()
+                remaining(),
+                recordedError: &probeError
             )
             if let payload = response?.payload {
                 sawBroker = true
@@ -160,7 +179,8 @@ enum MCPPrimeRunner {
         }
 
         if request.includePerson, remaining() > 0.02 {
-            let response = try probe(
+            let response = probeCatching(
+                probe,
                 AgentBrokerRequest(
                     command: "recall",
                     arguments: [
@@ -172,7 +192,8 @@ enum MCPPrimeRunner {
                     ]
                 ),
                 configuration,
-                remaining()
+                remaining(),
+                recordedError: &probeError
             )
             if let payload = response?.payload {
                 sawBroker = true
@@ -181,13 +202,15 @@ enum MCPPrimeRunner {
         }
 
         if attribution.isResolved, !projectMiss, remaining() > 0.02 {
-            let response = try probe(
+            let response = probeCatching(
+                probe,
                 AgentBrokerRequest(
                     command: "handoff_latest",
                     arguments: ["project": .from(attribution.project)]
                 ),
                 configuration,
-                remaining()
+                remaining(),
+                recordedError: &probeError
             )
             if let payload = response?.payload {
                 sawBroker = true
@@ -208,9 +231,50 @@ enum MCPPrimeRunner {
                 repo: attribution.repo,
                 personCandidates: person,
                 projectCandidates: project,
-                handoff: handoff
+                handoff: handoff,
+                probeFailed: probeError != nil,
+                probeError: probeError
             )
         )
+    }
+
+    /// One probe call that never throws: failures record the first sanitized
+    /// error and yield nil so sibling probes still run. A nil response means
+    /// the broker never answered (missing/dead socket, timeout) — that is a
+    /// failure, not an empty result: empty results arrive as successful
+    /// responses with empty result lists.
+    private static func probeCatching(
+        _ probe: @Sendable (AgentBrokerRequest, AgentBrokerConfiguration, TimeInterval) throws -> AgentBrokerResponse?,
+        _ request: AgentBrokerRequest,
+        _ configuration: AgentBrokerConfiguration,
+        _ timeout: TimeInterval,
+        recordedError: inout String?
+    ) -> AgentBrokerResponse? {
+        do {
+            let response = try probe(request, configuration, timeout)
+            if response == nil, recordedError == nil {
+                recordedError = "broker did not respond"
+            } else if let message = response?.error, recordedError == nil {
+                recordedError = sanitizeProbeMessage(message)
+            }
+            return response
+        } catch {
+            if recordedError == nil {
+                recordedError = sanitizeProbeError(error)
+            }
+            return nil
+        }
+    }
+
+    private static func sanitizeProbeError(_ error: Error) -> String {
+        sanitizeProbeMessage(String(describing: error))
+    }
+
+    private static func sanitizeProbeMessage(_ message: String) -> String {
+        let cleaned = MCPPrimeAssembly.sanitize(message)
+            .replacingOccurrences(of: "\n", with: " ")
+        let prefix = String(cleaned.prefix(200))
+        return prefix.isEmpty ? "unknown probe error" : prefix
     }
 }
 
@@ -221,7 +285,7 @@ extension WaxCLI.MCP {
             abstract: "Read-only host prime of bounded project memory. Never opens a session."
         )
 
-        @Option(name: .customLong("host"), help: "Host namespace: claude, codex, grok, cursor, opencode, openclaw")
+        @Option(name: .customLong("host"), help: "Host namespace: claude, codex, grok, cursor, opencode, openclaw, muse")
         var host: MCPPrimeHost
 
         @Option(name: .customLong("cwd"), help: "Client working directory used to resolve project/repo")
@@ -230,7 +294,7 @@ extension WaxCLI.MCP {
         @Flag(name: .customLong("include-person"), help: "Include up to 3 global user_preference hits")
         var includePerson = false
 
-        @Option(name: .customLong("format"), help: "Output format: json, claude, codex, grok, cursor")
+        @Option(name: .customLong("format"), help: "Output format: json, claude, codex, grok, cursor, muse")
         var format: MCPPrimeOutputFormat = .json
 
         @Option(name: .customLong("timeout-secs"), help: "Probe deadline in seconds (default 1.5)")

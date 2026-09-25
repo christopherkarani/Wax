@@ -212,6 +212,10 @@ package enum BrokerCommand: Sendable, Equatable {
         package var content: String
         package var project: String?
         package var pendingTasks: [String]
+        /// False when the close carries no human-authored handoff (transport
+        /// teardown): the session still ends, but nothing is persisted as a
+        /// handoff. Defaults true so explicit closes keep recording.
+        package var recordHandoff: Bool = true
     }
 
     package struct SessionOpen: Sendable, Equatable {
@@ -704,7 +708,8 @@ extension BrokerCommand.SessionClose {
                 maxBytes: BrokerLimits.maxContentBytes
             ),
             project: try args.optionalString("project"),
-            pendingTasks: try args.optionalStringArray("pending_tasks") ?? []
+            pendingTasks: try args.optionalStringArray("pending_tasks") ?? [],
+            recordHandoff: try args.optionalBool("record_handoff") ?? true
         )
     }
 }

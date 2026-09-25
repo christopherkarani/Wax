@@ -556,6 +556,7 @@ package enum BrokerCommandCatalog {
                 ),
                 Argument("project", .string, description: "Optional project scope for the handoff."),
                 pendingTasks,
+                Argument("record_handoff", .boolean, description: "Set false when the close carries no human-authored handoff (transport teardown): the session still ends, but nothing is persisted as a handoff. Defaults true."),
             ]
         ),
         Entry(

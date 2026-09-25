@@ -15,7 +15,7 @@ This is the install path. The playbook already exists — do not add a fourth co
 All hosts on a machine must share `~/.wax/memory.wax`.
 
 - **One client (Claude only):** stdio is fine.
-- **Two or more clients (Claude + Cursor + Codex + Hermes):** run **one** HTTP server and point every host at it. A second `wax-mcp` / `wax-cli daemon` on the same store will lock or time out.
+- **Two or more clients (Claude + Cursor + Codex + Hermes):** run **one** HTTP server and point every host at it. Identical stdio servers attach to one broker daemon automatically; a differently-configured second `wax-mcp` / `wax-cli daemon` on the same store fails fast with sharing guidance instead of hanging.
 
 ```bash
 # Stage binaries + skill once (does not register any host)
@@ -95,7 +95,7 @@ Expect `serverInfo.name = wax-mcp`. Then pick a host below. Restart that host af
 
 ## Claude Code
 
-`wax-cli mcp install` is the Claude registrar. The npm launcher (`waxmcp.js`) serves MCP; it does **not** implement `mcp install --scope`.
+`wax-cli mcp install` is the host registrar. The npm launcher (`waxmcp.js`) serves MCP; it does **not** implement `mcp install --scope`.
 
 From a checkout:
 
@@ -103,12 +103,13 @@ From a checkout:
 swift run --traits MCPServer wax-cli mcp install --scope user
 ```
 
-That command:
+That command registers every detected host (Claude Code, Muse Code, Cursor, Codex, Grok, OpenCode — see `--hosts auto|all|claude,muse,cursor,codex,grok,opencode`), skipping what it cannot find with a printed reason:
 
 1. Stages `wax-mcp` into a stable path
 2. Runs `claude mcp add wax` (stdio against the staged binary)
-3. Stages `~/.local/share/waxmcp/skills/wax-mcp`
-4. Best-effort `claude install-skill` of that staged skill
+3. Merges the same stdio entry into Muse settings, Cursor `mcp.json`, and OpenCode `opencode.json`; prints the Codex/Grok TOML snippet (writes it with `--write-toml-config`)
+4. Stages `~/.local/share/waxmcp/skills/wax-mcp`
+5. Best-effort skill install per host (`claude install-skill`, `muse skills install`, Codex skill copy)
 
 If you already run the shared HTTP server, skip stdio and add the URL instead:
 
@@ -125,7 +126,9 @@ Confirm: `claude mcp get wax` and a new Claude session that can see `remember`,
 
 ## Codex
 
-Codex reads `~/.codex/config.toml`. Add an HTTP server (stdio against a store another process already holds will fail):
+Automatic setup: `wax-cli mcp install` prints the exact stdio block for `~/.codex/config.toml` (or appends it with `--write-toml-config`, failing closed if an existing block differs) and copies the skill to `~/.codex/skills/wax-mcp`.
+
+Manual setup: Codex reads `~/.codex/config.toml`. Add an HTTP server (stdio against a store another process already holds will fail):
 
 ```toml
 [mcp_servers.wax]
@@ -146,7 +149,9 @@ Restart Codex. Confirm `remember`, `recall`, and `stats` are in the tool list.
 
 ## Cursor
 
-User MCP file: `~/.cursor/mcp.json`
+Automatic setup: `wax-cli mcp install` merges a stdio entry into the user MCP file below.
+
+Manual setup. User MCP file: `~/.cursor/mcp.json`
 
 ```json
 {
@@ -236,6 +241,8 @@ both doctors. Do not “fix” that by adding `wax-memory` to `plugins.enabled`.
 
 ## Grok CLI
 
+Automatic setup: `wax-cli mcp install --hosts grok` prints the exact stdio block for `~/.grok/config.toml` (`$GROK_HOME/config.toml` when set), or appends it with `--write-toml-config`, failing closed if an existing block differs.
+
 Daily install is the shared HTTP server plus a Grok MCP entry. Do **not** use
 `GROK_CONFIG` / `GROK_CONFIG_PATH` to retarget Wax — those overlays cannot
 change `mcp_servers` (network redirect is dropped on purpose).
@@ -276,7 +283,74 @@ Do not rewrite `~/.grok/config.toml` just to isolate a lab.
 
 ---
 
+## Muse Code
+
+Muse Code (Meta, powered by Muse Spark) reads
+`~/.config/muse/settings.json` (`schema_version: 1`) and takes MCP servers
+under `mcp_servers` (`mcpServers` is accepted as an alias). Each entry picks
+`transport: "stdio"` (`command`/`args`/`env`) or
+`transport: "streamable_http"` (`url`/`headers`), plus `mode: "required"` or
+`"optional"`.
+
+Automatic setup (recommended): `wax-cli mcp install` registers every
+detected host, Muse included. Limit with `--hosts` (e.g. `--hosts muse`)
+or exclude Muse with `--skip-muse`. It merges a stdio `mcp_servers.wax`
+entry and installs the `wax-mcp` skill when the `muse` CLI is present.
+
+Manual setup. Solo on this machine (Muse is the only client), stdio is
+fine. The server command is `wax-cli mcp serve` (it execs the `wax-mcp`
+binary) or the `wax-mcp` binary directly:
+
+```json
+{
+  "schema_version": 1,
+  "mcp_servers": {
+    "wax": {
+      "transport": "stdio",
+      "command": "wax-cli",
+      "args": ["mcp", "serve"],
+      "mode": "optional"
+    }
+  }
+}
+```
+
+Two or more clients must share **one** HTTP server on
+`http://127.0.0.1:3000/mcp` — a differently-configured second writer on `~/.wax/memory.wax` fails fast; share the server instead:
+
+```json
+{
+  "schema_version": 1,
+  "mcp_servers": {
+    "wax": {
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "mode": "optional"
+    }
+  }
+}
+```
+
+Use `"optional"`: a `required` server that fails to start aborts the whole
+Muse run, and a memory server must never do that.
+
+Teach the model when to use Wax: paste the AGENTS.md fence from
+`Resources/skills/public/wax-mcp/references/project-rules.md` into the
+project `AGENTS.md`:
+
+```text
+Follow the live Wax MCP server instructions for `remember`, `recall`, and `stats`. Do not invent a `session_id`. Do not load the `wax` or `wax-mcp` skills at session start. `wax` is Swift SDK only; `wax-mcp` is install/doctor only.
+```
+
+Restart Muse. Smoke test: run `/mcp` in-session and confirm `wax` is
+listed, then ask the agent to remember one fact, recall it, and run
+`stats`.
+
+---
+
 ## Generic / OpenCode / Windsurf / anything else
+
+Automatic setup for OpenCode: `wax-cli mcp install --hosts opencode` merges a local stdio entry into `opencode.json` (`OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` honored, else `~/.config/opencode/opencode.json`). JSONC configs (`.jsonc`, or a `.json` path with comments) are never edited — add the entry there manually.
 
 1. Run the shared HTTP server above.
 2. Point the host’s MCP config at `http://127.0.0.1:3000/mcp` (HTTP) or, if this is the only client, stdio:
@@ -311,7 +385,7 @@ Ownership levels, least to most authority:
 - **Level A** — the host wraps every Wax read/write with a proven conversation
   identity and owns terminal close. Only Hermes ships this today.
 
-- Claude Code, Codex, Grok, Cursor: Level C plus optional Level B prime.
+- Claude Code, Codex, Grok, Cursor, Muse: Level C plus optional Level B prime.
 - OpenCode: Level B only. There is no shipped Level A plugin that wraps
   every Wax read/write with the OpenCode session ID. Close is not available
   on `session.idle` or `session.compacted`.
@@ -332,10 +406,12 @@ the default per-host paths after staging (`--dry-run` previews without
 writing). Wired hooks call back into `wax-cli mcp run-hook`, which reads the
 host's JSON stdin and never fails the host:
 
-- `prime` (SessionStart: claude, codex, grok) prints a bounded, sanitized
+- `prime` (SessionStart: claude, codex, grok, muse) prints a bounded, sanitized
   context envelope for the host to inject. Prime is probe-only: it never opens
-  a session, never starts a broker, and exits 0 with an empty envelope when the
-  broker is down. `wax-cli mcp prime` runs it standalone.
+  a session, never starts a broker, and exits 0 with an explicitly-marked empty
+  envelope when the broker is down (`status: probe_failed`, distinct from an
+  empty store). `--with-prompt-prefetch` also wires a read-only prime hook on
+  `UserPromptSubmit`. `wax-cli mcp prime` runs it standalone.
 - `checkpoint` closes the exact session (`--session-id`) or the namespaced host
   conversation (`--host` + `--conversation-id`), never opens one, and skips
   cleanly when nothing is bound. `--strict` exits nonzero on skip. Stop, idle,

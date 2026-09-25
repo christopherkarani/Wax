@@ -56,6 +56,27 @@ func transportTeardownIsIdempotentAndExact() async throws {
 }
 
 @Test(.serialized)
+func teardownCloseSendsNoHandoffContent() async throws {
+    let sessionID = UUID()
+    let box = TeardownRequestBox()
+    let outcome = await MCPTransportTeardown.closeExactly(
+        sessionID: sessionID,
+        reason: .stdioEOF,
+        perform: { request in
+            box.capture(request)
+            return AgentBrokerResponse(outcome: .success(payload: .object([:])), shouldExit: false)
+        }
+    )
+    #expect(outcome.status == "closed")
+    let request = try #require(box.snapshot())
+    #expect(request.command == "session_close")
+    // Teardown must not fabricate handoff content from the transport reason:
+    // no "transport stdioEOF" handoff may reach the store.
+    #expect(request.arguments["record_handoff"] == .bool(false))
+    #expect(request.arguments["content"]?.stringValue?.isEmpty == true)
+}
+
+@Test(.serialized)
 func missingBindingSkipsTeardown() async {
     MCPBoundSessionRegistry.shared.resetForTests()
     defer { MCPBoundSessionRegistry.shared.resetForTests() }
@@ -185,6 +206,23 @@ func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
     #expect(Date().timeIntervalSince(started) < 2)
     #expect(!FileManager.default.fileExists(atPath: startedFlag.path))
     #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
+}
+
+private final class TeardownRequestBox: @unchecked Sendable {
+    private var request: AgentBrokerRequest?
+    private let lock = NSLock()
+
+    func capture(_ request: AgentBrokerRequest) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.request = request
+    }
+
+    func snapshot() -> AgentBrokerRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return request
+    }
 }
 
 private final class TeardownReasonBox: @unchecked Sendable {

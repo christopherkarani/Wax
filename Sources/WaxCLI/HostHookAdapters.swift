@@ -87,26 +87,32 @@ enum NestedMatcherHostAdapter {
     ) throws -> HostHookJSON {
         var current = document
         for entry in entries {
-            current = try merge(document: current, entry: entry)
+            current = try merge(document: current, entry: entry, allEntries: entries)
         }
         return current
     }
 
     private static func merge(
         document: HostHookJSON,
-        entry: HostHookDesiredEntry
+        entry: HostHookDesiredEntry,
+        allEntries: [HostHookDesiredEntry]
     ) throws -> HostHookJSON {
         let hits = try waxHits(in: document)
         let sameRole = hits.filter { $0.role == entry.role }
-        if sameRole.count > 1 {
+        // A role may span events only where the desired set says so (muse
+        // prompt prefetch). Anything elsewhere is still a conflict, and
+        // desired sets with one event per role behave exactly as before.
+        let desiredEvents = Set(allEntries.filter { $0.role == entry.role }.map(\.eventName))
+        for hit in sameRole where !desiredEvents.contains(hit.eventName) {
+            throw HostHookError.duplicateWaxHooks(
+                "Wax \(entry.role.rawValue) already exists on \(hit.eventName)"
+            )
+        }
+        let sameEvent = sameRole.filter { $0.eventName == entry.eventName }
+        if sameEvent.count > 1 {
             throw HostHookError.duplicateWaxHooks("multiple Wax \(entry.role.rawValue) hooks")
         }
-        if let hit = sameRole.first {
-            if hit.eventName != entry.eventName {
-                throw HostHookError.duplicateWaxHooks(
-                    "Wax \(entry.role.rawValue) already exists on \(hit.eventName)"
-                )
-            }
+        if let hit = sameEvent.first {
             return try update(document: document, hit: hit, entry: entry)
         }
         return try append(document: document, entry: entry)
@@ -351,7 +357,9 @@ enum HostHookOwnership {
         if let timeout = entry.timeoutSeconds {
             members.append(HostHookJSONMember(key: "timeout", value: .number(String(timeout))))
         }
-        members.append(HostHookJSONMember(key: "wax", value: marker(for: entry)))
+        if entry.includeOwnershipMarker {
+            members.append(HostHookJSONMember(key: "wax", value: marker(for: entry)))
+        }
         return .object(members)
     }
 
@@ -366,18 +374,22 @@ enum HostHookOwnership {
         }
         updated.set("command", to: .string(entry.command))
         updated.remove("trusted")
-        var wax = updated.value(forKey: "wax") ?? .object([])
-        if wax.objectMembers == nil {
-            wax = .object([])
+        if entry.includeOwnershipMarker {
+            var wax = updated.value(forKey: "wax") ?? .object([])
+            if wax.objectMembers == nil {
+                wax = .object([])
+            }
+            wax.set("owner", to: .string("wax"))
+            wax.set("version", to: .number("1"))
+            wax.set("role", to: .string(entry.role.rawValue))
+            wax.remove("trusted")
+            if entry.requiresLiveInjectionProbe {
+                wax.set("requiresLiveInjectionProbe", to: .bool(true))
+            }
+            updated.set("wax", to: wax)
+        } else {
+            updated.remove("wax")
         }
-        wax.set("owner", to: .string("wax"))
-        wax.set("version", to: .number("1"))
-        wax.set("role", to: .string(entry.role.rawValue))
-        wax.remove("trusted")
-        if entry.requiresLiveInjectionProbe {
-            wax.set("requiresLiveInjectionProbe", to: .bool(true))
-        }
-        updated.set("wax", to: wax)
         return updated
     }
 

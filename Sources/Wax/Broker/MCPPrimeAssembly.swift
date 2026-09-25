@@ -24,6 +24,7 @@ package enum MCPPrimeAssembly {
         case codex
         case grok
         case cursor
+        case muse
     }
 
     package struct Tokenizer: Sendable {
@@ -108,6 +109,13 @@ package enum MCPPrimeAssembly {
         package var personCandidates: [Candidate]
         package var projectCandidates: [Candidate]
         package var handoff: Handoff?
+        /// True when at least one broker probe failed. Distinguishes "recall
+        /// is broken" from "nothing to recall" — both previously rendered
+        /// the same empty envelope.
+        package var probeFailed: Bool = false
+        /// Sanitized first probe error for operator JSON. Never injected
+        /// into model context (hosts get a fixed failure line instead).
+        package var probeError: String? = nil
 
         package init(
             host: String,
@@ -117,7 +125,9 @@ package enum MCPPrimeAssembly {
             repo: String?,
             personCandidates: [Candidate],
             projectCandidates: [Candidate],
-            handoff: Handoff?
+            handoff: Handoff?,
+            probeFailed: Bool = false,
+            probeError: String? = nil
         ) {
             self.host = host
             self.includePerson = includePerson
@@ -127,6 +137,8 @@ package enum MCPPrimeAssembly {
             self.personCandidates = personCandidates
             self.projectCandidates = projectCandidates
             self.handoff = handoff
+            self.probeFailed = probeFailed
+            self.probeError = probeError
         }
     }
 
@@ -148,6 +160,8 @@ package enum MCPPrimeAssembly {
         package var byteCount: Int
         package var hostContext: String
         package var renderedJSON: String
+        package var probeFailed: Bool
+        package var probeError: String?
     }
 
     private static let projectTypeRank: [String: Int] = [
@@ -155,6 +169,9 @@ package enum MCPPrimeAssembly {
         MemoryType.lesson.rawValue: 1,
         MemoryType.decision.rawValue: 2,
         MemoryType.fact.rawValue: 3,
+        // Notes rank last: they surface only when higher-signal types leave
+        // slots free, so CLI-heavy stores still prime something useful.
+        MemoryType.note.rawValue: 4,
     ]
 
     private static let allowedProjectTypes: Set<String> = [
@@ -162,6 +179,7 @@ package enum MCPPrimeAssembly {
         MemoryType.fact.rawValue,
         MemoryType.decision.rawValue,
         MemoryType.constraint.rawValue,
+        MemoryType.note.rawValue,
     ]
 
     package static func assemble(
@@ -268,7 +286,7 @@ package enum MCPPrimeAssembly {
         switch format {
         case .json:
             return envelope.renderedJSON
-        case .claude:
+        case .claude, .muse:
             return hostJSON([
                 "hookSpecificOutput": [
                     "hookEventName": "SessionStart",
@@ -504,7 +522,12 @@ package enum MCPPrimeAssembly {
         omittedProject: Int,
         tokenizer: Tokenizer
     ) -> Envelope {
-        let hostContext = renderHostContext(person: person, project: project, handoff: handoff)
+        let hostContext = renderHostContext(
+            person: person,
+            project: project,
+            handoff: handoff,
+            probeFailed: input.probeFailed
+        )
         let json = encodeJSON(
             input: input,
             person: person,
@@ -531,7 +554,9 @@ package enum MCPPrimeAssembly {
             tokenCount: tokenizer.count(json),
             byteCount: json.utf8.count,
             hostContext: hostContext,
-            renderedJSON: json
+            renderedJSON: json,
+            probeFailed: input.probeFailed,
+            probeError: input.probeError
         )
     }
 
@@ -560,7 +585,17 @@ package enum MCPPrimeAssembly {
         return true
     }
 
-    private static func renderHostContext(person: [Item], project: [Item], handoff: Handoff?) -> String {
+    /// Fixed model-facing line when recall failed and nothing assembled.
+    /// Raw errors never reach model context; operators get probe_error JSON.
+    package static let probeFailureLine =
+        "Wax memory recall failed for this session start; continue without recalled context."
+
+    private static func renderHostContext(
+        person: [Item],
+        project: [Item],
+        handoff: Handoff?,
+        probeFailed: Bool
+    ) -> String {
         var lines: [String] = []
         for item in person + project {
             lines.append(hostLine(item))
@@ -568,7 +603,9 @@ package enum MCPPrimeAssembly {
         if let handoff, handoff.found, !handoff.content.isEmpty {
             lines.append("[handoff] \(handoff.content)")
         }
-        guard !lines.isEmpty else { return "" }
+        guard !lines.isEmpty else {
+            return probeFailed ? probeFailureLine : ""
+        }
         return trustHeader + "\n\n" + lines.joined(separator: "\n")
     }
 
@@ -598,10 +635,14 @@ package enum MCPPrimeAssembly {
             "ownership_level": ownershipLevel,
             "host": input.host,
             "project_miss": input.projectMiss,
+            "probe_failed": input.probeFailed,
             "person": person.map(itemJSON),
             "project_memories": project.map(itemJSON),
             "truncated": truncated,
         ]
+        if let probeError = input.probeError, !probeError.isEmpty {
+            object["probe_error"] = probeError
+        }
         if let project = input.project {
             object["project"] = project
         }
