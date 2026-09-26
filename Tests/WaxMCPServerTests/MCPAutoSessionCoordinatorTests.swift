@@ -63,6 +63,7 @@ struct MCPAutoSessionCoordinatorTests {
                         "content": .string("first concurrent auto-session write"),
                         "memory_type": .string("lesson"),
                         "cwd": .string(repo.path),
+                        "verbosity": .string("verbose"),
                     ]
                 ),
                 broker: broker,
@@ -75,6 +76,7 @@ struct MCPAutoSessionCoordinatorTests {
                         "content": .string("second concurrent auto-session write"),
                         "memory_type": .string("fact"),
                         "cwd": .string(repo.path),
+                        "verbosity": .string("verbose"),
                     ]
                 ),
                 broker: broker,

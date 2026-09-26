@@ -162,6 +162,7 @@ func hintedSessionInjectsIntoTaskStateRememberAndRecall() async throws {
                 arguments: [
                     "content": "HINT-TASK-STATE plan locked for inject test",
                     "memory_type": "task_state",
+                    "verbosity": "verbose",
                 ]
             ),
             broker: service,
