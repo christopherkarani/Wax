@@ -27,6 +27,15 @@ package enum MCPPrimeAssembly {
         case muse
     }
 
+    /// Coarse probe-failure class for the fixed model line and operator JSON.
+    /// Raw errors stay out of model context; this is the only signal the
+    /// model gets about why recall failed.
+    package enum ProbeReason: String, Sendable, Equatable, CaseIterable {
+        case timeout
+        case brokerDown = "broker_down"
+        case projectMiss = "project_miss"
+    }
+
     package struct Tokenizer: Sendable {
         package var count: @Sendable (String) -> Int
 
@@ -116,6 +125,9 @@ package enum MCPPrimeAssembly {
         /// Sanitized first probe error for operator JSON. Never injected
         /// into model context (hosts get a fixed failure line instead).
         package var probeError: String? = nil
+        /// Coarse failure class. Suffixed to the fixed model line and echoed
+        /// in operator JSON so hosts that drop probe_error still report why.
+        package var probeReason: ProbeReason? = nil
 
         package init(
             host: String,
@@ -127,7 +139,8 @@ package enum MCPPrimeAssembly {
             projectCandidates: [Candidate],
             handoff: Handoff?,
             probeFailed: Bool = false,
-            probeError: String? = nil
+            probeError: String? = nil,
+            probeReason: ProbeReason? = nil
         ) {
             self.host = host
             self.includePerson = includePerson
@@ -139,6 +152,7 @@ package enum MCPPrimeAssembly {
             self.handoff = handoff
             self.probeFailed = probeFailed
             self.probeError = probeError
+            self.probeReason = probeReason
         }
     }
 
@@ -162,6 +176,7 @@ package enum MCPPrimeAssembly {
         package var renderedJSON: String
         package var probeFailed: Bool
         package var probeError: String?
+        package var probeReason: ProbeReason?
     }
 
     private static let projectTypeRank: [String: Int] = [
@@ -526,7 +541,8 @@ package enum MCPPrimeAssembly {
             person: person,
             project: project,
             handoff: handoff,
-            probeFailed: input.probeFailed
+            probeFailed: input.probeFailed,
+            probeReason: input.probeReason
         )
         let json = encodeJSON(
             input: input,
@@ -556,7 +572,8 @@ package enum MCPPrimeAssembly {
             hostContext: hostContext,
             renderedJSON: json,
             probeFailed: input.probeFailed,
-            probeError: input.probeError
+            probeError: input.probeError,
+            probeReason: input.probeReason
         )
     }
 
@@ -590,11 +607,19 @@ package enum MCPPrimeAssembly {
     package static let probeFailureLine =
         "Wax memory recall failed for this session start; continue without recalled context."
 
+    /// The fixed failure line with the coarse reason class appended, e.g.
+    /// "...recalled context. (timeout)". A nil reason renders the bare line.
+    package static func failureLine(reason: ProbeReason?) -> String {
+        guard let reason else { return probeFailureLine }
+        return "\(probeFailureLine) (\(reason.rawValue))"
+    }
+
     private static func renderHostContext(
         person: [Item],
         project: [Item],
         handoff: Handoff?,
-        probeFailed: Bool
+        probeFailed: Bool,
+        probeReason: ProbeReason?
     ) -> String {
         var lines: [String] = []
         for item in person + project {
@@ -604,7 +629,7 @@ package enum MCPPrimeAssembly {
             lines.append("[handoff] \(handoff.content)")
         }
         guard !lines.isEmpty else {
-            return probeFailed ? probeFailureLine : ""
+            return probeFailed ? failureLine(reason: probeReason) : ""
         }
         return trustHeader + "\n\n" + lines.joined(separator: "\n")
     }
@@ -642,6 +667,9 @@ package enum MCPPrimeAssembly {
         ]
         if let probeError = input.probeError, !probeError.isEmpty {
             object["probe_error"] = probeError
+        }
+        if let probeReason = input.probeReason {
+            object["probe_reason"] = probeReason.rawValue
         }
         if let project = input.project {
             object["project"] = project

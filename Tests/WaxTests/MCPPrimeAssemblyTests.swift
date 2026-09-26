@@ -439,11 +439,41 @@ func primeAssemblyProbeFailureJSONKeys() throws {
     let failedObject = try #require(rawFailed as? [String: Any])
     #expect(failedObject["probe_failed"] as? Bool == true)
     #expect(failedObject["probe_error"] as? String == "boom")
+    #expect(failedObject["probe_reason"] == nil)
 
     let clean = assemble()
     let rawClean = try JSONSerialization.jsonObject(with: Data(clean.renderedJSON.utf8))
     let cleanObject = try #require(rawClean as? [String: Any])
     #expect(cleanObject["probe_failed"] as? Bool == false)
     #expect(cleanObject["probe_error"] == nil)
+    #expect(cleanObject["probe_reason"] == nil)
     #expect(clean.hostContext == "")
+}
+
+@Test
+func primeAssemblyProbeReasonSuffixesFailureLineAndJSON() throws {
+    for reason in MCPPrimeAssembly.ProbeReason.allCases {
+        let envelope = MCPPrimeAssembly.assemble(
+            MCPPrimeAssembly.Input(
+                host: "muse",
+                includePerson: false,
+                projectMiss: false,
+                project: "Wax",
+                repo: "Wax",
+                personCandidates: [],
+                projectCandidates: [],
+                handoff: nil,
+                probeFailed: true,
+                probeError: "boom",
+                probeReason: reason
+            )
+        )
+        #expect(envelope.probeReason == reason)
+        #expect(envelope.hostContext == MCPPrimeAssembly.failureLine(reason: reason))
+        #expect(envelope.hostContext == "\(MCPPrimeAssembly.probeFailureLine) (\(reason.rawValue))")
+        let raw = try JSONSerialization.jsonObject(with: Data(envelope.renderedJSON.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_reason"] as? String == reason.rawValue)
+    }
+    #expect(MCPPrimeAssembly.failureLine(reason: nil) == MCPPrimeAssembly.probeFailureLine)
 }
