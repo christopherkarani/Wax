@@ -24,7 +24,7 @@ enum MCPAgentInstructions {
 
         Daily tools/list is remember, recall, stats. The server auto-opens one transport-scoped session on the first remember or recall. Do not invent a session_id. stats never opens a session.
 
-        1) remember: memory_type selects the horizon. Successful saves return status=ok, committed=true, memory_id, and stored — that is the proof; do not recall again to verify. Default checkout_status is intent for decision and constraint. Pass cwd only when the host does not advertise roots or CWD. Never put session_id in metadata.
+        1) remember: memory_type selects the horizon. Successful saves return status=ok, committed=true, memory_id, and stored — that is the proof; do not recall again to verify. Default checkout_status is intent for decision and constraint. Pass cwd (your shell working directory) on the first remember/recall; later calls inherit the bound session. Never put session_id in metadata.
         2) recall is self-contained: it returns usable text. Do not recall again on follow-ups unless the job changed. Default scope is project. Empty project lane is a miss — never auto-widen to global. Pass scope=global only for intentional cross-project retrieval. on_this_tree is a label, not a skip. Do not treat intent as shipped.
         3) Do not close on Stop, idle, or compaction. Transport teardown checkpoints. Durable facts come from explicit remember, not from transcripts. This is transport-owned working memory, not per-chat isolation, unless a trusted host conversation identity is present.
         """
