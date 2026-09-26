@@ -8003,7 +8003,10 @@ struct WaxMCPProcessTests {
         _ = try await harness.callTool(
             id: 4,
             name: "remember",
-            arguments: ["content": "GLOBAL_ONLY_ABC broker regression anchor"],
+            arguments: [
+                "content": "GLOBAL_ONLY_ABC broker regression anchor",
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ],
             timeout: 20
         )
         _ = try await harness.callTool(
@@ -8023,6 +8026,7 @@ struct WaxMCPProcessTests {
                 "query": "SESSION_ONLY_XYZ",
                 "session_id": sessionID,
                 "scope": "global",
+                "include_working": true,
                 "limit": 10,
             ],
             timeout: 20
