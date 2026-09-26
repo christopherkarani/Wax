@@ -506,29 +506,6 @@ private extension WaxMCPTools {
         arguments["filters"] = .object(merged)
     }
 
-    static func autoSessionErrorResult(_ error: MCPAutoSessionError) -> CallTool.Result {
-        switch error {
-        case .projectUnresolved(let missing):
-            return structuredErrorResult(
-                message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
-                code: "project_unresolved",
-                fields: [
-                    "committed": .bool(false),
-                    "missing": .array(missing.map(AgentBrokerValue.string)),
-                ]
-            )
-        case .openFailed(let message, let retryable):
-            return structuredErrorResult(
-                message: message,
-                code: "auto_session_failed",
-                fields: [
-                    "committed": .bool(false),
-                    "retryable": .bool(retryable),
-                ]
-            )
-        }
-    }
-
     static func injectClientSessionIfNeeded(
         name: String,
         arguments: inout [String: Value],
@@ -632,6 +609,39 @@ private extension WaxMCPTools {
 }
 
 extension WaxMCPTools {
+    static func autoSessionErrorResult(_ error: MCPAutoSessionError) -> CallTool.Result {
+        switch error {
+        case .projectUnresolved(let missing):
+            return structuredErrorResult(
+                message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+                code: "project_unresolved",
+                fields: [
+                    "committed": .bool(false),
+                    "missing": .array(missing.map(AgentBrokerValue.string)),
+                ]
+            )
+        case .openFailed(let message, let retryable):
+            return structuredErrorResult(
+                message: message,
+                code: "auto_session_failed",
+                fields: [
+                    "committed": .bool(false),
+                    "retryable": .bool(retryable),
+                ]
+            )
+        case .collisionResumeFailed(let message, let retryable, let nextAction):
+            return structuredErrorResult(
+                message: message,
+                code: "auto_session_failed",
+                fields: [
+                    "committed": .bool(false),
+                    "retryable": .bool(retryable),
+                    "next_action": .string(nextAction),
+                ]
+            )
+        }
+    }
+
     static func responseVerbosity(from arguments: [String: Value]) throws -> ResponseVerbosity? {
         guard let value = arguments["verbosity"] else { return nil }
         guard case .string(let raw) = value else {

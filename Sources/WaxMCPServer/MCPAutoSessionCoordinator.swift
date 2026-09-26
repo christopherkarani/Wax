@@ -6,6 +6,7 @@ import Wax
 enum MCPAutoSessionError: Error, Sendable {
     case projectUnresolved(missing: [String])
     case openFailed(message: String, retryable: Bool)
+    case collisionResumeFailed(message: String, retryable: Bool, nextAction: String)
 }
 
 struct MCPAutoSessionBinding: Sendable, Equatable {
@@ -25,6 +26,17 @@ actor MCPAutoSessionCoordinator {
 
     private var state: State = .unbound
     private var openingTask: Task<Result<MCPAutoSessionBinding, Error>, Never>?
+
+    /// Fixed auto-session identity. Resume-after-collision reuses these exact
+    /// selectors so the colliding transport rebinds instead of failing.
+    private static let autoAgentID = "mcp-auto"
+
+    /// Broker pair-guard marker (see VirtualSessionStore). Matched with
+    /// `contains` so minor broker rewording keeps the stable core detectable.
+    private static let agentRunCollisionMarker = "already have an active session"
+
+    private static let collisionResumeNextAction =
+        "call session_resume with the same agent_id and run_id"
 
     func currentBinding() -> MCPAutoSessionBinding? {
         if case .bound(let binding) = state {
@@ -114,8 +126,13 @@ actor MCPAutoSessionCoordinator {
             state = .bound(binding)
             return binding
         case .failure(let error):
-            if let auto = error as? MCPAutoSessionError, case .openFailed(_, let retryable) = auto {
-                state = .failed(message: autoErrorMessage(auto), retryable: retryable)
+            if let auto = error as? MCPAutoSessionError {
+                switch auto {
+                case .openFailed(_, let retryable), .collisionResumeFailed(_, let retryable, _):
+                    state = .failed(message: autoErrorMessage(auto), retryable: retryable)
+                case .projectUnresolved:
+                    state = .failed(message: error.localizedDescription, retryable: true)
+                }
             } else {
                 state = .failed(message: error.localizedDescription, retryable: true)
             }
@@ -144,6 +161,8 @@ actor MCPAutoSessionCoordinator {
             return "project_unresolved"
         case .openFailed(let message, _):
             return message
+        case .collisionResumeFailed(let message, _, _):
+            return message
         }
     }
 
@@ -167,7 +186,7 @@ actor MCPAutoSessionCoordinator {
 
         var arguments: [String: AgentBrokerValue] = [
             "conversation_id": .string(conversationKey),
-            "agent_id": .string("mcp-auto"),
+            "agent_id": .string(Self.autoAgentID),
             "run_id": .string(transportKey),
         ]
         if let project = attribution.project {
@@ -204,7 +223,68 @@ actor MCPAutoSessionCoordinator {
                 conversationKey: conversationKey
             )
         case .failure(_, let message):
+            if message.contains(Self.agentRunCollisionMarker) {
+                return try await Self.resumeAfterCollision(
+                    transportKey: transportKey,
+                    ownership: ownership,
+                    conversationKey: conversationKey,
+                    openMessage: message,
+                    perform: perform
+                )
+            }
             throw MCPAutoSessionError.openFailed(message: message, retryable: true)
+        }
+    }
+
+    /// Rebind the winner of an agent/run pair collision. The broker keeps the
+    /// pair guard (isolation), so the coordinator resumes explicitly with the
+    /// same selectors instead of surfacing the collision.
+    private static func resumeAfterCollision(
+        transportKey: String,
+        ownership: MCPMemoryOwnership,
+        conversationKey: String,
+        openMessage: String,
+        perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
+    ) async throws -> MCPAutoSessionBinding {
+        let response: AgentBrokerResponse
+        do {
+            response = try await perform(
+                AgentBrokerRequest(
+                    command: "session_resume",
+                    arguments: [
+                        "agent_id": .string(Self.autoAgentID),
+                        "run_id": .string(transportKey),
+                    ]
+                )
+            )
+        } catch {
+            throw MCPAutoSessionError.collisionResumeFailed(
+                message: "auto-session collision (\(openMessage)); session_resume failed: \(error.localizedDescription)",
+                retryable: true,
+                nextAction: Self.collisionResumeNextAction
+            )
+        }
+        switch response.outcome {
+        case .success(let payload):
+            guard let raw = payload.objectValue?["session_id"]?.stringValue,
+                  let sessionID = UUID(uuidString: raw) else {
+                throw MCPAutoSessionError.collisionResumeFailed(
+                    message: "auto-session collision (\(openMessage)); session_resume returned no session_id",
+                    retryable: true,
+                    nextAction: Self.collisionResumeNextAction
+                )
+            }
+            return MCPAutoSessionBinding(
+                sessionID: sessionID,
+                ownership: ownership,
+                conversationKey: conversationKey
+            )
+        case .failure(_, let resumeMessage):
+            throw MCPAutoSessionError.collisionResumeFailed(
+                message: "auto-session collision (\(openMessage)); session_resume failed: \(resumeMessage)",
+                retryable: true,
+                nextAction: Self.collisionResumeNextAction
+            )
         }
     }
 }
