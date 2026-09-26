@@ -4,7 +4,111 @@ import MCP
 import Wax
 import WaxCore
 
+/// Lazily queried MCP client roots, keyed by transport/connection key.
+///
+/// The provider closure captures the connection's `Server` actor, so it lives
+/// in this registry instead of on `MCPClientSessionHint`: the server retains
+/// its method handlers, which retain the hint, and actors cannot be held
+/// weakly. Entries are removed on transport teardown.
+enum MCPRootsProviderRegistry {
+    static let shared = Registry()
+
+    final class Registry: @unchecked Sendable {
+        private let lock = NSLock()
+        private var providers: [String: (@Sendable () async -> [String])] = [:]
+
+        func remember(key: String, provider: @escaping @Sendable () async -> [String]) {
+            lock.lock()
+            defer { lock.unlock() }
+            providers[key] = provider
+        }
+
+        func current(key: String) -> (@Sendable () async -> [String])? {
+            lock.lock()
+            defer { lock.unlock() }
+            return providers[key]
+        }
+
+        func remove(key: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            providers.removeValue(forKey: key)
+        }
+
+        func resetForTests() {
+            lock.lock()
+            defer { lock.unlock() }
+            providers.removeAll()
+        }
+    }
+}
+
+/// `roots/list` fetch with a timeout. Never throws: a missing roots
+/// capability, a client that never answers (no HTTP GET stream held), and
+/// transport errors all yield an empty list so attribution falls back to
+/// explicit `cwd`/`project`/`repo` arguments.
+enum MCPRootsFetcher {
+    /// Bound for one roots round-trip. Only failing calls pay it: the refresh
+    /// runs solely when a project-gated call would otherwise throw, plus one
+    /// background fetch on initialized/roots-changed notifications.
+    static let timeoutSeconds: TimeInterval = 2
+
+    static func fetchRoots(server: Server) async -> [String] {
+        await withTaskGroup(of: [String]?.self) { group in
+            group.addTask {
+                do {
+                    let roots = try await server.listRoots()
+                    return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
+                } catch {
+                    return []
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? []
+        }
+    }
+}
+
+enum MCPRootsRefresher {
+    /// Background refresh after initialize/roots-changed. Never blocks the
+    /// notification handler: the caller spawns this in a detached task so the
+    /// server receive loop stays free to deliver the `roots/list` response.
+    static func refresh(connectionKey: String, hint: MCPClientSessionHint?) async {
+        guard let provider = MCPRootsProviderRegistry.shared.current(key: connectionKey) else { return }
+        let roots = await provider()
+        guard !roots.isEmpty else { return }
+        hint?.updateRoots(roots)
+        if var stored = MCPHTTPConnectionContextRegistry.shared.current(sessionID: connectionKey) {
+            stored.mcpRoots = roots
+            MCPHTTPConnectionContextRegistry.shared.remember(sessionID: connectionKey, context: stored)
+        } else if let hintContext = hint?.connectionContext() {
+            MCPHTTPConnectionContextRegistry.shared.remember(sessionID: connectionKey, context: hintContext)
+        } else {
+            MCPHTTPConnectionContextRegistry.shared.remember(
+                sessionID: connectionKey,
+                context: MCPConnectionContext(transportKey: connectionKey, mcpRoots: roots)
+            )
+        }
+    }
+}
+
+/// Project-gating failure with the exact inputs seen, so the error can tell
+/// the caller what to retry with instead of failing opaquely again.
+struct MCPProjectUnresolvedDetail: Error, Sendable {
+    var missing: [String]
+    var cwd: String?
+    var roots: [String]
+    var hasExplicit: Bool
+}
+
 enum WaxMCPTools {
+    static let projectUnresolvedNextAction = "retry once with cwd=<workspace root>"
+
     static func register(
         on server: Server,
         brokerConfiguration: AgentBrokerConfiguration,
@@ -27,6 +131,20 @@ enum WaxMCPTools {
                 structuredMemoryEnabled: structuredMemoryEnabled,
                 sessionHint: sessionHint
             )
+        }
+
+        // Capture `roots/list` on initialize (stdio + HTTP) into the
+        // connection context. The handler only retains the hint/key; the
+        // server-capturing fetch lives in the provider registry, and the
+        // refresh runs detached so the receive loop can deliver the reply.
+        if let connectionKey {
+            let key = connectionKey
+            _ = await server.onNotification(InitializedNotification.self) { _ in
+                Task { await MCPRootsRefresher.refresh(connectionKey: key, hint: sessionHint) }
+            }
+            _ = await server.onNotification(RootsListChangedNotification.self) { _ in
+                Task { await MCPRootsRefresher.refresh(connectionKey: key, hint: sessionHint) }
+            }
         }
     }
 
@@ -93,6 +211,8 @@ enum WaxMCPTools {
                     sessionHint: sessionHint,
                     perform: perform
                 )
+            } catch let detail as MCPProjectUnresolvedDetail {
+                return projectUnresolvedErrorResult(detail)
             } catch let error as MCPAutoSessionError {
                 return autoSessionErrorResult(error)
             }
@@ -121,6 +241,8 @@ enum WaxMCPTools {
                         sessionHint: sessionHint,
                         perform: perform
                     )
+                } catch let detail as MCPProjectUnresolvedDetail {
+                    return projectUnresolvedErrorResult(detail)
                 } catch let error as MCPAutoSessionError {
                     return autoSessionErrorResult(error)
                 }
@@ -288,6 +410,40 @@ final class MCPClientSessionHint: @unchecked Sendable {
         connectionKey
     }
 
+    /// Initialize/roots-changed capture target. Overwrites the cached list;
+    /// empty fetches never clear so a transient `roots/list` failure cannot
+    /// wipe attribution that already resolved.
+    func updateRoots(_ roots: [String]) {
+        guard !roots.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        var updated = context ?? MCPConnectionContext(transportKey: connectionKey ?? "")
+        updated.mcpRoots = roots
+        context = updated
+    }
+
+    /// Fetch client roots when attribution needs them. Non-empty results are
+    /// cached on the connection context; empty results re-query on the next
+    /// unresolved gated call so late-advertised roots still heal the
+    /// connection.
+    func refreshRootsIfNeeded() async {
+        guard let connectionKey, !hasCachedRoots else { return }
+        guard let provider = MCPRootsProviderRegistry.shared.current(key: connectionKey) else { return }
+        let roots = await provider()
+        guard !roots.isEmpty else { return }
+        updateRoots(roots)
+        if var stored = MCPHTTPConnectionContextRegistry.shared.current(sessionID: connectionKey) {
+            stored.mcpRoots = roots
+            MCPHTTPConnectionContextRegistry.shared.remember(sessionID: connectionKey, context: stored)
+        }
+    }
+
+    private var hasCachedRoots: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return context?.mcpRoots.isEmpty == false
+    }
+
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
@@ -363,24 +519,67 @@ private extension WaxMCPTools {
         guard let hint = sessionHint, let transportKey = hint.transportKey() else { return }
         if hint.current() != nil { return }
 
-        let context = hint.connectionContext() ?? MCPConnectionContext(transportKey: transportKey)
-        let attribution = MCPProjectAttributionResolver.resolve(
-            explicitProject: nonEmptyString(arguments["project"]),
-            explicitRepo: nonEmptyString(arguments["repo"]),
-            advertisedCWD: nonEmptyString(arguments["cwd"]) ?? context.advertisedCWD,
+        let explicitProject = nonEmptyString(arguments["project"])
+        let explicitRepo = nonEmptyString(arguments["repo"])
+        let explicitCWD = nonEmptyString(arguments["cwd"])
+        func resolveAttribution(advertisedCWD: String?, mcpRoots: [String]) -> MCPProjectAttribution {
+            MCPProjectAttributionResolver.resolve(
+                explicitProject: explicitProject,
+                explicitRepo: explicitRepo,
+                advertisedCWD: explicitCWD ?? advertisedCWD,
+                mcpRoots: mcpRoots
+            )
+        }
+        var context = hint.connectionContext() ?? MCPConnectionContext(transportKey: transportKey)
+        var attribution = resolveAttribution(
+            advertisedCWD: context.advertisedCWD,
             mcpRoots: context.mcpRoots
         )
+        // Sticky fallback: a connection that resolved once keeps working when
+        // later calls omit cwd/project/repo (e.g. after session_end cleared
+        // the binding). Explicit args always win over the sticky value.
+        if !attribution.isResolved,
+           explicitProject == nil, explicitRepo == nil, explicitCWD == nil,
+           let sticky = MCPStickyAttributionRegistry.shared.current(for: transportKey),
+           sticky.isResolved {
+            attribution = sticky
+        }
         let projectGated = try projectGatedAutoSession(
             command: canonical,
             arguments: arguments
         )
         if projectGated && !attribution.isResolved {
-            throw MCPAutoSessionError.projectUnresolved(missing: ["cwd", "mcp_root", "project"])
+            await hint.refreshRootsIfNeeded()
+            context = hint.connectionContext() ?? context
+            attribution = resolveAttribution(
+                advertisedCWD: context.advertisedCWD,
+                mcpRoots: context.mcpRoots
+            )
+            if !attribution.isResolved,
+               explicitProject == nil, explicitRepo == nil, explicitCWD == nil,
+               let sticky = MCPStickyAttributionRegistry.shared.current(for: transportKey),
+               sticky.isResolved {
+                attribution = sticky
+            }
+        }
+        if projectGated && !attribution.isResolved {
+            throw MCPProjectUnresolvedDetail(
+                missing: ["cwd", "project", "repo"],
+                cwd: explicitCWD ?? context.advertisedCWD,
+                roots: context.mcpRoots,
+                hasExplicit: explicitProject != nil || explicitRepo != nil
+            )
         }
         if !projectGated && !attribution.isResolved {
             return
         }
 
+        if attribution.isResolved {
+            MCPStickyAttributionRegistry.shared.remember(
+                transportKey: transportKey,
+                attribution: attribution
+            )
+        }
         let coordinator = MCPAutoSessionCoordinatorStore.shared.coordinator(for: transportKey)
         let binding = try await coordinator.ensureBound(
             transportKey: transportKey,
@@ -427,11 +626,15 @@ private extension WaxMCPTools {
         guard ["remember", "recall", "memory_append", "session_open", "session_start"].contains(canonical) else {
             return
         }
-        guard let cwd = sessionHint?.connectionContext()?.advertisedCWD
-            ?? sessionHint?.connectionContext()?.canonicalMCPRoot else {
+        if let cwd = sessionHint?.connectionContext()?.advertisedCWD
+            ?? sessionHint?.connectionContext()?.canonicalMCPRoot {
+            arguments["cwd"] = .string(cwd)
             return
         }
-        arguments["cwd"] = .string(cwd)
+        if let key = sessionHint?.transportKey(),
+           let cwd = MCPStickyAttributionRegistry.shared.current(for: key)?.cwdPath {
+            arguments["cwd"] = .string(cwd)
+        }
     }
 
     static func shouldRetryInactiveBinding(
@@ -609,6 +812,28 @@ private extension WaxMCPTools {
 }
 
 extension WaxMCPTools {
+    static func projectUnresolvedErrorResult(_ detail: MCPProjectUnresolvedDetail) -> CallTool.Result {
+        var received: [String: AgentBrokerValue] = [
+            "roots": .array(detail.roots.map(AgentBrokerValue.string)),
+            "explicit": .bool(detail.hasExplicit),
+        ]
+        if let cwd = detail.cwd {
+            received["cwd"] = .string(cwd)
+        } else {
+            received["cwd"] = .null
+        }
+        return structuredErrorResult(
+            message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+            code: "project_unresolved",
+            fields: [
+                "committed": .bool(false),
+                "missing": .array(detail.missing.map(AgentBrokerValue.string)),
+                "received": .object(received),
+                "next_action": .string(projectUnresolvedNextAction),
+            ]
+        )
+    }
+
     static func autoSessionErrorResult(_ error: MCPAutoSessionError) -> CallTool.Result {
         switch error {
         case .projectUnresolved(let missing):
@@ -618,6 +843,12 @@ extension WaxMCPTools {
                 fields: [
                     "committed": .bool(false),
                     "missing": .array(missing.map(AgentBrokerValue.string)),
+                    "received": .object([
+                        "cwd": .null,
+                        "roots": .array([]),
+                        "explicit": .bool(false),
+                    ]),
+                    "next_action": .string(projectUnresolvedNextAction),
                 ]
             )
         case .openFailed(let message, let retryable):
