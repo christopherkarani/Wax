@@ -158,7 +158,7 @@ package enum BrokerCommandCatalog {
 
     private static let cwd = Argument(
         "cwd", .string,
-        description: "Optional client working directory used to infer project/repo when not explicit. Never the MCP server process cwd."
+        description: "Your shell working directory, used to infer project/repo. Pass it on the first project-scoped remember/recall; later calls inherit the bound session. Never the MCP server process cwd."
     )
 
     private static let project = Argument(
@@ -471,7 +471,7 @@ package enum BrokerCommandCatalog {
                 ),
                 Argument(
                     "cwd", .string,
-                    description: "Optional client working directory used to infer project/repo when not explicit."
+                    description: "Your shell working directory, used to infer project/repo when not explicit."
                 ),
             ],
             requiresStructuredMemory: true
@@ -525,7 +525,7 @@ package enum BrokerCommandCatalog {
                 Argument("run_id", .string, description: "Stable run identifier for the current autonomous run. Combined with agent_id, reuses the active session."),
                 Argument("project", .string, description: "Optional project stamped onto the new session manifest (overrides cwd inference)."),
                 Argument("repo", .string, description: "Optional repo stamped onto the new session manifest (overrides cwd inference)."),
-                Argument("cwd", .string, description: "Optional client working directory used to infer project/repo when not explicit."),
+                Argument("cwd", .string, description: "Your shell working directory, used to infer project/repo when not explicit."),
                 Argument("conversation_id", .string, description: "Host chat/session id. The unique match is resumed across compaction, reconnect, and close. Grok should pass its session UUID. Omitted or whitespace-only is ignored."),
             ]
         ),
@@ -569,7 +569,7 @@ package enum BrokerCommandCatalog {
                 Argument("agent_id", .string, description: "Stable agent identifier. Combined with run_id, reuses the active session."),
                 Argument("run_id", .string, description: "Stable run identifier for the current autonomous run."),
                 Argument("recall_query", .string, description: "Optional non-empty query to run capped project-scoped recall after session_start. Omitted or whitespace-only means no recall."),
-                Argument("cwd", .string, description: "Optional client working directory used to infer project/repo when not explicit."),
+                Argument("cwd", .string, description: "Your shell working directory, used to infer project/repo when not explicit."),
                 Argument("conversation_id", .string, description: "Host chat/session id. The unique match is resumed across compaction, reconnect, and close. Grok should pass its session UUID. Omitted or whitespace-only is ignored."),
             ]
         ),

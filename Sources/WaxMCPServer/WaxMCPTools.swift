@@ -288,6 +288,32 @@ final class MCPClientSessionHint: @unchecked Sendable {
         connectionKey
     }
 
+    /// Fetch client roots when attribution needs them. Non-empty results are
+    /// cached on the connection context; empty results re-query on the next
+    /// unresolved gated call so late-advertised roots still heal the
+    /// connection.
+    func refreshRootsIfNeeded() async {
+        guard let connectionKey, !hasCachedRoots else { return }
+        guard let provider = MCPRootsProviderRegistry.shared.current(key: connectionKey) else { return }
+        let roots = await provider()
+        guard !roots.isEmpty else { return }
+        cacheRoots(roots, transportKey: connectionKey)
+    }
+
+    private var hasCachedRoots: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return context?.mcpRoots.isEmpty == false
+    }
+
+    private func cacheRoots(_ roots: [String], transportKey: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var updated = context ?? MCPConnectionContext(transportKey: transportKey)
+        updated.mcpRoots = roots
+        context = updated
+    }
+
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
@@ -363,11 +389,20 @@ private extension WaxMCPTools {
         guard let hint = sessionHint, let transportKey = hint.transportKey() else { return }
         if hint.current() != nil { return }
 
-        let context = hint.connectionContext() ?? MCPConnectionContext(transportKey: transportKey)
-        let attribution = MCPProjectAttributionResolver.resolve(
-            explicitProject: nonEmptyString(arguments["project"]),
-            explicitRepo: nonEmptyString(arguments["repo"]),
-            advertisedCWD: nonEmptyString(arguments["cwd"]) ?? context.advertisedCWD,
+        let explicitProject = nonEmptyString(arguments["project"])
+        let explicitRepo = nonEmptyString(arguments["repo"])
+        let explicitCWD = nonEmptyString(arguments["cwd"])
+        func resolveAttribution(advertisedCWD: String?, mcpRoots: [String]) -> MCPProjectAttribution {
+            MCPProjectAttributionResolver.resolve(
+                explicitProject: explicitProject,
+                explicitRepo: explicitRepo,
+                advertisedCWD: explicitCWD ?? advertisedCWD,
+                mcpRoots: mcpRoots
+            )
+        }
+        var context = hint.connectionContext() ?? MCPConnectionContext(transportKey: transportKey)
+        var attribution = resolveAttribution(
+            advertisedCWD: context.advertisedCWD,
             mcpRoots: context.mcpRoots
         )
         let projectGated = try projectGatedAutoSession(
@@ -375,7 +410,15 @@ private extension WaxMCPTools {
             arguments: arguments
         )
         if projectGated && !attribution.isResolved {
-            throw MCPAutoSessionError.projectUnresolved(missing: ["cwd", "mcp_root", "project"])
+            await hint.refreshRootsIfNeeded()
+            context = hint.connectionContext() ?? context
+            attribution = resolveAttribution(
+                advertisedCWD: context.advertisedCWD,
+                mcpRoots: context.mcpRoots
+            )
+        }
+        if projectGated && !attribution.isResolved {
+            throw MCPAutoSessionError.projectUnresolved(missing: ["cwd", "project", "repo"])
         }
         if !projectGated && !attribution.isResolved {
             return
@@ -510,7 +553,7 @@ private extension WaxMCPTools {
         switch error {
         case .projectUnresolved(let missing):
             return structuredErrorResult(
-                message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+                message: "project identity is unresolved; retry with cwd set to your shell working directory, or pass explicit project/repo",
                 code: "project_unresolved",
                 fields: [
                     "committed": .bool(false),
