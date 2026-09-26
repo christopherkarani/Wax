@@ -176,6 +176,7 @@ struct BrokerCommandDecodeTests {
         #expect(payload.scope == .project)
         #expect(payload.sessionID == nil)
         #expect(payload.mode == nil)
+        #expect(payload.includeWorking == false)
     }
 
     @Test
@@ -259,6 +260,38 @@ struct BrokerCommandDecodeTests {
         #expect(globalWithSessionPayload.identity == .global(workingSessionID: sessionID))
         #expect(globalWithSessionPayload.sessionID == sessionID)
         #expect(globalWithSessionPayload.filters.sessionId == globalWithSessionPayload.identity.sessionID)
+    }
+
+    @Test
+    func recallIncludeWorkingDefaultsFalseAndParsesExplicitTrue() throws {
+        let sessionID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let implicit = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "session_id": .string(sessionID.uuidString),
+            ]
+        )
+        guard case .recall(let implicitPayload) = implicit else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(implicitPayload.includeWorking == false)
+
+        let explicit = try BrokerCommand.decode(
+            command: "recall",
+            arguments: [
+                "query": .string("q"),
+                "session_id": .string(sessionID.uuidString),
+                "include_working": .bool(true),
+            ]
+        )
+        guard case .recall(let explicitPayload) = explicit else {
+            Issue.record("expected recall")
+            return
+        }
+        #expect(explicitPayload.includeWorking == true)
+        #expect(explicitPayload.sessionID == sessionID)
     }
 
     @Test

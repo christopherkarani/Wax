@@ -310,7 +310,7 @@ package enum BrokerCommandCatalog {
                 repo,
                 confidence,
                 expiresInDays,
-                Argument("reviewed", .boolean, description: "Mark this durable memory as reviewed."),
+                Argument("reviewed", .boolean, description: "Mark this durable memory as reviewed. This is the review mark: reviewed decisions/constraints leave the stats review_queue_depth count."),
                 Argument("locked", .boolean, description: "Lock this memory as durable and protected from freshness decay."),
                 Argument(
                     "checkout_status", .string,
@@ -346,7 +346,7 @@ package enum BrokerCommandCatalog {
         ),
         Entry(
             canonicalName: "recall",
-            summary: "Preferred read path: assemble RAG context for a query. Omit mode unless you need an override. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id merges that session with durable long-term memory under the selected scope.",
+            summary: "Preferred read path: assemble RAG context for a query. Omit mode unless you need an override. Default scope is the current project after project/repo resolution; pass scope=global only for intentional cross-project retrieval. Optional session_id resolves project identity; the working lane joins only with scope=session or include_working=true.",
             arguments: [
                 Argument("query", .string, required: true, description: "Recall query text."),
                 Argument(
@@ -356,7 +356,7 @@ package enum BrokerCommandCatalog {
                 ),
                 Argument(
                     "session_id", .string,
-                    description: "Optional session UUID. When set with default project scope, recall merges that session with durable long-term memory. Omit it unless you already have a broker-issued value — do not invent one."
+                    description: "Optional session UUID. Resolves project identity; merges that session's working lane only with scope=session or include_working=true. Omit it unless you already have a broker-issued value — do not invent one."
                 ),
                 Argument(
                     "project", .string,
@@ -370,6 +370,10 @@ package enum BrokerCommandCatalog {
                     "scope", .string,
                     description: "Recall scope. project (default) hard-filters to the resolved project/repo; session skips durable merge when a session_id is supplied; global searches the complete trusted local store without current-project boost (it is not an authorization boundary).",
                     enumValues: ["project", "session", "global"]
+                ),
+                Argument(
+                    "include_working", .boolean,
+                    description: "Include the bound session working lane in project/global recall. Default: false; scope=session always reads the working lane."
                 ),
                 Argument(
                     "memory_types", .stringArray,
@@ -508,7 +512,7 @@ package enum BrokerCommandCatalog {
         ),
         Entry(
             canonicalName: "stats",
-            summary: "Return Wax runtime and storage stats (health check, embedder identity, vector search status).",
+            summary: "Return Wax runtime and storage stats (health check, embedder identity, vector search status). Includes review_queue_depth (unreviewed durable decisions/constraints); remember(reviewed:true) clears entries.",
             arguments: [
                 Argument(
                     "session_id", .string,

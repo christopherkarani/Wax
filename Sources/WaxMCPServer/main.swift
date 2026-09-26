@@ -175,6 +175,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                     configuration: brokerConfiguration
                 )
             )
+            MCPRootsProviderRegistry.shared.remove(key: "stdio")
+            MCPStickyAttributionRegistry.shared.remove(for: "stdio")
             for source in signalSources { source.cancel() }
             await server.stop()
 
@@ -234,9 +236,18 @@ struct WaxMCPServerCommand: ParsableCommand {
             capabilities: .init(tools: .init(listChanged: false)),
             configuration: .default
         )
+        if let connectionKey {
+            MCPRootsProviderRegistry.shared.remember(key: connectionKey) {
+                await MCPRootsFetcher.fetchRoots(server: server)
+            }
+        }
         let context = connectionKey.flatMap {
             MCPHTTPConnectionContextRegistry.shared.current(sessionID: $0)
         } ?? connectionKey.map { MCPConnectionContext(transportKey: $0) }
+        if let connectionKey, let context,
+           MCPHTTPConnectionContextRegistry.shared.current(sessionID: connectionKey) == nil {
+            MCPHTTPConnectionContextRegistry.shared.remember(sessionID: connectionKey, context: context)
+        }
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,

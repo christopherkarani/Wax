@@ -19,6 +19,28 @@ package enum RecallPresent {
         return max(0, (nowMs - createdAtMs) / (1000 * 60 * 60 * 24))
     }
 
+    /// True when another hit in the same result set is a newer frame of the
+    /// same memory type. Unknown or tied timestamps fall back to same-horizon
+    /// frameId order, the only newer-signal left.
+    package static func hasNewerSameTypeFrame(_ hit: LayeredRecall.Hit, in hits: [LayeredRecall.Hit]) -> Bool {
+        let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
+        return hits.contains { other in
+            guard other.id != hit.id else { return false }
+            guard (other.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue) == type else {
+                return false
+            }
+            if other.timestampMs != hit.timestampMs {
+                return other.timestampMs > hit.timestampMs
+            }
+            return other.horizon == hit.horizon && other.frameID > hit.frameID
+        }
+    }
+
+    /// Per-hit `stale_hint` flags for a packed result set, in hit order.
+    package static func staleHints(for hits: [LayeredRecall.Hit]) -> [Bool] {
+        hits.map { hasNewerSameTypeFrame($0, in: hits) }
+    }
+
     package static func compactHitObject(
         id: String,
         text: String,
@@ -98,7 +120,8 @@ package enum RecallPresent {
         _ hit: LayeredRecall.Hit,
         rank: Int,
         verbose: Bool,
-        nowMs: Int64
+        nowMs: Int64,
+        staleHint: Bool = false
     ) -> AgentBrokerValue {
         var object = compactHitObject(
             id: hit.reference,
@@ -109,8 +132,17 @@ package enum RecallPresent {
             createdAtMs: hit.timestampMs,
             nowMs: nowMs
         )
+        if staleHint {
+            object["stale_hint"] = .bool(true)
+        }
         if hit.collapsedCount > 1 {
             object["collapsed_count"] = .from(hit.collapsedCount)
+        }
+        if hit.horizon == .working {
+            object["horizon"] = .string(LayeredRecall.Horizon.working.rawValue)
+            if let conversationID = hit.conversationID, !conversationID.isEmpty {
+                object["conversation_id"] = .string(conversationID)
+            }
         }
         if verbose {
             object["rank"] = .from(rank)

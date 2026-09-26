@@ -170,6 +170,7 @@ func uniqueTokenRanksHitAt1OnSearchRecallMemoryAndCorpus() async throws {
                 "project": .string("ishi-qa"),
                 "repo": .string("ishi-qa"),
                 "session_id": .string(sessionID.uuidString),
+                "include_working": .bool(true),
                 "limit": .int(8),
             ]
         ))

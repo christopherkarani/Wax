@@ -27,6 +27,15 @@ package enum MCPPrimeAssembly {
         case muse
     }
 
+    /// Coarse probe-failure class for the fixed model line and operator JSON.
+    /// Raw errors stay out of model context; this is the only signal the
+    /// model gets about why recall failed.
+    package enum ProbeReason: String, Sendable, Equatable, CaseIterable {
+        case timeout
+        case brokerDown = "broker_down"
+        case projectMiss = "project_miss"
+    }
+
     package struct Tokenizer: Sendable {
         package var count: @Sendable (String) -> Int
 
@@ -76,6 +85,8 @@ package enum MCPPrimeAssembly {
         package var ageDays: Int?
         package var score: Double
         package var createdAtMs: Int64
+        /// True when a newer same-type item exists in the same primed lane.
+        package var staleHint: Bool = false
     }
 
     package struct Handoff: Sendable, Equatable {
@@ -116,6 +127,9 @@ package enum MCPPrimeAssembly {
         /// Sanitized first probe error for operator JSON. Never injected
         /// into model context (hosts get a fixed failure line instead).
         package var probeError: String? = nil
+        /// Coarse failure class. Suffixed to the fixed model line and echoed
+        /// in operator JSON so hosts that drop probe_error still report why.
+        package var probeReason: ProbeReason? = nil
 
         package init(
             host: String,
@@ -127,7 +141,8 @@ package enum MCPPrimeAssembly {
             projectCandidates: [Candidate],
             handoff: Handoff?,
             probeFailed: Bool = false,
-            probeError: String? = nil
+            probeError: String? = nil,
+            probeReason: ProbeReason? = nil
         ) {
             self.host = host
             self.includePerson = includePerson
@@ -139,6 +154,7 @@ package enum MCPPrimeAssembly {
             self.handoff = handoff
             self.probeFailed = probeFailed
             self.probeError = probeError
+            self.probeReason = probeReason
         }
     }
 
@@ -162,6 +178,7 @@ package enum MCPPrimeAssembly {
         package var renderedJSON: String
         package var probeFailed: Bool
         package var probeError: String?
+        package var probeReason: ProbeReason?
     }
 
     private static let projectTypeRank: [String: Int] = [
@@ -191,33 +208,37 @@ package enum MCPPrimeAssembly {
         maxItemBytes: Int = maxItemBytes,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) -> Envelope {
-        let personPrepared = input.includePerson
-            ? prepare(
-                input.personCandidates,
-                allowedTypes: [MemoryType.userPreference.rawValue],
-                resolvedProject: nil,
-                resolvedRepo: nil,
-                requireProjectMatch: false,
-                tokenizer: tokenizer,
-                maxItemTokens: maxItemTokens,
-                maxItemBytes: maxItemBytes,
-                nowMs: nowMs
-            )
-            : []
+        let personPrepared = markStaleHints(
+            input.includePerson
+                ? prepare(
+                    input.personCandidates,
+                    allowedTypes: [MemoryType.userPreference.rawValue],
+                    resolvedProject: nil,
+                    resolvedRepo: nil,
+                    requireProjectMatch: false,
+                    tokenizer: tokenizer,
+                    maxItemTokens: maxItemTokens,
+                    maxItemBytes: maxItemBytes,
+                    nowMs: nowMs
+                )
+                : []
+        )
         let projectPrepared: [Item]
         if input.projectMiss {
             projectPrepared = []
         } else {
-            projectPrepared = prepare(
-                input.projectCandidates,
-                allowedTypes: allowedProjectTypes,
-                resolvedProject: input.project,
-                resolvedRepo: input.repo,
-                requireProjectMatch: input.project != nil || input.repo != nil,
-                tokenizer: tokenizer,
-                maxItemTokens: maxItemTokens,
-                maxItemBytes: maxItemBytes,
-                nowMs: nowMs
+            projectPrepared = markStaleHints(
+                prepare(
+                    input.projectCandidates,
+                    allowedTypes: allowedProjectTypes,
+                    resolvedProject: input.project,
+                    resolvedRepo: input.repo,
+                    requireProjectMatch: input.project != nil || input.repo != nil,
+                    tokenizer: tokenizer,
+                    maxItemTokens: maxItemTokens,
+                    maxItemBytes: maxItemBytes,
+                    nowMs: nowMs
+                )
             )
         }
 
@@ -390,6 +411,20 @@ package enum MCPPrimeAssembly {
 
     // MARK: - Selection
 
+    /// Flags items a newer same-type item supersedes within one lane.
+    /// Only strictly-newer `createdAtMs` counts; unknown timestamps stay unflagged.
+    package static func markStaleHints(_ items: [Item]) -> [Item] {
+        items.enumerated().map { index, item in
+            var copy = item
+            copy.staleHint = items.enumerated().contains { otherIndex, other in
+                guard otherIndex != index else { return false }
+                guard other.memoryType == item.memoryType else { return false }
+                return other.createdAtMs > item.createdAtMs
+            }
+            return copy
+        }
+    }
+
     private static func prepare(
         _ candidates: [Candidate],
         allowedTypes: Set<String>,
@@ -526,7 +561,8 @@ package enum MCPPrimeAssembly {
             person: person,
             project: project,
             handoff: handoff,
-            probeFailed: input.probeFailed
+            probeFailed: input.probeFailed,
+            probeReason: input.probeReason
         )
         let json = encodeJSON(
             input: input,
@@ -556,7 +592,8 @@ package enum MCPPrimeAssembly {
             hostContext: hostContext,
             renderedJSON: json,
             probeFailed: input.probeFailed,
-            probeError: input.probeError
+            probeError: input.probeError,
+            probeReason: input.probeReason
         )
     }
 
@@ -590,11 +627,19 @@ package enum MCPPrimeAssembly {
     package static let probeFailureLine =
         "Wax memory recall failed for this session start; continue without recalled context."
 
+    /// The fixed failure line with the coarse reason class appended, e.g.
+    /// "...recalled context. (timeout)". A nil reason renders the bare line.
+    package static func failureLine(reason: ProbeReason?) -> String {
+        guard let reason else { return probeFailureLine }
+        return "\(probeFailureLine) (\(reason.rawValue))"
+    }
+
     private static func renderHostContext(
         person: [Item],
         project: [Item],
         handoff: Handoff?,
-        probeFailed: Bool
+        probeFailed: Bool,
+        probeReason: ProbeReason?
     ) -> String {
         var lines: [String] = []
         for item in person + project {
@@ -604,7 +649,7 @@ package enum MCPPrimeAssembly {
             lines.append("[handoff] \(handoff.content)")
         }
         guard !lines.isEmpty else {
-            return probeFailed ? probeFailureLine : ""
+            return probeFailed ? failureLine(reason: probeReason) : ""
         }
         return trustHeader + "\n\n" + lines.joined(separator: "\n")
     }
@@ -616,6 +661,9 @@ package enum MCPPrimeAssembly {
         }
         if let age = item.ageDays {
             meta += " · \(age)d"
+        }
+        if item.staleHint {
+            meta += " · stale"
         }
         return "[\(meta)] \(item.text)"
     }
@@ -642,6 +690,9 @@ package enum MCPPrimeAssembly {
         ]
         if let probeError = input.probeError, !probeError.isEmpty {
             object["probe_error"] = probeError
+        }
+        if let probeReason = input.probeReason {
+            object["probe_reason"] = probeReason.rawValue
         }
         if let project = input.project {
             object["project"] = project
@@ -681,6 +732,9 @@ package enum MCPPrimeAssembly {
         }
         if let ageDays = item.ageDays {
             object["age_days"] = ageDays
+        }
+        if item.staleHint {
+            object["stale_hint"] = true
         }
         return object
     }

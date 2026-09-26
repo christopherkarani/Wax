@@ -256,6 +256,8 @@ actor MCPHTTPApplication {
             return response
         } catch {
             MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
+            MCPRootsProviderRegistry.shared.remove(key: sessionID)
+            MCPStickyAttributionRegistry.shared.remove(for: sessionID)
             await transport.disconnect()
             return .error(statusCode: 500, .internalError("Failed to create session: \(error.localizedDescription)"))
         }
@@ -337,6 +339,8 @@ actor MCPHTTPApplication {
             let initResponse = await transport.handleRequest(initRequest)
             guard await Self.consumeSuccessfulInitializeResponse(initResponse) else {
                 MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
+                MCPRootsProviderRegistry.shared.remove(key: sessionID)
+                MCPStickyAttributionRegistry.shared.remove(for: sessionID)
                 await transport.disconnect()
                 logger.error(
                     "HTTP session recovery initialize failed",
@@ -371,6 +375,8 @@ actor MCPHTTPApplication {
             return true
         } catch {
             MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
+            MCPRootsProviderRegistry.shared.remove(key: sessionID)
+            MCPStickyAttributionRegistry.shared.remove(for: sessionID)
             await transport.disconnect()
             logger.error(
                 "HTTP session recovery failed",
@@ -422,20 +428,25 @@ actor MCPHTTPApplication {
         isRecovery: Bool
     ) {
         let identity: MCPClientIdentity
+        let roots: [String]
         if isRecovery {
             identity = MCPClientIdentity(
                 name: MCPClientIdentity.syntheticRecoveryName,
                 version: "0.0.0"
             )
+            roots = []
         } else if let body = request?.body {
             identity = MCPInitializeIdentityParser.parse(from: body)
+            roots = MCPInitializeRootsParser.parseRoots(from: body)
         } else {
             identity = MCPClientIdentity()
+            roots = []
         }
         MCPHTTPConnectionContextRegistry.shared.remember(
             sessionID: sessionID,
             context: MCPConnectionContext(
                 transportKey: sessionID,
+                mcpRoots: roots,
                 clientIdentity: identity
             )
         )
@@ -448,6 +459,8 @@ actor MCPHTTPApplication {
             _ = await onTransportTeardown(sessionID, reason)
         }
         MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
+        MCPRootsProviderRegistry.shared.remove(key: sessionID)
+        MCPStickyAttributionRegistry.shared.remove(for: sessionID)
         guard let session = sessions.removeValue(forKey: sessionID) else { return }
         await session.transport.disconnect()
         logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)", "reason": "\(reason.rawValue)"])

@@ -49,6 +49,7 @@ private func recallThroughBrokerRecallModule(
         "query": .string(token),
         "session_id": .string(sessionID),
         "mode": .string("text"),
+        "include_working": .bool(true),
     ])
     guard case .recall(let command) = decoded else {
         throw BrokerRecallTestError.expectedRecallCommand

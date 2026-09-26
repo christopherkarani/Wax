@@ -18,6 +18,8 @@ struct MCPPrimeTests {
         #expect(command.format == .cursor)
         #expect(command.includePerson)
         #expect(command.timeoutSeconds == MCPPrimeRunner.defaultTimeoutSeconds)
+        // Session-start prime must survive a cold broker.
+        #expect(MCPPrimeRunner.defaultTimeoutSeconds == 10)
 
         // The global person lane stays off unless the operator opts in.
         let minimal = try WaxCLI.MCP.Prime.parse([
@@ -27,7 +29,7 @@ struct MCPPrimeTests {
         #expect(!minimal.includePerson)
     }
 
-    @Test func primeBrokerDownExitsZeroWithSignaledFailureAndNoStderr() throws {
+    @Test func primeBrokerDownExitsZeroWithSignaledFailureAndStderr() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-prime-down-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -71,7 +73,6 @@ struct MCPPrimeTests {
         // with margin for loaded CI runners.
         #expect(Date().timeIntervalSince(started) < 5)
         #expect(outcome.exitCode == 0)
-        #expect(outcome.stderr.isEmpty)
         #expect(FileManager.default.fileExists(atPath: startedFlag.path) == false)
         #expect(FileManager.default.fileExists(atPath: configuration.socketPath) == false)
 
@@ -87,6 +88,10 @@ struct MCPPrimeTests {
         // Broker-down must be distinguishable from genuinely empty recall.
         #expect(object["probe_failed"] as? Bool == true)
         #expect((object["probe_error"] as? String)?.isEmpty == false)
+        #expect(object["probe_reason"] as? String == "broker_down")
+        // Host formats drop probe_error, so the same message travels on stderr.
+        #expect(outcome.stderr == object["probe_error"] as? String)
+        #expect(outcome.stderr.isEmpty == false)
     }
 
     @Test func fiveConcurrentPrimesWithBrokerDownSignalFailureAndStartNothing() throws {
@@ -136,9 +141,10 @@ struct MCPPrimeTests {
         // Same bound rationale as the single-prime test: proves no broker start.
         #expect(Date().timeIntervalSince(started) < 5)
         #expect(outcomes.value.count == 5)
-        #expect(outcomes.value.allSatisfy { $0.exitCode == 0 && $0.stderr.isEmpty })
+        #expect(outcomes.value.allSatisfy { $0.exitCode == 0 && !$0.stderr.isEmpty })
         #expect(outcomes.value.allSatisfy { !$0.stdout.contains(MCPPrimeAssembly.trustHeader) })
         #expect(outcomes.value.allSatisfy { $0.stdout.contains(MCPPrimeAssembly.probeFailureLine) })
+        #expect(outcomes.value.allSatisfy { $0.stdout.contains("(broker_down)") })
         #expect(FileManager.default.fileExists(atPath: startedFlag.path) == false)
     }
 
@@ -270,6 +276,8 @@ struct MCPPrimeTests {
         let object = try #require(raw as? [String: Any])
         #expect(object["probe_failed"] as? Bool == true)
         #expect((object["probe_error"] as? String)?.isEmpty == false)
+        #expect(object["probe_reason"] as? String == "broker_down")
+        #expect(outcome.stderr.isEmpty == false)
         #expect((object["person"] as? [Any])?.count == 1)
     }
 
@@ -309,6 +317,7 @@ struct MCPPrimeTests {
         let object = try #require(raw as? [String: Any])
         #expect(object["probe_failed"] as? Bool == true)
         #expect(object["probe_error"] as? String == "recall exploded")
+        #expect(outcome.stderr == "recall exploded")
     }
 
     @Test func primeProjectRecallKeepsNotesEligibleWithoutQueryKeyword() throws {
@@ -365,6 +374,215 @@ struct MCPPrimeTests {
         // Notes stay eligible via the types filter, but the text query must
         // not bias broker-side scoring toward them.
         #expect(query.split(separator: " ").contains("notes") == false)
+    }
+
+    @Test func primeColdBrokerSucceedsAfterTimeoutRetry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-cold-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let project = root.lastPathComponent
+        let payload = AgentBrokerResponse.success(
+            payload: .object([
+                "project_miss": .bool(false),
+                "project": .string(project),
+                "repo": .string(project),
+                "results": .array([
+                    .object([
+                        "text": .string("Cold broker answered on retry."),
+                        "memory_type": .string("lesson"),
+                        "project": .string(project),
+                        "score": .double(1.0),
+                        "created_at_ms": .int(1),
+                    ]),
+                ]),
+            ])
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        let projectCalls = LockBox(0)
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: false,
+                format: .json,
+                timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    if request.command == "recall" {
+                        projectCalls.mutate { $0 += 1 }
+                        if projectCalls.value == 1 {
+                            throw ProbeTimeout()
+                        }
+                        return payload
+                    }
+                    return AgentBrokerResponse.success(payload: .object(["found": .bool(false)]))
+                }
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.stderr.isEmpty)
+        // Exactly one retry: the cold broker is rescued, not hammered.
+        #expect(projectCalls.value == 2)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == false)
+        #expect(object["probe_error"] == nil)
+        #expect(object["probe_reason"] == nil)
+        #expect((object["project_memories"] as? [Any])?.count == 1)
+        #expect(outcome.stdout.contains("Cold broker answered on retry."))
+    }
+
+    @Test func primeTimeoutReportsReasonClass() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-timeout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        func run(format: MCPPrimeAssembly.Format, calls: LockBox<Int>) -> MCPPrimeOutcome {
+            MCPPrimeRunner.run(
+                MCPPrimeRunner.Request(
+                    host: "claude",
+                    cwd: root.path,
+                    includePerson: false,
+                    format: format,
+                    timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                    storePath: configuration.storePath,
+                    noEmbedder: true,
+                    embedderChoice: "minilm",
+                    configuration: configuration,
+                    probe: { _, _, _ in
+                        calls.mutate { $0 += 1 }
+                        throw ProbeTimeout()
+                    }
+                )
+            )
+        }
+
+        let jsonOutcome = run(format: .json, calls: LockBox(0))
+        #expect(jsonOutcome.exitCode == 0)
+        let raw = try JSONSerialization.jsonObject(with: Data(jsonOutcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == true)
+        #expect(object["probe_reason"] as? String == "timeout")
+        #expect((object["probe_error"] as? String)?.contains("Timed out") == true)
+        #expect(jsonOutcome.stderr == object["probe_error"] as? String)
+
+        let hostCalls = LockBox(0)
+        let hostOutcome = run(format: .claude, calls: hostCalls)
+        let hostRaw = try JSONSerialization.jsonObject(with: Data(hostOutcome.stdout.utf8))
+        let hostObject = try #require(hostRaw as? [String: Any])
+        let hook = try #require(hostObject["hookSpecificOutput"] as? [String: Any])
+        let context = try #require(hook["additionalContext"] as? String)
+        #expect(context == MCPPrimeAssembly.failureLine(reason: .timeout))
+        #expect(context.hasPrefix(MCPPrimeAssembly.probeFailureLine))
+        #expect(context.hasSuffix("(timeout)"))
+        // Project + handoff lanes, each attempted once and retried once.
+        #expect(hostCalls.value == 4)
+    }
+
+    @Test func primePersonSurvivesProjectMissWhenProbeOk() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-person-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let personPayload = AgentBrokerResponse.success(
+            payload: .object([
+                "results": .array([
+                    .object([
+                        "text": .string("Prefers tabs."),
+                        "memory_type": .string("user_preference"),
+                        "score": .double(1.0),
+                        "created_at_ms": .int(1),
+                    ]),
+                ]),
+            ])
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        let commands = LockBox<[String]>([])
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: true,
+                format: .json,
+                timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    commands.mutate { $0.append(request.command) }
+                    if request.command == "recall",
+                       request.arguments["scope"]?.stringValue == "project" {
+                        return AgentBrokerResponse.success(
+                            payload: .object([
+                                "project_miss": .bool(true),
+                                "results": .array([]),
+                            ])
+                        )
+                    }
+                    if request.command == "recall" {
+                        return personPayload
+                    }
+                    return AgentBrokerResponse.success(payload: .object(["found": .bool(false)]))
+                }
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.stderr.isEmpty)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["project_miss"] as? Bool == true)
+        #expect(object["probe_failed"] as? Bool == false)
+        #expect(object["probe_error"] == nil)
+        #expect((object["person"] as? [Any])?.count == 1)
+        #expect((object["project_memories"] as? [Any])?.isEmpty == true)
+        // A project miss skips handoff, never the opted-in person lane.
+        #expect(commands.value.contains("handoff_latest") == false)
+        #expect(commands.value.filter { $0 == "recall" }.count == 2)
     }
 
     @Test func primeLiveBrokerProbeDoesNotStartASecondWriter() async throws {
@@ -437,6 +655,11 @@ struct MCPPrimeTests {
         #expect(reused == false)
         #expect(FileManager.default.fileExists(atPath: socket.path))
     }
+}
+
+/// Injected-probe stand-in for a cold broker's first-attempt timeout.
+private struct ProbeTimeout: Error, CustomStringConvertible {
+    var description: String { "Timed out waiting for broker response" }
 }
 
 private final class LockBox<Value>: @unchecked Sendable {

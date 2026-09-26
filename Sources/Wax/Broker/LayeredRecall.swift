@@ -160,6 +160,7 @@ package enum LayeredRecall {
         package var id: MemoryID
         package var agentID: String?
         package var runID: String?
+        package var conversationID: String?
         package var score: Float
         package var text: String
         package var preview: String
@@ -180,6 +181,7 @@ package enum LayeredRecall {
             id: MemoryID,
             agentID: String? = nil,
             runID: String? = nil,
+            conversationID: String? = nil,
             score: Float,
             text: String,
             preview: String,
@@ -194,6 +196,7 @@ package enum LayeredRecall {
             self.id = id
             self.agentID = agentID
             self.runID = runID
+            self.conversationID = conversationID
             self.score = score
             self.text = text
             self.preview = preview
@@ -213,6 +216,7 @@ package enum LayeredRecall {
         package var sessionID: UUID
         package var agentID: String?
         package var runID: String?
+        package var conversationID: String?
         package var updatedAtMs: Int64
         package var project: String?
         package var repo: String?
@@ -225,11 +229,13 @@ package enum LayeredRecall {
             updatedAtMs: Int64,
             project: String?,
             repo: String?,
-            memory: MemoryOrchestrator
+            memory: MemoryOrchestrator,
+            conversationID: String? = nil
         ) {
             self.sessionID = sessionID
             self.agentID = agentID
             self.runID = runID
+            self.conversationID = conversationID
             self.updatedAtMs = updatedAtMs
             self.project = project
             self.repo = repo
@@ -250,9 +256,24 @@ package enum LayeredRecall {
         package var frameFilter: FrameFilter?
         package var timeRange: SearchTimeRange?
         package var memoryTypes: [MemoryType]
+        package var includeWorking: Bool
 
         package var scope: Scope { identity.scope }
         package var sessionID: UUID? { identity.sessionID }
+
+        /// Working lane is conversation-scoped: it enters recall only through
+        /// an explicit session scope or an explicit `include_working` opt-in.
+        /// A merely present session id (project/global identity, MCP injection)
+        /// never implies it.
+        package var includesWorkingLane: Bool {
+            scope == .session || includeWorking
+        }
+
+        /// Recall fetches working + durable; episodic stays a memory_search /
+        /// compact lane. Gated requests fetch durable only.
+        package var fetchHorizons: HorizonSet {
+            includesWorkingLane ? [.working, .durable] : [.durable]
+        }
 
         package init(
             query: String,
@@ -265,7 +286,8 @@ package enum LayeredRecall {
             clientCWD: String? = nil,
             frameFilter: FrameFilter? = nil,
             timeRange: SearchTimeRange? = nil,
-            memoryTypes: [MemoryType] = []
+            memoryTypes: [MemoryType] = [],
+            includeWorking: Bool = false
         ) {
             self.query = query
             self.identity = identity
@@ -278,6 +300,7 @@ package enum LayeredRecall {
             self.frameFilter = frameFilter
             self.timeRange = timeRange
             self.memoryTypes = memoryTypes
+            self.includeWorking = includeWorking
         }
     }
 
@@ -540,6 +563,39 @@ package enum LayeredRecall {
         }
     }
 
+    /// Project recall keeps only own-conversation task_state. task_state is
+    /// conversation-scoped working memory; a durable hit stamped with another
+    /// session's provenance is another conversation's diary, not project
+    /// knowledge. Only positively-foreign stamps drop — unstamped hits stay,
+    /// like the other unstamped-stays filters, and non-task_state is untouched.
+    /// Project recall keeps only own-conversation task_state. task_state is
+    /// conversation-scoped working memory; a hit stamped with another
+    /// session's provenance is another conversation's diary, not project
+    /// knowledge. Only positively-foreign stamps drop — unstamped hits stay,
+    /// like the other unstamped-stays filters, and non-task_state is untouched.
+    package static func filterForeignTaskState(_ hits: [Hit], sessionID: UUID?) -> [Hit] {
+        hits.filter { hit in
+            guard hit.metadata[MemoryMetadataKeys.type] == MemoryType.taskState.rawValue else {
+                return true
+            }
+            guard let raw = taskStateSessionStamp(hit.metadata) else {
+                return true
+            }
+            guard let stamped = UUID(uuidString: raw) else {
+                return false
+            }
+            return stamped == sessionID
+        }
+    }
+
+    /// Session stamp behind a task_state hit, mirroring the task_state
+    /// migration's provenance lookup plus its repaired-store key.
+    package static func taskStateSessionStamp(_ metadata: [String: String]) -> String? {
+        metadata["session_id"]
+            ?? metadata[MemoryMetadataKeys.promotedFromSession]
+            ?? metadata[MemoryMetadataKeys.migrationOriginalSessionID]
+    }
+
     /// Person-lane (`user_preference` only) drops other-project/other-repo prefs
     /// when identity is resolved. Unscoped prefs stay. Unresolved identity is a no-op.
     package static func filterHitsForGlobalPersonLane(
@@ -758,7 +814,7 @@ package enum LayeredRecall {
         let queryAsks = queryAsksForRating(query)
         let tagged = sessionTagged + durableTagged
         let unlandedIDs = unlandedClaimIdentifiers(in: tagged)
-        let candidates = tagged.map { demoteUnlandedSkipList($0, unlandedIDs: unlandedIDs) }
+        let candidates = demoteStaleNearTwins(tagged.map { demoteUnlandedSkipList($0, unlandedIDs: unlandedIDs) })
         let ranked = candidates.sorted(by: higherRank)
         let clustered = clusterHits(ranked, identity: identity)
         var seen = Set<String>()
@@ -970,6 +1026,49 @@ package enum LayeredRecall {
             copy.explanations.append("unlanded skip-list demoted")
         }
         return copy
+    }
+
+    package static let staleTwinRankPenalty: Float = 0.15
+    package static let staleTwinExplanation = "stale near-twin demoted"
+
+    /// Older half of a same-type near-twin pair that auto-supersede missed
+    /// (written before the write-time pass, or across lanes) reads stale: a
+    /// newer frame says nearly the same thing. Demote it so the newer twin
+    /// wins the rank without a store rewrite. Locked frames stay protected.
+    package static func demoteStaleNearTwins(_ hits: [Hit]) -> [Hit] {
+        hits.map { hit in
+            guard !isLockedHit(hit), hasNewerNearTwin(hit, in: hits) else { return hit }
+            var copy = hit
+            copy.score -= staleTwinRankPenalty
+            if !copy.explanations.contains(staleTwinExplanation) {
+                copy.explanations.append(staleTwinExplanation)
+            }
+            return copy
+        }
+    }
+
+    private static func hasNewerNearTwin(_ hit: Hit, in hits: [Hit]) -> Bool {
+        let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
+        let project = hit.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        return hits.contains { other in
+            guard other.id != hit.id else { return false }
+            guard (other.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue) == type else {
+                return false
+            }
+            let otherProject = other.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+            guard otherProject == project else { return false }
+            guard isNewerTwin(other, than: hit) else { return false }
+            return MemorySemantics.similarity(lhs: hit.text, rhs: other.text)
+                >= RememberAssembly.autoSupersedeSimilarityThreshold
+                || MemorySemantics.identifiersMatch(hit.text, other.text)
+        }
+    }
+
+    private static func isNewerTwin(_ other: Hit, than hit: Hit) -> Bool {
+        if other.timestampMs != hit.timestampMs {
+            return other.timestampMs > hit.timestampMs
+        }
+        return other.horizon == hit.horizon && other.frameID > hit.frameID
     }
 
     private static func standingClusterTier(_ hit: Hit) -> Int {
@@ -1303,6 +1402,7 @@ package enum LayeredRecall {
                 var copy = hit
                 copy.agentID = working.agentID
                 copy.runID = working.runID
+                copy.conversationID = working.conversationID
                 return copy
             }
             if canonicalizeFrameIDs {
@@ -1414,7 +1514,11 @@ package enum LayeredRecall {
         fetchRequest.searchTopK = personLane
             ? retrievalTopKForGlobalPersonLane(requested: request.searchTopK)
             : retrievalTopK(requested: request.searchTopK)
-        let lanes = try await fetchLanes(request: fetchRequest, stores: stores)
+        let lanes = try await fetchLanes(
+            request: fetchRequest,
+            stores: stores,
+            horizons: fetchRequest.fetchHorizons
+        )
         let identity = lanes.identity
         let liveCheckout = MemorySemantics.snapshotGitCheckout(startingAt: request.clientCWD)
         let repoRootPath = request.clientCWD.flatMap {
@@ -1428,13 +1532,15 @@ package enum LayeredRecall {
             merged = Array(typedWorking.prefix(request.limit))
         } else if request.scope == .project {
             // Filter before merge so foreign ranks cannot consume the result budget.
+            let ownWorking = Self.filterForeignTaskState(typedWorking, sessionID: request.sessionID)
+            let ownDurable = Self.filterForeignTaskState(typedDurable, sessionID: request.sessionID)
             let scopedSession = Self.filterHitsByProject(
-                typedWorking,
+                ownWorking,
                 project: identity.project,
                 repo: identity.repo
             )
             let scopedDurable = Self.filterHitsByProject(
-                typedDurable,
+                ownDurable,
                 project: identity.project,
                 repo: identity.repo
             )
