@@ -310,7 +310,7 @@ package enum BrokerCommandCatalog {
                 repo,
                 confidence,
                 expiresInDays,
-                Argument("reviewed", .boolean, description: "Mark this durable memory as reviewed."),
+                Argument("reviewed", .boolean, description: "Mark this durable memory as reviewed. This is the review mark: reviewed decisions/constraints leave the stats review_queue_depth count."),
                 Argument("locked", .boolean, description: "Lock this memory as durable and protected from freshness decay."),
                 Argument(
                     "checkout_status", .string,
@@ -512,7 +512,7 @@ package enum BrokerCommandCatalog {
         ),
         Entry(
             canonicalName: "stats",
-            summary: "Return Wax runtime and storage stats (health check, embedder identity, vector search status).",
+            summary: "Return Wax runtime and storage stats (health check, embedder identity, vector search status). Includes review_queue_depth (unreviewed durable decisions/constraints); remember(reviewed:true) clears entries.",
             arguments: [
                 Argument(
                     "session_id", .string,

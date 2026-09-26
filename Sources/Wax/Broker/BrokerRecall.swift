@@ -363,8 +363,15 @@ package enum BrokerRecall {
         case .verbose:
             verbose = true
         }
+        let staleFlags = RecallPresent.staleHints(for: result.hits)
         let results: [AgentBrokerValue] = result.hits.enumerated().map { index, hit in
-            RecallPresent.renderRecallHit(hit, rank: index + 1, verbose: verbose, nowMs: nowMs)
+            RecallPresent.renderRecallHit(
+                hit,
+                rank: index + 1,
+                verbose: verbose,
+                nowMs: nowMs,
+                staleHint: staleFlags[index]
+            )
         }
 
         var payload: [String: AgentBrokerValue] = [

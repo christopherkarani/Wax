@@ -814,7 +814,7 @@ package enum LayeredRecall {
         let queryAsks = queryAsksForRating(query)
         let tagged = sessionTagged + durableTagged
         let unlandedIDs = unlandedClaimIdentifiers(in: tagged)
-        let candidates = tagged.map { demoteUnlandedSkipList($0, unlandedIDs: unlandedIDs) }
+        let candidates = demoteStaleNearTwins(tagged.map { demoteUnlandedSkipList($0, unlandedIDs: unlandedIDs) })
         let ranked = candidates.sorted(by: higherRank)
         let clustered = clusterHits(ranked, identity: identity)
         var seen = Set<String>()
@@ -1026,6 +1026,49 @@ package enum LayeredRecall {
             copy.explanations.append("unlanded skip-list demoted")
         }
         return copy
+    }
+
+    package static let staleTwinRankPenalty: Float = 0.15
+    package static let staleTwinExplanation = "stale near-twin demoted"
+
+    /// Older half of a same-type near-twin pair that auto-supersede missed
+    /// (written before the write-time pass, or across lanes) reads stale: a
+    /// newer frame says nearly the same thing. Demote it so the newer twin
+    /// wins the rank without a store rewrite. Locked frames stay protected.
+    package static func demoteStaleNearTwins(_ hits: [Hit]) -> [Hit] {
+        hits.map { hit in
+            guard !isLockedHit(hit), hasNewerNearTwin(hit, in: hits) else { return hit }
+            var copy = hit
+            copy.score -= staleTwinRankPenalty
+            if !copy.explanations.contains(staleTwinExplanation) {
+                copy.explanations.append(staleTwinExplanation)
+            }
+            return copy
+        }
+    }
+
+    private static func hasNewerNearTwin(_ hit: Hit, in hits: [Hit]) -> Bool {
+        let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
+        let project = hit.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+        return hits.contains { other in
+            guard other.id != hit.id else { return false }
+            guard (other.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue) == type else {
+                return false
+            }
+            let otherProject = other.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
+            guard otherProject == project else { return false }
+            guard isNewerTwin(other, than: hit) else { return false }
+            return MemorySemantics.similarity(lhs: hit.text, rhs: other.text)
+                >= RememberAssembly.autoSupersedeSimilarityThreshold
+                || MemorySemantics.identifiersMatch(hit.text, other.text)
+        }
+    }
+
+    private static func isNewerTwin(_ other: Hit, than hit: Hit) -> Bool {
+        if other.timestampMs != hit.timestampMs {
+            return other.timestampMs > hit.timestampMs
+        }
+        return other.horizon == hit.horizon && other.frameID > hit.frameID
     }
 
     private static func standingClusterTier(_ hit: Hit) -> Int {

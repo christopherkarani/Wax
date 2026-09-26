@@ -85,6 +85,8 @@ package enum MCPPrimeAssembly {
         package var ageDays: Int?
         package var score: Double
         package var createdAtMs: Int64
+        /// True when a newer same-type item exists in the same primed lane.
+        package var staleHint: Bool = false
     }
 
     package struct Handoff: Sendable, Equatable {
@@ -206,33 +208,37 @@ package enum MCPPrimeAssembly {
         maxItemBytes: Int = maxItemBytes,
         nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     ) -> Envelope {
-        let personPrepared = input.includePerson
-            ? prepare(
-                input.personCandidates,
-                allowedTypes: [MemoryType.userPreference.rawValue],
-                resolvedProject: nil,
-                resolvedRepo: nil,
-                requireProjectMatch: false,
-                tokenizer: tokenizer,
-                maxItemTokens: maxItemTokens,
-                maxItemBytes: maxItemBytes,
-                nowMs: nowMs
-            )
-            : []
+        let personPrepared = markStaleHints(
+            input.includePerson
+                ? prepare(
+                    input.personCandidates,
+                    allowedTypes: [MemoryType.userPreference.rawValue],
+                    resolvedProject: nil,
+                    resolvedRepo: nil,
+                    requireProjectMatch: false,
+                    tokenizer: tokenizer,
+                    maxItemTokens: maxItemTokens,
+                    maxItemBytes: maxItemBytes,
+                    nowMs: nowMs
+                )
+                : []
+        )
         let projectPrepared: [Item]
         if input.projectMiss {
             projectPrepared = []
         } else {
-            projectPrepared = prepare(
-                input.projectCandidates,
-                allowedTypes: allowedProjectTypes,
-                resolvedProject: input.project,
-                resolvedRepo: input.repo,
-                requireProjectMatch: input.project != nil || input.repo != nil,
-                tokenizer: tokenizer,
-                maxItemTokens: maxItemTokens,
-                maxItemBytes: maxItemBytes,
-                nowMs: nowMs
+            projectPrepared = markStaleHints(
+                prepare(
+                    input.projectCandidates,
+                    allowedTypes: allowedProjectTypes,
+                    resolvedProject: input.project,
+                    resolvedRepo: input.repo,
+                    requireProjectMatch: input.project != nil || input.repo != nil,
+                    tokenizer: tokenizer,
+                    maxItemTokens: maxItemTokens,
+                    maxItemBytes: maxItemBytes,
+                    nowMs: nowMs
+                )
             )
         }
 
@@ -404,6 +410,20 @@ package enum MCPPrimeAssembly {
     }
 
     // MARK: - Selection
+
+    /// Flags items a newer same-type item supersedes within one lane.
+    /// Only strictly-newer `createdAtMs` counts; unknown timestamps stay unflagged.
+    package static func markStaleHints(_ items: [Item]) -> [Item] {
+        items.enumerated().map { index, item in
+            var copy = item
+            copy.staleHint = items.enumerated().contains { otherIndex, other in
+                guard otherIndex != index else { return false }
+                guard other.memoryType == item.memoryType else { return false }
+                return other.createdAtMs > item.createdAtMs
+            }
+            return copy
+        }
+    }
 
     private static func prepare(
         _ candidates: [Candidate],
@@ -642,6 +662,9 @@ package enum MCPPrimeAssembly {
         if let age = item.ageDays {
             meta += " · \(age)d"
         }
+        if item.staleHint {
+            meta += " · stale"
+        }
         return "[\(meta)] \(item.text)"
     }
 
@@ -709,6 +732,9 @@ package enum MCPPrimeAssembly {
         }
         if let ageDays = item.ageDays {
             object["age_days"] = ageDays
+        }
+        if item.staleHint {
+            object["stale_hint"] = true
         }
         return object
     }
