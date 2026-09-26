@@ -891,6 +891,10 @@ extension WaxMCPTools {
         verbosity: ResponseVerbosity = .compact
     ) -> CallTool.Result {
         var presented = payload
+        let canonical = BrokerCommandCatalog.canonicalCommand(for: name) ?? name
+        if canonical == "remember", verbosity != .verbose, let object = presented.objectValue {
+            presented = .object(RememberAssembly.slimCompactRememberPayload(object))
+        }
         if name == "compact_context", verbosity != .verbose, var object = payload.objectValue {
             // The checkpoint text has already been token-budgeted. Keep memory
             // references for follow-up reads without repeating full source bodies.
