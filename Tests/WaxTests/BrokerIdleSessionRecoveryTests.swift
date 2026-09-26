@@ -64,6 +64,7 @@ struct BrokerIdleSessionRecoveryTests {
                 "session_id": .string(sessionID),
                 "query": .string("IDLE_RECOVERY_ANCHOR"),
                 "mode": .string("text"),
+                "include_working": .bool(true),
             ]))
             #expect(recalled.ok, "Recall after idle failed: \(recalled.error ?? "nil")")
             let rows = recalled.payload?.objectValue?["results"]?.arrayValue ?? []

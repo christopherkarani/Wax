@@ -44,6 +44,7 @@ struct GlobalRecallRelevanceTests {
                     "query": .string(query),
                     "scope": .string("global"),
                     "mode": .string("text"),
+                    "include_working": .bool(true),
                 ]
                 if let filters { arguments["filters"] = filters }
                 let response = await service.handle(.init(command: "recall", arguments: arguments))
@@ -57,6 +58,7 @@ struct GlobalRecallRelevanceTests {
                 "query": .string("Bananas"),
                 "scope": .string("global"),
                 "mode": .string("text"),
+                "include_working": .bool(true),
             ]))
             #expect(matched.ok)
             let matches = try #require(matched.payload?.objectValue?["results"]?.arrayValue)

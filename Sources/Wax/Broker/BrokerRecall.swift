@@ -111,7 +111,8 @@ package enum BrokerRecall {
             clientCWD: command.clientCWD,
             frameFilter: command.filters.frameFilter,
             timeRange: command.filters.timeRange,
-            memoryTypes: command.memoryTypes
+            memoryTypes: command.memoryTypes,
+            includeWorking: command.includeWorking
         )
         // Snapshot acquisition lives inside the module: working-lane lookup
         // and scope inference can never skew from each other.
@@ -295,7 +296,8 @@ package enum BrokerRecall {
                     updatedAtMs: state.manifest.updatedAtMs,
                     project: state.manifest.project,
                     repo: state.manifest.repo,
-                    memory: state.memory
+                    memory: state.memory,
+                    conversationID: state.manifest.conversationID
                 )
             },
             inferWriteScope: { sessionID, clientCWD in

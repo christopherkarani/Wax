@@ -73,7 +73,8 @@ struct LayeredRecallDiagnosticsTests {
                 identity: .global(workingSessionID: id),
                 limit: 8,
                 searchTopK: 8,
-                mode: .hybrid()
+                mode: .hybrid(),
+                includeWorking: true
             ), stores: stores)
             #expect(result.hits.contains { $0.text.contains("working investigation") })
             #expect(result.hits.contains { $0.text.contains("durable decision") })
@@ -84,16 +85,43 @@ struct LayeredRecallDiagnosticsTests {
         }
     }
 
-    @Test func projectScopeWithWorkingSessionStillConsultsWorkingLane() async throws {
+    @Test func projectScopeExcludesWorkingLaneUnlessIncludeWorking() async throws {
         try await withLanes(workingVectorEnabled: true) { stores, id in
-            let result = try await LayeredRecall.recall(request: .init(
+            let gated = try await LayeredRecall.recall(request: .init(
                 query: "memory reliability",
                 identity: .project(workingSessionID: id),
                 limit: 8,
                 searchTopK: 8,
                 mode: .hybrid()
             ), stores: stores)
-            #expect(result.hits.contains { $0.text.contains("working investigation") })
+            #expect(!gated.hits.contains { $0.text.contains("working investigation") })
+            #expect(gated.hits.contains { $0.text.contains("durable decision") })
+
+            let optedIn = try await LayeredRecall.recall(request: .init(
+                query: "memory reliability",
+                identity: .project(workingSessionID: id),
+                limit: 8,
+                searchTopK: 8,
+                mode: .hybrid(),
+                includeWorking: true
+            ), stores: stores)
+            #expect(optedIn.hits.contains { $0.text.contains("working investigation") })
+        }
+    }
+
+    @Test func sessionScopeIncludesOwnWorkingLane() async throws {
+        try await withLanes(workingVectorEnabled: true) { stores, id in
+            let result = try await LayeredRecall.recall(request: .init(
+                query: "memory reliability",
+                identity: .session(workingSessionID: id),
+                limit: 8,
+                searchTopK: 8,
+                mode: .hybrid()
+            ), stores: stores)
+            #expect(result.hits.contains {
+                $0.horizon == .working && $0.text.contains("working investigation")
+            })
+            #expect(!result.hits.contains { $0.horizon == .durable })
         }
     }
 

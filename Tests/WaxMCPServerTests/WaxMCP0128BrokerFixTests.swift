@@ -181,6 +181,7 @@ func hintedSessionInjectsIntoTaskStateRememberAndRecall() async throws {
                     "mode": "text",
                     "limit": 5,
                     "verbosity": "verbose",
+                    "include_working": true,
                 ]
             ),
             broker: service,

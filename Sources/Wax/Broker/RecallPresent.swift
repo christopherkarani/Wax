@@ -112,6 +112,12 @@ package enum RecallPresent {
         if hit.collapsedCount > 1 {
             object["collapsed_count"] = .from(hit.collapsedCount)
         }
+        if hit.horizon == .working {
+            object["horizon"] = .string(LayeredRecall.Horizon.working.rawValue)
+            if let conversationID = hit.conversationID, !conversationID.isEmpty {
+                object["conversation_id"] = .string(conversationID)
+            }
+        }
         if verbose {
             object["rank"] = .from(rank)
             object["kind"] = .string(itemKindLabel(hit.kind))
