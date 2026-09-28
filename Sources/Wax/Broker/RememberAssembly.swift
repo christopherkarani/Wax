@@ -1,9 +1,33 @@
 import Foundation
+import WaxCore
 
 /// Remember response assembly and durable auto-supersede selection policy.
 /// Store I/O (`remember`, `supersede`, `flush`, session events) stays on the broker.
 package enum RememberAssembly {
     package static let storedEchoLimit = 240
+
+    /// MCP compact keys for remember. Everything else in `payload` is
+    /// verbose-only (operator diagnostics, compat aliases, follow-up hints).
+    package static let compactRememberKeys: Set<String> = [
+        "status", "committed", "memory_id", "frame_id", "scope",
+        "content_bytes", "content_sha8", "echo", "echo_truncated",
+        "project", "repo",
+    ]
+
+    /// First 8 hex chars of the content SHA-256. Callers verify the echo
+    /// against the bytes they sent without re-reading the store.
+    package static func contentSHA8(for content: String) -> String {
+        String(SHA256Checksum.digest(Data(content.utf8)).hexString.prefix(8))
+    }
+
+    /// Project a full remember `payload` down to `compactRememberKeys`.
+    /// `project`/`repo` survive only when the full payload carried them.
+    package static func slimCompactRememberPayload(
+        _ payload: [String: AgentBrokerValue]
+    ) -> [String: AgentBrokerValue] {
+        payload.filter { compactRememberKeys.contains($0.key) }
+    }
+
     package static let autoSupersedeSimilarityThreshold: Float = 0.88
     package static let autoSupersedeMaxMatches = 32
     package static let autoSupersedeTypes: Set<MemoryType> = [
@@ -55,14 +79,14 @@ package enum RememberAssembly {
         let repo = metadata[MemoryMetadataKeys.repo] ?? inferredScope.repoName
         let unresolvedProject = project?.isEmpty != false
         let contentBytes = content.utf8.count
-        let storedTruncated = content.count > storedEchoLimit
+        let echo = String(content.prefix(storedEchoLimit))
+        let echoTruncated = content.count > storedEchoLimit
+        let sha8 = contentSHA8(for: content)
         let chunked = framesAdded > 1
-        var display = "Remembered. \(framesAdded) frame(s) added (\(frameCount) total, \(pendingFrames) pending)."
+        var display =
+            "Full content stored (\(contentBytes) bytes, sha \(sha8)); echo shows first \(storedEchoLimit) chars."
         if chunked {
             display += " Large content chunked into \(framesAdded) frames; memory_id names the document frame."
-        }
-        if storedTruncated {
-            display += " Stored echo truncated to \(storedEchoLimit) chars."
         }
         if unresolvedProject {
             display += " Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
@@ -81,8 +105,12 @@ package enum RememberAssembly {
             "durability": .string(metadata[MemoryMetadataKeys.durability] ?? MemoryDurability.working.rawValue),
             "deduplicated": .bool(deduplicated),
             "searchable": .bool(searchable),
-            "stored": .string(String(content.prefix(storedEchoLimit))),
-            "stored_truncated": .bool(storedTruncated),
+            "echo": .string(echo),
+            "echo_truncated": .bool(echoTruncated),
+            "content_sha8": .string(sha8),
+            // Compat aliases for one release; compact drops them.
+            "stored": .string(echo),
+            "stored_truncated": .bool(echoTruncated),
             "chunked": .bool(chunked),
             "chunk_count": .from(framesAdded),
             "content_bytes": .from(Int64(contentBytes)),

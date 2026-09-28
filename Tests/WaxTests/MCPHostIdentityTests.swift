@@ -152,3 +152,69 @@ func autoSessionKillSwitchReadsEnvironment() {
     #expect(!MCPAutoSessionPolicy.isEnabled(["WAX_MCP_AUTO_SESSION": "0"]))
     #expect(!MCPAutoSessionPolicy.isEnabled(["WAX_MCP_AUTO_SESSION": "false"]))
 }
+
+@Test
+func rootsMapperAcceptsFileURIsAndBarePaths() {
+    #expect(MCPRootsMapper.path(fromURI: "file:///tmp/wax-proj") == "/tmp/wax-proj")
+    #expect(MCPRootsMapper.path(fromURI: "file://localhost/tmp/wax-proj") == "/tmp/wax-proj")
+    #expect(MCPRootsMapper.path(fromURI: "file:///tmp/my%20proj") == "/tmp/my proj")
+    #expect(MCPRootsMapper.path(fromURI: "/tmp/bare-path") == "/tmp/bare-path")
+    #expect(
+        MCPRootsMapper.paths(fromURIs: ["file:///a", "  file:///b  "]) == ["/a", "/b"]
+    )
+}
+
+@Test
+func rootsMapperDropsNonFileURIs() {
+    #expect(MCPRootsMapper.path(fromURI: "https://example.com/x") == nil)
+    #expect(MCPRootsMapper.path(fromURI: "not-a-path") == nil)
+    #expect(MCPRootsMapper.path(fromURI: "") == nil)
+    #expect(MCPRootsMapper.path(fromURI: "   ") == nil)
+    #expect(MCPRootsMapper.path(fromURI: "file://") == nil)
+    #expect(MCPRootsMapper.paths(fromURIs: ["https://example.com/x", "file:///kept"]) == ["/kept"])
+}
+
+@Test
+func initializeRootsParserCapturesEmbeddedRoots() {
+    let body = Data(
+        #"{"jsonrpc":"2.0","method":"initialize","params":{"clientInfo":{"name":"cursor","version":"1.0"},"roots":[{"uri":"file:///tmp/alpha"},{"uri":"file:///tmp/beta","name":"b"}],"capabilities":{"roots":{"listChanged":true}}}}"#
+            .utf8
+    )
+    #expect(MCPInitializeRootsParser.parseRoots(from: body) == ["/tmp/alpha", "/tmp/beta"])
+
+    let metaBody = Data(
+        #"{"jsonrpc":"2.0","method":"initialize","params":{"clientInfo":{"name":"x","version":"0"},"_meta":{"roots":["file:///tmp/meta-root"]}}}"#
+            .utf8
+    )
+    #expect(MCPInitializeRootsParser.parseRoots(from: metaBody) == ["/tmp/meta-root"])
+
+    let bareBody = Data(
+        #"{"jsonrpc":"2.0","method":"initialize","params":{"roots":["/tmp/bare"]}}"#.utf8
+    )
+    #expect(MCPInitializeRootsParser.parseRoots(from: bareBody) == ["/tmp/bare"])
+
+    let emptyBody = Data(
+        #"{"jsonrpc":"2.0","method":"initialize","params":{"clientInfo":{"name":"x","version":"0"},"capabilities":{}}}"#
+            .utf8
+    )
+    #expect(MCPInitializeRootsParser.parseRoots(from: emptyBody) == [])
+}
+
+@Test
+func stickyAttributionPersistsLastResolvedPerTransportKey() {
+    MCPStickyAttributionRegistry.shared.resetForTests()
+    defer { MCPStickyAttributionRegistry.shared.resetForTests() }
+    #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-a") == nil)
+
+    let unresolved = MCPProjectAttribution(source: .unresolved)
+    MCPStickyAttributionRegistry.shared.remember(transportKey: "sticky-a", attribution: unresolved)
+    #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-a") == nil)
+
+    let resolved = MCPProjectAttribution(project: "Wax", repo: "Wax", cwdPath: "/tmp/wax", source: .advertisedCWD)
+    MCPStickyAttributionRegistry.shared.remember(transportKey: "sticky-a", attribution: resolved)
+    #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-a") == resolved)
+    #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-b") == nil)
+
+    MCPStickyAttributionRegistry.shared.remove(for: "sticky-a")
+    #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-a") == nil)
+}

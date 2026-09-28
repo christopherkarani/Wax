@@ -178,6 +178,7 @@ struct MCPConnectionRecoveryTests {
                 params: .init(name: "memory_append", arguments: [
                     "memory_type": .string("task_state"),
                     "content": .string("Continue the alias session inheritance regression task."),
+                    "verbosity": .string("verbose"),
                 ]),
                 broker: broker,
                 sessionHint: hint

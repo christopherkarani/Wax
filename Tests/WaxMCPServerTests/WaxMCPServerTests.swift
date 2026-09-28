@@ -3891,6 +3891,7 @@ func vectorSearchRememberFlushRecallHappyPath() async throws {
         let remember = await WaxMCPTools.handleCall(
             params: .init(name: "remember", arguments: [
                 "content": .string("Swift actors provide data isolation through actor-isolated state."),
+                "verbosity": .string("verbose"),
             ]),
             broker: service
         )
@@ -6383,7 +6384,7 @@ func invalidArgumentErrorListsAcceptedArguments() async throws {
 func rememberReceiptIdentifiesStoredMemoryAndDeduplication() async throws {
     try await withAgentBrokerService { service, _ in
         let content = "RECEIPT_MARKER-\(UUID().uuidString)"
-        let first = await WaxMCPTools.handleCall(
+        let compactFirst = await WaxMCPTools.handleCall(
             params: .init(
                 name: "remember",
                 arguments: [
@@ -6395,14 +6396,41 @@ func rememberReceiptIdentifiesStoredMemoryAndDeduplication() async throws {
             ),
             broker: service
         )
+        let compactJSON = try parseJSONText(in: compactFirst)
+        #expect((compactJSON["frame_id"] as? Int ?? -1) >= 0)
+        #expect((compactJSON["memory_id"] as? String)?.hasPrefix("durable:") == true)
+        #expect(compactJSON["scope"] as? String == "durable")
+        #expect(compactJSON["echo"] as? String == content)
+        #expect(compactJSON["echo_truncated"] as? Bool == false)
+        #expect((compactJSON["content_sha8"] as? String)?.count == 8)
+        #expect(compactJSON["content_bytes"] as? Int == content.utf8.count)
+        #expect(compactJSON["committed"] as? Bool == true)
+        #expect(compactJSON["project"] as? String == "Wax")
+        #expect(compactJSON["memory_type"] == nil)
+        #expect(compactJSON["deduplicated"] == nil)
+        #expect(compactJSON["stored"] == nil)
+
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "project": .string("Wax"),
+                    "memory_type": .string("decision"),
+                    "durability": .string("durable"),
+                    "verbosity": .string("verbose"),
+                ]
+            ),
+            broker: service
+        )
         let firstJSON = try parseJSONText(in: first)
         #expect((firstJSON["frame_id"] as? Int ?? -1) >= 0)
         #expect((firstJSON["memory_id"] as? String)?.hasPrefix("durable:") == true)
         #expect(firstJSON["scope"] as? String == "durable")
         #expect(firstJSON["memory_type"] as? String == "decision")
         #expect(firstJSON["durability"] as? String == "durable")
-        #expect(firstJSON["deduplicated"] as? Bool == false)
         #expect(firstJSON["searchable"] as? Bool == true)
+        #expect(firstJSON["echo"] as? String == content)
         #expect(firstJSON["stored"] as? String == content)
         #expect(firstJSON["committed"] as? Bool == true)
 
@@ -6414,6 +6442,7 @@ func rememberReceiptIdentifiesStoredMemoryAndDeduplication() async throws {
                     "project": .string("Wax"),
                     "memory_type": .string("decision"),
                     "durability": .string("durable"),
+                    "verbosity": .string("verbose"),
                 ]
             ),
             broker: service
@@ -7974,7 +8003,10 @@ struct WaxMCPProcessTests {
         _ = try await harness.callTool(
             id: 4,
             name: "remember",
-            arguments: ["content": "GLOBAL_ONLY_ABC broker regression anchor"],
+            arguments: [
+                "content": "GLOBAL_ONLY_ABC broker regression anchor",
+                "cwd": harness.storeURL.deletingLastPathComponent().path,
+            ],
             timeout: 20
         )
         _ = try await harness.callTool(
@@ -7994,6 +8026,7 @@ struct WaxMCPProcessTests {
                 "query": "SESSION_ONLY_XYZ",
                 "session_id": sessionID,
                 "scope": "global",
+                "include_working": true,
                 "limit": 10,
             ],
             timeout: 20

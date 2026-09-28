@@ -45,8 +45,179 @@ func projectScopedRememberWithoutAttributionReturnsProjectUnresolvedAndBindsNoth
         let payload = try requireAttributionJSON(result)
         #expect(payload["code"] as? String == "project_unresolved")
         #expect(payload["committed"] as? Bool == false)
+        #expect(payload["next_action"] as? String == "retry once with cwd=<workspace root>")
+        let received = try #require(payload["received"] as? [String: Any])
+        #expect(received["roots"] as? [String] == [])
+        #expect(received["explicit"] as? Bool == false)
+        #expect(received["cwd"] as? String == nil)
         #expect(hint.current() == nil)
         #expect(MCPBoundSessionRegistry.shared.current(for: "attr-unresolved") == nil)
+    }
+}
+
+@Test(.serialized)
+func projectUnresolvedPayloadEchoesReceivedRoots() async throws {
+    MCPBoundSessionRegistry.shared.resetForTests()
+    defer { MCPBoundSessionRegistry.shared.resetForTests() }
+
+    try await withAttributionBroker { broker in
+        let hint = MCPClientSessionHint(
+            connectionKey: "attr-received",
+            context: MCPConnectionContext(
+                transportKey: "attr-received",
+                mcpRoots: ["/tmp/a", "/tmp/b"]
+            )
+        )
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("ambiguous roots still fail, but echo inputs"),
+                    "memory_type": .string("lesson"),
+                ]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(result.isError == true)
+        let payload = try requireAttributionJSON(result)
+        #expect(payload["code"] as? String == "project_unresolved")
+        #expect(payload["next_action"] as? String == "retry once with cwd=<workspace root>")
+        let received = try #require(payload["received"] as? [String: Any])
+        #expect((received["roots"] as? [String])?.sorted() == ["/tmp/a", "/tmp/b"])
+        #expect(received["explicit"] as? Bool == false)
+        #expect(received["cwd"] as? String == nil)
+    }
+}
+
+@Test(.serialized)
+func singleMCPRootResolvesAttributionWithoutExplicitCWD() async throws {
+    MCPBoundSessionRegistry.shared.resetForTests()
+    MCPStickyAttributionRegistry.shared.remove(for: "attr-root")
+    defer {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        MCPStickyAttributionRegistry.shared.remove(for: "attr-root")
+    }
+
+    try await withAttributionBroker { broker in
+        let repo = try makeAttributionGitRepo(named: "attr-root")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let hint = MCPClientSessionHint(
+            connectionKey: "attr-root",
+            context: MCPConnectionContext(transportKey: "attr-root", mcpRoots: [repo.path])
+        )
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("lesson via captured root"),
+                    "memory_type": .string("lesson"),
+                ]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(result.isError != true)
+        #expect((try requireAttributionJSON(result)["committed"] as? Bool) == true)
+        #expect(hint.current() != nil)
+    }
+}
+
+@Test(.serialized)
+func lazyRootsProviderHealsUnresolvedAttribution() async throws {
+    MCPBoundSessionRegistry.shared.resetForTests()
+    MCPStickyAttributionRegistry.shared.remove(for: "attr-lazy")
+    MCPRootsProviderRegistry.shared.remove(key: "attr-lazy")
+    defer {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        MCPStickyAttributionRegistry.shared.remove(for: "attr-lazy")
+        MCPRootsProviderRegistry.shared.remove(key: "attr-lazy")
+    }
+
+    try await withAttributionBroker { broker in
+        let repo = try makeAttributionGitRepo(named: "attr-lazy-roots")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        MCPRootsProviderRegistry.shared.remember(key: "attr-lazy") { [repo.path] }
+        let hint = MCPClientSessionHint(
+            connectionKey: "attr-lazy",
+            context: MCPConnectionContext(transportKey: "attr-lazy")
+        )
+        let result = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("lesson via lazy roots/list"),
+                    "memory_type": .string("lesson"),
+                ]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(result.isError != true)
+        #expect((try requireAttributionJSON(result)["committed"] as? Bool) == true)
+        #expect(hint.connectionContext()?.mcpRoots == [repo.path])
+    }
+}
+
+@Test(.serialized)
+func stickyAttributionLetsRepeatCallsOmitCWD() async throws {
+    MCPBoundSessionRegistry.shared.resetForTests()
+    MCPStickyAttributionRegistry.shared.remove(for: "attr-sticky")
+    defer {
+        MCPBoundSessionRegistry.shared.resetForTests()
+        MCPStickyAttributionRegistry.shared.remove(for: "attr-sticky")
+    }
+
+    try await withAttributionBroker { broker in
+        let repo = try makeAttributionGitRepo(named: "attr-sticky")
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let key = "attr-sticky"
+        let hint = MCPClientSessionHint(
+            connectionKey: key,
+            context: MCPConnectionContext(transportKey: key)
+        )
+        let first = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("first write pins the project"),
+                    "memory_type": .string("lesson"),
+                    "cwd": .string(repo.path),
+                ]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(first.isError != true)
+        let bound = try #require(hint.current())
+
+        // Ending the session clears the binding but keeps the last-resolved
+        // attribution, so the next project-gated call rebinds without cwd.
+        let ended = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "session_end",
+                arguments: ["session_id": .string(bound.uuidString)]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(ended.isError != true)
+        #expect(hint.current() == nil)
+
+        let second = await WaxMCPTools.handleCall(
+            params: .init(
+                name: "remember",
+                arguments: [
+                    "content": .string("repeat without cwd must not re-fail"),
+                    "memory_type": .string("lesson"),
+                ]
+            ),
+            broker: broker,
+            sessionHint: hint
+        )
+        #expect(second.isError != true)
+        #expect((try requireAttributionJSON(second)["committed"] as? Bool) == true)
+        #expect(hint.current() != nil)
     }
 }
 

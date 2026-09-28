@@ -97,7 +97,10 @@ func recallPresentRenderRecallHitKeepsWireShape() throws {
     )
     #expect(Set(compact.keys) == [
         "id", "text", "score", "created_at_ms", "age_days", "project", "memory_type",
+        "horizon",
     ])
+    #expect(compact["horizon"]?.stringValue == "working")
+    #expect(compact["conversation_id"] == nil)
     #expect(compact["id"]?.stringValue == "working:\(sessionID.uuidString):42")
     #expect(compact["rank"] == nil)
     #expect(compact["kind"] == nil)
@@ -116,6 +119,41 @@ func recallPresentRenderRecallHitKeepsWireShape() throws {
     #expect(verbose["sources"]?.arrayValue?.compactMap(\.stringValue) == ["text", "vector"])
     #expect(verbose["metadata"]?.objectValue?[MemoryMetadataKeys.project]?.stringValue == "Wax")
     #expect(verbose["explanations"]?.arrayValue?.compactMap(\.stringValue) == ["why-a", "why-b"])
+}
+
+@Test
+func recallPresentWorkingHitIsTaggedWithHorizonAndConversation() throws {
+    let sessionID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+    let working = LayeredRecall.Hit(
+        id: .working(sessionID: sessionID, frameID: 7),
+        conversationID: "host:chat-9",
+        score: 0.5,
+        text: "session note",
+        preview: "session note",
+        metadata: [MemoryMetadataKeys.type: MemoryType.taskState.rawValue],
+        explanations: [],
+        timestampMs: 0
+    )
+    let tagged = try #require(
+        RecallPresent.renderRecallHit(working, rank: 1, verbose: false, nowMs: 1).objectValue
+    )
+    #expect(tagged["horizon"]?.stringValue == "working")
+    #expect(tagged["conversation_id"]?.stringValue == "host:chat-9")
+
+    let durable = LayeredRecall.Hit(
+        id: .durable(frameID: 8),
+        score: 0.5,
+        text: "durable fact",
+        preview: "durable fact",
+        metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue],
+        explanations: [],
+        timestampMs: 0
+    )
+    let untagged = try #require(
+        RecallPresent.renderRecallHit(durable, rank: 1, verbose: false, nowMs: 1).objectValue
+    )
+    #expect(untagged["horizon"] == nil)
+    #expect(untagged["conversation_id"] == nil)
 }
 
 @Test

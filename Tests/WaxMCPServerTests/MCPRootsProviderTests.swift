@@ -10,6 +10,7 @@ func rootsMapperAcceptsFileURIs() {
     #expect(MCPRootsMapper.path(fromURI: "file:///tmp/wax-proj") == "/tmp/wax-proj")
     #expect(MCPRootsMapper.path(fromURI: "file://localhost/tmp/wax-proj") == "/tmp/wax-proj")
     #expect(MCPRootsMapper.path(fromURI: "file:///tmp/my%20proj") == "/tmp/my proj")
+    #expect(MCPRootsMapper.path(fromURI: "/tmp/bare-path") == "/tmp/bare-path")
     #expect(
         MCPRootsMapper.paths(fromURIs: ["file:///a", "  file:///b  "]) == ["/a", "/b"]
     )
@@ -18,7 +19,7 @@ func rootsMapperAcceptsFileURIs() {
 @Test
 func rootsMapperDropsNonFileURIs() {
     #expect(MCPRootsMapper.path(fromURI: "https://example.com/x") == nil)
-    #expect(MCPRootsMapper.path(fromURI: "/tmp/not-a-uri") == nil)
+    #expect(MCPRootsMapper.path(fromURI: "not-a-path") == nil)
     #expect(MCPRootsMapper.path(fromURI: "") == nil)
     #expect(MCPRootsMapper.path(fromURI: "   ") == nil)
     #expect(MCPRootsMapper.path(fromURI: "file://") == nil)

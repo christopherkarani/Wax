@@ -87,6 +87,7 @@ func sessionScopedRecallMergesDurableAndSessionNotes() async throws {
                 "mode": .string("text"),
                 "scope": .string("global"),
                 "limit": .int(10),
+                "include_working": .bool(true),
             ]
         ))
         #expect(scoped.ok == true, "scoped recall failed: \(scoped.error ?? "nil")")
@@ -773,6 +774,7 @@ func recallRecordsRetrievalHitsOnlyForSessionHorizonItems() async throws {
                 "mode": .string("text"),
                 "scope": .string("global"),
                 "limit": .int(10),
+                "include_working": .bool(true),
             ]
         ))
         #expect(recalled.ok == true, "recall failed: \(recalled.error ?? "nil")")

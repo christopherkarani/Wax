@@ -63,6 +63,7 @@ struct MCPAutoSessionCoordinatorTests {
                         "content": .string("first concurrent auto-session write"),
                         "memory_type": .string("lesson"),
                         "cwd": .string(repo.path),
+                        "verbosity": .string("verbose"),
                     ]
                 ),
                 broker: broker,
@@ -75,6 +76,7 @@ struct MCPAutoSessionCoordinatorTests {
                         "content": .string("second concurrent auto-session write"),
                         "memory_type": .string("fact"),
                         "cwd": .string(repo.path),
+                        "verbosity": .string("verbose"),
                     ]
                 ),
                 broker: broker,
@@ -588,6 +590,140 @@ struct MCPAutoSessionCoordinatorTests {
     }
 
     @Test
+    func sessionOpenCollisionResumesSameAgentRunAndBinds() async throws {
+        let recorder = CoordinatorRequestRecorder()
+        let coordinator = MCPAutoSessionCoordinator()
+        let resumedID = UUID()
+        let transportKey = "collision-resume"
+
+        let binding = try await coordinator.ensureBound(
+            transportKey: transportKey,
+            attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+            context: MCPConnectionContext(transportKey: transportKey),
+            perform: { request in
+                await recorder.record(request)
+                switch request.command {
+                case "session_open":
+                    return AgentBrokerResponse(
+                        outcome: .failure(
+                            payload: nil,
+                            message: "agent_id and run_id already have an active session; use session_resume"
+                        ),
+                        shouldExit: false
+                    )
+                case "session_resume":
+                    return AgentBrokerResponse.success(
+                        payload: .object(["session_id": .string(resumedID.uuidString)])
+                    )
+                default:
+                    return AgentBrokerResponse(
+                        outcome: .failure(payload: nil, message: "unexpected \(request.command)"),
+                        shouldExit: false
+                    )
+                }
+            }
+        )
+
+        #expect(binding.sessionID == resumedID)
+        #expect(await coordinator.currentBinding()?.sessionID == resumedID)
+        let requests = await recorder.requests
+        #expect(requests.map(\.command) == ["session_open", "session_resume"])
+        let resumeArgs = try #require(requests.last?.arguments)
+        #expect(resumeArgs["agent_id"]?.stringValue == "mcp-auto")
+        #expect(resumeArgs["run_id"]?.stringValue == transportKey)
+    }
+
+    @Test
+    func collisionResumeFailureSurfacesRecoveryAction() async throws {
+        let coordinator = MCPAutoSessionCoordinator()
+        let transportKey = "collision-resume-fails"
+
+        do {
+            _ = try await coordinator.ensureBound(
+                transportKey: transportKey,
+                attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+                context: MCPConnectionContext(transportKey: transportKey),
+                perform: { request in
+                    switch request.command {
+                    case "session_open":
+                        return AgentBrokerResponse(
+                            outcome: .failure(
+                                payload: nil,
+                                message: "agent_id and run_id already have an active session; use session_resume"
+                            ),
+                            shouldExit: false
+                        )
+                    case "session_resume":
+                        return AgentBrokerResponse(
+                            outcome: .failure(
+                                payload: nil,
+                                message: "No resumable session manifest matched the requested selectors"
+                            ),
+                            shouldExit: false
+                        )
+                    default:
+                        return AgentBrokerResponse(
+                            outcome: .failure(payload: nil, message: "unexpected \(request.command)"),
+                            shouldExit: false
+                        )
+                    }
+                }
+            )
+            Issue.record("ensureBound must throw when collision resume fails")
+        } catch let error as MCPAutoSessionError {
+            guard case .collisionResumeFailed(let message, let retryable, let nextAction) = error else {
+                Issue.record("expected collisionResumeFailed, got \(error)")
+                return
+            }
+            #expect(message.contains("session_resume"))
+            #expect(retryable)
+            #expect(nextAction.contains("session_resume"))
+            let payload = try requireAutoJSON(WaxMCPTools.autoSessionErrorResult(error))
+            #expect(payload["code"] as? String == "auto_session_failed")
+            #expect((payload["next_action"] as? String)?.contains("session_resume") == true)
+        }
+        #expect(await coordinator.currentBinding() == nil)
+    }
+
+    @Test
+    func parallelFirstCallsShareSingleBind() async throws {
+        let opens = CoordinatorAttemptCounter()
+        let coordinator = MCPAutoSessionCoordinator()
+        let sessionID = UUID()
+        let transportKey = "parallel-bind"
+
+        let perform: @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse = { request in
+            if request.command == "session_open" {
+                _ = await opens.increment()
+                try? await Task.sleep(for: .milliseconds(20))
+                return AgentBrokerResponse.success(
+                    payload: .object(["session_id": .string(sessionID.uuidString)])
+                )
+            }
+            return AgentBrokerResponse.success(payload: .object([:]))
+        }
+
+        async let first = coordinator.ensureBound(
+            transportKey: transportKey,
+            attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+            context: MCPConnectionContext(transportKey: transportKey),
+            perform: perform
+        )
+        async let second = coordinator.ensureBound(
+            transportKey: transportKey,
+            attribution: MCPProjectAttribution(project: "wax", source: .explicit),
+            context: MCPConnectionContext(transportKey: transportKey),
+            perform: perform
+        )
+        let firstBinding = try await first
+        let secondBinding = try await second
+        #expect(firstBinding.sessionID == sessionID)
+        #expect(secondBinding.sessionID == sessionID)
+        #expect(await opens.count == 1)
+        #expect(await coordinator.currentBinding()?.sessionID == sessionID)
+    }
+
+    @Test
     func leaseWindowIsDocumentedForCrashFallback() {
         #expect(VirtualSessionStore.defaultSessionLeaseSeconds == 300)
         #expect(MemoryRetentionSettings.default.recentlyClosedMs == 604_800_000)
@@ -640,6 +776,14 @@ private actor CoordinatorAttemptCounter {
     func increment() -> Int {
         count += 1
         return count
+    }
+}
+
+private actor CoordinatorRequestRecorder {
+    private(set) var requests: [(command: String, arguments: [String: AgentBrokerValue])] = []
+
+    func record(_ request: AgentBrokerRequest) {
+        requests.append((request.command, request.arguments))
     }
 }
 

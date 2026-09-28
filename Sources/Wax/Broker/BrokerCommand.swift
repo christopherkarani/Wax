@@ -91,6 +91,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var clientCWD: String?
         package var verbosity: ResponseVerbosity = .compact
         package var memoryTypes: [MemoryType] = []
+        package var includeWorking: Bool = false
 
         package var scope: LayeredRecall.Scope { identity.scope }
         /// Working-lane session. Wire `filters.sessionId` is a parse snapshot and
@@ -462,7 +463,8 @@ extension BrokerCommand.Recall {
             explicitRepo: try args.optionalString("repo"),
             clientCWD: try args.optionalString("cwd"),
             verbosity: try BrokerCommand.parseResponseVerbosity(args),
-            memoryTypes: try BrokerCommand.parseMemoryTypes(args)
+            memoryTypes: try BrokerCommand.parseMemoryTypes(args),
+            includeWorking: try args.optionalBool("include_working") ?? false
         )
     }
 }

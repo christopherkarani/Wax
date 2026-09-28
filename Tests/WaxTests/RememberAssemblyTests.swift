@@ -58,10 +58,12 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
     let object = try #require(payload.objectValue)
     #expect(Set(object.keys) == [
         "status", "committed", "frame_id", "memory_id", "framesAdded", "frameCount", "pendingFrames",
-        "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable", "stored",
+        "scope", "session_id", "memory_type", "durability", "deduplicated", "searchable",
+        "echo", "echo_truncated", "content_sha8", "stored",
         "stored_truncated", "chunked", "chunk_count", "content_bytes",
         "unresolved_project", "display_text", "project", "repo",
     ])
+    #expect(object["echo"]?.stringValue == originalDecision)
     #expect(object["stored"]?.stringValue == originalDecision)
     #expect(object["status"]?.stringValue == "ok")
     #expect(object["committed"]?.boolValue == true)
@@ -76,13 +78,18 @@ func rememberAssemblyPayloadKeepsDurableWireShape() throws {
     #expect(object["durability"]?.stringValue == "durable")
     #expect(object["deduplicated"]?.boolValue == false)
     #expect(object["searchable"]?.boolValue == true)
+    #expect(object["echo_truncated"]?.boolValue == false)
     #expect(object["stored_truncated"]?.boolValue == false)
+    #expect(object["content_sha8"]?.stringValue == "c676bad7")
     #expect(object["chunked"]?.boolValue == false)
     #expect(object["chunk_count"]?.intValue == 1)
     #expect(object["unresolved_project"]?.boolValue == false)
     #expect(object["project"]?.stringValue == "wax")
     #expect(object["repo"]?.stringValue == "wax")
-    #expect(object["display_text"]?.stringValue == "Remembered. 1 frame(s) added (9 total, 2 pending).")
+    #expect(
+        object["display_text"]?.stringValue
+            == "Full content stored (72 bytes, sha c676bad7); echo shows first 240 chars."
+    )
     #expect(object["next_action"] == nil)
 }
 
@@ -104,6 +111,7 @@ func rememberAssemblyPayloadFlagsChunkedLargeWrites() throws {
     let object = try #require(payload.objectValue)
     #expect(object["chunked"]?.boolValue == true)
     #expect(object["chunk_count"]?.intValue == 15)
+    #expect(object["echo_truncated"]?.boolValue == true)
     #expect(object["stored_truncated"]?.boolValue == true)
     #expect(object["content_bytes"]?.intValue == Int64(content.utf8.count))
     #expect((object["display_text"]?.stringValue ?? "").contains("chunked into 15 frames"))
@@ -125,6 +133,7 @@ func rememberAssemblyPayloadEchoesStoredContent() throws {
         content: content
     )
     let object = try #require(payload.objectValue)
+    #expect(object["echo"]?.stringValue == content)
     #expect(object["stored"]?.stringValue == content)
     #expect(object["memory_id"]?.stringValue == "durable:42")
     #expect(object["committed"]?.boolValue == true)
@@ -146,9 +155,10 @@ func rememberAssemblyPayloadTruncatesStoredEchoAt240Characters() throws {
         searchable: true,
         content: content
     )
-    let stored = try #require(payload.objectValue?["stored"]?.stringValue)
-    #expect(stored == String(repeating: "a", count: 240))
-    #expect(stored.count == 240)
+    let echo = try #require(payload.objectValue?["echo"]?.stringValue)
+    #expect(echo == String(repeating: "a", count: 240))
+    #expect(echo.count == 240)
+    #expect(payload.objectValue?["stored"]?.stringValue == echo)
 }
 
 @Test
@@ -169,8 +179,9 @@ func rememberAssemblyPayloadTruncationBoundaryIsExact() throws {
         )
         let object = try #require(payload.objectValue)
         let expectedTruncated = count > RememberAssembly.storedEchoLimit
+        #expect(object["echo_truncated"]?.boolValue == expectedTruncated)
         #expect(object["stored_truncated"]?.boolValue == expectedTruncated)
-        #expect(object["stored"]?.stringValue?.count == min(count, RememberAssembly.storedEchoLimit))
+        #expect(object["echo"]?.stringValue?.count == min(count, RememberAssembly.storedEchoLimit))
     }
 }
 
@@ -192,8 +203,9 @@ func rememberAssemblyPayloadHandlesZeroFramesAdded() throws {
     let object = try #require(payload.objectValue)
     #expect(object["chunked"]?.boolValue == false)
     #expect(object["chunk_count"]?.intValue == 0)
-    #expect(object["stored_truncated"]?.boolValue == false)
+    #expect(object["echo_truncated"]?.boolValue == false)
     #expect(object["content_bytes"]?.intValue == Int64(content.utf8.count))
+    #expect(object["content_sha8"]?.stringValue == "a18ba73f")
 }
 
 @Test
@@ -243,7 +255,7 @@ func rememberAssemblyPayloadMarksUnresolvedProjectAndNextAction() throws {
     #expect(object["next_action"]?.stringValue == "pass project/repo or recall with scope=global")
     #expect(
         object["display_text"]?.stringValue
-            == "Remembered. 1 frame(s) added (1 total, 0 pending). Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
+            == "Full content stored (72 bytes, sha c676bad7); echo shows first 240 chars. Project unresolved; default recall will miss this unless you pass project/repo or scope=global."
     )
 }
 
@@ -291,6 +303,65 @@ func rememberAssemblyPayloadEchoesBoundSessionOnDurableWrite() throws {
     #expect(object["memory_id"]?.stringValue == "durable:42")
     #expect(object["committed"]?.boolValue == true)
     #expect(object["session_id"]?.stringValue == bound.uuidString)
+}
+
+@Test
+func rememberAssemblyContentSHA8MatchesKnownDigests() {
+    #expect(RememberAssembly.contentSHA8(for: originalDecision) == "c676bad7")
+    #expect(RememberAssembly.contentSHA8(for: "deduped") == "a18ba73f")
+    #expect(
+        RememberAssembly.contentSHA8(for: "C01 GitLiveProbe stays intent until this tree has the type.")
+            == "5dc5ef31"
+    )
+}
+
+@Test
+func rememberAssemblyCompactSlimKeepsMinimalKeys() throws {
+    let payload = RememberAssembly.payload(
+        frameId: 42,
+        framesAdded: 1,
+        frameCount: 9,
+        pendingFrames: 2,
+        sessionID: nil,
+        metadata: durableMetadata(),
+        inferredScope: MemoryScopeContext(repoName: "wax", projectName: "wax"),
+        deduplicated: false,
+        searchable: true,
+        content: originalDecision
+    )
+    let object = try #require(payload.objectValue)
+    let slim = RememberAssembly.slimCompactRememberPayload(object)
+    #expect(Set(slim.keys) == [
+        "status", "committed", "memory_id", "frame_id", "scope",
+        "content_bytes", "content_sha8", "echo", "echo_truncated",
+        "project", "repo",
+    ])
+    #expect(slim["echo"]?.stringValue == originalDecision)
+    #expect(slim["echo_truncated"]?.boolValue == false)
+    #expect(slim["content_sha8"]?.stringValue == "c676bad7")
+    #expect(slim["content_bytes"]?.intValue == 72)
+}
+
+@Test
+func rememberAssemblyCompactSlimDropsProjectWhenAbsent() throws {
+    let payload = RememberAssembly.payload(
+        frameId: 1,
+        framesAdded: 1,
+        frameCount: 1,
+        pendingFrames: 0,
+        sessionID: nil,
+        metadata: durableMetadata(project: nil, repo: nil),
+        inferredScope: MemoryScopeContext(),
+        deduplicated: false,
+        searchable: true,
+        content: originalDecision
+    )
+    let object = try #require(payload.objectValue)
+    let slim = RememberAssembly.slimCompactRememberPayload(object)
+    #expect(slim["project"] == nil)
+    #expect(slim["repo"] == nil)
+    #expect(slim["status"]?.stringValue == "ok")
+    #expect(slim["memory_id"]?.stringValue == "durable:1")
 }
 
 @Test

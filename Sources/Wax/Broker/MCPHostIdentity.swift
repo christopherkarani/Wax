@@ -229,3 +229,109 @@ package enum MCPInitializeIdentityParser {
         return MCPClientIdentity(name: name, version: version)
     }
 }
+
+/// MCP root URIs to filesystem paths. Roots must use the `file` scheme;
+/// anything else is dropped, never guessed. Bare absolute paths are kept
+/// so initialize-embedded roots stay usable.
+package enum MCPRootsMapper {
+    package static func paths(fromURIs uris: [String]) -> [String] {
+        uris.compactMap(path(fromURI:))
+    }
+
+    package static func path(fromURI uri: String) -> String? {
+        let trimmed = uri.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("/") {
+            return trimmed
+        }
+        guard let url = URL(string: trimmed),
+              url.scheme?.lowercased() == "file",
+              !url.path.isEmpty
+        else { return nil }
+        return url.path
+    }
+
+    package static func paths(fromRootValues values: [Any]) -> [String] {
+        var out: [String] = []
+        for value in values {
+            if let raw = value as? String, let mapped = path(fromURI: raw) {
+                out.append(mapped)
+            } else if let dict = value as? [String: Any],
+                      let raw = dict["uri"] as? String,
+                      let mapped = path(fromURI: raw) {
+                out.append(mapped)
+            }
+        }
+        return out
+    }
+}
+
+/// Initialize-time roots capture. The spec carries roots via `roots/list`,
+/// but clients that embed `params.roots` (or `_meta.roots`) are honored so
+/// attribution works without a second round-trip.
+package enum MCPInitializeRootsParser {
+    package static func parseRoots(from body: Data) -> [String] {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return []
+        }
+        return parseRoots(from: json)
+    }
+
+    package static func parseRoots(from json: [String: Any]) -> [String] {
+        let params = json["params"] as? [String: Any] ?? [:]
+        var ordered: [String] = []
+        var seen = Set<String>()
+        func append(_ paths: [String]) {
+            for path in paths where seen.insert(path).inserted {
+                ordered.append(path)
+            }
+        }
+        if let roots = params["roots"] as? [Any] {
+            append(MCPRootsMapper.paths(fromRootValues: roots))
+        }
+        if let meta = params["_meta"] as? [String: Any],
+           let roots = meta["roots"] as? [Any] {
+            append(MCPRootsMapper.paths(fromRootValues: roots))
+        }
+        if let capabilities = params["capabilities"] as? [String: Any],
+           let roots = capabilities["roots"] as? [Any] {
+            append(MCPRootsMapper.paths(fromRootValues: roots))
+        }
+        return ordered
+    }
+}
+
+/// Last-resolved project attribution per transport key. Once a connection
+/// resolves, repeats reuse it instead of re-failing when the caller omits
+/// `cwd`/`project`/`repo` (e.g. after `session_end` clears the binding).
+package final class MCPStickyAttributionRegistry: @unchecked Sendable {
+    package static let shared = MCPStickyAttributionRegistry()
+
+    private let lock = NSLock()
+    private var stored: [String: MCPProjectAttribution] = [:]
+
+    package func remember(transportKey: String, attribution: MCPProjectAttribution) {
+        guard attribution.isResolved else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        stored[transportKey] = attribution
+    }
+
+    package func current(for transportKey: String) -> MCPProjectAttribution? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored[transportKey]
+    }
+
+    package func remove(for transportKey: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored.removeValue(forKey: transportKey)
+    }
+
+    package func resetForTests() {
+        lock.lock()
+        defer { lock.unlock() }
+        stored.removeAll()
+    }
+}

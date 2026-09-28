@@ -1075,11 +1075,13 @@ extension AgentBrokerService {
             ])
         }()
         let sessionDisk = currentSessionDiskStats()
+        let reviewQueueDepth = await reviewQueueDepth()
 
         return .object([
             "frameCount": .from(stats.frameCount),
             "pendingFrames": .from(stats.pendingFrames),
             "framesWithoutVectors": .from(stats.framesWithoutVectors),
+            "review_queue_depth": .from(reviewQueueDepth),
             "generation": .from(stats.generation),
             "diskBytes": .from(diskBytes),
             "storePath": .string(stats.storeURL.path),
@@ -1117,6 +1119,26 @@ extension AgentBrokerService {
             ]),
             "sessions": sessionDisk.asBrokerValue(),
         ])
+    }
+
+    /// Live unreviewed durable decisions/constraints awaiting human review.
+    /// `remember(reviewed: true)` is the mark that clears a frame from this count.
+    package static func isReviewQueueFrame(_ metadata: [String: String]) -> Bool {
+        guard let type = metadata[MemoryMetadataKeys.type].flatMap(MemoryType.init(rawValue:)) else {
+            return false
+        }
+        guard type == .decision || type == .constraint else { return false }
+        return metadata[MemoryMetadataKeys.reviewed]?.lowercased() != "true"
+    }
+
+    private func reviewQueueDepth() async -> Int {
+        let metas = await longTermMemory.wax.frameMetas()
+        return metas.filter { meta in
+            guard meta.status == .active, meta.supersededBy == nil, meta.role == .document else {
+                return false
+            }
+            return Self.isReviewQueueFrame(meta.metadata?.entries ?? [:])
+        }.count
     }
 
     package func prewarmEmbedder() async {

@@ -145,7 +145,11 @@ package enum SessionBootstrap {
             filters: recallFilters(sessionID: sessionID),
             explicitProject: project,
             explicitRepo: repo,
-            clientCWD: cwd
+            clientCWD: cwd,
+            // Continuity recall is for the session being opened: include its
+            // own working lane. The fetch scopes working to request.sessionID,
+            // so no other session's lane can leak in.
+            includeWorking: true
         )
     }
 

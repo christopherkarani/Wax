@@ -23,7 +23,7 @@ import WaxVectorSearchArctic
 #endif
 
 enum WaxMCPServerMetadata {
-    static let version = "0.1.49"
+    static let version = "0.1.50"
 }
 
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
@@ -176,6 +176,7 @@ struct WaxMCPServerCommand: ParsableCommand {
                 )
             )
             MCPRootsProviderRegistry.shared.remove(key: "stdio")
+            MCPStickyAttributionRegistry.shared.remove(for: "stdio")
             for source in signalSources { source.cancel() }
             await server.stop()
 
@@ -243,6 +244,10 @@ struct WaxMCPServerCommand: ParsableCommand {
         let context = connectionKey.flatMap {
             MCPHTTPConnectionContextRegistry.shared.current(sessionID: $0)
         } ?? connectionKey.map { MCPConnectionContext(transportKey: $0) }
+        if let connectionKey, let context,
+           MCPHTTPConnectionContextRegistry.shared.current(sessionID: connectionKey) == nil {
+            MCPHTTPConnectionContextRegistry.shared.remember(sessionID: connectionKey, context: context)
+        }
         await WaxMCPTools.register(
             on: server,
             brokerConfiguration: brokerConfiguration,

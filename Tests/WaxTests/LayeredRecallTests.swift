@@ -967,6 +967,107 @@ struct LayeredRecallTests {
         )
         #expect(LayeredRecall.hit(from: expanded).text == "keep [user] brackets")
     }
+
+    @Test
+    func projectRecallExcludesForeignConversationTaskState() {
+        let own = UUID()
+        let foreign = UUID()
+        let hits = [
+            layeredHit(
+                frameID: 1,
+                score: 1,
+                text: "own conversation task",
+                horizon: .durable,
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                    "session_id": own.uuidString,
+                ]
+            ),
+            layeredHit(
+                frameID: 2,
+                score: 1,
+                text: "foreign conversation task",
+                horizon: .durable,
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                    "session_id": foreign.uuidString,
+                ]
+            ),
+            layeredHit(
+                frameID: 3,
+                score: 1,
+                text: "foreign promoted task",
+                horizon: .durable,
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                    MemoryMetadataKeys.promotedFromSession: foreign.uuidString,
+                ]
+            ),
+            layeredHit(
+                frameID: 4,
+                score: 1,
+                text: "unstamped legacy task",
+                horizon: .durable,
+                metadata: [MemoryMetadataKeys.type: MemoryType.taskState.rawValue]
+            ),
+            layeredHit(
+                frameID: 5,
+                score: 1,
+                text: "foreign stamped decision",
+                horizon: .durable,
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.decision.rawValue,
+                    "session_id": foreign.uuidString,
+                ]
+            ),
+        ]
+        let filtered = LayeredRecall.filterForeignTaskState(hits, sessionID: own)
+        #expect(filtered.map(\.frameID).sorted() == [1, 4, 5])
+
+        let unscoped = LayeredRecall.filterForeignTaskState(hits, sessionID: nil)
+        #expect(unscoped.map(\.frameID).sorted() == [4, 5])
+    }
+
+    @Test
+    func recallRequestIncludesWorkingLaneOnlyForSessionScopeOrExplicitFlag() {
+        let sessionID = UUID()
+        let project = LayeredRecall.RecallRequest(
+            query: "q",
+            identity: .project(workingSessionID: sessionID),
+            limit: 5,
+            searchTopK: 5
+        )
+        #expect(project.includesWorkingLane == false)
+        #expect(project.fetchHorizons == [.durable])
+
+        let projectOptIn = LayeredRecall.RecallRequest(
+            query: "q",
+            identity: .project(workingSessionID: sessionID),
+            limit: 5,
+            searchTopK: 5,
+            includeWorking: true
+        )
+        #expect(projectOptIn.includesWorkingLane == true)
+        #expect(projectOptIn.fetchHorizons == [.working, .durable])
+
+        let global = LayeredRecall.RecallRequest(
+            query: "q",
+            identity: .global(workingSessionID: sessionID),
+            limit: 5,
+            searchTopK: 5
+        )
+        #expect(global.includesWorkingLane == false)
+        #expect(global.fetchHorizons == [.durable])
+
+        let session = LayeredRecall.RecallRequest(
+            query: "q",
+            identity: .session(workingSessionID: sessionID),
+            limit: 5,
+            searchTopK: 5
+        )
+        #expect(session.includesWorkingLane == true)
+        #expect(session.fetchHorizons == [.working, .durable])
+    }
 }
 
 private func layeredHit(
