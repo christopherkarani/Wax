@@ -629,7 +629,7 @@ func agentInstructionsDescribeDailyAndLegacySurfaces() {
     #expect(daily.contains("on_this_tree"))
     #expect(daily.contains("label, not a skip"))
     #expect(daily.contains("Do not treat intent as shipped"))
-    #expect(daily.contains("Pass cwd only"))
+    #expect(daily.contains("Pass cwd (your shell working directory) on the first remember/recall"))
     #expect(daily.contains("Do not close on Stop"))
     #expect(daily.contains("do not load a second lifecycle from a skill"))
     let dailyForbids = [
