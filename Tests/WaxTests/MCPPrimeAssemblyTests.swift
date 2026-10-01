@@ -309,6 +309,41 @@ func primeAssemblyAttachesProvenanceAndOmitsLifecyclePlaybookFields() throws {
     #expect(envelope.renderedJSON.contains("session_id") == false)
 }
 
+@Test
+func primeAssemblyDropsStubContentOnlyHandoff() {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(content: "transport idleExpiry", project: "Wax")
+    )
+    #expect(envelope.handoff == nil)
+    #expect(envelope.hostContext.contains("[handoff]") == false)
+}
+
+@Test
+func primeAssemblyKeepsStubHandoffWithPendingTasks() {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(
+            content: "transport idleExpiry", project: "Wax", pendingTasks: ["land tests"]
+        )
+    )
+    #expect(envelope.handoff?.found == true)
+    #expect(envelope.hostContext.contains("[handoff]"))
+}
+
+@Test
+func primeAssemblyKeepsSubstantiveTasklessHandoff() {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(
+            content: "Shipped stale-demotion; remaining work is the handoff write-path fix.",
+            project: "Wax"
+        )
+    )
+    #expect(envelope.handoff?.found == true)
+    #expect(envelope.hostContext.contains("[handoff]"))
+}
+
 @Test(arguments: [
     MCPPrimeAssembly.Format.claude,
     .codex,

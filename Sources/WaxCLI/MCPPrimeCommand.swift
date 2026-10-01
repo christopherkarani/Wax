@@ -158,7 +158,9 @@ enum MCPPrimeRunner {
                         "query": .string(
                             "\(attribution.project ?? attribution.repo ?? "project") lessons facts decisions constraints"
                         ),
-                        "limit": .from(8),
+                        // Pool deeper than the rendered slots: assembly drops
+                        // secrets/mismatches and demotes stale hints.
+                        "limit": .from(12),
                         "scope": .string("project"),
                         "cwd": .string(request.cwd),
                         "project": .from(attribution.project),

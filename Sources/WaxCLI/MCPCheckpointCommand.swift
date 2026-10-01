@@ -10,7 +10,6 @@ struct MCPCheckpointOutcome: Sendable, Equatable {
 
 enum MCPCheckpointRunner {
     static let defaultTimeoutSeconds: TimeInterval = 1.5
-    static let defaultHandoffContent = "checkpoint"
 
     struct Request: Sendable {
         var sessionID: String?
@@ -79,7 +78,7 @@ enum MCPCheckpointRunner {
                 )
             }
         } else {
-            content = defaultHandoffContent
+            content = ""
         }
 
         if let rawID = request.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines), !rawID.isEmpty {
@@ -248,12 +247,16 @@ enum MCPCheckpointRunner {
             )
         }
 
+        // No content file means no human-authored handoff: close the session
+        // without recording a stub (mirrors transport teardown).
+        let recordHandoff = request.contentFile != nil
         let response = try probe(
             AgentBrokerRequest(
                 command: "session_close",
                 arguments: [
                     "session_id": .string(sessionID.uuidString),
                     "content": .string(content),
+                    "record_handoff": .bool(recordHandoff),
                 ]
             ),
             configuration,
