@@ -297,6 +297,78 @@ struct MCPCheckpointTests {
         #expect(captured.value.isEmpty == false)
         #expect(outcome.stderr.isEmpty)
     }
+
+    @Test func checkpointWithoutContentFileRecordsNoHandoff() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.url) }
+        let sessionID = UUID()
+        let capturedContent = LockBox<String?>(nil)
+        let capturedRecord = LockBox<Bool?>(nil)
+        let outcome = MCPCheckpointRunner.run(
+            MCPCheckpointRunner.Request(
+                sessionID: sessionID.uuidString,
+                host: nil,
+                conversationID: nil,
+                cwd: nil,
+                contentFile: nil,
+                strict: false,
+                timeoutSeconds: 1.5,
+                storePath: root.store.path,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: root.configuration,
+                probe: { request, _, _ in
+                    capturedContent.value = request.arguments["content"]?.stringValue
+                    capturedRecord.value = request.arguments["record_handoff"]?.boolValue
+                    #expect(request.command == "session_close")
+                    return AgentBrokerResponse.success(
+                        payload: .object(["already_ended": .bool(false)])
+                    )
+                },
+                sessionRootURL: root.sessions
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(capturedContent.value == "")
+        #expect(capturedRecord.value == false)
+    }
+
+    @Test func checkpointWithContentFileRecordsAuthoredHandoff() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.url) }
+        let file = root.url.appendingPathComponent("handoff.txt")
+        try "ship the stale-prime fix".write(to: file, atomically: true, encoding: .utf8)
+        let sessionID = UUID()
+        let capturedContent = LockBox<String?>(nil)
+        let capturedRecord = LockBox<Bool?>(nil)
+        let outcome = MCPCheckpointRunner.run(
+            MCPCheckpointRunner.Request(
+                sessionID: sessionID.uuidString,
+                host: nil,
+                conversationID: nil,
+                cwd: nil,
+                contentFile: file.path,
+                strict: false,
+                timeoutSeconds: 1.5,
+                storePath: root.store.path,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: root.configuration,
+                probe: { request, _, _ in
+                    capturedContent.value = request.arguments["content"]?.stringValue
+                    capturedRecord.value = request.arguments["record_handoff"]?.boolValue
+                    #expect(request.command == "session_close")
+                    return AgentBrokerResponse.success(
+                        payload: .object(["already_ended": .bool(false)])
+                    )
+                },
+                sessionRootURL: root.sessions
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(capturedContent.value == "ship the stale-prime fix")
+        #expect(capturedRecord.value != false)
+    }
 }
 
 private final class LockBox<Value>: @unchecked Sendable {

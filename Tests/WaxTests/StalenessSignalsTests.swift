@@ -145,6 +145,54 @@ func primeStaleHintFlagsOlderSameTypeItem() throws {
     #expect(envelope.hostContext.contains("stale"))
 }
 
+private func primeStalenessCandidate(
+    _ text: String,
+    type: String,
+    score: Double,
+    createdAtMs: Int64
+) -> MCPPrimeAssembly.Candidate {
+    MCPPrimeAssembly.Candidate(
+        text: text, memoryType: type,
+        project: "Wax", repo: "Wax", score: score, createdAtMs: createdAtMs
+    )
+}
+
+private func primeStalenessOrder(_ candidates: [MCPPrimeAssembly.Candidate]) -> [String] {
+    MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "claude",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: candidates,
+            handoff: nil
+        ),
+        tokenizer: .character,
+        nowMs: 10_000
+    ).projectItems.map(\.text)
+}
+
+@Test
+func primeStaleHintDemotesOlderSameTypeItem() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate("old decision", type: "decision", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate("new decision", type: "decision", score: 0.8, createdAtMs: 9_000),
+    ])
+    #expect(order == ["new decision", "old decision"])
+}
+
+@Test
+func primeStaleHintKeepsTypeRankAboveFreshness() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate("old constraint", type: "constraint", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate("new constraint", type: "constraint", score: 0.8, createdAtMs: 2_000),
+        primeStalenessCandidate("fresh fact", type: "fact", score: 1.0, createdAtMs: 3_000),
+    ])
+    #expect(order == ["new constraint", "old constraint", "fresh fact"])
+}
+
 @Test
 func reviewQueueFrameMatchesUnreviewedDecisionsAndConstraints() {
     #expect(AgentBrokerService.isReviewQueueFrame([MemoryMetadataKeys.type: "decision"]) == true)
