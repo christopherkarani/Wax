@@ -24,4 +24,22 @@ struct ProcessRunnerTests {
         #expect(output.status == EXIT_SUCCESS)
         #expect(output.stdout.contains("ok"))
     }
+
+    /// 200 KB on stdout, then 200 KB on stderr. Reading the pipes only after
+    /// exit deadlocks (each holds ~64 KB); the timeout turns that into a
+    /// failure instead of a hang.
+    @Test func runCapturedDrainsLargeOutputOnBothStreams() throws {
+        let script = """
+        head -c 200000 /dev/zero | tr '\\000' o
+        head -c 200000 /dev/zero | tr '\\000' e 1>&2
+        """
+        let output = try ProcessRunner.runCaptured(
+            command: "/bin/sh",
+            arguments: ["-c", script],
+            timeoutSeconds: 20
+        )
+        #expect(output.status == EXIT_SUCCESS)
+        #expect(output.stdout.utf8.count == 200_000)
+        #expect(output.stderr.utf8.count == 200_000)
+    }
 }

@@ -1027,6 +1027,7 @@ enum ProcessRunner {
         }
 
         try process.run()
+        let drain = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe)
 
         if let input, let stdinPipe {
             if let data = input.data(using: .utf8) {
@@ -1055,10 +1056,9 @@ enum ProcessRunner {
             process.waitUntilExit()
         }
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let captured = drain.wait()
+        let stdout = String(data: captured.stdout, encoding: .utf8) ?? ""
+        let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
 
         return CapturedProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
