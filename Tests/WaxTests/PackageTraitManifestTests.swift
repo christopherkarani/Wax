@@ -92,7 +92,7 @@ waxRepoPackageDependencies = [
     // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
     // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
     .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
-    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+    .package(url: "https://github.com/tuist/Noora.git", .upToNextMinor(from: "0.57.0")),
 ]
 """#))
     #expect(manifest.source.contains(#"""
@@ -101,7 +101,7 @@ waxRepoPackageDependencies = [
     // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
     // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
     .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
-    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+    .package(url: "https://github.com/tuist/Noora.git", .upToNextMinor(from: "0.57.0")),
 ]
 waxRepoTargets = [
     .executableTarget(

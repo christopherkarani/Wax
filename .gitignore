@@ -69,8 +69,9 @@ issue*_snapshot.md
 Resources/docs/assets/wax-banner-*.png
 Resources/docs/assets/wax-github-banner.png
 Resources/docs/assets/wax-github-image.png
-Package.resolved
-**/Package.resolved
+# The root Package.resolved is committed so released binaries are reproducible.
+# Nested packages (Examples, scratch packages) keep theirs local.
+*/**/Package.resolved
 .build-codex/
 Resources/npm/waxmcp/dist/
 Resources/npm/waxmcp/*.tgz
