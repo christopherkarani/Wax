@@ -12,7 +12,11 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     package let dimensions: Int
     private let configuration: IndexConfiguration
 
+    /// Graph over `vectors`/`frameIds`, which are the source of truth. `nil` means it is rebuilt
+    /// on the next search (or the store is too small for a graph).
     private var index: VectorIndex<UInt64, VectorIndexState.Ready>?
+    /// Ids soft-deleted from `index`; MetalANNS keeps them reserved until the graph is rebuilt.
+    private var softDeletedFrameIds: Set<UInt64> = []
     private var frameIds: [UInt64] = []
     private var positions: [UInt64: Int] = [:]
     private var vectors: [Float] = []
@@ -74,26 +78,16 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     package func add(frameId: UInt64, vector: [Float]) async throws {
         try validate(vector)
         let stored = preparedVector(vector)
-        let record = VectorRecord(id: frameId, vector: stored)
 
         if let existingIndex = positions[frameId] {
             overwriteVector(at: existingIndex, with: stored)
-            if let index {
-                try await index.delete(id: frameId)
-                try await index.insert(record)
-            } else {
-                try await rebuildIndex()
-            }
+            // MetalANNS has no in-place update; rebuild lazily from the stored vectors.
+            invalidateIndex()
         } else {
-            let newIndex = frameIds.count
+            positions[frameId] = frameIds.count
             frameIds.append(frameId)
-            positions[frameId] = newIndex
             vectors.append(contentsOf: stored)
-            if let index {
-                try await index.insert(record)
-            } else {
-                try await rebuildIndex()
-            }
+            await insertIntoIndex([VectorRecord(id: frameId, vector: stored)])
         }
         dirty = true
     }
@@ -107,37 +101,29 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             try validate(vector)
         }
 
-        var recordsToInsert: [VectorRecord<UInt64>] = []
-        recordsToInsert.reserveCapacity(frameIds.count)
-        let hadIndex = index != nil
+        var newRecords: [VectorRecord<UInt64>] = []
+        newRecords.reserveCapacity(frameIds.count)
+        var overwroteExisting = false
 
         for (frameId, vector) in zip(frameIds, newVectors) {
             let stored = preparedVector(vector)
             if let existingIndex = positions[frameId] {
                 overwriteVector(at: existingIndex, with: stored)
-                if let index {
-                    try await index.delete(id: frameId)
-                    recordsToInsert.append(VectorRecord(id: frameId, vector: stored))
-                }
+                overwroteExisting = true
             } else {
-                let newIndex = self.frameIds.count
+                positions[frameId] = self.frameIds.count
                 self.frameIds.append(frameId)
-                positions[frameId] = newIndex
                 self.vectors.append(contentsOf: stored)
-                recordsToInsert.append(VectorRecord(id: frameId, vector: stored))
+                newRecords.append(VectorRecord(id: frameId, vector: stored))
             }
         }
 
-        if hadIndex, let index, !recordsToInsert.isEmpty {
-            if recordsToInsert.count == 1, let record = recordsToInsert.first {
-                try await index.insert(record)
-            } else {
-                try await index.batchInsert(recordsToInsert)
-            }
+        if overwroteExisting {
+            // MetalANNS has no in-place update; rebuild lazily from the stored vectors.
+            invalidateIndex()
         } else {
-            try await rebuildIndex()
+            await insertIntoIndex(newRecords)
         }
-
         dirty = true
     }
 
@@ -153,9 +139,14 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         frameIds.removeLast()
         vectors.removeLast(dimensions)
         if !canBuildIndex {
-            index = nil
+            invalidateIndex()
         } else if let index {
-            try await index.delete(id: frameId)
+            do {
+                try await index.delete(id: frameId)
+                softDeletedFrameIds.insert(frameId)
+            } catch {
+                invalidateIndex()
+            }
         }
         dirty = true
     }
@@ -303,6 +294,33 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
+    /// Applies new-id inserts to the graph incrementally when MetalANNS can take them;
+    /// otherwise drops the graph so the next search rebuilds it from `vectors`.
+    /// MetalANNS 0.3.0 cannot re-insert an id it soft-deleted, and inserts past the capacity
+    /// fixed when the graph was built throw. The graph is a derived cache, so any insert
+    /// failure is handled by rebuilding rather than by failing an add whose data is stored.
+    private func insertIntoIndex(_ records: [VectorRecord<UInt64>]) async {
+        guard let index, !records.isEmpty else { return }
+        guard !records.contains(where: { softDeletedFrameIds.contains($0.id) }) else {
+            invalidateIndex()
+            return
+        }
+        do {
+            if records.count == 1, let record = records.first {
+                try await index.insert(record)
+            } else {
+                try await index.batchInsert(records)
+            }
+        } catch {
+            invalidateIndex()
+        }
+    }
+
+    private func invalidateIndex() {
+        index = nil
+        softDeletedFrameIds.removeAll()
+    }
+
     private func ensureIndex() async throws {
         if index == nil, !frameIds.isEmpty {
             try await rebuildIndex()
@@ -310,10 +328,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     private func rebuildIndex() async throws {
-        guard canBuildIndex else {
-            index = nil
-            return
-        }
+        invalidateIndex()
+        guard canBuildIndex else { return }
         let builder = VectorIndex<UInt64, VectorIndexState.Unbuilt>(configuration: configuration)
         index = try await builder.build(vectors: matrixVectors(), ids: frameIds)
     }

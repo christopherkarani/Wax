@@ -152,6 +152,83 @@ func loadedVectorSearchEngineGpuOnlyRanksNearestFirst(count: Int) async throws {
 }
 #endif
 
+#if canImport(Metal) && canImport(MetalANNS)
+private func expectMetalANNSParity(
+    _ metalANNS: MetalANNSVectorEngine,
+    _ accelerate: AccelerateVectorEngine,
+    query: [Float],
+    count: Int,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    let actual = try await metalANNS.search(vector: query, topK: count)
+    let expected = try await accelerate.search(vector: query, topK: count)
+    #expect(actual.map(\.frameId) == expected.map(\.frameId), sourceLocation: sourceLocation)
+    for (lhs, rhs) in zip(actual, expected) {
+        #expect(abs(lhs.score - rhs.score) <= 1e-4, sourceLocation: sourceLocation)
+    }
+}
+
+@Test(
+    "MetalANNS engine handles overwrite and re-add after the graph is built",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSHandlesMutationsAfterGraphBuild() async throws {
+    let dimensions = 8
+    // 40 > MetalANNS graph degree (32), so the graph exists before the mutations.
+    let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
+    let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
+    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    func apply(_ body: (any VectorSearchEngine) async throws -> Void) async throws {
+        try await body(metalANNS)
+        try await body(accelerate)
+    }
+
+    try await apply { try await $0.addBatch(frameIds: base.frameIds, vectors: base.vectors) }
+    let query = base.vectors[3]
+    try await expectMetalANNSParity(metalANNS, accelerate, query: query, count: 40)
+
+    // Overwrite an existing id via add.
+    try await apply { try await $0.add(frameId: base.frameIds[3], vector: extra.vectors[0]) }
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[0], count: 40)
+
+    // Overwrite existing ids via addBatch.
+    try await apply {
+        try await $0.addBatch(frameIds: [base.frameIds[4], base.frameIds[5]], vectors: [extra.vectors[1], extra.vectors[2]])
+    }
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[1], count: 40)
+
+    // Remove, then re-add the same id.
+    try await apply { try await $0.remove(frameId: base.frameIds[6]) }
+    try await expectMetalANNSParity(metalANNS, accelerate, query: query, count: 39)
+    try await apply { try await $0.add(frameId: base.frameIds[6], vector: extra.vectors[3]) }
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[3], count: 40)
+}
+
+@Test(
+    "MetalANNS engine grows past the capacity its graph was built with",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSGrowsPastBuiltCapacity() async throws {
+    let dimensions = 8
+    let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
+    let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
+    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: base.vectors[3], count: 40)
+
+    // The graph is built with capacity 2x its node count; insert one at a time past that.
+    for index in 0..<60 {
+        let frameId = 10_000 + UInt64(index)
+        try await metalANNS.add(frameId: frameId, vector: extra.vectors[index])
+        try await accelerate.add(frameId: frameId, vector: extra.vectors[index])
+    }
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[30], count: 100)
+}
+#endif
+
 // MARK: - Metal cosine kernels with partial threadgroups (finding 2)
 
 #if canImport(Metal)

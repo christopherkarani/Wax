@@ -652,6 +652,7 @@ package actor MetalVectorEngine {
 
             for (index, distance) in topResults {
                 let score = metric.score(fromDistance: distance)
+                guard score.isFinite else { continue }
                 results.append((frameIds[index], score))
             }
 
