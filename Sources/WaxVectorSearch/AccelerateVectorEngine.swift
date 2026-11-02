@@ -15,6 +15,8 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     private var vectors: [Float] = []
     private var squaredNorms: [Float] = []
     private var dirty = false
+    /// Rows dropped from the last loaded segment because they held non-finite values.
+    package private(set) var droppedNonFiniteRowCount = 0
 
     package init(metric: VectorMetric, dimensions: Int) throws {
         guard dimensions > 0 else {
@@ -150,19 +152,7 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
             }
         }
 
-        var results: [(frameId: UInt64, score: Float)] = []
-        results.reserveCapacity(frameIds.count)
-        for index in frameIds.indices {
-            results.append((frameIds[index], scores[index]))
-        }
-        results.sort { lhs, rhs in
-            if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
-            return lhs.score > rhs.score
-        }
-        if results.count > limit {
-            results.removeLast(results.count - limit)
-        }
-        return results
+        return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
     package func stageForCommit(into wax: Wax) async throws {
@@ -211,7 +201,9 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 let start = index * dimensions
                 squaredNorms.append(squaredNorm(ofSliceStartingAt: start))
             }
-            dirty = false
+            droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
+            // Rewrite a clean segment on the next commit when rows were dropped.
+            dirty = info.droppedNonFiniteRowCount > 0
         }
     }
 
