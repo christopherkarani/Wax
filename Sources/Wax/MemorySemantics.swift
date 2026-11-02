@@ -918,31 +918,77 @@ package enum MemorySemantics {
     }
 
     package static func similarity(lhs: String, rhs: String) -> Float {
-        let lhsTerms = Set(normalizedTextFingerprint(lhs).split(separator: " ").map(String.init))
-        let rhsTerms = Set(normalizedTextFingerprint(rhs).split(separator: " ").map(String.init))
-        guard !lhsTerms.isEmpty || !rhsTerms.isEmpty else { return 0 }
-        let overlap = lhsTerms.intersection(rhsTerms).count
-        let union = lhsTerms.union(rhsTerms).count
+        termJaccard(terms(lhs), terms(rhs))
+    }
+
+    private static func terms(_ text: String) -> Set<String> {
+        Set(normalizedTextFingerprint(text).split(separator: " ").map(String.init))
+    }
+
+    private static func termJaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Float {
+        guard !lhs.isEmpty || !rhs.isEmpty else { return 0 }
+        let overlap = lhs.intersection(rhs).count
+        let union = lhs.union(rhs).count
         guard union > 0 else { return 0 }
         return Float(overlap) / Float(union)
+    }
+
+    /// Term and identifier sets for one text, computed once so a corpus scan
+    /// does not re-normalize and re-run the identifier regexes per pair.
+    package struct TextSignature: Sendable, Equatable {
+        package let terms: Set<String>
+        package let identifiers: Set<String>
+
+        package init(_ text: String) {
+            self.terms = MemorySemantics.terms(text)
+            self.identifiers = MemorySemantics.extractIdentifiers(text)
+        }
+    }
+
+    /// Term Jaccard of two precomputed signatures.
+    package static func similarity(_ lhs: TextSignature, _ rhs: TextSignature) -> Float {
+        termJaccard(lhs.terms, rhs.terms)
     }
 
     package static let identifierJaccardThreshold: Float = 0.5
     package static let identifierSharedCountThreshold = 3
 
+    /// Term Jaccard at or above this alone makes two texts near-twins.
+    package static let nearTwinSimilarityThreshold: Float = 0.88
+    /// Identifier overlap only counts as a near-twin when the texts also share
+    /// at least this much vocabulary. Two different lessons about the same three
+    /// types share identifiers but little else; a paraphrase shares both.
+    package static let nearTwinIdentifierSimilarityFloor: Float = 0.4
+
+    private static let pascalCaseRegex = makeRegex(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#)
+    private static let issueNumberRegex = makeRegex(#"#\d+"#)
+    private static let hexSHARegex = makeRegex(#"\b[0-9a-fA-F]{7,40}\b"#)
+    private static let ticketIDRegex = makeRegex(#"\b[A-Z]{1,3}\d{1,4}\b"#)
+
     /// PascalCase tokens, `#123`, 7+ hex SHAs, and `C01`/`T1`-style IDs.
     package static func extractIdentifiers(_ text: String) -> Set<String> {
         var ids = Set<String>()
-        ids.formUnion(regexMatches(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#, in: text).map { $0.lowercased() })
-        ids.formUnion(regexMatches(#"#\d+"#, in: text).map { $0.lowercased() })
-        ids.formUnion(regexMatches(#"\b[0-9a-fA-F]{7,40}\b"#, in: text).map { $0.lowercased() })
-        ids.formUnion(regexMatches(#"\b[A-Z]{1,3}\d{1,4}\b"#, in: text).map { $0.lowercased() })
+        for regex in [pascalCaseRegex, issueNumberRegex, hexSHARegex, ticketIDRegex] {
+            ids.formUnion(regexMatches(regex, in: text).map { $0.lowercased() })
+        }
         return ids
     }
 
     package static func identifierOverlap(lhs: String, rhs: String) -> (jaccard: Float, shared: Int) {
-        let left = extractIdentifiers(lhs)
-        let right = extractIdentifiers(rhs)
+        identifierOverlap(extractIdentifiers(lhs), extractIdentifiers(rhs))
+    }
+
+    package static func identifierOverlap(
+        _ lhs: TextSignature,
+        _ rhs: TextSignature
+    ) -> (jaccard: Float, shared: Int) {
+        identifierOverlap(lhs.identifiers, rhs.identifiers)
+    }
+
+    private static func identifierOverlap(
+        _ left: Set<String>,
+        _ right: Set<String>
+    ) -> (jaccard: Float, shared: Int) {
         guard !left.isEmpty, !right.isEmpty else { return (0, 0) }
         let shared = left.intersection(right).count
         let union = left.union(right).count
@@ -951,7 +997,14 @@ package enum MemorySemantics {
     }
 
     package static func identifiersMatch(_ lhs: String, _ rhs: String) -> Bool {
-        let overlap = identifierOverlap(lhs: lhs, rhs: rhs)
+        identifiersMatch(overlap: identifierOverlap(lhs: lhs, rhs: rhs))
+    }
+
+    package static func identifiersMatch(_ lhs: TextSignature, _ rhs: TextSignature) -> Bool {
+        identifiersMatch(overlap: identifierOverlap(lhs, rhs))
+    }
+
+    private static func identifiersMatch(overlap: (jaccard: Float, shared: Int)) -> Bool {
         if overlap.shared >= identifierSharedCountThreshold {
             return true
         }
@@ -959,8 +1012,31 @@ package enum MemorySemantics {
         return overlap.shared >= 2 && overlap.jaccard >= identifierJaccardThreshold
     }
 
-    private static func regexMatches(_ pattern: String, in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+    /// Same-topic test used by write-time auto-supersede, read-time stale-twin
+    /// demotion, and `stale_hint` labels: near-identical wording, or matching
+    /// identifiers backed by real shared vocabulary. Identifiers alone are not
+    /// enough — distinct memories about the same types must both survive.
+    package static func isNearTwin(_ lhs: TextSignature, _ rhs: TextSignature) -> Bool {
+        let textSimilarity = similarity(lhs, rhs)
+        if textSimilarity >= nearTwinSimilarityThreshold {
+            return true
+        }
+        return textSimilarity >= nearTwinIdentifierSimilarityFloor && identifiersMatch(lhs, rhs)
+    }
+
+    package static func isNearTwin(_ lhs: String, _ rhs: String) -> Bool {
+        isNearTwin(TextSignature(lhs), TextSignature(rhs))
+    }
+
+    private static func makeRegex(_ pattern: String) -> NSRegularExpression {
+        do {
+            return try NSRegularExpression(pattern: pattern)
+        } catch {
+            preconditionFailure("invalid built-in identifier regex \(pattern): \(error)")
+        }
+    }
+
+    private static func regexMatches(_ regex: NSRegularExpression, in text: String) -> [String] {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.matches(in: text, range: range).compactMap { match in
             Range(match.range, in: text).map { String(text[$0]) }

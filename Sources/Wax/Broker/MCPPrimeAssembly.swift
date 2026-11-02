@@ -85,7 +85,7 @@ package enum MCPPrimeAssembly {
         package var ageDays: Int?
         package var score: Double
         package var createdAtMs: Int64
-        /// True when a newer same-type item exists in the same primed lane.
+        /// True when a newer same-type, same-topic item exists in the same primed lane.
         package var staleHint: Bool = false
     }
 
@@ -411,16 +411,15 @@ package enum MCPPrimeAssembly {
 
     // MARK: - Selection
 
-    /// Flags items a newer same-type item supersedes within one lane.
-    /// Only strictly-newer `createdAtMs` counts; unknown timestamps stay unflagged.
+    /// Flags items a newer same-type, same-topic item supersedes within one lane.
+    /// Shares ``StaleHint`` with recall: unknown timestamps stay unflagged.
     package static func markStaleHints(_ items: [Item]) -> [Item] {
-        items.enumerated().map { index, item in
+        let flags = StaleHint.flags(for: items.map {
+            StaleHint.Entry(memoryType: $0.memoryType, createdAtMs: $0.createdAtMs, text: $0.text)
+        })
+        return zip(items, flags).map { item, stale in
             var copy = item
-            copy.staleHint = items.enumerated().contains { otherIndex, other in
-                guard otherIndex != index else { return false }
-                guard other.memoryType == item.memoryType else { return false }
-                return other.createdAtMs > item.createdAtMs
-            }
+            copy.staleHint = stale
             return copy
         }
     }

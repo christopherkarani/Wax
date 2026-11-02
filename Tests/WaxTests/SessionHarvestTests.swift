@@ -139,7 +139,7 @@ private func harvestLiveSession(
         manifest: state.manifest,
         events: events,
         scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
-        nowMs: VirtualSessionStore.nowMs()
+        nowMs: BrokerClock.nowMs()
     )
 }
 

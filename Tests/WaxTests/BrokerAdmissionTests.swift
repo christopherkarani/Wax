@@ -24,6 +24,12 @@ struct BrokerAdmissionTests {
             BrokerAdmission.rememberDrain
         ),
         (
+            "memory_maintain",
+            "memory_maintain",
+            [:],
+            BrokerAdmission.rememberDrain
+        ),
+        (
             "remember",
             "remember",
             ["content": .string("note")],

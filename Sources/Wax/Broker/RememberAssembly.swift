@@ -28,7 +28,7 @@ package enum RememberAssembly {
         payload.filter { compactRememberKeys.contains($0.key) }
     }
 
-    package static let autoSupersedeSimilarityThreshold: Float = 0.88
+    package static let autoSupersedeSimilarityThreshold = MemorySemantics.nearTwinSimilarityThreshold
     package static let autoSupersedeMaxMatches = 32
     package static let autoSupersedeTypes: Set<MemoryType> = [
         .decision, .lesson, .constraint, .fact, .userPreference,
@@ -154,10 +154,26 @@ package enum RememberAssembly {
         return info.project != nil
     }
 
-    /// Same-project Jaccard ≥ 0.88, or identifier-set overlap, retires prior
-    /// unsuperseded durable twins. Pending or committed `supersededBy` is a skip
-    /// so a failed flush cannot restamp the same predecessor. Locked others stay
-    /// live. Returns candidate frame IDs; broker still supersedes + flushes.
+    /// Metadata-only gate for one corpus row: same type, same project, durable,
+    /// not already superseded. Runs before any text is loaded or compared so a
+    /// durable remember does not tokenize the whole store.
+    package static func isSupersedeCandidate(
+        metadata: [String: String],
+        supersededBy: UInt64?,
+        type: MemoryType,
+        project: String,
+        nowMs: Int64
+    ) -> Bool {
+        guard supersededBy == nil else { return false }
+        let other = MemorySemantics.parse(metadata: metadata, nowMs: nowMs)
+        return other.type == type && other.project == project && other.durability == .durable
+    }
+
+    /// Same-project near-twins (`MemorySemantics.isNearTwin`:
+    /// Jaccard ≥ 0.88, or identifier overlap backed by shared vocabulary) retire
+    /// prior unsuperseded durable twins. Pending or committed `supersededBy` is a
+    /// skip so a failed flush cannot restamp the same predecessor. Locked others
+    /// stay live. Returns candidate frame IDs; broker still supersedes + flushes.
     package static func selectSupersedeFrameIDs(
         sessionID: UUID?,
         newFrameId: UInt64,
@@ -172,19 +188,21 @@ package enum RememberAssembly {
         let info = MemorySemantics.parse(metadata: metadata, nowMs: nowMs)
         guard let project = info.project else { return [] }
 
+        let newSignature = MemorySemantics.TextSignature(content)
         var selected: [UInt64] = []
         selected.reserveCapacity(min(documents.count, autoSupersedeMaxMatches))
         for document in documents {
             guard selected.count < autoSupersedeMaxMatches else { break }
             guard document.frameId != newFrameId else { continue }
-            guard document.supersededBy == nil else { continue }
-            let other = MemorySemantics.parse(metadata: document.metadata, nowMs: nowMs)
-            guard other.type == info.type else { continue }
-            guard other.project == project else { continue }
-            guard other.durability == .durable else { continue }
-            let similarity = MemorySemantics.similarity(lhs: content, rhs: document.text)
-            let identifiersMatch = MemorySemantics.identifiersMatch(content, document.text)
-            guard similarity >= autoSupersedeSimilarityThreshold || identifiersMatch else { continue }
+            guard isSupersedeCandidate(
+                metadata: document.metadata,
+                supersededBy: document.supersededBy,
+                type: info.type,
+                project: project,
+                nowMs: nowMs
+            ) else { continue }
+            let other = MemorySemantics.TextSignature(document.text)
+            guard MemorySemantics.isNearTwin(newSignature, other) else { continue }
             selected.append(document.frameId)
         }
         return selected

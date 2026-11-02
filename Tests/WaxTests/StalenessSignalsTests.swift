@@ -39,10 +39,16 @@ private func stalenessHit(
     )
 }
 
+/// Same topic: 11/12 term Jaccard, above the near-twin threshold.
+private let staleOldDecision = "Prefer project-scoped recall and never auto-widen an empty project lane."
+private let staleNewDecision = "Prefer project-scoped recall and never auto-widen an empty project lane now."
+/// Same type, unrelated topic.
+private let unrelatedDecision = "Ship the Homebrew formula from the release workflow, not by hand."
+
 @Test
-func recallStaleHintFlagsOlderSameTypeHit() throws {
-    let old = stalenessHit(frameID: 1, score: 0.9, text: "old decision", type: .decision, timestampMs: 1_000)
-    let new = stalenessHit(frameID: 2, score: 0.8, text: "new decision", type: .decision, timestampMs: 2_000)
+func recallStaleHintFlagsOlderSameTypeSameTopicHit() throws {
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 2_000)
     #expect(RecallPresent.staleHints(for: [old, new]) == [true, false])
     #expect(RecallPresent.staleHints(for: [new]) == [false])
 
@@ -58,9 +64,27 @@ func recallStaleHintFlagsOlderSameTypeHit() throws {
 
 @Test
 func recallStaleHintIgnoresDifferentType() {
-    let old = stalenessHit(frameID: 1, score: 0.9, text: "old decision", type: .decision, timestampMs: 1_000)
-    let new = stalenessHit(frameID: 2, score: 0.8, text: "new fact", type: .fact, timestampMs: 2_000)
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .fact, timestampMs: 2_000)
     #expect(RecallPresent.staleHints(for: [old, new]) == [false, false])
+}
+
+@Test
+func recallStaleHintIgnoresSameTypeDifferentTopic() {
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: unrelatedDecision, type: .decision, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [old, new]) == [false, false])
+}
+
+@Test
+func recallStaleHintLeavesUnknownAndTiedTimestampsUnflagged() {
+    let unknown = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 0)
+    let known = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [unknown, known]) == [false, false])
+
+    let tiedOld = stalenessHit(frameID: 3, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 5_000)
+    let tiedNew = stalenessHit(frameID: 4, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 5_000)
+    #expect(RecallPresent.staleHints(for: [tiedOld, tiedNew]) == [false, false])
 }
 
 @Test
@@ -112,9 +136,8 @@ func staleTwinDemotionSkipsLockedAndForeignProjectFrames() {
     #expect(abs(demoted[2].score - 0.8) < 0.0001)
 }
 
-@Test
-func primeStaleHintFlagsOlderSameTypeItem() throws {
-    let envelope = MCPPrimeAssembly.assemble(
+private func primeStaleEnvelope(_ candidates: [MCPPrimeAssembly.Candidate]) -> MCPPrimeAssembly.Envelope {
+    MCPPrimeAssembly.assemble(
         MCPPrimeAssembly.Input(
             host: "claude",
             includePerson: false,
@@ -122,27 +145,54 @@ func primeStaleHintFlagsOlderSameTypeItem() throws {
             project: "Wax",
             repo: "Wax",
             personCandidates: [],
-            projectCandidates: [
-                MCPPrimeAssembly.Candidate(
-                    text: "old decision", memoryType: "decision",
-                    project: "Wax", repo: "Wax", score: 0.9, createdAtMs: 1_000
-                ),
-                MCPPrimeAssembly.Candidate(
-                    text: "new decision", memoryType: "decision",
-                    project: "Wax", repo: "Wax", score: 0.8, createdAtMs: 9_000
-                ),
-            ],
+            projectCandidates: candidates,
             handoff: nil
         ),
         tokenizer: .character,
         nowMs: 10_000
     )
-    let old = try #require(envelope.projectItems.first { $0.text == "old decision" })
-    let new = try #require(envelope.projectItems.first { $0.text == "new decision" })
+}
+
+private func primeDecision(_ text: String, createdAtMs: Int64, score: Double = 0.8) -> MCPPrimeAssembly.Candidate {
+    MCPPrimeAssembly.Candidate(
+        text: text, memoryType: "decision",
+        project: "Wax", repo: "Wax", score: score, createdAtMs: createdAtMs
+    )
+}
+
+@Test
+func primeStaleHintFlagsOlderSameTypeSameTopicItem() throws {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 1_000, score: 0.9),
+        primeDecision(staleNewDecision, createdAtMs: 9_000),
+    ])
+    let old = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
+    let new = try #require(envelope.projectItems.first { $0.text == staleNewDecision })
     #expect(old.staleHint == true)
     #expect(new.staleHint == false)
     #expect(envelope.renderedJSON.contains("\"stale_hint\":true"))
     #expect(envelope.hostContext.contains("stale"))
+}
+
+@Test
+func primeStaleHintIgnoresUnrelatedSameTypeItem() {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 1_000, score: 0.9),
+        primeDecision(unrelatedDecision, createdAtMs: 9_000),
+    ])
+    #expect(envelope.projectItems.allSatisfy { $0.staleHint == false })
+    #expect(envelope.renderedJSON.contains("stale_hint") == false)
+    #expect(envelope.hostContext.contains(" · stale") == false)
+}
+
+@Test
+func primeStaleHintLeavesUnknownTimestampUnflagged() throws {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 0, score: 0.9),
+        primeDecision(staleNewDecision, createdAtMs: 9_000),
+    ])
+    let unknown = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
+    #expect(unknown.staleHint == false)
 }
 
 @Test

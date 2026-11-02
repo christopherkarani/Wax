@@ -31,10 +31,13 @@ package enum AgentBrokerClient {
         envKey: "WAX_BROKER_SHUTDOWN_TIMEOUT_SECS",
         defaultValue: 2.0
     )
+    /// Defaults past the broker's embedder wait so a slow-but-successful
+    /// remember is not reported as a client timeout.
     package static let responseTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_RESPONSE_TIMEOUT_SECS",
-        defaultValue: 30.0
+        defaultValue: BrokerLimits.defaultClientResponseTimeoutSeconds
     )
+    private static let pollInterval: Duration = .milliseconds(50)
     private static let maxSocketResponseBytes = 1_048_576
 
     /// Silence window after our spawned peer exits before startup fails.
@@ -58,12 +61,12 @@ package enum AgentBrokerClient {
                 throw BrokerClientError("Broker did not respond after startup.")
             }
             if shutdownIfStarted, startedBroker, request.command != "shutdown" {
-                try shutdownStartedBroker(configuration: configuration)
+                try await shutdownStartedBroker(configuration: configuration)
             }
             return response
         } catch {
             if shutdownIfStarted, startedBroker, request.command != "shutdown" {
-                try? shutdownStartedBroker(configuration: configuration)
+                try? await shutdownStartedBroker(configuration: configuration)
             }
             throw error
         }
@@ -94,10 +97,22 @@ package enum AgentBrokerClient {
         return response
     }
 
+    /// Synchronous on purpose: callers run it from `defer`, which cannot
+    /// await. Async paths use ``shutdownStartedBroker(configuration:)``.
     package static func shutdownOwnedBrokerIfReachable(
         configuration: AgentBrokerConfiguration
     ) throws {
-        try shutdownStartedBroker(configuration: configuration)
+        guard try requestShutdown(configuration: configuration) else { return }
+        let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
+        while Date() < deadline {
+            if try brokerShutdownCompleted(
+                socketPath: configuration.socketPath,
+                storePath: configuration.storePath
+            ) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
     }
 
     package static func ensureAvailable(
@@ -123,8 +138,8 @@ package enum AgentBrokerClient {
             ), response.ok {
                 return false
             }
-            if try restartMuteOwnedBroker(configuration: configuration) {
-                return try startBrokerIfNeeded(
+            if try await restartMuteOwnedBroker(configuration: configuration) {
+                return try await startBrokerIfNeeded(
                     configuration: configuration,
                     timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
                 )
@@ -134,7 +149,7 @@ package enum AgentBrokerClient {
             )
         }
 
-        return try startBrokerIfNeeded(
+        return try await startBrokerIfNeeded(
             configuration: configuration,
             timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
         )
@@ -143,7 +158,7 @@ package enum AgentBrokerClient {
     private static func startBrokerIfNeeded(
         configuration: AgentBrokerConfiguration,
         timeoutSeconds: TimeInterval
-    ) throws -> Bool {
+    ) async throws -> Bool {
         #if os(iOS) || os(tvOS) || os(watchOS)
         throw BrokerClientError("Starting a broker process is not supported on this platform.")
         #else
@@ -205,7 +220,7 @@ package enum AgentBrokerClient {
                     return false
                 }
                 // Bind-first loser may still be exiting after the winner answered.
-                Thread.sleep(forTimeInterval: 0.05)
+                try await Task.sleep(for: pollInterval)
                 return process.isRunning
             }
 
@@ -230,7 +245,7 @@ package enum AgentBrokerClient {
                 failedFast = true
                 break
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(for: pollInterval)
         }
 
         if let response = try sendIfAvailable(
@@ -240,7 +255,7 @@ package enum AgentBrokerClient {
             return observedExitStatus == nil
         }
 
-        terminateLaunchedBroker(process)
+        await terminateLaunchedBroker(process)
 
         if let observedExitStatus, observedExitStatus != EXIT_SUCCESS {
             let stderrSuffix: String
@@ -264,28 +279,33 @@ package enum AgentBrokerClient {
         #endif
     }
 
-    private static func terminateLaunchedBroker(_ process: Process) {
+    private static func terminateLaunchedBroker(_ process: Process) async {
         guard process.isRunning else { return }
         process.terminate()
         let stopBy = Date().addingTimeInterval(0.5)
         while process.isRunning, Date() < stopBy {
-            Thread.sleep(forTimeInterval: 0.05)
+            // Cleanup must finish even when the caller was cancelled.
+            try? await Task.sleep(for: pollInterval)
         }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
     }
 
-    private static func shutdownStartedBroker(configuration: AgentBrokerConfiguration) throws {
+    /// Sends `shutdown` when the socket exists. Returns false when there is no socket.
+    private static func requestShutdown(configuration: AgentBrokerConfiguration) throws -> Bool {
         guard FileManager.default.fileExists(atPath: configuration.socketPath) else {
-            return
+            return false
         }
-
         _ = try sendIfAvailable(
             AgentBrokerRequest(id: "__shutdown__", command: "shutdown"),
             socketPath: configuration.socketPath
         )
+        return true
+    }
 
+    private static func shutdownStartedBroker(configuration: AgentBrokerConfiguration) async throws {
+        guard try requestShutdown(configuration: configuration) else { return }
         let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
         while Date() < deadline {
             if try brokerShutdownCompleted(
@@ -294,7 +314,7 @@ package enum AgentBrokerClient {
             ) {
                 return
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(for: pollInterval)
         }
     }
 
@@ -356,7 +376,7 @@ package enum AgentBrokerClient {
 
     /// Kill a mute `wax-cli` broker we can identify, then let `startBrokerIfNeeded` relaunch it.
     /// Foreign listeners (tests, other apps) are left alone.
-    private static func restartMuteOwnedBroker(configuration: AgentBrokerConfiguration) throws -> Bool {
+    private static func restartMuteOwnedBroker(configuration: AgentBrokerConfiguration) async throws -> Bool {
         #if canImport(Darwin)
         guard let pid = peerPID(socketPath: configuration.socketPath) else { return false }
         guard isWaxCLIProcess(pid: pid) else { return false }
@@ -367,10 +387,10 @@ package enum AgentBrokerClient {
             if !stillRunning, !isSocketLive(socketPath: configuration.socketPath) {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(for: pollInterval)
         }
         kill(pid, SIGKILL)
-        Thread.sleep(forTimeInterval: 0.15)
+        try await Task.sleep(for: .milliseconds(150))
         return !isSocketLive(socketPath: configuration.socketPath)
         #else
         return false
@@ -531,10 +551,12 @@ package enum AgentBrokerClient {
         treatTimeoutAsUnavailable: Bool = false
     ) throws -> String? {
         var buffer = Data()
-        let timeoutMS = Int32((timeoutSeconds ?? responseTimeoutSeconds) * 1000)
+        // One overall deadline: a broker trickling bytes must not reset the clock per chunk.
+        let deadline = Date().addingTimeInterval(timeoutSeconds ?? responseTimeoutSeconds)
         while true {
+            let remainingMS = Int32(max(0, min(Double(Int32.max), deadline.timeIntervalSinceNow * 1000)))
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, timeoutMS)
+            let pollResult = remainingMS > 0 ? poll(&descriptor, 1, remainingMS) : 0
             if pollResult == 0 {
                 if treatTimeoutAsUnavailable {
                     return nil

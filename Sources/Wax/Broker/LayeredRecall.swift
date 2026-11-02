@@ -477,7 +477,7 @@ package enum LayeredRecall {
             preview: @escaping @Sendable (String?) -> String,
             canonicalFrameID: @escaping @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?,
             endedSessions: any EndedSessionStore,
-            nowMs: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+            nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() }
         ) {
             self.longTermMemory = longTermMemory
             self.workingLane = workingLane
@@ -734,6 +734,22 @@ package enum LayeredRecall {
     package static let recallClusterJaccardThreshold: Float = 0.55
     package static let scorecardRankPenalty: Float = 0.40
     package static let unlandedSkipListPenalty: Float = 0.40
+    /// Lexical current-session hits rank ahead of durable neighbors.
+    package static let sessionLexicalBoost: Float = 0.12
+    /// A landed claim recorded on another (or unknown) checkout.
+    package static let offTreeLandedClaimPenalty: Float = 0.25
+    /// Locked "do not follow / stale frames" lists outside a stale lookup.
+    package static let lockedStaleIgnoreListPenalty: Float = 0.28
+    /// Standing memory younger than ``freshStandingMaxAgeDays``.
+    package static let freshStandingBoost: Float = 0.20
+    /// Standing memory older than ``agedStandingMinAgeDays``.
+    package static let agedStandingPenalty: Float = 0.12
+    package static let freshStandingMaxAgeDays: Float = 7
+    package static let agedStandingMinAgeDays: Float = 14
+    /// Maximum recency penalty for operational memory, reached at
+    /// ``operationalFreshnessWindowDays``.
+    package static let operationalFreshnessMaxPenalty: Float = 0.18
+    package static let operationalFreshnessWindowDays: Float = 30
 
     package static func collapsedTotal(in hits: [Hit]) -> Int {
         hits.reduce(0) { $0 + max(0, $1.collapsedCount - 1) }
@@ -796,7 +812,7 @@ package enum LayeredRecall {
             // working neighbors already have a similarity score; a flat boost
             // lets unrelated task_state beat the durable fact MiniLM ranked first.
             if hit.sources.contains(.text) || hit.sources.isEmpty {
-                copy.score += 0.12
+                copy.score += sessionLexicalBoost
             }
             if !copy.explanations.contains("current session") {
                 copy.explanations = ["current session"] + copy.explanations
@@ -819,10 +835,11 @@ package enum LayeredRecall {
         let clustered = clusterHits(ranked, identity: identity)
         var seen = Set<String>()
         var merged: [Hit] = []
-        // Default queries drop scorecards (oracle: absent unless asked). −0.40
-        // still applies in rankingAdjustedScore so a leaked card ranks below work.
+        // Default queries drop explicit session rubrics (oracle: absent unless
+        // asked). A bare "NN/100" is only demoted (−0.40 in rankingAdjustedScore)
+        // because real memories say "99/100 tests pass".
         for hit in clustered.sorted(by: higherRank) {
-            if looksScorecard(hit.text), !queryAsks { continue }
+            if looksSessionRubric(hit.text), !queryAsks { continue }
             guard seen.insert(identity(hit)).inserted else { continue }
             merged.append(hit)
             if merged.count >= limit { break }
@@ -870,19 +887,31 @@ package enum LayeredRecall {
         return merged
     }
 
+    /// Rating-shaped text: a "NN/100" figure or a session rubric. Demoted in
+    /// ranking unless the query asks for a rating; only rubrics are dropped.
     package static func looksScorecard(_ text: String) -> Bool {
         if isStaleIgnoreList(text) { return false }
         let lowered = text.lowercased()
         let ratingDump = lowered.range(of: #"\b\d{1,3}\s*/\s*100\b"#, options: .regularExpression) != nil
-        let sessionRubric = lowered.contains("for this session")
-            && lowered.contains("would use it again")
-        return ratingDump || sessionRubric
+        return ratingDump || looksSessionRubric(text)
     }
 
+    /// Explicit end-of-session rating ("… for this session; would use it again").
+    package static func looksSessionRubric(_ text: String) -> Bool {
+        if isStaleIgnoreList(text) { return false }
+        let lowered = text.lowercased()
+        return lowered.contains("for this session") && lowered.contains("would use it again")
+    }
+
+    /// Whole-word "rating(s)", "score(s)", "scorecard(s)", "scored". Substrings
+    /// such as "underscore" or "scoreboard" do not count.
     package static func queryAsksForRating(_ query: String?) -> Bool {
         let lowered = query?.lowercased() ?? ""
         guard !lowered.isEmpty else { return false }
-        return lowered.contains("rating") || lowered.contains("score")
+        return lowered.range(
+            of: #"\b(ratings?|scores?|scored|scorecards?)\b"#,
+            options: .regularExpression
+        ) != nil
     }
 
     private static func clusterHits(
@@ -974,22 +1003,17 @@ package enum LayeredRecall {
         } ?? group[0]
     }
 
+    private static let skipRerunPhrases = ["do not re-run", "don't re-run", "do not rerun"]
+    private static let skipReproposePhrases = ["do not re-propose", "don't re-propose"]
+
     package static func looksSkipThisSession(_ text: String) -> Bool {
         let lowered = text.lowercased()
-        let skipRun = lowered.contains("do not re-run")
-            || lowered.contains("don't re-run")
-            || lowered.contains("do not rerun")
-        return skipRun && lowered.contains("this session")
+        return skipRerunPhrases.contains { lowered.contains($0) } && lowered.contains("this session")
     }
 
     package static func looksSkipList(_ text: String) -> Bool {
         let lowered = text.lowercased()
-        if lowered.contains("do not re-run")
-            || lowered.contains("don't re-run")
-            || lowered.contains("do not rerun") {
-            return true
-        }
-        return lowered.contains("do not re-propose") || lowered.contains("don't re-propose")
+        return (skipRerunPhrases + skipReproposePhrases).contains { lowered.contains($0) }
     }
 
     private static func unlandedClaimIdentifiers(in hits: [Hit]) -> Set<String> {
@@ -1036,8 +1060,12 @@ package enum LayeredRecall {
     /// newer frame says nearly the same thing. Demote it so the newer twin
     /// wins the rank without a store rewrite. Locked frames stay protected.
     package static func demoteStaleNearTwins(_ hits: [Hit]) -> [Hit] {
-        hits.map { hit in
-            guard !isLockedHit(hit), hasNewerNearTwin(hit, in: hits) else { return hit }
+        let signatures = hits.map { MemorySemantics.TextSignature($0.text) }
+        return hits.indices.map { index in
+            let hit = hits[index]
+            guard !isLockedHit(hit), hasNewerNearTwin(at: index, in: hits, signatures: signatures) else {
+                return hit
+            }
             var copy = hit
             copy.score -= staleTwinRankPenalty
             if !copy.explanations.contains(staleTwinExplanation) {
@@ -1047,10 +1075,16 @@ package enum LayeredRecall {
         }
     }
 
-    private static func hasNewerNearTwin(_ hit: Hit, in hits: [Hit]) -> Bool {
+    private static func hasNewerNearTwin(
+        at index: Int,
+        in hits: [Hit],
+        signatures: [MemorySemantics.TextSignature]
+    ) -> Bool {
+        let hit = hits[index]
         let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
         let project = hit.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
-        return hits.contains { other in
+        return hits.indices.contains { otherIndex in
+            let other = hits[otherIndex]
             guard other.id != hit.id else { return false }
             guard (other.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue) == type else {
                 return false
@@ -1058,9 +1092,7 @@ package enum LayeredRecall {
             let otherProject = other.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
             guard otherProject == project else { return false }
             guard isNewerTwin(other, than: hit) else { return false }
-            return MemorySemantics.similarity(lhs: hit.text, rhs: other.text)
-                >= RememberAssembly.autoSupersedeSimilarityThreshold
-                || MemorySemantics.identifiersMatch(hit.text, other.text)
+            return MemorySemantics.isNearTwin(signatures[index], signatures[otherIndex])
         }
     }
 
@@ -1103,7 +1135,10 @@ package enum LayeredRecall {
             return hit.score
         }
         let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
-        let penalty = min(0.18, max(0, ageDays / 30) * 0.18)
+        let penalty = min(
+            operationalFreshnessMaxPenalty,
+            max(0, ageDays / operationalFreshnessWindowDays) * operationalFreshnessMaxPenalty
+        )
         return hit.score - penalty
     }
 
@@ -1129,7 +1164,7 @@ package enum LayeredRecall {
             }
         if let checkoutRelation, checkoutRelation == .other || checkoutRelation == .unknown,
            MemorySemantics.looksLandedClaim(metadata: hit.metadata, text: hit.text) {
-            score -= 0.25
+            score -= offTreeLandedClaimPenalty
         }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if looksScorecard(hit.text), !queryAsksForRating(trimmedQuery) {
@@ -1140,7 +1175,7 @@ package enum LayeredRecall {
         let queryLooksLikeStaleLookup = isStaleIgnoreList(trimmedQuery)
         let isLocked = hit.metadata[MemoryMetadataKeys.durability] == MemoryDurability.locked.rawValue
         if isLocked, isStaleIgnoreList(hit.text), !queryLooksLikeStaleLookup {
-            score -= 0.28
+            score -= lockedStaleIgnoreListPenalty
         }
 
         let type = MemoryType(rawValue: hit.metadata[MemoryMetadataKeys.type] ?? "")
@@ -1150,10 +1185,10 @@ package enum LayeredRecall {
         }
         if isStanding, hit.timestampMs > 0, nowMs > hit.timestampMs {
             let ageDays = Float(nowMs - hit.timestampMs) / 86_400_000
-            if ageDays < 7 {
-                score += 0.20
-            } else if ageDays > 14 {
-                score -= 0.12
+            if ageDays < freshStandingMaxAgeDays {
+                score += freshStandingBoost
+            } else if ageDays > agedStandingMinAgeDays {
+                score -= agedStandingPenalty
             }
         }
         return score

@@ -295,7 +295,8 @@ package enum BrokerMemoryInsights {
         documents: [MemoryOrchestrator.CorpusSourceDocument],
         accessStats: [UInt64: FrameAccessStats],
         facts: StructuredFactsResult?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64 = BrokerClock.nowMs(),
+        settings: MemoryRetentionSettings = .default
     ) -> BrokerMemoryHealth {
         var typedCounts: [String: Int] = [:]
         var expired: [UInt64] = []
@@ -321,7 +322,8 @@ package enum BrokerMemoryInsights {
             if MemoryRetention.isQuarantineCandidate(
                 metadata: document.metadata,
                 stats: accessStats[document.frameId],
-                nowMs: nowMs
+                nowMs: nowMs,
+                settings: settings
             ) {
                 quarantine.append(document.frameId)
             }

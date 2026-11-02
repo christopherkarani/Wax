@@ -308,7 +308,7 @@ struct RememberSupersedeTests {
         let firstText =
             "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
         let secondText =
-            "Still open on this tree: GitLiveProbe (C01), UniqueRanking (C02), CompactSummary (C03) — skip if already listed."
+            "Do not re-run C01 GitLiveProbe / C02 UniqueRanking / C03 CompactSummary this session."
         #expect(MemorySemantics.similarity(lhs: firstText, rhs: secondText) < 0.88)
         try await withSupersedeBroker { service in
             let first = try await rememberDurable(
@@ -327,6 +327,33 @@ struct RememberSupersedeTests {
             #expect(live.contains(second))
             #expect(live.contains(first) == false)
             #expect(await supersededBy(service, frameID: first) == second)
+        }
+    }
+
+    @Test
+    func distinctLessonsSharingIdentifiersBothStayLive() async throws {
+        let project = "wax-supersede-distinct-\(UUID().uuidString.prefix(6))"
+        let firstText = "Lesson: GitLiveProbe must call UniqueRanking before CompactSummary flushes."
+        let secondText =
+            "Lesson: CompactSummary crashes when UniqueRanking returns empty; GitLiveProbe unaffected."
+        #expect(MemorySemantics.identifiersMatch(firstText, secondText))
+        try await withSupersedeBroker { service in
+            let first = try await rememberDurable(
+                service,
+                content: firstText,
+                memoryType: "lesson",
+                project: project
+            )
+            let second = try await rememberDurable(
+                service,
+                content: secondText,
+                memoryType: "lesson",
+                project: project
+            )
+            let live = try await liveFrameIDs(service)
+            #expect(live.contains(first))
+            #expect(live.contains(second))
+            #expect(await supersededBy(service, frameID: first) == nil)
         }
     }
 
