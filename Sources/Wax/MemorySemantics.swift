@@ -945,7 +945,9 @@ package enum MemorySemantics {
         package let negated: Bool
 
         package init(_ text: String) {
-            let tokens = MemorySemantics.normalizedTextFingerprint(text).split(separator: " ").map(String.init)
+            let tokens = MemorySemantics.normalizedTextFingerprint(MemorySemantics.expandingNegatedContractions(text))
+                .split(separator: " ")
+                .map(String.init)
             let terms = Set(tokens)
             let identifiers = MemorySemantics.extractIdentifiers(text)
             let identifierTerms = Set(identifiers.flatMap { MemorySemantics.terms($0) })
@@ -984,14 +986,38 @@ package enum MemorySemantics {
         "might", "shall", "than", "then", "so", "if", "when", "s", "t",
     ]
 
-    /// Negation markers. Normalization splits "don't" into "don" + "t", so the
-    /// contracted stems are listed rather than the apostrophe forms. "without"
-    /// is left out: it qualifies ("without blocking") far more often than it negates.
-    private static let negationTerms: Set<String> = [
-        "not", "no", "never", "cannot",
-        "don", "doesn", "didn", "isn", "aren", "wasn", "weren",
-        "shouldn", "mustn", "couldn", "wouldn",
+    /// Negation markers. "n't" contractions are expanded to "not" first
+    /// (`expandingNegatedContractions`). "without" is left out: it qualifies
+    /// ("without blocking") far more often than it negates.
+    private static let negationTerms: Set<String> = ["not", "no", "never", "cannot"]
+
+    /// Contractions whose stem is not the positive verb ("can't" is not "ca not").
+    private static let irregularNegatedContractions: [(regex: NSRegularExpression, expansion: String)] = [
+        (makeRegex(#"(?i)\bcan['\u2019]t\b"#), "can not"),
+        (makeRegex(#"(?i)\bwon['\u2019]t\b"#), "will not"),
+        (makeRegex(#"(?i)\bshan['\u2019]t\b"#), "shall not"),
+        (makeRegex(#"(?i)\bain['\u2019]t\b"#), "is not"),
     ]
+    private static let negatedContractionRegex = makeRegex(#"(?i)n['\u2019]t\b"#)
+
+    /// Rewrites "n't" contractions (straight or curly apostrophe) as "not", so
+    /// "can't" / "don't" / "hasn't" read as negations instead of normalizing to
+    /// "can" + "t", which are both stopwords.
+    package static func expandingNegatedContractions(_ text: String) -> String {
+        var result = text
+        for contraction in irregularNegatedContractions {
+            result = replacing(contraction.regex, in: result, with: contraction.expansion)
+        }
+        return replacing(negatedContractionRegex, in: result, with: " not")
+    }
+
+    private static func replacing(_ regex: NSRegularExpression, in text: String, with template: String) -> String {
+        regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(text.startIndex..., in: text),
+            withTemplate: template
+        )
+    }
 
     /// True when a negation marker negates. Idioms that only look negative do
     /// not count: "no-op" (normalized "no op") and "not only".
@@ -1018,10 +1044,10 @@ package enum MemorySemantics {
     /// 7-40 hex chars with at least one letter and one digit: dates, plain
     /// numbers and hex-only words ("defaced") are not SHAs.
     private static let hexSHARegex = makeRegex(#"\b(?=[0-9a-fA-F]*[a-fA-F])(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{7,40}\b"#)
-    /// `PROJ-42` / `PR-145` style keys, or the repo's own `C01` (two or more
+    /// `PROJ-42` / `PR-145` / `CVE-2024-1234` style keys, or the repo's own `C01` (two or more
     /// digits) and `T1` IDs. Other letter+digit tokens (A1, L2, GPT4, ARM64,
     /// SHA256, MD5, X86, V2, S3, H264) name technologies, not tickets.
-    private static let ticketIDRegex = makeRegex(#"\b(?:[A-Z]{2,10}-\d{1,6}|C\d{2,4}|T\d{1,4})\b"#)
+    private static let ticketIDRegex = makeRegex(#"\b(?:[A-Z]{2,10}(?:-\d{1,6})+|C\d{2,4}|T\d{1,4})\b"#)
     /// Prefixes of standards written like ticket keys (UTF-8, SHA-256, ISO-8601).
     private static let standardKeyPrefixes: Set<String> = [
         "utf", "ucs", "sha", "aes", "des", "iso", "iec", "ieee", "rsa", "hmac",
@@ -1091,11 +1117,11 @@ package enum MemorySemantics {
     }
 
     /// Whether `newer` subsumes `older`, so `older` can be retired. Drives
-    /// write-time auto-supersede (destructive), read-time stale-twin demotion,
-    /// and `stale_hint` labels; callers pass the older and newer memory in order.
+    /// write-time auto-supersede, which is destructive; read-time hints use
+    /// `isStaleTwin`. Callers pass the older and newer memory in order.
     /// True iff all of:
-    /// 1. both agree on negation ("use X" vs "never use X"; "no-op", "not only"
-    ///    and "without" do not count as negation);
+    /// 1. both agree on negation ("use X" vs "never use X", "can't" vs "can";
+    ///    "no-op", "not only" and "without" do not count as negation);
     /// 2. every identifier `older` names (types, `#123`, SHAs, tickets) is also in `newer`;
     /// 3. every content term of `older` (lowercased terms minus identifier tokens,
     ///    stopwords and negations; numbers and units included) is also in `newer`:
@@ -1113,6 +1139,21 @@ package enum MemorySemantics {
 
     package static func isNearTwin(older: String, newer: String) -> Bool {
         isNearTwin(older: TextSignature(older), newer: TextSignature(newer))
+    }
+
+    /// Term Jaccard at or above this lets the advisory `isStaleTwin` match a
+    /// near-identical rewrite (a typo fix) that `isNearTwin` rejects.
+    package static let staleTwinSimilarityThreshold: Float = 0.88
+
+    /// Advisory, non-destructive test for `stale_hint` labels and read-time
+    /// stale-twin demotion: `isNearTwin(older:newer:)`, or a near-identical
+    /// rewrite (term Jaccard >= 0.88) whose negation agrees and which keeps
+    /// every identifier `older` names. Directional, like `isNearTwin`.
+    package static func isStaleTwin(older: TextSignature, newer: TextSignature) -> Bool {
+        if isNearTwin(older: older, newer: newer) { return true }
+        return older.negated == newer.negated
+            && older.identifiers.isSubset(of: newer.identifiers)
+            && similarity(older, newer) >= staleTwinSimilarityThreshold
     }
 
     private static func makeRegex(_ pattern: String) -> NSRegularExpression {

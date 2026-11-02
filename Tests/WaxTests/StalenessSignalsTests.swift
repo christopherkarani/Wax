@@ -136,6 +136,51 @@ func staleTwinDemotionSkipsLockedAndForeignProjectFrames() {
     #expect(abs(demoted[2].score - 0.8) < 0.0001)
 }
 
+/// A 20-term memory and its typo fix: term Jaccard 19/21 ≈ 0.905, but the newer
+/// text substitutes a term, so it does not subsume the older one.
+private let typoLesson =
+    "Lesson: the settings panel renderd every theme swatch twice after each window resize because layout invalidation fired before cache refresh."
+private let typoFixedLesson =
+    "Lesson: the settings panel rendered every theme swatch twice after each window resize because layout invalidation fired before cache refresh."
+
+@Test
+func nearIdenticalRewriteIsHintedAndDemotedButNeverAutoSuperseded() {
+    #expect(MemorySemantics.similarity(lhs: typoLesson, rhs: typoFixedLesson) >= 0.88)
+    // Destructive path stays strict.
+    #expect(!MemorySemantics.isNearTwin(older: typoLesson, newer: typoFixedLesson))
+
+    let old = stalenessHit(frameID: 1, score: 0.9, text: typoLesson, type: .lesson, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: typoFixedLesson, type: .lesson, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [old, new]) == [true, false])
+    let demoted = LayeredRecall.demoteStaleNearTwins([old, new])
+    #expect(demoted[0].explanations.contains(LayeredRecall.staleTwinExplanation))
+    #expect(demoted[1].explanations.isEmpty)
+
+    let envelope = primeStaleEnvelope([
+        primeDecision(typoLesson, createdAtMs: 1_000, score: 0.9),
+        primeDecision(typoFixedLesson, createdAtMs: 9_000),
+    ])
+    #expect(envelope.projectItems.first { $0.text == typoLesson }?.staleHint == true)
+    #expect(envelope.projectItems.first { $0.text == typoFixedLesson }?.staleHint == false)
+}
+
+@Test
+func advisoryTwinIsDirectionalOnIdentifiersAndNegation() {
+    // The newer text drops the #212 reference: not a restatement, even at high Jaccard.
+    let withRef = "Lesson: the settings panel rendered every theme swatch twice after each window resize because layout invalidation fired before cache refresh (#212)."
+    let flags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: withRef),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: typoFixedLesson),
+    ])
+    #expect(flags == [false, false])
+    let negated = typoFixedLesson.replacingOccurrences(of: "rendered every", with: "never rendered any")
+    let negatedFlags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: typoFixedLesson),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: negated),
+    ])
+    #expect(negatedFlags == [false, false])
+}
+
 private func primeStaleEnvelope(_ candidates: [MCPPrimeAssembly.Candidate]) -> MCPPrimeAssembly.Envelope {
     MCPPrimeAssembly.assemble(
         MCPPrimeAssembly.Input(

@@ -722,6 +722,36 @@ func supersedeNeverRetiresAMemoryWhoseContentTermWasSubstituted() {
 }
 
 @Test
+func supersedeTreatsContractedNegationAsNegation() {
+    #expect(!supersedes(
+        older: "WaxSession can't be shared across actors.",
+        newer: "WaxSession can be shared across actors."
+    ))
+    #expect(!supersedes(
+        older: "WaxSession can be shared across actors.",
+        newer: "WaxSession can\u{2019}t be shared across actors."
+    ))
+    #expect(!supersedes(
+        older: "The broker should retry a failed embed.",
+        newer: "The broker shouldn't retry a failed embed."
+    ))
+    // The same negation spelled two ways is still the same memory.
+    #expect(supersedes(
+        older: "WaxSession can't be shared across actors.",
+        newer: "WaxSession cannot be shared across actors."
+    ))
+    #expect(supersedes(
+        older: "The broker won't retry a failed embed.",
+        newer: "The broker will not retry a failed embed."
+    ))
+}
+
+@Test
+func identifierExtractionKeepsMultiPartTicketKeysWhole() {
+    #expect(MemorySemantics.extractIdentifiers("Patched CVE-2024-1234 today.") == ["cve-2024-1234"])
+}
+
+@Test
 func supersedeNeverLetsALongMemorySwallowAShortOne() {
     #expect(!supersedes(
         older: "Run the linter.",

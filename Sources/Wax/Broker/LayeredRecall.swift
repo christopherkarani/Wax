@@ -1092,7 +1092,7 @@ package enum LayeredRecall {
             let otherProject = other.metadata[MemoryMetadataKeys.project].flatMap { $0.isEmpty ? nil : $0 }
             guard otherProject == project else { return false }
             guard isNewerTwin(other, than: hit) else { return false }
-            return MemorySemantics.isNearTwin(older: signatures[index], newer: signatures[otherIndex])
+            return MemorySemantics.isStaleTwin(older: signatures[index], newer: signatures[otherIndex])
         }
     }
 
