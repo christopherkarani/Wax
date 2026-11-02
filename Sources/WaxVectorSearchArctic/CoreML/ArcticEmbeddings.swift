@@ -197,20 +197,6 @@ package final class ArcticEmbeddings {
             batchSize: sentences.count
         )
     }
-
-    /// Generate an embedding from pre-tokenized input IDs and attention mask.
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async -> [Float]? {
-        guard let embeddings = await batchPredictionOffPool(
-            inputIds: inputIds,
-            attentionMask: attentionMask,
-            batchSize: 1
-        ) else {
-            return nil
-        }
-
-        return embeddings.first
-    }
-
 }
 
 // MARK: - Sendable Conformances for CoreML Types

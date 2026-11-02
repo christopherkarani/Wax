@@ -184,12 +184,7 @@ package final class MiniLMEmbeddings {
         return embeddings.first
     }
 
-    /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    package func encode(batch sentences: [String]) async throws -> [[Float]]? {
-        var reuse: BatchInputBuffers?
-        return try await encode(batch: sentences, reuseBuffers: &reuse)
-    }
-
+    /// Encode a batch of sentences to embedding vectors, reusing input buffers across calls.
     package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
@@ -208,23 +203,6 @@ package final class MiniLMEmbeddings {
             batchSize: sentences.count
         )
     }
-
-    /// Generate embeddings from pre-tokenized input IDs and attention mask (for advanced use cases).
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async throws -> [[Float]]? {
-        guard let batchSize = Self.preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask) else {
-            return nil
-        }
-        guard let embeddings = try await batchPredictionOffPool(
-            inputIds: inputIds,
-            attentionMask: attentionMask,
-            batchSize: batchSize
-        ) else {
-            return nil
-        }
-
-        return embeddings
-    }
-
 }
 
 // MARK: - Sendable Conformances for CoreML Types
@@ -499,22 +477,6 @@ private extension MiniLMEmbeddings {
 
         return nil
     }
-
-    static func preTokenizedBatchSize(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> Int? {
-        let inputShape = inputIds.shape.map(\.intValue)
-        let maskShape = attentionMask.shape.map(\.intValue)
-        guard inputShape == maskShape else { return nil }
-        guard !inputShape.isEmpty else { return nil }
-
-        if inputShape.count == 1 {
-            return inputShape[0] > 0 ? 1 : nil
-        }
-
-        let batchSize = inputShape[0]
-        let sequenceLength = inputShape[1]
-        guard batchSize > 0, sequenceLength > 0 else { return nil }
-        return batchSize
-    }
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -526,13 +488,6 @@ package extension MiniLMEmbeddings {
         outputDimension: Int
     ) -> [[Float]]? {
         decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
-    }
-
-    static func _preTokenizedBatchSizeForTesting(
-        inputIds: MLMultiArray,
-        attentionMask: MLMultiArray
-    ) -> Int? {
-        preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask)
     }
 }
 #endif // canImport(CoreML)
