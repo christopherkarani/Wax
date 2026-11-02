@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Wax
+import WaxCore
 
 struct StatsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -120,9 +121,15 @@ struct StatsCommand: AsyncParsableCommand {
                 } else {
                     print("Embedder: none")
                 }
-                print("WAL: \(stats.wal.pendingBytes) bytes pending, seq \(stats.wal.committedSeq)-\(stats.wal.lastSeq)")
+                print(Self.walSummary(stats.wal))
             }
         }
+    }
+
+    /// Every open moves `lastSeq` about `walSize / 48` past `committedSeq` (the WAL replay
+    /// sequence floor), so the two are shown separately rather than as a pending range.
+    static func walSummary(_ wal: WaxWALStats) -> String {
+        "WAL: \(wal.pendingBytes) bytes pending (committed seq \(wal.committedSeq), last seq \(wal.lastSeq))"
     }
 }
 

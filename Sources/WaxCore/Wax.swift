@@ -43,6 +43,9 @@ package struct WaxWALStats: Equatable, Sendable {
     package var checkpointPos: UInt64
     package var pendingBytes: UInt64
     package var committedSeq: UInt64
+    /// The writer's last sequence. Every open moves it about `walSize / 48` past `committedSeq`
+    /// (the replay sequence floor), so `lastSeq - committedSeq` is not a pending-record count;
+    /// `pendingBytes` is.
     package var lastSeq: UInt64
     package var wrapCount: UInt64
     package var checkpointCount: UInt64
@@ -1155,6 +1158,11 @@ package actor Wax {
                         base.advanced(by: cursor).copyMemory(from: srcBase, byteCount: storedBytes.count)
                     }
                     cursor += storedBytes.count
+                }
+                // The WAL's durable anchor fsyncs before writing its first record. Write the
+                // mapped pages back first so that fsync is sure to cover these payloads.
+                if wal.needsDurableAnchor {
+                    try region.sync()
                 }
             }
         }

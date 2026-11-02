@@ -316,6 +316,8 @@ func walFirstAppendAfterResumeIsADurableAnchor(batch: Bool) throws {
         // fsync before the first record, then again right after it; none after that under `.onCommit`.
         #expect(writer.fsyncCount == 2)
         #expect(!writer.needsDurableAnchor)
+        // The anchor's fsync made the first record durable, so only the later two count toward `.everyBytes`.
+        #expect(writer.bytesSinceFsync == 2 * 64)
         if batch {
             // The first record is written on its own; the rest and the sentinel follow in one write.
             #expect(writer.writeCallCount == 2)

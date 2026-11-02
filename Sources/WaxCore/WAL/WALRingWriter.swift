@@ -105,6 +105,8 @@ package final class WALRingWriter {
         var writes = CoalescedWrites()
         /// Number of leading write operations that end with the first data record.
         var anchorOperationCount: Int?
+        /// Bytes written by those leading operations.
+        var anchoredBytes: UInt64 = 0
         var lastSequence: UInt64
         var sequences: [UInt64] = []
         var bytesBeforeTrailingTail: UInt64 = 0
@@ -142,6 +144,7 @@ package final class WALRingWriter {
                 encoded.bytesBeforeTrailingTail = encoded.writes.totalBytes
                 if splitAfterFirstRecord, encoded.anchorOperationCount == nil {
                     encoded.anchorOperationCount = encoded.writes.operations.count
+                    encoded.anchoredBytes = encoded.writes.totalBytes
                     encoded.writes.seal()
                 }
             }
@@ -164,13 +167,7 @@ package final class WALRingWriter {
         var writes = encoded.writes
         let sequence = encoded.lastSequence
         let sequences = encoded.sequences
-        let fsyncBytes: UInt64
-        switch fsyncAccounting {
-        case .ringBytesConsumed:
-            fsyncBytes = plan.pendingBytes - pendingBytes
-        case .bytesWrittenBeforeTrailingTail:
-            fsyncBytes = encoded.bytesBeforeTrailingTail
-        }
+        let fsyncBytes = unsyncedBytes(after: encoded, plan: plan, accounting: fsyncAccounting)
         if plan.writesSentinel {
             writes.append(Self.sentinelData, at: walOffset + plan.writePos)
         }
@@ -194,6 +191,24 @@ package final class WALRingWriter {
         }
     }
 
+    /// Bytes this append adds toward the `.everyBytes` threshold. An anchored append has already
+    /// fsynced everything up to its first record, so only the writes after that count.
+    private func unsyncedBytes(
+        after encoded: EncodedPlan,
+        plan: WALAppendPlan,
+        accounting: FsyncAccounting
+    ) -> UInt64 {
+        if needsDurableAnchor {
+            return encoded.writes.totalBytes - encoded.anchoredBytes
+        }
+        switch accounting {
+        case .ringBytesConsumed:
+            return plan.pendingBytes - pendingBytes
+        case .bytesWrittenBeforeTrailingTail:
+            return encoded.bytesBeforeTrailingTail
+        }
+    }
+
     /// Issues the planned file writes. While `needsDurableAnchor` is set, everything already on
     /// disk is fsynced first, and the writes up to the first data record are fsynced before the rest.
     private func perform(_ operations: [(offset: UInt64, bytes: Data)], anchorOperationCount: Int?) throws {
@@ -204,6 +219,7 @@ package final class WALRingWriter {
                 try writeAllCounted(write.bytes, at: write.offset)
             }
             try fsyncCounted()
+            bytesSinceFsync = 0
             needsDurableAnchor = false
         }
         for write in operations[anchorEnd...] {
