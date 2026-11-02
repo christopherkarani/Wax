@@ -1909,7 +1909,13 @@ extension AgentBrokerService {
         }
         quarantineSoftDeletes = quarantineIDs.count
         if apply {
-            try await longTermMemory.delete(frameIds: quarantineIDs)
+            do {
+                try await longTermMemory.delete(frameIds: quarantineIDs)
+            } catch let partial as MemoryOrchestrator.PartialDeleteError {
+                // Flush the committed part; the error states how many were deleted.
+                try await longTermMemory.flush()
+                throw partial
+            }
             if !quarantineIDs.isEmpty {
                 try await longTermMemory.flush()
             }

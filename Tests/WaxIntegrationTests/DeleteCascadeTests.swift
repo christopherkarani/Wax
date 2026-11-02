@@ -135,20 +135,86 @@ func batchDeleteWithUnknownIDLeavesNothingPending() async throws {
     }
 }
 
-// MARK: - Forget reports batched deletes as all-or-nothing
+// MARK: - Forget reports what a failed batch actually deleted
+
+private struct InjectedDeleteFailure: Error {}
+
+/// Fails the `failOn`-th call of `step`, counting from 1.
+private final class DeleteStepFailer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private let step: MemoryOrchestrator.DeleteStep
+    private let failOn: Int
+
+    init(step: MemoryOrchestrator.DeleteStep, failOn: Int) {
+        self.step = step
+        self.failOn = failOn
+    }
+
+    func check(_ step: MemoryOrchestrator.DeleteStep, _ frameId: UInt64) throws {
+        guard step == self.step else { return }
+        lock.lock()
+        calls += 1
+        let current = calls
+        lock.unlock()
+        if current == failOn { throw InjectedDeleteFailure() }
+    }
+}
+
+/// Forgets three one-frame memories with the second call of `step` failing.
+/// Returns the reported result, how many of the three are deleted after
+/// reopen, and how many are still found by search.
+private func forgetWithFailure(
+    at step: MemoryOrchestrator.DeleteStep,
+    url: URL
+) async throws -> (result: WaxMemoryToolResult, deletedAfterReopen: Int, searchableAfterReopen: Int) {
+    let orchestrator = try await textOnlyOrchestrator(at: url)
+    var ids: [UInt64] = []
+    for label in ["one", "two", "three"] {
+        ids.append(try await orchestrator.remember("Feldspar card \(label)").frameId)
+    }
+    try await orchestrator.flush()
+
+    let failer = DeleteStepFailer(step: step, failOn: 2)
+    await orchestrator.setDeleteStepHookForTesting { try failer.check($0, $1) }
+    let result = await WaxMemoryToolExecutor.execute(
+        memory: Memory(orchestrator: orchestrator),
+        config: WaxMemoryToolConfig(),
+        action: .forget,
+        query: "feldspar card"
+    )
+    await orchestrator.setDeleteStepHookForTesting(nil)
+    try await orchestrator.close()
+
+    let reopened = try await textOnlyOrchestrator(at: url)
+    let live = await activeIDs(reopened)
+    let hits = try await reopened.recallExecution(query: "feldspar card", mode: .textOnly).context.items
+    try await reopened.close()
+    let searchable = Set(hits.map(\.frameId)).intersection(ids).count
+    return (result, ids.filter { !live.contains($0) }.count, searchable)
+}
 
 @Test
-func forgetBatchFailureReportsZeroDeleted() async {
-    struct Boom: Error {}
-    let failed = await WaxMemoryToolExecutor.deleteFramesReportingPartial(frameIDs: [1, 2, 3]) { _ in
-        throw Boom()
+func forgetReportsTrueCountWhenSoftDeleteFailsPartWay() async throws {
+    try await TempFiles.withTempFile { url in
+        let outcome = try await forgetWithFailure(at: .softDelete, url: url)
+        #expect(outcome.result.status == .error)
+        #expect(outcome.deletedAfterReopen == 1)
+        #expect(outcome.result.itemCount == outcome.deletedAfterReopen)
+        #expect(outcome.result.message.contains("deleted 1 memory frame"))
+        // The two frames that were not deleted are still searchable.
+        #expect(outcome.searchableAfterReopen == 2)
     }
-    #expect(failed.deleted == 0)
-    #expect(failed.failure is Boom)
+}
 
-    let succeeded = await WaxMemoryToolExecutor.deleteFramesReportingPartial(frameIDs: [1, 2, 3]) { ids in
-        #expect(ids == [1, 2, 3])
+@Test
+func forgetReportsTrueCountWhenIndexRemovalFails() async throws {
+    try await TempFiles.withTempFile { url in
+        // Index removal runs after every soft-delete, so all three are deleted.
+        let outcome = try await forgetWithFailure(at: .indexRemoval, url: url)
+        #expect(outcome.result.status == .error)
+        #expect(outcome.deletedAfterReopen == 3)
+        #expect(outcome.result.itemCount == 3)
+        #expect(outcome.searchableAfterReopen == 0)
     }
-    #expect(succeeded.deleted == 3)
-    #expect(succeeded.failure == nil)
 }

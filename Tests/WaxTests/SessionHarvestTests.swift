@@ -747,6 +747,63 @@ func maintainApplySoftDeletesAgedWorkingNotes() async throws {
 }
 
 @Test
+func maintainApplyReportsPartialQuarantineAndKeepsWhatItDeleted() async throws {
+    struct InjectedFailure: Error {}
+    let needles = (0..<2).map { _ in "WAXQPART-\(UUID().uuidString.prefix(8))" }
+    let created = Int64(Date().timeIntervalSince1970 * 1000) - 31 * 24 * 60 * 60 * 1000
+    try await withHarvestBroker { service, _ in
+        for needle in needles {
+            _ = try await service.longTermMemory.remember(
+                "Working scratch \(needle) should be quarantined after 30 days.",
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                    MemoryMetadataKeys.project: harvestProject,
+                    MemoryMetadataKeys.repo: harvestProject,
+                    MemoryMetadataKeys.createdAtMs: String(created),
+                ]
+            )
+        }
+        try await service.longTermMemory.flush()
+
+        // Let the first soft-delete through, fail every later one.
+        let firstDeleted = FirstCallFlag()
+        await service.longTermMemory.setDeleteStepHookForTesting { step, _ in
+            guard step == .softDelete else { return }
+            if firstDeleted.testAndSet() { throw InjectedFailure() }
+        }
+        let applied = await service.handle(.init(
+            command: "memory_maintain",
+            arguments: ["apply": .bool(true)]
+        ))
+        await service.longTermMemory.setDeleteStepHookForTesting(nil)
+
+        #expect(applied.ok == false)
+        #expect((applied.error ?? "").contains("deleted 1 of 2"), "error: \(applied.error ?? "nil")")
+        var remaining = 0
+        for needle in needles {
+            let recall = try await projectRecall(service, query: needle)
+            if firstHitText(recall).contains(needle) { remaining += 1 }
+        }
+        #expect(remaining == 1, "remaining: \(remaining)")
+    }
+}
+
+/// Returns false on the first call and true afterwards.
+private final class FirstCallFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set = false
+
+    func testAndSet() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let was = set
+        set = true
+        return was
+    }
+}
+
+@Test
 func coldDurableFramesAreOmittedFromHybridParaphraseRecall() async throws {
     let needle = "WAXCOLD-\(UUID().uuidString.prefix(8))"
     try await withHarvestBroker { service, _ in

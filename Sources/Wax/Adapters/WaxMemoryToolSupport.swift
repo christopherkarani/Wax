@@ -584,7 +584,7 @@ public enum WaxMemoryToolExecutor: Sendable {
             frameIDs.append(item.frameId)
         }
 
-        let outcome = await deleteFramesReportingPartial(
+        let outcome = await deleteFramesReportingCount(
             frameIDs: frameIDs,
             delete: { try await memory.delete(frameIDs: $0) }
         )
@@ -607,13 +607,15 @@ public enum WaxMemoryToolExecutor: Sendable {
         )
     }
 
-    /// Deletes all frames in one batch and reports how many were deleted.
+    /// Deletes all frames in one batch and reports how many requested frames
+    /// were deleted.
     ///
-    /// The batch commits once and checks every ID before mutating, so a failure
-    /// reports `0` deleted rather than a count of frames that were never committed.
+    /// A batch that fails before writing anything reports `0`. A batch that
+    /// fails part-way throws ``MemoryOrchestrator/PartialDeleteError``, whose
+    /// committed ids are the count reported.
     ///
     /// Package-visible so unit tests can inject a throwing `delete` without a live store.
-    package static func deleteFramesReportingPartial(
+    package static func deleteFramesReportingCount(
         frameIDs: [UInt64],
         delete: ([UInt64]) async throws -> Void
     ) async -> (deleted: Int, failure: Error?) {
@@ -621,6 +623,8 @@ public enum WaxMemoryToolExecutor: Sendable {
         do {
             try await delete(frameIDs)
             return (frameIDs.count, nil)
+        } catch let partial as MemoryOrchestrator.PartialDeleteError {
+            return (partial.deletedFrameIds.count, partial.underlying)
         } catch {
             return (0, error)
         }

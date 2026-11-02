@@ -428,7 +428,9 @@ package struct FastRAGContextBuilder: Sendable {
         guard intent.contains(.asksDate), text != preview else { return text }
         let tokens = await countTokens(text)
         guard tokens > maxTokens else { return text }
-        let fitted = max(1, maxCharacters * maxTokens / tokens)
+        // Never cut below the date literal itself.
+        let literalLength = analyzer.dateLiterals(in: frameText).first?.count ?? 1
+        let fitted = max(literalLength, maxCharacters * maxTokens / tokens)
         return expandedSnippetText(
             preview: preview,
             frameText: frameText,

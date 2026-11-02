@@ -610,10 +610,22 @@ func waxMemoryToolKitCasesAreDistinct() {
 func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async {
     enum Boom: Error { case stop }
 
-    // The renderer reports whatever count the delete produced.
+    // A batch that fails part-way reports the ids it committed.
+    let outcome = await WaxMemoryToolExecutor.deleteFramesReportingCount(
+        frameIDs: [10, 20, 30, 40]
+    ) { _ in
+        throw MemoryOrchestrator.PartialDeleteError(
+            deletedFrameIds: [10, 20],
+            requestedCount: 4,
+            underlying: Boom.stop
+        )
+    }
+    #expect(outcome.deleted == 2)
+    #expect(outcome.failure is Boom)
+
     let partialMessage = WaxMemoryToolRenderer.renderForgetPartial(
         query: "secrets",
-        deletedCount: 2,
+        deletedCount: outcome.deleted,
         failure: "injected delete failure"
     )
     #expect(partialMessage.contains("2"))
@@ -623,22 +635,22 @@ func waxMemoryToolForgetPartialDeleteReportsAccurateItemCount() async {
     let result = WaxMemoryToolResult.error(
         action: "forget",
         message: partialMessage,
-        itemCount: 2
+        itemCount: outcome.deleted
     )
     #expect(result.status == .error)
     #expect(result.itemCount == 2)
     #expect(result.message.contains("2"))
     #expect(!result.isSuccess)
 
-    // Zero successes still report itemCount 0.
-    let zero = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+    // A batch that fails before writing reports 0.
+    let zero = await WaxMemoryToolExecutor.deleteFramesReportingCount(
         frameIDs: [1]
     ) { _ in throw Boom.stop }
     #expect(zero.deleted == 0)
     #expect(zero.failure != nil)
 
     // All succeed → no failure.
-    let ok = await WaxMemoryToolExecutor.deleteFramesReportingPartial(
+    let ok = await WaxMemoryToolExecutor.deleteFramesReportingCount(
         frameIDs: [1, 2]
     ) { _ in }
     #expect(ok.deleted == 2)

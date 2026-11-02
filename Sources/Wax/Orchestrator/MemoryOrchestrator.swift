@@ -249,6 +249,14 @@ package actor MemoryOrchestrator {
         coverageReadFailureForTesting = error
     }
 
+    /// Test seam: called before each index removal and each soft-delete in
+    /// ``delete(frameIds:)``; throwing there simulates that step failing.
+    private var deleteStepHookForTesting: (@Sendable (DeleteStep, UInt64) throws -> Void)? = nil
+
+    package func setDeleteStepHookForTesting(_ hook: (@Sendable (DeleteStep, UInt64) throws -> Void)?) {
+        deleteStepHookForTesting = hook
+    }
+
     package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
         accessStatsPersistenceHoldForTesting = duration
     }
@@ -2068,15 +2076,43 @@ package actor MemoryOrchestrator {
         try await delete(frameIds: [frameId])
     }
 
+    /// The two phases of ``delete(frameIds:)``, named for its test seam.
+    package enum DeleteStep: Sendable, Equatable {
+        case indexRemoval
+        case softDelete
+    }
+
+    /// Thrown by ``delete(frameIds:)`` when it fails after writing
+    /// soft-deletes. What was written is committed before this is thrown.
+    package struct PartialDeleteError: Error, CustomStringConvertible, LocalizedError {
+        /// Requested ids whose frame and descendants are all deleted.
+        package var deletedFrameIds: [UInt64]
+        package var requestedCount: Int
+        package var underlying: any Error
+
+        package var description: String {
+            "deleted \(deletedFrameIds.count) of \(requestedCount) frames, then failed: \(underlying)"
+        }
+
+        package var errorDescription: String? { description }
+    }
+
     /// Deletes several frames and all their descendants with one metadata scan
     /// and one commit.
     ///
     /// Descendants are found through `parentId` at any depth (document ->
     /// chunk -> enrichment). A requested frame that is already deleted still
     /// cascades to its live descendants, which repairs stores written before
-    /// delete cascaded. Every requested id is checked before anything is
-    /// mutated, so an unknown id throws ``WaxError/frameNotFound(frameId:)``
-    /// and deletes nothing.
+    /// delete cascaded.
+    ///
+    /// Every id is checked first; an unknown id throws
+    /// ``WaxError/frameNotFound(frameId:)`` and nothing is written. Frames are
+    /// then soft-deleted, each requested frame's descendants before the frame
+    /// itself, and only frames that are deleted are removed from the indexes.
+    /// That order never leaves a live frame unindexed (search already hides
+    /// deleted frames). If a soft-delete or index removal fails, what was
+    /// written is committed and ``PartialDeleteError`` names the requested ids
+    /// that are fully deleted.
     package func delete(frameIds: [UInt64]) async throws {
         guard !frameIds.isEmpty else { return }
         lastWriteActivityAt = .now
@@ -2086,32 +2122,96 @@ package actor MemoryOrchestrator {
         if let unknown = frameIds.first(where: { statusById[$0] == nil }) {
             throw WaxError.frameNotFound(frameId: unknown)
         }
-        let targets = Self.frameIdsWithDescendants(frameIds, metas: metas)
+        let roots = Self.uniqued(frameIds)
+        let softDeletes = await softDeleteTrees(roots, children: Self.childrenByParent(metas), statusById: statusById)
 
-        for id in targets {
-            if statusById[id] == .active {
-                try await wax.delete(frameId: id)
+        var failure = softDeletes.failure
+        do {
+            for id in softDeletes.removedFromIndex {
+                try deleteStepHookForTesting?(.indexRemoval, id)
+                if config.enableTextSearch {
+                    try await session.removeText(frameId: id)
+                }
+                if config.enableVectorSearch {
+                    try await session.removeVector(frameId: id)
+                }
             }
-            if config.enableTextSearch {
-                try await session.removeText(frameId: id)
-            }
-            if config.enableVectorSearch {
-                try await session.removeVector(frameId: id)
-            }
+        } catch {
+            failure = failure ?? error
         }
-        try await session.commit()
+        guard let failure else {
+            try await session.commit()
+            return
+        }
+        await commitAfterPartialDelete()
+        throw PartialDeleteError(
+            deletedFrameIds: softDeletes.deletedRoots,
+            requestedCount: roots.count,
+            underlying: failure
+        )
     }
 
-    /// The requested ids plus every frame reachable from them through `parentId`,
-    /// in visit order. Already-deleted descendants are still walked so their own
-    /// live children are found.
-    private static func frameIdsWithDescendants(_ roots: [UInt64], metas: [FrameMeta]) -> [UInt64] {
+    /// Soft-deletes each root's tree, leaves first, stopping at the first
+    /// failure. `removedFromIndex` is every visited frame that is now deleted
+    /// (written here or deleted before).
+    private func softDeleteTrees(
+        _ roots: [UInt64],
+        children: [UInt64: [UInt64]],
+        statusById: [UInt64: FrameStatus]
+    ) async -> (deletedRoots: [UInt64], removedFromIndex: [UInt64], failure: (any Error)?) {
+        var handled: Set<UInt64> = []
+        var deletedRoots: [UInt64] = []
+        var removedFromIndex: [UInt64] = []
+        for root in roots {
+            let tree = Self.frameIdsWithDescendants([root], children: children).filter { !handled.contains($0) }
+            for id in tree.reversed() {
+                if statusById[id] == .active {
+                    do {
+                        try deleteStepHookForTesting?(.softDelete, id)
+                        try await wax.delete(frameId: id)
+                    } catch {
+                        return (deletedRoots, removedFromIndex, error)
+                    }
+                }
+                handled.insert(id)
+                removedFromIndex.append(id)
+            }
+            deletedRoots.append(root)
+        }
+        return (deletedRoots, removedFromIndex, nil)
+    }
+
+    private func commitAfterPartialDelete() async {
+        do {
+            try await session.commit()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "commit after partial delete",
+                fallback: "written soft-deletes stay in the WAL and apply on the next commit or reopen"
+            )
+        }
+    }
+
+    private static func childrenByParent(_ metas: [FrameMeta]) -> [UInt64: [UInt64]] {
         var children: [UInt64: [UInt64]] = [:]
         for meta in metas {
             if let parent = meta.parentId {
                 children[parent, default: []].append(meta.id)
             }
         }
+        return children
+    }
+
+    private static func uniqued(_ ids: [UInt64]) -> [UInt64] {
+        var seen: Set<UInt64> = []
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    /// The requested ids plus every frame reachable from them through `parentId`,
+    /// in visit order. Already-deleted descendants are still walked so their own
+    /// live children are found.
+    private static func frameIdsWithDescendants(_ roots: [UInt64], children: [UInt64: [UInt64]]) -> [UInt64] {
         var visited: Set<UInt64> = []
         var ordered: [UInt64] = []
         var queue = roots
