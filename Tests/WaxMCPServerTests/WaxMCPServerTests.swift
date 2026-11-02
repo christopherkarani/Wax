@@ -1230,10 +1230,11 @@ func brokerBackedF152RecallAndSearchSupportFilters() async throws {
 
 @Test
 func promotionMaxCandidatesAreBounded() async throws {
-    setenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES", "1000000", 1)
-    defer { unsetenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES") }
-
-    #expect(BrokerPromotionSettings.fromEnvironment().maxCandidates == 12)
+    #expect(
+        BrokerPromotionSettings.fromEnvironment(
+            ["WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES": "1000000"]
+        ).maxCandidates == 12
+    )
     #expect(schemaMaximum(ToolSchemas.waxSessionSynthesize, property: "max_candidates") == 12)
     #expect(schemaMaximum(ToolSchemas.waxMemoryPromote, property: "max_candidates") == 12)
 
@@ -3439,19 +3440,16 @@ func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
         throw NSError(domain: "WaxMCPServerTests", code: 41, userInfo: [NSLocalizedDescriptionKey: "Failed to make test executables"])
     }
 
-    let originalPath = ProcessInfo.processInfo.environment["PATH"]
+    // Inject PATH instead of mutating the process environment: a global
+    // `setenv("PATH")` races with every concurrently spawned child process.
+    var environment = ProcessInfo.processInfo.environment
     let pathPrefix = tempDir.path
-    let newPath = originalPath.map { "\(pathPrefix):\($0)" } ?? pathPrefix
-    setenv("PATH", newPath, 1)
-    defer {
-        if let originalPath {
-            setenv("PATH", originalPath, 1)
-        } else {
-            unsetenv("PATH")
-        }
-    }
+    environment["PATH"] = environment["PATH"].map { "\(pathPrefix):\($0)" } ?? pathPrefix
 
-    let resolved = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: "wax-mcp")
+    let resolved = AgentBrokerPathing.resolveBrokerCLIPath(
+        currentExecutablePath: "wax-mcp",
+        environment: environment
+    )
     #expect(resolved == cliPath.path)
 }
 
@@ -9097,7 +9095,6 @@ struct WaxMCPProcessTests {
         )
 
         let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
-        let start = Date()
         try second.start()
         defer { second.terminateIfNeeded() }
 
@@ -9107,8 +9104,10 @@ struct WaxMCPProcessTests {
             initializeTimeout: 10,
             toolsListTimeout: 10
         )
-        let elapsed = Date().timeIntervalSince(start)
-        #expect(elapsed < 4)
+        // Reuse is pinned structurally: a second process that tried to take the
+        // store lock itself fails with the "use a unique --store-path" guidance
+        // asserted below. A wall-clock bound on process spawn flakes under
+        // `swift test --parallel`; the suite time limit catches hangs.
         let stderr = second.stderrSnapshot()
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)

@@ -312,8 +312,9 @@ package enum AgentBrokerPathing {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    package static func brokerSocketRoot() -> URL {
-        let env = ProcessInfo.processInfo.environment
+    package static func brokerSocketRoot(
+        environment env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
         if let raw = env["WAX_BROKER_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             return URL(fileURLWithPath: expandPath(raw), isDirectory: true)
@@ -352,16 +353,17 @@ package enum AgentBrokerPathing {
     }
 
     package static func resolveBrokerCLIPath(
-        currentExecutablePath: String
+        currentExecutablePath: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
-        if let executableURL = resolvedExecutableURL(for: currentExecutablePath) {
+        if let executableURL = resolvedExecutableURL(for: currentExecutablePath, environment: environment) {
             let sibling = executableURL.deletingLastPathComponent().appendingPathComponent("wax-cli").path
             if FileManager.default.isExecutableFile(atPath: sibling) {
                 return sibling
             }
         }
 
-        if let resolvedOnPath = resolveExecutableOnPath("wax-cli") {
+        if let resolvedOnPath = resolveExecutableOnPath("wax-cli", environment: environment) {
             return resolvedOnPath
         }
         return "wax-cli"
@@ -399,17 +401,19 @@ package enum AgentBrokerPathing {
         embedderChoice: String,
         noEmbedder: Bool,
         requireVector: Bool = false,
-        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
+        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentBrokerConfiguration {
         let expandedStore = expandPath(storePath)
         let expandedSessionRoot = resolveSessionRootPath(
             storePath: expandedStore,
-            sessionRootPath: sessionRootPath
+            sessionRootPath: sessionRootPath,
+            environment: environment
         )
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"
         let socketName = "\(stableHexHash(key)).sock"
-        let preferredSocketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot()
+        let preferredSocketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot(environment: environment)
         let socketRoot = try usableSocketRoot(preferred: preferredSocketRoot, socketName: socketName)
         let socketPath = socketRoot.appendingPathComponent(socketName).path
 
@@ -518,14 +522,17 @@ package enum AgentBrokerPathing {
         return parts.joined(separator: "|")
     }
 
-    private static func resolvedExecutableURL(for currentExecutablePath: String) -> URL? {
+    private static func resolvedExecutableURL(
+        for currentExecutablePath: String,
+        environment: [String: String]
+    ) -> URL? {
         let trimmed = currentExecutablePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         let candidatePath: String
         if trimmed.contains("/") {
             candidatePath = expandPath(trimmed)
-        } else if let resolvedOnPath = resolveExecutableOnPath(trimmed) {
+        } else if let resolvedOnPath = resolveExecutableOnPath(trimmed, environment: environment) {
             candidatePath = resolvedOnPath
         } else {
             return nil
@@ -536,13 +543,17 @@ package enum AgentBrokerPathing {
             .standardizedFileURL
     }
 
-    private static func resolveExecutableOnPath(_ tool: String) -> String? {
+    private static func resolveExecutableOnPath(
+        _ tool: String,
+        environment: [String: String]
+    ) -> String? {
         #if os(iOS) || os(tvOS) || os(watchOS)
         nil
         #else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["which", tool]
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

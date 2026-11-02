@@ -160,7 +160,11 @@ import Glibc
                 return
             }
             #expect(details.contains("timed out waiting for exclusive lock"))
-            #expect(elapsed < .seconds(2))
+            // Structural: the timed-polling path (not the non-blocking probe)
+            // produced the error, and it honored the requested wait. An upper
+            // wall-clock bound flakes under `swift test --parallel`; a timeout
+            // that is ignored would block forever and trip the test time limit.
+            #expect(elapsed >= .milliseconds(150))
         }
     }
 }

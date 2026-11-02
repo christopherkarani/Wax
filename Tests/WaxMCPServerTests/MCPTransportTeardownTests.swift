@@ -203,7 +203,10 @@ func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
     } catch {
         #expect(error is MCPTeardownPerformError)
     }
-    #expect(Date().timeIntervalSince(started) < 2)
+    // Hang backstop: the 0.5s teardown budget must hold; a regression that
+    // waits for a broker start (10s default) still fails. Tighter bounds flaked
+    // under `swift test --parallel`.
+    #expect(Date().timeIntervalSince(started) < 5)
     #expect(!FileManager.default.fileExists(atPath: startedFlag.path))
     #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
 }

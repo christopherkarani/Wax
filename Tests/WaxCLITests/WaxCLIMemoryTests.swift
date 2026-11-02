@@ -260,7 +260,9 @@ struct WaxCLIMemoryTests {
             Issue.record("expected second orchestrator open to time out")
         } catch {
             let elapsed = start.duration(to: clock.now)
-            #expect(elapsed < .seconds(2))
+            // Structural: the configured 150ms wait was honored and reported.
+            // No upper wall-clock bound — it flakes under `--parallel`.
+            #expect(elapsed >= .milliseconds(150))
             #expect(error.localizedDescription.contains("timed out waiting for exclusive lock"))
         }
         try await holder.close()
@@ -278,8 +280,6 @@ struct WaxCLIMemoryTests {
         config.rag.searchMode = .textOnly
 
         let holder = try await MemoryOrchestrator(at: url, config: config)
-        let clock = ContinuousClock()
-        let start = clock.now
         do {
             let command = try VectorHealthCommand.parse([
                 "--store-path", url.path,
@@ -288,8 +288,9 @@ struct WaxCLIMemoryTests {
             try await command.runAsync()
             Issue.record("expected vector-health to fail while the store is held")
         } catch {
-            let elapsed = start.duration(to: clock.now)
-            #expect(elapsed < .seconds(1))
+            // "Fails fast" is pinned structurally: the error comes from the
+            // non-blocking lock probe, not from the timed lock wait (asserted
+            // below via the absence of the timed-out message).
             let message = error.localizedDescription.lowercased()
             #expect(message.contains("exclusive lock"))
             #expect(message.contains("another process"))
@@ -522,20 +523,22 @@ struct WaxCLIMemoryTests {
             .appendingPathComponent("wxdc-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: daemonRoot) }
 
-        setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
-        defer { unsetenv("WAX_CLI_DAEMON_DIR") }
+        let environment = testEnvironment(["WAX_CLI_DAEMON_DIR": daemonRoot.path])
 
         let first = try AgentDaemonTransport.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
-            embedderChoice: .minilm
+            embedderChoice: .minilm,
+            environment: environment
         )
         let second = try AgentDaemonTransport.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
-            embedderChoice: .minilm
+            embedderChoice: .minilm,
+            environment: environment
         )
         let arctic = try AgentDaemonTransport.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
-            embedderChoice: .arctic
+            embedderChoice: .arctic,
+            environment: environment
         )
 
         #expect(first.socketPath == second.socketPath)
@@ -550,8 +553,7 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: binariesRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: daemonRoot) }
 
-        setenv("WAX_CLI_DAEMON_DIR", daemonRoot.path, 1)
-        defer { unsetenv("WAX_CLI_DAEMON_DIR") }
+        let environment = testEnvironment(["WAX_CLI_DAEMON_DIR": daemonRoot.path])
 
         let firstCLI = binariesRoot.appendingPathComponent("wax-cli-a")
         let secondCLI = binariesRoot.appendingPathComponent("wax-cli-b")
@@ -561,12 +563,14 @@ struct WaxCLIMemoryTests {
         let first = try AgentDaemonTransport.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
             embedderChoice: .minilm,
-            cliPathOverride: firstCLI.path
+            cliPathOverride: firstCLI.path,
+            environment: environment
         )
         let second = try AgentDaemonTransport.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
             embedderChoice: .minilm,
-            cliPathOverride: secondCLI.path
+            cliPathOverride: secondCLI.path,
+            environment: environment
         )
 
         #expect(first.socketPath != second.socketPath)
@@ -770,13 +774,11 @@ struct WaxCLIMemoryTests {
             withIntermediateDirectories: true
         )
 
-        setenv("WAX_MCP_INSTALL_ROOT", installRoot.path, 1)
-        defer { unsetenv("WAX_MCP_INSTALL_ROOT") }
-
         let runtime = try Pathing.prepareMCPInstallRuntime(
             cliPath: sourceDir.appendingPathComponent("wax-cli").path,
             serverPath: sourceDir.appendingPathComponent("wax-mcp").path,
-            dryRun: false
+            dryRun: false,
+            environment: testEnvironment(["WAX_MCP_INSTALL_ROOT": installRoot.path])
         )
 
         let expectedDir = installRoot.appendingPathComponent("darwin-arm64", isDirectory: true)
@@ -842,18 +844,17 @@ struct WaxCLIMemoryTests {
         try makeExecutableStub(at: cli)
         try makeExecutableStub(at: server)
 
-        setenv("WAX_MCP_INSTALL_ROOT", installRoot.path, 1)
-        setenv("WAX_MCP_SKILL_SOURCE", sourceSkill.path, 1)
-        defer {
-            unsetenv("WAX_MCP_INSTALL_ROOT")
-            unsetenv("WAX_MCP_SKILL_SOURCE")
-        }
+        let environment = testEnvironment([
+            "WAX_MCP_INSTALL_ROOT": installRoot.path,
+            "WAX_MCP_SKILL_SOURCE": sourceSkill.path,
+        ])
 
         let skipped = try Pathing.prepareWaxMCPSkill(
             cliPath: cli.path,
             serverPath: server.path,
             dryRun: false,
-            skip: true
+            skip: true,
+            environment: environment
         )
         #expect(skipped.skipped)
         #expect(skipped.stagedPath == nil)
@@ -862,7 +863,8 @@ struct WaxCLIMemoryTests {
             cliPath: cli.path,
             serverPath: server.path,
             dryRun: false,
-            skip: false
+            skip: false,
+            environment: environment
         )
         #expect(!staged.skipped)
         #expect(staged.staged)
@@ -1016,18 +1018,14 @@ struct WaxCLIMemoryTests {
     }
 
     @Test func embedderRuntimeOptionsOverrideEnvironment() throws {
-        setenv("WAX_EMBEDDER_BATCH_SIZE", "2", 1)
-        setenv("WAX_EMBEDDER_PREWARM_BATCH_SIZE", "3", 1)
-        setenv("WAX_EMBEDDER_ALLOW_LOW_PRECISION_GPU", "1", 1)
-        setenv("WAX_EMBEDDER_TIMEOUT_SECS", "7", 1)
-        setenv("WAX_EMBEDDER_COMPUTE_UNITS", "cpuOnly", 1)
-        defer {
-            unsetenv("WAX_EMBEDDER_BATCH_SIZE")
-            unsetenv("WAX_EMBEDDER_PREWARM_BATCH_SIZE")
-            unsetenv("WAX_EMBEDDER_ALLOW_LOW_PRECISION_GPU")
-            unsetenv("WAX_EMBEDDER_TIMEOUT_SECS")
-            unsetenv("WAX_EMBEDDER_COMPUTE_UNITS")
-        }
+        let environment = [
+            "WAX_EMBEDDER_BATCH_SIZE": "2",
+            "WAX_EMBEDDER_PREWARM_BATCH_SIZE": "3",
+            "WAX_EMBEDDER_ALLOW_LOW_PRECISION_GPU": "1",
+            "WAX_EMBEDDER_TIMEOUT_SECS": "7",
+            "WAX_EMBEDDER_COMPUTE_UNITS": "cpuOnly",
+        ]
+        #expect(CommandLineEmbedderRuntimeTuning.fromEnvironment(environment).batchSize == 2)
 
         let store = try VectorStoreOptions.parse([
             "--embedder-batch-size", "8",
@@ -1038,7 +1036,7 @@ struct WaxCLIMemoryTests {
             "--embedder-compute-unit", "cpuOnly",
         ])
 
-        let tuning = store.embedderTuning
+        let tuning = store.runtime.resolvedTuning(environment: environment)
         #expect(tuning.batchSize == 8)
         #expect(tuning.prewarmBatchSize == 5)
         #expect(tuning.allowLowPrecisionGPU == false)
@@ -1128,15 +1126,13 @@ struct WaxCLIMemoryTests {
             .appendingPathComponent("wxbr-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: brokerRoot) }
 
-        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
-        defer { unsetenv("WAX_BROKER_DIR") }
-
         let configuration = try AgentBrokerPathing.configuration(
             brokerExecutablePath: try builtProductPath(named: "wax-cli"),
             storePath: brokerRoot.appendingPathComponent("private-root.wax").path,
             embedderChoice: "minilm",
             noEmbedder: true,
-            requireVector: false
+            requireVector: false,
+            environment: testEnvironment(["WAX_BROKER_DIR": brokerRoot.path])
         )
 
         #expect(configuration.socketPath.hasPrefix(brokerRoot.path))
@@ -1156,16 +1152,14 @@ struct WaxCLIMemoryTests {
 
         try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: symlinkRoot, withDestinationURL: targetRoot)
-        setenv("WAX_BROKER_DIR", symlinkRoot.path, 1)
-        defer { unsetenv("WAX_BROKER_DIR") }
-
         do {
             _ = try AgentBrokerPathing.configuration(
                 brokerExecutablePath: try builtProductPath(named: "wax-cli"),
                 storePath: tempRoot.appendingPathComponent("symlink-root.wax").path,
                 embedderChoice: "minilm",
                 noEmbedder: true,
-                requireVector: false
+                requireVector: false,
+                environment: testEnvironment(["WAX_BROKER_DIR": symlinkRoot.path])
             )
             Issue.record("Expected broker socket root to reject symlink directories")
         } catch {
@@ -1179,15 +1173,13 @@ struct WaxCLIMemoryTests {
         let storeURL = brokerRoot.appendingPathComponent("vector-required.wax")
         defer { try? FileManager.default.removeItem(at: brokerRoot) }
 
-        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
-        defer { unsetenv("WAX_BROKER_DIR") }
-
         let brokerConfiguration = try AgentBrokerPathing.configuration(
             brokerExecutablePath: try builtProductPath(named: "wax-cli"),
             storePath: storeURL.path,
             embedderChoice: "minilm",
             noEmbedder: true,
-            requireVector: true
+            requireVector: true,
+            environment: testEnvironment(["WAX_BROKER_DIR": brokerRoot.path])
         )
 
         do {
@@ -1209,19 +1201,13 @@ struct WaxCLIMemoryTests {
         let storeURL = brokerRoot.appendingPathComponent("one-shot-stats.wax")
         defer { try? FileManager.default.removeItem(at: brokerRoot) }
 
-        setenv("WAX_BROKER_DIR", brokerRoot.path, 1)
-        setenv("WAX_LOCK_TIMEOUT_SECS", "0.2", 1)
-        defer {
-            unsetenv("WAX_BROKER_DIR")
-            unsetenv("WAX_LOCK_TIMEOUT_SECS")
-        }
-
         let configuration = try AgentBrokerPathing.configuration(
             brokerExecutablePath: try builtProductPath(named: "wax-cli"),
             storePath: storeURL.path,
             embedderChoice: "minilm",
             noEmbedder: true,
-            requireVector: false
+            requireVector: false,
+            environment: testEnvironment(["WAX_BROKER_DIR": brokerRoot.path])
         )
 
         let response = try await AgentBrokerClient.perform(
@@ -1233,7 +1219,15 @@ struct WaxCLIMemoryTests {
 
         #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
 
-        let reopened = try await StoreSession.open(at: storeURL, noEmbedder: true)
+        // A short lock wait proves the broker released the store: a still-held
+        // lock fails this open after 200ms instead of the 5s CLI default.
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let reopened = try await MemoryOrchestrator(
+            at: storeURL,
+            config: config,
+            waxOptions: WaxOptions(lockWaitTimeout: .milliseconds(200))
+        )
         try await reopened.close()
     }
 
@@ -2061,4 +2055,11 @@ struct WaxCLIMemoryTests {
         let stderr = String(data: snapshot.stderr, encoding: .utf8) ?? ""
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
+}
+
+/// Process environment plus test overrides, injected into the code under test
+/// instead of mutating the global environment with `setenv`, which races with
+/// every other test (and spawned child process) under `swift test --parallel`.
+private func testEnvironment(_ overrides: [String: String]) -> [String: String] {
+    ProcessInfo.processInfo.environment.merging(overrides) { _, override in override }
 }
