@@ -7,9 +7,6 @@ import Testing
 
 @Test(.serialized)
 func transportTeardownIsIdempotentAndExact() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-teardown-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -78,8 +75,6 @@ func teardownCloseSendsNoHandoffContent() async throws {
 
 @Test(.serialized)
 func missingBindingSkipsTeardown() async {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
     let outcome = await MCPTransportTeardown.checkpointBoundTransportSession(
         connectionKey: "missing",
         reason: .shutdown,
@@ -95,8 +90,6 @@ func missingBindingSkipsTeardown() async {
 
 @Test(.serialized)
 func harvestTimeoutDoesNotThrowIntoHTTPPath() async {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
     MCPBoundSessionRegistry.shared.remember(key: "slow", sessionID: UUID(), ownership: .transport)
     let outcome = await MCPTransportTeardown.checkpointBoundTransportSession(
         connectionKey: "slow",
@@ -203,7 +196,11 @@ func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
     } catch {
         #expect(error is MCPTeardownPerformError)
     }
-    #expect(Date().timeIntervalSince(started) < 2)
+    // Hang backstop, not a lock timeout: perform is budgeted at 0.5s. 5s is
+    // well clear of that under `swift test --parallel` (the old 2s bound
+    // flaked) and still well below the 10s default broker start, so a
+    // regression that starts or waits for a broker still fails.
+    #expect(Date().timeIntervalSince(started) < 5)
     #expect(!FileManager.default.fileExists(atPath: startedFlag.path))
     #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
 }

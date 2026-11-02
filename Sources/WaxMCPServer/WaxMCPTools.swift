@@ -299,6 +299,8 @@ enum WaxMCPTools {
 
 /// Process-wide Wax session binding keyed by MCP HTTP/stdio connection id.
 /// Survives `Server` recreate under the same `Mcp-Session-Id`.
+/// Deliberately has no wipe-everything reset: tests share this instance and run
+/// in parallel, so they isolate by unique connection keys instead.
 final class MCPBoundSessionRegistry: @unchecked Sendable {
     static let shared = MCPBoundSessionRegistry()
     private let lock = NSLock()
@@ -348,15 +350,6 @@ final class MCPBoundSessionRegistry: @unchecked Sendable {
             ownerships.removeValue(forKey: key)
             MCPAutoSessionCoordinatorStore.shared.remove(for: key)
         }
-    }
-
-    func resetForTests() {
-        lock.lock()
-        defer { lock.unlock() }
-        ids.removeAll()
-        ownerships.removeAll()
-        reverse.removeAll()
-        MCPAutoSessionCoordinatorStore.shared.resetForTests()
     }
 }
 

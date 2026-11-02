@@ -318,11 +318,5 @@ final class MCPAutoSessionCoordinatorStore: @unchecked Sendable {
         defer { lock.unlock() }
         coordinators.removeValue(forKey: transportKey)
     }
-
-    func resetForTests() {
-        lock.lock()
-        defer { lock.unlock() }
-        coordinators.removeAll()
-    }
 }
 #endif
