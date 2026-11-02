@@ -39,17 +39,23 @@ private func stalenessHit(
     )
 }
 
+/// Same topic: 11/12 term Jaccard, above the near-twin threshold.
+private let staleOldDecision = "Prefer project-scoped recall and never auto-widen an empty project lane."
+private let staleNewDecision = "Prefer project-scoped recall and never auto-widen an empty project lane now."
+/// Same type, unrelated topic.
+private let unrelatedDecision = "Ship the Homebrew formula from the release workflow, not by hand."
+
 @Test
-func recallStaleHintFlagsOlderSameTypeHit() throws {
-    let old = stalenessHit(frameID: 1, score: 0.9, text: "old decision", type: .decision, timestampMs: 1_000)
-    let new = stalenessHit(frameID: 2, score: 0.8, text: "new decision", type: .decision, timestampMs: 2_000)
+func recallStaleHintFlagsOlderSameTypeSameTopicHit() throws {
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 2_000)
     #expect(RecallPresent.staleHints(for: [old, new]) == [true, false])
     #expect(RecallPresent.staleHints(for: [new]) == [false])
 
     let flagged = try #require(
         RecallPresent.renderRecallHit(old, rank: 2, verbose: false, nowMs: 3_000, staleHint: true).objectValue
     )
-    #expect(flagged["stale_hint"]?.boolValue == true)
+    #expect(try #require(flagged["stale_hint"]?.boolValue))
     let clean = try #require(
         RecallPresent.renderRecallHit(new, rank: 1, verbose: false, nowMs: 3_000).objectValue
     )
@@ -58,9 +64,27 @@ func recallStaleHintFlagsOlderSameTypeHit() throws {
 
 @Test
 func recallStaleHintIgnoresDifferentType() {
-    let old = stalenessHit(frameID: 1, score: 0.9, text: "old decision", type: .decision, timestampMs: 1_000)
-    let new = stalenessHit(frameID: 2, score: 0.8, text: "new fact", type: .fact, timestampMs: 2_000)
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .fact, timestampMs: 2_000)
     #expect(RecallPresent.staleHints(for: [old, new]) == [false, false])
+}
+
+@Test
+func recallStaleHintIgnoresSameTypeDifferentTopic() {
+    let old = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: unrelatedDecision, type: .decision, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [old, new]) == [false, false])
+}
+
+@Test
+func recallStaleHintLeavesUnknownAndTiedTimestampsUnflagged() {
+    let unknown = stalenessHit(frameID: 1, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 0)
+    let known = stalenessHit(frameID: 2, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [unknown, known]) == [false, false])
+
+    let tiedOld = stalenessHit(frameID: 3, score: 0.9, text: staleOldDecision, type: .decision, timestampMs: 5_000)
+    let tiedNew = stalenessHit(frameID: 4, score: 0.8, text: staleNewDecision, type: .decision, timestampMs: 5_000)
+    #expect(RecallPresent.staleHints(for: [tiedOld, tiedNew]) == [false, false])
 }
 
 @Test
@@ -112,8 +136,106 @@ func staleTwinDemotionSkipsLockedAndForeignProjectFrames() {
     #expect(abs(demoted[2].score - 0.8) < 0.0001)
 }
 
+/// A 20-term memory and its typo fix: term Jaccard 19/21 ≈ 0.905, but the newer
+/// text substitutes a term, so it does not subsume the older one.
+private let typoLesson =
+    "Lesson: the settings panel renderd every theme swatch twice after each window resize because layout invalidation fired before cache refresh."
+private let typoFixedLesson =
+    "Lesson: the settings panel rendered every theme swatch twice after each window resize because layout invalidation fired before cache refresh."
+
 @Test
-func primeStaleHintFlagsOlderSameTypeItem() throws {
+func nearIdenticalRewriteIsHintedAndDemotedButNeverAutoSuperseded() {
+    #expect(MemorySemantics.similarity(lhs: typoLesson, rhs: typoFixedLesson) >= 0.88)
+    // Destructive path stays strict.
+    #expect(!MemorySemantics.isNearTwin(older: typoLesson, newer: typoFixedLesson))
+
+    let old = stalenessHit(frameID: 1, score: 0.9, text: typoLesson, type: .lesson, timestampMs: 1_000)
+    let new = stalenessHit(frameID: 2, score: 0.8, text: typoFixedLesson, type: .lesson, timestampMs: 2_000)
+    #expect(RecallPresent.staleHints(for: [old, new]) == [true, false])
+    let demoted = LayeredRecall.demoteStaleNearTwins([old, new])
+    #expect(demoted[0].explanations.contains(LayeredRecall.staleTwinExplanation))
+    #expect(demoted[1].explanations.isEmpty)
+
+    let envelope = primeStaleEnvelope([
+        primeDecision(typoLesson, createdAtMs: 1_000, score: 0.9),
+        primeDecision(typoFixedLesson, createdAtMs: 9_000),
+    ])
+    #expect(envelope.projectItems.first { $0.text == typoLesson }?.staleHint == true)
+    #expect(envelope.projectItems.first { $0.text == typoFixedLesson }?.staleHint == false)
+}
+
+@Test
+func advisoryTwinIsDirectionalOnIdentifiersAndNegation() {
+    // The newer text drops the #212 reference: not a restatement, even at high Jaccard.
+    let withRef = "Lesson: the settings panel rendered every theme swatch twice after each window resize because layout invalidation fired before cache refresh (#212)."
+    let flags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: withRef),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: typoFixedLesson),
+    ])
+    #expect(flags == [false, false])
+    let negated = typoFixedLesson.replacingOccurrences(of: "rendered every", with: "never rendered any")
+    let negatedFlags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: typoFixedLesson),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: negated),
+    ])
+    #expect(negatedFlags == [false, false])
+}
+
+private func primeStaleEnvelope(_ candidates: [MCPPrimeAssembly.Candidate]) -> MCPPrimeAssembly.Envelope {
+    MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "claude",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: candidates,
+            handoff: nil
+        ),
+        tokenizer: .character,
+        nowMs: 10_000
+    )
+}
+
+private func primeDecision(_ text: String, createdAtMs: Int64, score: Double = 0.8) -> MCPPrimeAssembly.Candidate {
+    MCPPrimeAssembly.Candidate(
+        text: text, memoryType: "decision",
+        project: "Wax", repo: "Wax", score: score, createdAtMs: createdAtMs
+    )
+}
+
+@Test
+func primeStaleHintFlagsOlderSameTypeSameTopicItem() throws {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 1_000, score: 0.9),
+        primeDecision(staleNewDecision, createdAtMs: 9_000),
+    ])
+    let old = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
+    let new = try #require(envelope.projectItems.first { $0.text == staleNewDecision })
+    #expect(old.staleHint)
+    #expect(!new.staleHint)
+    #expect(envelope.renderedJSON.contains("\"stale_hint\":true"))
+    #expect(envelope.hostContext.contains("stale"))
+}
+
+@Test
+func primeStaleHintIgnoresUnrelatedSameTypeItem() {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 1_000, score: 0.9),
+        primeDecision(unrelatedDecision, createdAtMs: 9_000),
+    ])
+    #expect(envelope.projectItems.allSatisfy { !$0.staleHint })
+    #expect(!envelope.renderedJSON.contains("stale_hint"))
+    #expect(!envelope.hostContext.contains(" · stale"))
+}
+
+@Test
+func primeStaleHintComparesFullTextNotTruncatedPrefix() {
+    let sharedLead = "Prefer project-scoped recall and never auto-widen an empty project lane; "
+    let sessionTail = sharedLead + "session lanes rank their own working notes first after compaction."
+    let releaseTail = sharedLead + "Homebrew formulas ship from the release workflow with pinned checksums."
+    #expect(!MemorySemantics.isNearTwin(older: sessionTail, newer: releaseTail))
     let envelope = MCPPrimeAssembly.assemble(
         MCPPrimeAssembly.Input(
             host: "claude",
@@ -123,26 +245,28 @@ func primeStaleHintFlagsOlderSameTypeItem() throws {
             repo: "Wax",
             personCandidates: [],
             projectCandidates: [
-                MCPPrimeAssembly.Candidate(
-                    text: "old decision", memoryType: "decision",
-                    project: "Wax", repo: "Wax", score: 0.9, createdAtMs: 1_000
-                ),
-                MCPPrimeAssembly.Candidate(
-                    text: "new decision", memoryType: "decision",
-                    project: "Wax", repo: "Wax", score: 0.8, createdAtMs: 9_000
-                ),
+                primeDecision(sessionTail, createdAtMs: 1_000, score: 0.9),
+                primeDecision(releaseTail, createdAtMs: 9_000),
             ],
             handoff: nil
         ),
         tokenizer: .character,
+        maxItemTokens: sharedLead.count,
         nowMs: 10_000
     )
-    let old = try #require(envelope.projectItems.first { $0.text == "old decision" })
-    let new = try #require(envelope.projectItems.first { $0.text == "new decision" })
-    #expect(old.staleHint == true)
-    #expect(new.staleHint == false)
-    #expect(envelope.renderedJSON.contains("\"stale_hint\":true"))
-    #expect(envelope.hostContext.contains("stale"))
+    // Both items render as the same truncated lead; only the full texts differ.
+    #expect(envelope.projectItems.count == 2)
+    #expect(envelope.projectItems.allSatisfy { !$0.staleHint })
+}
+
+@Test
+func primeStaleHintLeavesUnknownTimestampUnflagged() throws {
+    let envelope = primeStaleEnvelope([
+        primeDecision(staleOldDecision, createdAtMs: 0, score: 0.9),
+        primeDecision(staleNewDecision, createdAtMs: 9_000),
+    ])
+    let unknown = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
+    #expect(!unknown.staleHint)
 }
 
 @Test

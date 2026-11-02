@@ -326,7 +326,7 @@ package enum BrokerCorpusStoreBuilder {
                 CorpusBuildManifest(
                     configuration: buildConfiguration,
                     sources: sourceFingerprints,
-                    generatedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
+                    generatedAtMs: BrokerClock.nowMs()
                 ),
                 for: standardizedTarget
             )

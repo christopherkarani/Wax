@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Wax
 
-/// 11/12 Jaccard on `MemorySemantics.similarity` (threshold is 0.88).
+/// The newer text only adds "now", so it subsumes the original.
 private let originalDecision = "Prefer project-scoped recall and never auto-widen an empty project lane."
 private let similarDecision = "Prefer project-scoped recall and never auto-widen an empty project lane now."
 
@@ -492,12 +492,26 @@ func rememberAssemblyCapsSupersedeMatchesAt32() {
 
 private let identifierHolesOriginal =
     "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
+/// Same identifiers; only adds words ("open", "them"), with text Jaccard under 0.88.
+/// A looser rewording ("Do not re-run C01 ... this session.") shares the
+/// identifiers but not the content, so it is intentionally not auto-superseded.
 private let identifierHolesParaphrase =
-    "Still open on this tree: GitLiveProbe (C01), UniqueRanking (C02), CompactSummary (C03) — skip if already listed."
+    "Remaining open holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose them."
+/// Two different lessons that name the same three types. Identifiers match,
+/// but the shared vocabulary is low: neither restates the other.
+private let lessonCallOrder =
+    "Lesson: GitLiveProbe must call UniqueRanking before CompactSummary flushes."
+private let lessonEmptyCrash =
+    "Lesson: CompactSummary crashes when UniqueRanking returns empty; GitLiveProbe unaffected."
 
 @Test
 func rememberAssemblySelectsIdentifierOverlapBelowTextJaccard() {
-    #expect(MemorySemantics.similarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase) < 0.88)
+    let similarity = MemorySemantics.similarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
+    #expect(similarity < 0.88)
+    #expect(
+        MemorySemantics.contentSimilarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
+            >= MemorySemantics.nearTwinContentSimilarityFloor
+    )
     let selected = RememberAssembly.selectSupersedeFrameIDs(
         sessionID: nil,
         newFrameId: 2,
@@ -522,4 +536,236 @@ func rememberAssemblyIdentifierOverlapStillRequiresSameType() {
         nowMs: 0
     )
     #expect(selected.isEmpty)
+}
+
+@Test
+func rememberAssemblyKeepsDistinctLessonsThatShareIdentifiers() {
+    #expect(MemorySemantics.identifiersMatch(lessonCallOrder, lessonEmptyCrash))
+    #expect(!MemorySemantics.isNearTwin(older: lessonCallOrder, newer: lessonEmptyCrash))
+    let selected = RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 2,
+        content: lessonEmptyCrash,
+        metadata: durableMetadata(type: MemoryType.lesson.rawValue),
+        documents: [candidate(frameId: 1, text: lessonCallOrder, type: MemoryType.lesson.rawValue)],
+        nowMs: 0
+    )
+    #expect(selected.isEmpty)
+}
+
+@Test
+func nearTwinRequiresVocabularyNotJustIdentifiers() {
+    #expect(MemorySemantics.isNearTwin(older: originalDecision, newer: similarDecision))
+    #expect(MemorySemantics.isNearTwin(older: identifierHolesOriginal, newer: identifierHolesParaphrase))
+    #expect(!MemorySemantics.isNearTwin(older: lessonCallOrder, newer: lessonEmptyCrash))
+    #expect(!MemorySemantics.isNearTwin(older: "old decision", newer: "new decision"))
+}
+
+@Test
+func nearTwinRejectsSameIdentifiersWithDifferentAction() {
+    let closeOrder = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be closed in order before flush."
+    let openLazily = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be opened lazily before search."
+    #expect(MemorySemantics.identifiersMatch(closeOrder, openLazily))
+    #expect(!MemorySemantics.isNearTwin(older: closeOrder, newer: openLazily))
+}
+
+@Test
+func nearTwinRejectsDifferentIssueNumbers() {
+    let bug123 = "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush."
+    let bug124 = "Bug #124 in WaxSession: MemoryOrchestrator crashes on open."
+    #expect(!MemorySemantics.isNearTwin(older: bug123, newer: bug124))
+    // The pure-text path is guarded too: identical wording, different ticket.
+    #expect(!MemorySemantics.isNearTwin(
+        older: "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush after compaction.",
+        newer: "Bug #124 in WaxSession: MemoryOrchestrator crashes on flush after compaction."
+    ))
+}
+
+@Test
+func nearTwinRejectsNegationFlip() {
+    let use = "Use GitLiveProbe for UniqueRanking in CompactSummary."
+    let neverUse = "Never use GitLiveProbe outside UniqueRanking or CompactSummary."
+    #expect(!MemorySemantics.isNearTwin(older: use, newer: neverUse))
+    #expect(!MemorySemantics.isNearTwin(
+        older: "Prefer project-scoped recall and auto-widen an empty project lane.",
+        newer: "Prefer project-scoped recall and never auto-widen an empty project lane."
+    ))
+}
+
+@Test
+func supersedeCandidateGateFiltersOnMetadataOnly() {
+    let lesson = MemoryType.lesson
+    #expect(
+        RememberAssembly.isSupersedeCandidate(
+            metadata: durableMetadata(type: lesson.rawValue),
+            supersededBy: nil, type: lesson, project: "wax", nowMs: 0
+        )
+    )
+    #expect(
+        !RememberAssembly.isSupersedeCandidate(
+            metadata: durableMetadata(type: lesson.rawValue),
+            supersededBy: 9, type: lesson, project: "wax", nowMs: 0
+        )
+    )
+    #expect(
+        !RememberAssembly.isSupersedeCandidate(
+            metadata: durableMetadata(type: MemoryType.fact.rawValue),
+            supersededBy: nil, type: lesson, project: "wax", nowMs: 0
+        )
+    )
+    #expect(
+        !RememberAssembly.isSupersedeCandidate(
+            metadata: durableMetadata(type: lesson.rawValue, project: "other"),
+            supersededBy: nil, type: lesson, project: "wax", nowMs: 0
+        )
+    )
+    #expect(
+        !RememberAssembly.isSupersedeCandidate(
+            metadata: durableMetadata(type: lesson.rawValue, durability: MemoryDurability.locked.rawValue),
+            supersededBy: nil, type: lesson, project: "wax", nowMs: 0
+        )
+    )
+}
+
+/// True when writing `newer` auto-supersedes an existing durable `older` of the same type.
+private func supersedes(older: String, newer: String, type: MemoryType = .decision) -> Bool {
+    !RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 2,
+        content: newer,
+        metadata: durableMetadata(type: type.rawValue),
+        documents: [candidate(frameId: 1, text: older, type: type.rawValue)],
+        nowMs: 0
+    ).isEmpty
+}
+
+@Test
+func supersedeAllowsNewerTextToAddAPreciseReference() {
+    let withRef = originalDecision + " (#212)"
+    #expect(supersedes(older: originalDecision, newer: withRef))
+    // Dropping the reference loses information: the referenced memory stays live.
+    #expect(!supersedes(older: withRef, newer: originalDecision))
+}
+
+private let broadFlushLesson =
+    "Lesson: GitLiveProbe, UniqueRanking, CompactSummary, WalRing and VectorIndex flush ordering matters for crash recovery and replay."
+private let narrowFlushLesson = "Lesson: GitLiveProbe, UniqueRanking, CompactSummary flush ordering matters."
+
+@Test
+func supersedeNeverRetiresABroaderOlderMemory() {
+    #expect(!supersedes(older: broadFlushLesson, newer: narrowFlushLesson, type: .lesson))
+    #expect(supersedes(older: narrowFlushLesson, newer: broadFlushLesson, type: .lesson))
+}
+
+@Test
+func staleHintIsDirectionalForBroaderOlderMemory() {
+    let flags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: broadFlushLesson),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: narrowFlushLesson),
+    ])
+    #expect(flags == [false, false])
+}
+
+@Test
+func supersedeIgnoresIncidentalNegationTokens() {
+    #expect(supersedes(
+        older: "FlushPolicy batches WAL writes and fsyncs once per batch.",
+        newer: "FlushPolicy batches WAL writes and fsyncs once per batch; no-op when empty."
+    ))
+    #expect(supersedes(
+        older: "VectorIndex rebuilds run in the background after compaction.",
+        newer: "VectorIndex rebuilds run in the background after compaction without blocking recall."
+    ))
+    #expect(supersedes(
+        older: "VectorIndex rebuilds cut tail latency after compaction.",
+        newer: "VectorIndex rebuilds not only cut tail latency after compaction."
+    ))
+    // A real polarity flip still blocks.
+    #expect(!supersedes(
+        older: "Prefer project-scoped recall and auto-widen an empty project lane.",
+        newer: "Prefer project-scoped recall and never auto-widen an empty project lane."
+    ))
+}
+
+@Test
+func supersedeMatchesRewordingWithoutIdentifiers() {
+    #expect(supersedes(
+        older: "We should always run the linter before commit.",
+        newer: "Always run the linter before you commit."
+    ))
+    #expect(!supersedes(older: "old decision", newer: "new decision"))
+}
+
+@Test
+func supersedeAllowsNewerTextToAddAnIdentifierToAnIdentifierFreeMemory() {
+    #expect(supersedes(
+        older: "Always run the linter before commit.",
+        newer: "Always run the linter before commit in WaxSession."
+    ))
+}
+
+@Test
+func supersedeNeverRetiresAMemoryWhoseContentTermWasSubstituted() {
+    // Sharing a type name must not make a different fact a restatement.
+    #expect(!supersedes(
+        older: "MemoryOrchestrator: flush latency p99 under 5 ms on macOS.",
+        newer: "MemoryOrchestrator: flush latency p99 under 5 ms on Linux."
+    ))
+    #expect(!supersedes(
+        older: "MemoryOrchestrator: cache embeddings in memory for hybrid search.",
+        newer: "MemoryOrchestrator: evict embeddings from memory for hybrid search."
+    ))
+    #expect(!supersedes(
+        older: "VectorIndex benchmark: hybrid recall p50 is 12 ms with 10k documents in the corpus.",
+        newer: "VectorIndex benchmark: hybrid recall p50 is 12 ms with 100k documents in the corpus."
+    ))
+}
+
+@Test
+func supersedeTreatsContractedNegationAsNegation() {
+    #expect(!supersedes(
+        older: "WaxSession can't be shared across actors.",
+        newer: "WaxSession can be shared across actors."
+    ))
+    #expect(!supersedes(
+        older: "WaxSession can be shared across actors.",
+        newer: "WaxSession can\u{2019}t be shared across actors."
+    ))
+    #expect(!supersedes(
+        older: "The broker should retry a failed embed.",
+        newer: "The broker shouldn't retry a failed embed."
+    ))
+    // The same negation spelled two ways is still the same memory.
+    #expect(supersedes(
+        older: "WaxSession can't be shared across actors.",
+        newer: "WaxSession cannot be shared across actors."
+    ))
+    #expect(supersedes(
+        older: "The broker won't retry a failed embed.",
+        newer: "The broker will not retry a failed embed."
+    ))
+}
+
+@Test
+func identifierExtractionKeepsMultiPartTicketKeysWhole() {
+    #expect(MemorySemantics.extractIdentifiers("Patched CVE-2024-1234 today.") == ["cve-2024-1234"])
+}
+
+@Test
+func supersedeNeverLetsALongMemorySwallowAShortOne() {
+    #expect(!supersedes(
+        older: "Run the linter.",
+        newer: "Run the linter, then the formatter, the type checker, the unit tests and the integration suite before release."
+    ))
+}
+
+@Test
+func identifierExtractionSkipsCommonTokensDatesAndPlainNumbers() {
+    let ids = MemorySemantics.extractIdentifiers(
+        "UTF8 on S3 with H264, P1 since 20261102, run 1234567; A1 L2 GPT4 ARM64 SHA256 MD5 X86 V2 R2 C4 "
+            + "ISO-8601 UTF-8 AES-256 SHA-256"
+    )
+    #expect(ids.isEmpty, "\(ids)")
+    let kept = MemorySemantics.extractIdentifiers("C01 on T1, PROJ-42, sha 466c1e6")
+    #expect(kept == ["c01", "t1", "proj-42", "466c1e6"])
 }

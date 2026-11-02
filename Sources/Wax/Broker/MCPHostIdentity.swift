@@ -304,28 +304,58 @@ package enum MCPInitializeRootsParser {
 /// Last-resolved project attribution per transport key. Once a connection
 /// resolves, repeats reuse it instead of re-failing when the caller omits
 /// `cwd`/`project`/`repo` (e.g. after `session_end` clears the binding).
+///
+/// Bounded LRU: a long-lived HTTP server sees an unbounded stream of transport
+/// keys, so the least recently used entry is evicted past `capacity`.
 package final class MCPStickyAttributionRegistry: @unchecked Sendable {
+    package static let defaultCapacity = 512
     package static let shared = MCPStickyAttributionRegistry()
 
     private let lock = NSLock()
+    private let capacity: Int
     private var stored: [String: MCPProjectAttribution] = [:]
+    /// Least recently used first.
+    private var recency: [String] = []
+
+    package init(capacity: Int = defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
+
+    package var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored.count
+    }
 
     package func remember(transportKey: String, attribution: MCPProjectAttribution) {
         guard attribution.isResolved else { return }
         lock.lock()
         defer { lock.unlock() }
         stored[transportKey] = attribution
+        touch(transportKey)
+        while stored.count > capacity, !recency.isEmpty {
+            stored.removeValue(forKey: recency.removeFirst())
+        }
     }
 
     package func current(for transportKey: String) -> MCPProjectAttribution? {
         lock.lock()
         defer { lock.unlock() }
-        return stored[transportKey]
+        guard let attribution = stored[transportKey] else { return nil }
+        touch(transportKey)
+        return attribution
     }
 
     package func remove(for transportKey: String) {
         lock.lock()
         defer { lock.unlock() }
         stored.removeValue(forKey: transportKey)
+        recency.removeAll { $0 == transportKey }
+    }
+
+    /// Caller holds `lock`.
+    private func touch(_ transportKey: String) {
+        recency.removeAll { $0 == transportKey }
+        recency.append(transportKey)
     }
 }

@@ -139,7 +139,8 @@ private func harvestLiveSession(
         manifest: state.manifest,
         events: events,
         scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
-        nowMs: VirtualSessionStore.nowMs()
+        retention: .default,
+        nowMs: BrokerClock.nowMs()
     )
 }
 
@@ -458,6 +459,121 @@ func zombieActiveLeaseIsEndedAndHarvestedByMaintain() async throws {
     } catch {
         try? await second.close()
         throw error
+    }
+}
+
+/// Maintain runs under `commandMutex` only. A remember that rebinds a zombie
+/// session while maintain is harvesting it must win: maintain must not mark the
+/// now-live session `.ended` underneath it.
+@Test(.timeLimit(.minutes(2)))
+func maintainDoesNotEndZombieReboundByConcurrentRemember() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-zombie-race-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let sessionID: String
+    let first = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        sessionID = try await startHarvestSession(first, runID: "zombie-race")
+        try await rememberSession(first, sessionID: sessionID, content: "Working note before the race.", memoryType: "note")
+        try await first.close()
+    } catch {
+        try? await first.close()
+        throw error
+    }
+    let uuid = try #require(UUID(uuidString: sessionID))
+    var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: uuid)
+    // Freshly expired, not abandoned: startup maintain leaves it for explicit maintain.
+    manifest.leaseExpiresAtMs = BrokerClock.nowMs() - 1_000
+    try BrokerSessionPersistence.saveManifest(
+        manifest,
+        to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: uuid)
+    )
+
+    let second = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let (reached, reachedSignal) = AsyncStream<Void>.makeStream()
+        let (release, releaseSignal) = AsyncStream<Void>.makeStream()
+        await second.setPersistedHarvestHookForTesting { _ in
+            reachedSignal.yield()
+            for await _ in release { break }
+        }
+        let maintain = Task {
+            await second.handle(.init(command: "memory_maintain", arguments: ["apply": .bool(true)]))
+        }
+        for await _ in reached { break }
+
+        // Maintain is parked between harvest and mark-ended. Remember must not
+        // wait for it, and its rebind must survive maintain finishing.
+        let rememberDone = RaceFlag()
+        let remember = Task {
+            defer { rememberDone.set() }
+            return await second.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("Working note written during maintain."),
+                    "session_id": .string(sessionID),
+                    "memory_type": .string("note"),
+                    "durability": .string("working"),
+                    "scope": .string("session"),
+                    "project": .string(harvestProject),
+                    "repo": .string(harvestProject),
+                ]
+            ))
+        }
+        // Bounded wait: if remember is (wrongly) queued behind maintain, release anyway.
+        let waitDeadline = Date().addingTimeInterval(10)
+        while !rememberDone.isSet, Date() < waitDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let rememberFinishedFirst = rememberDone.isSet
+        releaseSignal.yield()
+        releaseSignal.finish()
+        let applied = await maintain.value
+        let written = await remember.value
+
+        #expect(rememberFinishedFirst, "remember waited on memory_maintain")
+        #expect(applied.ok, "memory_maintain failed: \(applied.error ?? "nil")")
+        #expect(written.ok, "remember failed: \(written.error ?? "nil")")
+        let after = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: uuid)
+        #expect(after.status == .active, "maintain ended a session a concurrent remember rebound")
+        #expect(await second.activeSessions[uuid] != nil)
+        try await second.close()
+    } catch {
+        try? await second.close()
+        throw error
+    }
+}
+
+private final class RaceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        value = true
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 

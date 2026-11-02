@@ -20,6 +20,8 @@ package actor MetalVectorEngine {
     private static let initialReserve: UInt32 = 64
     private static let maxThreadsPerThreadgroup = 256
     private static let gpuTopKThreshold = 1_000
+    /// Upper bound on idle transient buffer sets kept for reuse across searches.
+    static let maxPooledTransientBufferSets = 4
     
     /// Threshold for switching to SIMD8 kernel (optimal for MiniLM 384-dim vectors)
     private static let simd8DimensionThreshold = 384
@@ -44,6 +46,7 @@ package actor MetalVectorEngine {
     struct BufferPoolStats: Sendable {
         var transientAllocations: Int
         var reuseCount: Int
+        var pooledBufferSets: Int
     }
 
     private let metric: VectorMetric
@@ -81,16 +84,19 @@ package actor MetalVectorEngine {
             throw error
         }
     }
-    private var gpuBufferNeedsSync: Bool = false // Deprecated/Unused but kept if logic needs refactor
 
     private func acquireTransientBuffers(vectorCount: Int) throws -> TransientBuffers {
-        if let index = transientBufferPool.firstIndex(where: { $0.capacity >= vectorCount }) {
+        // Best fit: the smallest pooled set that can hold this search.
+        let bestFit = transientBufferPool.indices
+            .filter { transientBufferPool[$0].capacity >= vectorCount }
+            .min { transientBufferPool[$0].capacity < transientBufferPool[$1].capacity }
+        if let index = bestFit {
             transientReuseCount += 1
             return transientBufferPool.remove(at: index)
         }
 
         transientAllocations += 1
-        let capacity = max(vectorCount, Int(Self.initialReserve))
+        let capacity = Self.transientCapacity(for: vectorCount)
 
         guard let query = device.makeBuffer(
             length: dimensions * MemoryLayout<Float>.stride,
@@ -116,10 +122,33 @@ package actor MetalVectorEngine {
 
     private func releaseTransientBuffers(_ buffers: TransientBuffers) {
         transientBufferPool.append(buffers)
+        // Keep the pool bounded; the smallest sets are the least likely to fit future searches.
+        while transientBufferPool.count > Self.maxPooledTransientBufferSets {
+            guard let smallest = transientBufferPool.indices.min(by: {
+                transientBufferPool[$0].capacity < transientBufferPool[$1].capacity
+            }) else { break }
+            transientBufferPool.remove(at: smallest)
+        }
+    }
+
+    /// Geometric growth (next power of two, at least `initialReserve`) so alternating
+    /// add/search allocates O(log n) transient sets instead of one per new vector count.
+    private static func transientCapacity(for vectorCount: Int) -> Int {
+        var capacity = Int(initialReserve)
+        while capacity < vectorCount {
+            let (doubled, overflow) = capacity.multipliedReportingOverflow(by: 2)
+            if overflow { return vectorCount }
+            capacity = doubled
+        }
+        return capacity
     }
 
     func debugBufferPoolStats() -> BufferPoolStats {
-        BufferPoolStats(transientAllocations: transientAllocations, reuseCount: transientReuseCount)
+        BufferPoolStats(
+            transientAllocations: transientAllocations,
+            reuseCount: transientReuseCount,
+            pooledBufferSets: transientBufferPool.count
+        )
     }
     
     private let device: MTLDevice
@@ -481,9 +510,7 @@ package actor MetalVectorEngine {
                 throw WaxError.invalidToc(reason: "Failed to create command buffer")
             }
 
-            var reductionBuffers: [MTLBuffer] = []
             var finalTopKBuffer: MTLBuffer?
-            defer { _ = reductionBuffers.count }
 
             guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
                 throw WaxError.invalidToc(reason: "Failed to create compute encoder")
@@ -495,7 +522,9 @@ package actor MetalVectorEngine {
             computeEncoder.setBuffer(transientCountBuffer, offset: 0, index: 3)
             computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
 
-            let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
+            // Metal requires threadgroup memory lengths to be a multiple of 16 bytes.
+            let queryBytes = dimensions * MemoryLayout<Float>.stride
+            let threadgroupMemorySize = (queryBytes + 15) & ~15
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
 
             let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline
@@ -523,7 +552,6 @@ package actor MetalVectorEngine {
                 guard let stage1Buffer = device.makeBuffer(length: stage1Length, options: .storageModeShared) else {
                     throw WaxError.invalidToc(reason: "Failed to allocate top-k stage1 buffer")
                 }
-                reductionBuffers.append(stage1Buffer)
 
                 guard let reduceEncoder = commandBuffer.makeComputeCommandEncoder() else {
                     throw WaxError.invalidToc(reason: "Failed to create top-k reduction encoder")
@@ -553,7 +581,6 @@ package actor MetalVectorEngine {
                     guard let nextBuffer = device.makeBuffer(length: nextLength, options: .storageModeShared) else {
                         throw WaxError.invalidToc(reason: "Failed to allocate top-k merge buffer")
                     }
-                    reductionBuffers.append(nextBuffer)
 
                     guard let mergeEncoder = commandBuffer.makeComputeCommandEncoder() else {
                         throw WaxError.invalidToc(reason: "Failed to create top-k merge encoder")
@@ -625,6 +652,7 @@ package actor MetalVectorEngine {
 
             for (index, distance) in topResults {
                 let score = metric.score(fromDistance: distance)
+                guard score.isFinite else { continue }
                 results.append((frameIds[index], score))
             }
 
