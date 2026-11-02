@@ -91,7 +91,35 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
                 data.append(bytes)
             }
         }
+        // Byte-level BPE can split a multi-byte scalar across tokens. A token
+        // prefix (truncation) may end mid-scalar; drop that partial tail rather
+        // than decoding it to U+FFFD.
+        data.removeLast(Self.incompleteUTF8SuffixLength(data))
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Length (0...3) of a trailing UTF-8 sequence whose lead byte promises
+    /// more continuation bytes than are present.
+    static func incompleteUTF8SuffixLength(_ data: Data) -> Int {
+        var continuationCount = 0
+        var index = data.endIndex
+        while index > data.startIndex, continuationCount < 4 {
+            index = data.index(before: index)
+            let byte = data[index]
+            if byte & 0b1100_0000 == 0b1000_0000 {
+                continuationCount += 1
+                continue
+            }
+            let expected: Int
+            switch byte {
+            case 0b1100_0000...0b1101_1111: expected = 1
+            case 0b1110_0000...0b1110_1111: expected = 2
+            case 0b1111_0000...0b1111_0111: expected = 3
+            default: return 0
+            }
+            return continuationCount < expected ? continuationCount + 1 : 0
+        }
+        return 0
     }
 
     private func bpeEncode(_ bytes: [UInt8]) -> [UInt32] {
