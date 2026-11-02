@@ -100,6 +100,29 @@ func docsPaste_memoryAPIRoundTrip(storeURL: URL) async throws -> Int {
     return lexical.items.count
 }
 
+/// Mirrors the context budget / time phrase / delete sample from `ios/memory-api.md`.
+func docsPaste_budgetAndDelete(storeURL: URL) async throws -> (items: Int, remainingAfterDelete: Int) {
+    let memory = try await Memory(at: storeURL) { config in
+        config.enableVectorSearch = false
+    }
+    for index in 0..<20 {
+        try await memory.save("Offsite planning note \(index): agenda, travel, venue, catering and budget details.")
+    }
+    let frameID = try await memory.save("Draft agenda for the Lisbon offsite")
+
+    let wide = try await memory.search("offsite") { options in
+        options.topK = 20
+        options.mode = .textOnly
+        options.maxContextTokens = 8_000
+        options.inferTimeRange = false
+    }
+
+    try await memory.delete(frameID: frameID)
+    let after = try await memory.search("Lisbon offsite agenda", options: .init(mode: .textOnly))
+    try await memory.close()
+    return (wide.items.count, after.items.filter { $0.frameId == frameID }.count)
+}
+
 /// Mirrors custom embedder shape + `.custom` wiring from `ios/memory-api.md`.
 actor DocsPasteMyEmbedder: EmbeddingProvider {
     let dimensions = 384
@@ -156,6 +179,15 @@ func docsPasteDiagnosticsAndStatsRun() async throws {
         #expect(!result.requested.isEmpty)
         #expect(!result.effective.isEmpty)
         #expect(result.vectorEnabled == false)
+    }
+}
+
+@Test
+func docsPasteBudgetAndDeleteRuns() async throws {
+    try await TempFiles.withTempFile { url in
+        let result = try await docsPaste_budgetAndDelete(storeURL: url)
+        #expect(result.items == 20)
+        #expect(result.remainingAfterDelete == 0)
     }
 }
 

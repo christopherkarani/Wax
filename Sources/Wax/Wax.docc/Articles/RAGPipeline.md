@@ -43,11 +43,7 @@ The ``QueryAnalyzer`` detects query intent patterns that influence scoring:
 
 ### Distractor Penalties
 
-Results matching distractor patterns receive a configurable penalty (`answerDistractorPenalty`, default 0.70):
-
-- Tentative language ("tentative", "no authoritative")
-- Checklists and reports ("weekly report", "checklist", "signoff")
-- Draft content ("draft memo", "placeholder")
+For date-intent queries, hedged date statements ("tentative", "proposed", "pending approval", "target date", "estimate") receive a configurable penalty (`answerDistractorPenalty`, default 0.70). Ranking does not key on document topics or fixture phrases; words such as "checklist" or "health" carry no penalty.
 
 ### 3. Token Budget Assembly
 
@@ -88,6 +84,8 @@ Remaining budget is filled with preview-based snippets from additional search re
 For certain query intents (location, date, ownership), snippets may be expanded to their full frame content if the preview appears to contain the answer.
 
 ## Configuration
+
+Apps set the per-search token budget with `Memory.SearchOptions.maxContextTokens`.
 
 `FastRAGConfig` (package-only) controls all pipeline parameters:
 

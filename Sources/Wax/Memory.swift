@@ -59,12 +59,16 @@ public actor Memory {
         case custom(any EmbeddingProvider)
     }
 
+    /// Retrieval lane used by the Foundation Models memory tools and session
+    /// (`WaxMemoryToolConfig`, `WaxFoundationModelSession`): `.automatic` maps to
+    /// hybrid search, `.always` to vector-only, `.never` to text-only.
     public enum EmbeddingPolicy: Sendable, Equatable {
         case automatic
         case always
         case never
     }
 
+    /// Save-time window in milliseconds since 1970: `afterMs` inclusive, `beforeMs` exclusive.
     public struct TimeRange: Sendable, Equatable {
         public var afterMs: Int64?
         public var beforeMs: Int64?
@@ -81,21 +85,38 @@ public actor Memory {
     public typealias RetrievalMode = SearchMode
 
     public struct SearchOptions: Sendable, Equatable {
+        /// Bounds applied to ``maxContextTokens``.
+        public static let maxContextTokensRange: ClosedRange<Int> = 64...32_768
+
         public var topK: Int
         public var includeSurrogates: Bool
         public var timeRange: TimeRange?
         public var mode: RetrievalMode
+        /// Token budget for the returned context. `nil` uses the store default
+        /// (1,500 tokens). Clamped to ``maxContextTokensRange``. Raise it when a
+        /// large ``topK`` returns fewer items than requested.
+        public var maxContextTokens: Int?
+        /// When `true` and ``timeRange`` is `nil`, a past-looking phrase in the
+        /// query ("yesterday", "last week") filters results to memories saved in
+        /// that window. Future-looking phrases ("tomorrow", "next week") never
+        /// filter. The applied window is reported in
+        /// ``RAGContext/Diagnostics/inferredTimeRange``.
+        public var inferTimeRange: Bool
 
         public init(
             topK: Int = 10,
             includeSurrogates: Bool = false,
             timeRange: TimeRange? = nil,
-            mode: RetrievalMode = .hybrid()
+            mode: RetrievalMode = .hybrid(),
+            maxContextTokens: Int? = nil,
+            inferTimeRange: Bool = true
         ) {
             self.topK = topK
             self.includeSurrogates = includeSurrogates
             self.timeRange = timeRange
             self.mode = mode
+            self.maxContextTokens = maxContextTokens
+            self.inferTimeRange = inferTimeRange
         }
 
         public static let `default` = SearchOptions()
@@ -147,11 +168,20 @@ public actor Memory {
     }
 
     /// Persist text into memory.
-    public func save(_ text: String, metadata: [String: String] = [:]) async throws {
-        _ = try await orchestrator.remember(text, metadata: metadata)
+    ///
+    /// - Returns: The saved document's frame ID; pass it to ``delete(frameID:)``.
+    ///   Saving identical text and metadata again returns the existing ID. Text
+    ///   longer than one chunk is also indexed as chunk frames, whose IDs appear
+    ///   in search results.
+    @discardableResult
+    public func save(_ text: String, metadata: [String: String] = [:]) async throws -> UInt64 {
+        try await orchestrator.remember(text, metadata: metadata).frameId
     }
 
-    /// Persist multiple texts in a single call.
+    /// Persist multiple texts in one call, in order.
+    ///
+    /// Not atomic: each text is saved separately. If one save throws, the texts
+    /// before it stay saved.
     public func save<each S: StringProtocol>(_ texts: repeat each S) async throws {
         repeat _ = try await orchestrator.remember(String(each texts))
     }
@@ -160,12 +190,18 @@ public actor Memory {
     public func search(_ query: String, options: SearchOptions = .default) async throws -> Results {
         let frameFilter = FrameFilter(includeSurrogates: options.includeSurrogates)
         let mappedTimeRange = options.timeRange.map { SearchTimeRange(after: $0.afterMs, before: $0.beforeMs) }
+        let tokenRange = SearchOptions.maxContextTokensRange
+        let maxContextTokens = options.maxContextTokens.map {
+            min(max($0, tokenRange.lowerBound), tokenRange.upperBound)
+        }
         let execution = try await orchestrator.recallExecution(
             query: query,
             mode: options.mode,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
-            topK: options.topK
+            topK: options.topK,
+            maxContextTokens: maxContextTokens,
+            inferTimeRange: options.inferTimeRange
         )
         return execution.context
     }
