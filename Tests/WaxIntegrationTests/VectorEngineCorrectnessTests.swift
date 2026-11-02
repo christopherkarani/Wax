@@ -87,20 +87,26 @@ func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric, count: In
     let queryIndex = count / 2
     let query = dataset.vectors[queryIndex]
     let expected = try await accelerate.search(vector: query, topK: dataset.frameIds.count)
-    let actual = try await metalANNS.search(vector: query, topK: dataset.frameIds.count)
 
-    #expect(actual.count == expected.count)
-    #expect(actual.first?.frameId == dataset.frameIds[queryIndex])
-    #expect(actual.map(\.frameId) == expected.map(\.frameId))
-    let tolerance: Float = metric == .cosine ? 1e-4 : 1e-3
-    for (lhs, rhs) in zip(actual, expected) {
-        #expect(abs(lhs.score - rhs.score) <= tolerance, "\(metric) score mismatch for frame \(lhs.frameId): \(lhs.score) vs \(rhs.score)")
+    // Pass 1 scans exactly while the graph build is pending; pass 2 uses the graph (64).
+    for _ in 0..<2 {
+        let actual = try await metalANNS.search(vector: query, topK: dataset.frameIds.count)
+
+        #expect(actual.count == expected.count)
+        #expect(actual.first?.frameId == dataset.frameIds[queryIndex])
+        #expect(actual.map(\.frameId) == expected.map(\.frameId))
+        let tolerance: Float = metric == .cosine ? 1e-4 : 1e-3
+        for (lhs, rhs) in zip(actual, expected) {
+            #expect(abs(lhs.score - rhs.score) <= tolerance, "\(metric) score mismatch for frame \(lhs.frameId): \(lhs.score) vs \(rhs.score)")
+        }
+        expectSortedBestFirst(actual)
+
+        let timed = try await metalANNS.searchTimed(vector: query, topK: 5)
+        #expect(timed.hits.map(\.frameId) == Array(expected.prefix(5)).map(\.frameId))
+        expectSortedBestFirst(timed.hits)
+        await metalANNS.waitForPendingGraphBuild()
     }
-    expectSortedBestFirst(actual)
-
-    let timed = try await metalANNS.searchTimed(vector: query, topK: 5)
-    #expect(timed.hits.map(\.frameId) == Array(expected.prefix(5)).map(\.frameId))
-    expectSortedBestFirst(timed.hits)
+    #expect(await metalANNS.isGraphReady == (count > 32))
 }
 
 @Test(
@@ -160,11 +166,16 @@ private func expectMetalANNSParity(
     count: Int,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
-    let actual = try await metalANNS.search(vector: query, topK: count)
-    let expected = try await accelerate.search(vector: query, topK: count)
-    #expect(actual.map(\.frameId) == expected.map(\.frameId), sourceLocation: sourceLocation)
-    for (lhs, rhs) in zip(actual, expected) {
-        #expect(abs(lhs.score - rhs.score) <= 1e-4, sourceLocation: sourceLocation)
+    // First search may scan exactly while a graph build is pending; the second, after
+    // the build settles, goes through the graph when the store is large enough for one.
+    for _ in 0..<2 {
+        let actual = try await metalANNS.search(vector: query, topK: count)
+        let expected = try await accelerate.search(vector: query, topK: count)
+        #expect(actual.map(\.frameId) == expected.map(\.frameId), sourceLocation: sourceLocation)
+        for (lhs, rhs) in zip(actual, expected) {
+            #expect(abs(lhs.score - rhs.score) <= 1e-4, sourceLocation: sourceLocation)
+        }
+        await metalANNS.waitForPendingGraphBuild()
     }
 }
 
@@ -226,6 +237,184 @@ func metalANNSGrowsPastBuiltCapacity() async throws {
         try await accelerate.add(frameId: frameId, vector: extra.vectors[index])
     }
     try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[30], count: 100)
+}
+
+@Test(
+    "MetalANNS add and remove racing a graph rebuild are not lost",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSMutationsRacingGraphRebuildAreNotLost() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0x5EED)
+    let extra = makeDataset(count: 2, dimensions: dimensions, seed: 0xD00D)
+    let newId: UInt64 = 1_000_000
+    let removedId = base.frameIds[7]
+
+    for _ in 0..<5 {
+        let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+        let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+        try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+        try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+        _ = try await metalANNS.search(vector: base.vectors[1], topK: 10)
+
+        // Overwriting drops the graph; the next search rebuilds it while add/remove run.
+        try await metalANNS.add(frameId: base.frameIds[0], vector: extra.vectors[0])
+        try await accelerate.add(frameId: base.frameIds[0], vector: extra.vectors[0])
+        async let raced = metalANNS.search(vector: base.vectors[1], topK: 10)
+        async let added: Void = metalANNS.add(frameId: newId, vector: extra.vectors[1])
+        async let removed: Void = metalANNS.remove(frameId: removedId)
+        _ = try await (raced, added, removed)
+        try await accelerate.add(frameId: newId, vector: extra.vectors[1])
+        try await accelerate.remove(frameId: removedId)
+
+        // Check both the search right after the race and the graph built once it settles.
+        for _ in 0..<2 {
+            let nearNew = try await metalANNS.search(vector: extra.vectors[1], topK: 10)
+            #expect(nearNew.first?.frameId == newId)
+            let all = try await metalANNS.search(vector: base.vectors[7], topK: 100)
+            #expect(!all.contains { $0.frameId == removedId })
+            try await expectMetalANNSParity(metalANNS, accelerate, query: base.vectors[7], count: 100)
+        }
+        #expect(await metalANNS.isGraphReady)
+    }
+}
+
+/// Holds MetalANNS graph builds until released, and counts how many started.
+private actor GraphBuildGate {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var started = 0
+
+    func enter() async {
+        started += 1
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        for waiter in waiters {
+            waiter.resume()
+        }
+        waiters.removeAll()
+    }
+}
+
+private struct InjectedGraphBuildFailure: Error {}
+
+@Test(
+    "MetalANNS search during an in-flight graph build returns exact results",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0xA11CE)
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0xB0B)
+    let gate = GraphBuildGate()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .cosine,
+        dimensions: dimensions,
+        searchMode: .exact,
+        graphBuildHook: { await gate.enter() }
+    )
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+
+    // The first search schedules a build; the gate holds it, so these scan exactly.
+    for query in base.vectors.prefix(3) {
+        try await expectExactParity(metalANNS, accelerate, query: query, count: 100)
+    }
+    #expect(!(await metalANNS.isGraphReady))
+
+    // Mutate while the build is held: its snapshot is now stale.
+    let newId: UInt64 = 1_000_000
+    let removedId = base.frameIds[7]
+    for engine in [metalANNS, accelerate] as [any VectorSearchEngine] {
+        try await engine.add(frameId: newId, vector: extra.vectors[0])
+        try await engine.remove(frameId: removedId)
+    }
+    try await expectExactParity(metalANNS, accelerate, query: extra.vectors[0], count: 100)
+
+    await gate.release()
+    await metalANNS.waitForPendingGraphBuild()
+    // Single flight: one build ran, and its stale graph was discarded.
+    #expect(await gate.started == 1)
+    #expect(!(await metalANNS.isGraphReady))
+
+    // The next search schedules a fresh build from current data.
+    try await expectExactParity(metalANNS, accelerate, query: extra.vectors[0], count: 100)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await gate.started == 2)
+    #expect(await metalANNS.isGraphReady)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[0], count: 100)
+    let all = try await metalANNS.search(vector: base.vectors[7], topK: 100)
+    #expect(!all.contains { $0.frameId == removedId })
+    #expect(all.contains { $0.frameId == newId })
+}
+
+@Test(
+    "MetalANNS falls back to exact search when the graph build fails",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSFailedGraphBuildFallsBackToExactSearch() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0xFA11)
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0xFA12)
+    let gate = GraphBuildGate()
+    await gate.release()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .l2,
+        dimensions: dimensions,
+        searchMode: .exact,
+        graphBuildHook: {
+            await gate.enter()
+            throw InjectedGraphBuildFailure()
+        }
+    )
+    let accelerate = try AccelerateVectorEngine(metric: .l2, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+
+    try await expectExactParity(metalANNS, accelerate, query: base.vectors[3], count: 100)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await metalANNS.graphBuildFailureCount == 1)
+    #expect(!(await metalANNS.isGraphReady))
+
+    // Backed off: further searches stay exact and do not retry the build.
+    for query in base.vectors.prefix(5) {
+        try await expectExactParity(metalANNS, accelerate, query: query, count: 100)
+        await metalANNS.waitForPendingGraphBuild()
+    }
+    #expect(await gate.started == 1)
+    let timed = try await metalANNS.searchTimed(vector: base.vectors[4], topK: 5)
+    let expected = try await accelerate.search(vector: base.vectors[4], topK: 5)
+    #expect(timed.hits.map(\.frameId) == expected.map(\.frameId))
+
+    // A mutation allows one retry.
+    try await metalANNS.add(frameId: 1_000_000, vector: extra.vectors[0])
+    try await accelerate.add(frameId: 1_000_000, vector: extra.vectors[0])
+    try await expectExactParity(metalANNS, accelerate, query: extra.vectors[0], count: 101)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await gate.started == 2)
+    #expect(await metalANNS.graphBuildFailureCount == 2)
+}
+
+/// Exact-path parity: the store has no current graph, so results must equal Accelerate's.
+private func expectExactParity(
+    _ metalANNS: MetalANNSVectorEngine,
+    _ accelerate: AccelerateVectorEngine,
+    query: [Float],
+    count: Int,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    #expect(!(await metalANNS.isGraphReady), sourceLocation: sourceLocation)
+    let actual = try await metalANNS.search(vector: query, topK: count)
+    let expected = try await accelerate.search(vector: query, topK: count)
+    #expect(actual.map(\.frameId) == expected.map(\.frameId), sourceLocation: sourceLocation)
+    for (lhs, rhs) in zip(actual, expected) {
+        #expect(abs(lhs.score - rhs.score) <= 1e-4 * max(1, abs(rhs.score)), sourceLocation: sourceLocation)
+    }
 }
 #endif
 

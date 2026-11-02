@@ -165,6 +165,7 @@ final class HybridVectorEngineBenchmark: XCTestCase {
             )
             try await engine.addBatch(frameIds: ids, vectors: vectors)
             _ = try await engine.search(vector: query, topK: topK)
+            await engine.waitForPendingGraphBuild()
             var prepare = 0.0
             var index = 0.0
             var map = 0.0
@@ -201,6 +202,10 @@ final class HybridVectorEngineBenchmark: XCTestCase {
             let ingestStart = CFAbsoluteTimeGetCurrent()
             try await ingest(engine, count: vectorCount, dimensions: dimensions)
             _ = try await engine.search(vector: query, topK: topK)
+            // MetalANNS builds its graph in the background after the first search.
+            if let anns = engine as? MetalANNSVectorEngine {
+                await anns.waitForPendingGraphBuild()
+            }
             let ingestSeconds = CFAbsoluteTimeGetCurrent() - ingestStart
 
             let average = try await measure(iterations: iterations) {
