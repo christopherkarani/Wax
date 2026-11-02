@@ -257,9 +257,7 @@ package struct FastRAGContextBuilder: Sendable {
                     clamped.expansionMaxBytes,
                     max(4 * 1024, clamped.previewMaxBytes * 64)
                 )
-                // ~3 characters per token keeps a date-centered window inside the
-                // snippet token budget for typical text.
-                let snippetMaxCharacters = clamped.snippetMaxTokens * 3
+                let snippetMaxTokens = clamped.snippetMaxTokens
                 var previews = Array<String>(repeating: "", count: snippetCandidates.count)
                 await withTaskGroup(of: (Int, String).self) { group in
                     for (index, (result, preview)) in snippetCandidates.enumerated() {
@@ -274,12 +272,13 @@ package struct FastRAGContextBuilder: Sendable {
                                     maxBytes: snippetFallbackMaxBytes
                                 ),
                                 !expanded.isEmpty {
-                                    return (index, Self.expandedSnippetText(
+                                    return (index, await Self.tokenFittedSnippetText(
                                         preview: preview,
                                         frameText: expanded,
                                         intent: queryIntent,
                                         analyzer: queryAnalyzer,
-                                        maxCharacters: snippetMaxCharacters
+                                        maxTokens: snippetMaxTokens,
+                                        countTokens: { await counter.count($0) }
                                     ))
                                 }
                             } catch {
@@ -406,6 +405,39 @@ package struct FastRAGContextBuilder: Sendable {
         return false
     }
 
+    /// ``expandedSnippetText(preview:frameText:intent:analyzer:maxCharacters:)``
+    /// sized for a token budget. The window starts at ~3 characters per token;
+    /// when that overshoots (CJK, emoji), it is cut once more in proportion to
+    /// the measured tokens so the date stays inside the budget.
+    static func tokenFittedSnippetText(
+        preview: String,
+        frameText: String,
+        intent: QueryIntent,
+        analyzer: QueryAnalyzer,
+        maxTokens: Int,
+        countTokens: (String) async -> Int
+    ) async -> String {
+        let maxCharacters = maxTokens * 3
+        let text = expandedSnippetText(
+            preview: preview,
+            frameText: frameText,
+            intent: intent,
+            analyzer: analyzer,
+            maxCharacters: maxCharacters
+        )
+        guard intent.contains(.asksDate), text != preview else { return text }
+        let tokens = await countTokens(text)
+        guard tokens > maxTokens else { return text }
+        let fitted = max(1, maxCharacters * maxTokens / tokens)
+        return expandedSnippetText(
+            preview: preview,
+            frameText: frameText,
+            intent: intent,
+            analyzer: analyzer,
+            maxCharacters: fitted
+        )
+    }
+
     /// Text to use for a snippet once the full frame was fetched.
     ///
     /// For a date question whose preview lacks a date, the frame is used only
@@ -429,14 +461,16 @@ package struct FastRAGContextBuilder: Sendable {
     }
 
     /// `text` itself when it fits, else a `maxCharacters` slice centered on the
-    /// first date literal. `nil` when `text` has no date literal.
+    /// first date literal, with the date in the first third of the slice.
+    /// Recall assembly truncates snippets from the start, so the date must sit
+    /// early. `nil` when `text` has no date literal.
     static func dateCenteredWindow(in text: String, analyzer: QueryAnalyzer, maxCharacters: Int) -> String? {
         guard let literal = analyzer.dateLiterals(in: text).first,
               let match = text.range(of: literal) else { return nil }
         guard maxCharacters > 0, text.count > maxCharacters else { return text }
         let matchStart = text.distance(from: text.startIndex, to: match.lowerBound)
-        let center = matchStart + literal.count / 2
-        let end = min(text.count, max(maxCharacters, center + maxCharacters / 2))
+        let lead = min(matchStart, maxCharacters / 3)
+        let end = min(text.count, matchStart - lead + maxCharacters)
         let start = end - maxCharacters
         let lower = text.index(text.startIndex, offsetBy: start)
         let upper = text.index(lower, offsetBy: maxCharacters)

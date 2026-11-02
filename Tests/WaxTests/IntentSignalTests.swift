@@ -115,6 +115,27 @@ struct IntentSignalTests {
         #expect(text.count <= 400)
     }
 
+    /// CJK text costs about a token per character, so a window sized in
+    /// characters must still keep the date inside the token budget that
+    /// recall assembly truncates to (from the start).
+    @Test
+    func dateSnippetWindowKeepsDateInsideTokenBudgetForCJK() async throws {
+        let filler = String(repeating: "日本語の調査メモと予算の背景説明。", count: 60)
+        let frame = filler + "審査日は 2026-03-03 です。" + filler
+        let maxTokens = 100
+        let counter = try await TokenCounter.shared()
+        let text = await FastRAGContextBuilder.tokenFittedSnippetText(
+            preview: "日本語の調査メモ",
+            frameText: frame,
+            intent: [.asksDate],
+            analyzer: analyzer,
+            maxTokens: maxTokens,
+            countTokens: { await counter.count($0) }
+        )
+        let truncated = await counter.truncate(text, maxTokens: maxTokens)
+        #expect(truncated.contains("2026-03-03"))
+    }
+
     private func result(_ frameId: UInt64, _ score: Float, _ preview: String) -> SearchResponse.Result {
         SearchResponse.Result(frameId: frameId, score: score, previewText: preview, sources: [.text])
     }
