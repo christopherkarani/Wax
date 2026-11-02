@@ -218,6 +218,8 @@ package actor MemoryOrchestrator {
 
     let session: WaxSession
     private var embedderLifecycle: EmbedderLifecycle
+    /// Bumped by `transitionEmbedderLifecycle(to:)`.
+    private var embedderLifecycleGeneration: UInt64 = 0
     private var embeddingCache: EmbeddingMemoizer?
     private var committedVectorCoverage: CommittedVectorCoverage?
     private var isClosed = false
@@ -238,6 +240,13 @@ package actor MemoryOrchestrator {
 
     package func setCoverageScanHookForTesting(_ hook: (@Sendable () async -> Void)?) {
         coverageScanHookForTesting = hook
+    }
+
+    /// Test seam: makes every vector-coverage read throw this error.
+    private var coverageReadFailureForTesting: (any Error)? = nil
+
+    package func setCoverageReadFailureForTesting(_ error: (any Error)?) {
+        coverageReadFailureForTesting = error
     }
 
     package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
@@ -402,7 +411,7 @@ package actor MemoryOrchestrator {
             lifecycle = .disabled
         }
         if embedder != nil,
-           let degradedReason = await Self.vectorCoverageDegradedReason(in: wax, cached: nil).reason {
+           let degradedReason = await Self.vectorCoverageDegradedReason(in: wax) {
             switch lifecycle {
             case .ready(let attached, _):
                 lifecycle = .ready(attached: attached, degradedReason: degradedReason)
@@ -1338,6 +1347,8 @@ package actor MemoryOrchestrator {
         let stats = await wax.stats()
         let walStats = await wax.walStats()
         let storeURL = await wax.fileURL()
+        // Before reading `embeddingStatus`: an unreadable coverage scan marks it degraded.
+        let framesWithoutVectors = await framesWithoutVectorsCount()
 
         return RuntimeStats(
             frameCount: stats.frameCount,
@@ -1353,7 +1364,7 @@ package actor MemoryOrchestrator {
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embeddingStatus.identity,
             embeddingStatus: embeddingStatus,
-            framesWithoutVectors: await framesWithoutVectorsCount()
+            framesWithoutVectors: framesWithoutVectors
         )
     }
 
@@ -1674,6 +1685,8 @@ package actor MemoryOrchestrator {
     /// phrase whose window starts at or after `anchorMs` ("tomorrow", "next
     /// week") describes event time, so filtering on save time would always be
     /// empty; those phrases are skipped. Past and present windows apply.
+    /// A skipped future phrase does not end the scan: a later past phrase in
+    /// the same query ("tomorrow's agenda from last week") still applies.
     static func pastIngestTimeRange(inferredFrom query: String, anchorMs: Int64?) -> SearchTimeRange? {
         guard let anchorMs else { return nil }
         let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
@@ -2047,16 +2060,24 @@ package actor MemoryOrchestrator {
     /// Soft-delete is pending until a single commit after index removes, so the committed vector
     /// (and text) indexes exclude the deleted frame without a second commit or close-time flush.
     /// If index remove throws, the soft-delete is not committed in this call.
+    ///
+    /// Deleting a document frame also deletes its chunk frames (`parentId ==
+    /// frameId`). Long texts are indexed as chunks, so deleting only the
+    /// document would leave its text searchable.
     package func delete(frameId: UInt64) async throws {
         lastWriteActivityAt = .now
 
-        try await wax.delete(frameId: frameId)
-
-        if config.enableTextSearch {
-            try await session.removeText(frameId: frameId)
-        }
-        if config.enableVectorSearch {
-            try await session.removeVector(frameId: frameId)
+        let chunkIds = await wax.frameMetasIncludingPending()
+            .filter { $0.parentId == frameId && $0.status == .active }
+            .map(\.id)
+        for id in [frameId] + chunkIds {
+            try await wax.delete(frameId: id)
+            if config.enableTextSearch {
+                try await session.removeText(frameId: id)
+            }
+            if config.enableVectorSearch {
+                try await session.removeVector(frameId: id)
+            }
         }
         try await session.commit()
     }
@@ -2446,38 +2467,50 @@ package actor MemoryOrchestrator {
                 enabled: true
             )
         }
+        let generation = embedderLifecycleGeneration
         var degradedReason: String?
         if case .loading(true) = embedderLifecycle {
             degradedReason = Self.missingVectorsReason
         } else {
             degradedReason = await vectorCoverageDegradedReason()
         }
-        if let hook = coverageScanHookForTesting {
-            await hook()
-        }
         guard !isClosed else { return }
-        // Actor reentrancy: a text-only remember may have run while the scan
-        // was suspended. Re-read the flag instead of trusting the scan.
+        // Actor reentrancy: the scan suspended. A markUnavailable or a newer
+        // attach that landed meanwhile wins; do not overwrite it.
+        guard embedderLifecycleGeneration == generation else { return }
+        // A text-only remember may also have run; re-read its flag.
         if case .loading(true) = embedderLifecycle {
             degradedReason = Self.missingVectorsReason
         }
-        embedderLifecycle = .ready(attached: provider, degradedReason: degradedReason)
+        transitionEmbedderLifecycle(to: .ready(attached: provider, degradedReason: degradedReason))
         finishReadinessWaiters()
         scheduleAutomaticEmbeddingBackfillIfReady()
     }
 
     package func markUnavailable(_ reason: String) {
-        embedderLifecycle = .unavailable(reason: reason)
+        transitionEmbedderLifecycle(to: .unavailable(reason: reason))
         finishReadinessWaiters()
     }
 
     package func markUnavailableIfStillLoading(_ reason: String) {
         guard case .loading = embedderLifecycle else { return }
-        embedderLifecycle = .unavailable(reason: reason)
+        transitionEmbedderLifecycle(to: .unavailable(reason: reason))
         finishReadinessWaiters()
     }
 
+    /// Provider transitions (attach, unavailable) bump the generation so a
+    /// suspended attach or coverage refresh can tell it was superseded.
+    /// Reason-only updates and the text-only flag do not.
+    private func transitionEmbedderLifecycle(to lifecycle: EmbedderLifecycle) {
+        embedderLifecycle = lifecycle
+        embedderLifecycleGeneration &+= 1
+    }
+
     private static let missingVectorsReason = "some saved frames have no vectors"
+
+    private static func coverageUnknownReason(_ error: any Error) -> String {
+        "vector coverage unknown: \(error)"
+    }
 
     /// Frame IDs in the committed vector index, keyed by its manifest so
     /// `stats()` does not decode an unchanged index on every call.
@@ -2489,28 +2522,40 @@ package actor MemoryOrchestrator {
     /// `nil` when every live source has a vector. A coverage read/decode failure
     /// is reported as degraded, never as "no vectors" or "fully embedded".
     private func vectorCoverageDegradedReason() async -> String? {
-        let result = await Self.vectorCoverageDegradedReason(in: wax, cached: committedVectorCoverage)
-        if let committed = result.committed { committedVectorCoverage = committed }
-        return result.reason
-    }
-
-    private static func vectorCoverageDegradedReason(
-        in wax: Wax,
-        cached: CommittedVectorCoverage?
-    ) async -> (reason: String?, committed: CommittedVectorCoverage?) {
+        let reason: String?
         do {
-            let result = try await unembeddedLiveSources(in: wax, cached: cached)
-            return (result.sources.isEmpty ? nil : missingVectorsReason, result.committed)
+            reason = try await unembeddedLiveSources().isEmpty ? nil : Self.missingVectorsReason
         } catch {
             WaxDiagnostics.logSwallowed(
                 error,
                 context: "vector coverage scan",
                 fallback: "report embedding status degraded"
             )
-            return ("vector coverage unknown: \(error)", nil)
+            reason = Self.coverageUnknownReason(error)
+        }
+        if let hook = coverageScanHookForTesting {
+            await hook()
+        }
+        return reason
+    }
+
+    /// Store-open variant (no actor state yet).
+    private static func vectorCoverageDegradedReason(in wax: Wax) async -> String? {
+        do {
+            return try await unembeddedLiveSources(in: wax, cached: nil).sources.isEmpty
+                ? nil
+                : missingVectorsReason
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "vector coverage scan at open",
+                fallback: "report embedding status degraded"
+            )
+            return coverageUnknownReason(error)
         }
     }
 
+    /// 0 when coverage cannot be read; the embedder is then reported degraded.
     private func framesWithoutVectorsCount() async -> UInt64 {
         do {
             return UInt64(try await unembeddedLiveSources().count)
@@ -2518,8 +2563,11 @@ package actor MemoryOrchestrator {
             WaxDiagnostics.logSwallowed(
                 error,
                 context: "vector coverage for stats",
-                fallback: "report 0 frames without vectors (coverage unknown)"
+                fallback: "report 0 frames without vectors and embedding status degraded"
             )
+            if case .ready(let attached, _) = embedderLifecycle {
+                embedderLifecycle = .ready(attached: attached, degradedReason: Self.coverageUnknownReason(error))
+            }
             return 0
         }
     }
@@ -2527,12 +2575,14 @@ package actor MemoryOrchestrator {
     /// Throws when a vector index cannot be read or decoded. Callers must not
     /// treat that as "nothing is embedded" (backfill would re-embed the store).
     private func unembeddedLiveSources() async throws -> [SurrogateSourceFrame] {
+        if let error = coverageReadFailureForTesting { throw error }
         let result = try await Self.unembeddedLiveSources(in: wax, cached: committedVectorCoverage)
         if let committed = result.committed { committedVectorCoverage = committed }
         return result.sources
     }
 
     private func embeddedFrameIds() async throws -> Set<UInt64> {
+        if let error = coverageReadFailureForTesting { throw error }
         let result = try await Self.embeddedFrameIds(in: wax, cached: committedVectorCoverage)
         if let committed = result.committed { committedVectorCoverage = committed }
         return result.ids
@@ -2579,11 +2629,13 @@ package actor MemoryOrchestrator {
         guard case .ready = embedderLifecycle else {
             return
         }
+        let generation = embedderLifecycleGeneration
         let degradedReason = await vectorCoverageDegradedReason()
         // Actor reentrancy: the lifecycle may have changed during the scan
         // (unavailable, or a different provider attached). Never resurrect or
-        // swap the provider; only update the reason on the current one.
-        guard case .ready(let attached, _) = embedderLifecycle else {
+        // swap the provider, and drop a reason computed for a superseded one.
+        guard embedderLifecycleGeneration == generation,
+              case .ready(let attached, _) = embedderLifecycle else {
             return
         }
         embedderLifecycle = .ready(attached: attached, degradedReason: degradedReason)

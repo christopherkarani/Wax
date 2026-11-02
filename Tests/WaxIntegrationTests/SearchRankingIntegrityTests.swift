@@ -261,3 +261,156 @@ func corruptVectorSegmentThrowsInsteadOfReportingNoVectors() {
         _ = try MemoryOrchestrator.vecSegmentFrameIds(bytes: Data([0x01, 0x02, 0x03]))
     }
 }
+
+private struct CoverageReadFailure: Error {}
+
+private func embeddedOrchestrator(
+    at url: URL,
+    initialStatus: EmbeddingStatus? = nil
+) async throws -> MemoryOrchestrator {
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = true
+    config.requireOnDeviceProviders = false
+    if let initialStatus {
+        return try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: nil,
+            initialEmbeddingStatus: initialStatus
+        )
+    }
+    return try await MemoryOrchestrator(at: url, config: config, embedder: DeterministicTextEmbedder())
+}
+
+@Test
+func unreadableCoverageMarksStatsDegraded() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        await orchestrator.setCoverageReadFailureForTesting(CoverageReadFailure())
+
+        let stats = await orchestrator.runtimeStats()
+        #expect(stats.framesWithoutVectors == 0)
+        guard case .degraded(_, let reason) = stats.embeddingStatus else {
+            Issue.record("expected degraded when coverage is unreadable, got \(stats.embeddingStatus)")
+            try await orchestrator.close()
+            return
+        }
+        #expect(reason.contains("vector coverage unknown"))
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func backfillPropagatesUnreadableCoverage() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        await orchestrator.setCoverageReadFailureForTesting(CoverageReadFailure())
+        await #expect(throws: CoverageReadFailure.self) {
+            _ = try await orchestrator.backfillUnembedded()
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func committedCoverageCacheFollowsManifestChanges() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        try await orchestrator.remember("first vector-backed note about basalt")
+        try await orchestrator.flush()
+        #expect(await orchestrator.runtimeStats().framesWithoutVectors == 0)
+
+        // A second commit replaces the committed index; a stale cache would
+        // report the new frame as missing a vector.
+        try await orchestrator.remember("second vector-backed note about granite")
+        try await orchestrator.flush()
+        #expect(await orchestrator.runtimeStats().framesWithoutVectors == 0)
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func refreshDuringCoverageScanDoesNotResurrectUnavailableEmbedder() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        await orchestrator.setCoverageScanHookForTesting {
+            await orchestrator.setCoverageScanHookForTesting(nil)
+            await orchestrator.markUnavailable("provider crashed during refresh")
+        }
+        // Empty store: backfill finds nothing missing and refreshes coverage.
+        _ = try await orchestrator.backfillUnembedded()
+
+        let status = await orchestrator.runtimeStats().embeddingStatus
+        guard case .unavailable = status else {
+            Issue.record("expected unavailable to survive the refresh, got \(status)")
+            try await orchestrator.close()
+            return
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func attachDuringScanDoesNotOverrideMarkUnavailable() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url, initialStatus: .loading)
+        await orchestrator.setCoverageScanHookForTesting {
+            await orchestrator.setCoverageScanHookForTesting(nil)
+            await orchestrator.markUnavailable("load timed out")
+        }
+        await orchestrator.attachEmbedder(DeterministicTextEmbedder())
+
+        let status = await orchestrator.runtimeStats().embeddingStatus
+        guard case .unavailable = status else {
+            Issue.record("expected unavailable to win over a suspended attach, got \(status)")
+            try await orchestrator.close()
+            return
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func attachDuringScanDoesNotOverrideNewerAttach() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url, initialStatus: .loading)
+        let newer = ConfigurableIdentityEmbedder(
+            identity: EmbeddingIdentity(provider: "Mock", model: "Newer", dimensions: 2, normalized: true)
+        )
+        await orchestrator.setCoverageScanHookForTesting {
+            await orchestrator.setCoverageScanHookForTesting(nil)
+            await orchestrator.attachEmbedder(newer)
+        }
+        await orchestrator.attachEmbedder(DeterministicTextEmbedder())
+
+        let identity = await orchestrator.runtimeStats().embeddingStatus.identity
+        #expect(identity?.model == "Newer")
+        try await orchestrator.close()
+    }
+}
+
+// MARK: - delete(frameID:) must remove every chunk of a long save
+
+@Test
+func deletingLongSaveRemovesItsChunksFromSearch() async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(at: url, config: .init(enableVectorSearch: false))
+        let filler = String(
+            repeating: "The survey crew logged stake heights, snow depth and meltwater flow at camp. ",
+            count: 60
+        )
+        let longID = try await memory.save("Zirconium sample notes. " + filler)
+        let keepID = try await memory.save("Zirconium reference card kept in drawer C")
+
+        let before = try await memory.search("zirconium", options: .init(mode: .textOnly))
+        #expect(before.items.count >= 2)
+
+        try await memory.delete(frameID: longID)
+        let after = try await memory.search("zirconium", options: .init(mode: .textOnly))
+        let remaining = Set(after.items.map(\.frameId))
+        #expect(remaining == [keepID])
+        let crewHits = try await memory.search("meltwater stake heights", options: .init(mode: .textOnly))
+        #expect(crewHits.items.isEmpty)
+        try await memory.close()
+    }
+}

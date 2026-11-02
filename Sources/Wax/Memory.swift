@@ -99,7 +99,8 @@ public actor Memory {
         /// When `true` and ``timeRange`` is `nil`, a past-looking phrase in the
         /// query ("yesterday", "last week") filters results to memories saved in
         /// that window. Future-looking phrases ("tomorrow", "next week") never
-        /// filter. The applied window is reported in
+        /// filter; a past phrase elsewhere in the same query still can. The
+        /// applied window is reported in
         /// ``RAGContext/Diagnostics/inferredTimeRange``.
         public var inferTimeRange: Bool
 
@@ -232,6 +233,9 @@ public actor Memory {
 
     /// Soft-delete a memory frame and remove it from enabled search indexes.
     ///
+    /// Deleting a document frame (the ID ``save(_:metadata:)`` returns) also
+    /// deletes the chunk frames a long text was split into.
+    ///
     /// Used by forget tooling and callers that need to retract a specific frame ID
     /// returned from ``search(_:options:)``.
     public func delete(frameID: UInt64) async throws {
@@ -275,6 +279,8 @@ public actor Memory {
         /// Readiness of the embedding provider attached to this store.
         public var embeddingStatus: EmbeddingStatus
         /// Live searchable frames that currently have no pending or committed vector.
+        /// `0` when vector coverage cannot be read; ``embeddingStatus`` is then
+        /// `.degraded` with a "vector coverage unknown" reason.
         public var framesWithoutVectors: UInt64
 
         public init(

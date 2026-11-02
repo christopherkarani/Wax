@@ -16,7 +16,7 @@ Source: `Sources/Wax/Memory.swift`
 - `public func search(_ query: String, configure: (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
 - `public func search(_ query: String, strategy: (any SearchStrategy)?, reranker: (any ResultReranker)? = nil, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
 - Deprecated aliases: `search(_:strategy:options:)` and `search(_:strategy:options:reranker:)` (generic shims; use the existential form)
-- `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed).
+- `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed). Deleting a document frame (the ID `save` returns) also deletes its chunk frames.
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage.
 - `public func backfillUnembedded() async throws -> UInt64` — embeds live searchable frames that have no vectors using the attached provider. Idempotent. Throws `WaxError.missingEmbedder` when no provider is attached; never invents vectors. Call `flush()` to commit.
 - `public func close() async throws` — flushes, then closes.
@@ -38,7 +38,7 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: Memory.RetrievalMode` (`.hybrid()`), `maxContextTokens: Int?` (nil), `inferTimeRange: Bool` (true).
   - `maxContextTokens` — token budget for the returned `RAGContext`. `nil` uses the store default (1,500). Values are clamped to `Memory.SearchOptions.maxContextTokensRange` (`64...32_768`). Raise it when a large `topK` returns fewer items than requested.
-  - `inferTimeRange` — when `true` and `timeRange` is `nil`, a past-looking phrase in the query ("yesterday", "last week", "last month") filters results to memories saved in that window. Future-looking phrases ("tomorrow", "next week") never filter, because they describe event time, not save time. The applied window is reported in `RAGContext.Diagnostics.inferredTimeRange`. Set `false` to search all time.
+  - `inferTimeRange` — when `true` and `timeRange` is `nil`, a past-looking phrase in the query ("yesterday", "last week", "last month") filters results to memories saved in that window. Future-looking phrases ("tomorrow", "next week") never filter, because they describe event time, not save time; a past phrase elsewhere in the same query still can. The applied window is reported in `RAGContext.Diagnostics.inferredTimeRange`. Set `false` to search all time.
 - `public enum SearchMode: Sendable, Equatable, CustomStringConvertible { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }` — module-scope canonical lane type. `Memory.RetrievalMode` is a public typealias of `SearchMode`; both names are valid in app code. `diagnosticsSummary` / `CustomStringConvertible` yield the stable `"text"` / `"vector"` / `"hybrid(alpha=0.500)"` form used by docs, MCP, and broker.
   - `.hybrid` degrades to the text lane when no embedder is available; `.vectorOnly` throws when vector search is unavailable. Check `RAGContext.diagnostics` for what actually ran.
 - `public struct TimeRange { afterMs: Int64?, beforeMs: Int64? }` — milliseconds since 1970, `afterMs` inclusive, `beforeMs` exclusive.
@@ -59,7 +59,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 
 ### Memory.Stats
 
-`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`, `framesWithoutVectors`.
+`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`, `framesWithoutVectors` (`0` when vector coverage cannot be read; `embeddingStatus` is then `.degraded` with a "vector coverage unknown" reason).
 
 `queryEmbedderConfigured` is derived: `true` only for `active` and `degraded`.
 
