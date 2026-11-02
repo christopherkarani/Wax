@@ -1,6 +1,11 @@
 import Foundation
 import Testing
+@testable import Wax
 @testable import wax_cli
+
+@Test func waxCLIVersionComesFromReleaseInfo() {
+    #expect(WaxCLI.configuration.version == WaxReleaseInfo.version)
+}
 
 @Suite("ProcessRunner")
 struct ProcessRunnerTests {

@@ -23,7 +23,7 @@ import WaxVectorSearchArctic
 #endif
 
 enum WaxMCPServerMetadata {
-    static let version = "0.1.50"
+    static let version = WaxReleaseInfo.version
 }
 
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
@@ -144,7 +144,6 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
-        // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
         let serverVersion = WaxMCPServerMetadata.version
         writeStderr("wax-mcp v\(serverVersion) starting")
         switch normalizedTransport {

@@ -227,7 +227,7 @@ version, and the CLI version together, then rebuilds the Darwin binaries:
 ```bash
 cd /path/to/Wax
 ./Resources/scripts/release-waxmcp.sh 0.1.33
-git add Resources/npm/waxmcp/package.json Sources/WaxMCPServer/main.swift Sources/WaxCLI/WaxCLICommand.swift Resources/npm/waxmcp/dist
+git add Resources/npm/waxmcp/package.json Sources/Wax/WaxReleaseInfo.swift Resources/npm/waxmcp/dist
 git commit -m "release: bump waxmcp version"
 ```
 
@@ -236,6 +236,6 @@ Pushing tag `waxmcp-v<version>` triggers the publish workflow
 Homebrew formula `sha256` from the GitHub tag archive and commits it back to
 `main`. Set repository secret `HOMEBREW_TAP_TOKEN` (PAT with `contents: write`
 on `christopherkarani/homebrew-wax`) to sync the external tap automatically.
-`package.json` and `Sources/WaxMCPServer/main.swift` must stay in lockstep; CI
+`package.json` and `Sources/Wax/WaxReleaseInfo.swift` must stay in lockstep; CI
 checks that before publishing. Dist artifacts carry `sha256` checksums,
 verified at pack time by `scripts/verify-dist.mjs`.
