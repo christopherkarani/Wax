@@ -86,8 +86,9 @@ func hybridJobRecallRanksRecentLexicalFactAboveOldVectorLesson() async throws {
 
         let hits = try await memory.search(query: query, mode: .hybrid(), topK: 5)
         let topHit = try #require(hits.first)
+        // previewText is truncated ("…playbook hard-codes..."), so match the part it keeps.
         #expect(
-            topHit.previewText?.contains("hard-codes recall mode") == true,
+            topHit.previewText?.contains("playbook hard-codes") == true,
             "hybrid search rank-1 was \(topHit.previewText ?? "<nil>")"
         )
         #expect(topHit.sources.contains(.text))

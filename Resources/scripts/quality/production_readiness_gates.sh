@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
+# Per-run log directory: fixed /tmp paths collide when two gate runs share a
+# machine and ignore $TMPDIR. Override with GATE_LOG_DIR to keep logs elsewhere.
+GATE_LOG_DIR="${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wax-gate.XXXXXX")}"
+mkdir -p "$GATE_LOG_DIR"
+
 run_and_capture() {
   local log_file="$1"
   shift
@@ -12,8 +17,8 @@ run_and_capture() {
   local last_line
   local shell_flags=$-
 
-  # Full swift test output includes hundreds of MB of swift-testing
-  # deprecation warnings. Teeing that onto stdout stalls the GitHub
+  # Full swift test output is large (it used to include hundreds of MB of
+  # swift-testing package deprecation warnings). Teeing it onto stdout stalls the GitHub
   # Actions log pipe (local Popen has the same failure). Keep the full
   # log on disk for skip/pass-rate checks; print only breadcrumbs.
   # Run under `script -F` so Swift line-buffers; a plain file redirect
@@ -216,8 +221,8 @@ assert_mcp_cli_doctor_smokes_ran() {
 }
 
 assert_mcp_trait_test_inventory() {
-  local default_list_log="/tmp/wax-gate-default-test-list.log"
-  local mcp_list_log="/tmp/wax-gate-mcp-test-list.log"
+  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
+  local mcp_list_log="$GATE_LOG_DIR/wax-gate-mcp-test-list.log"
 
   run_and_capture "$default_list_log" \
     swift test --disable-automatic-resolution list
@@ -229,10 +234,10 @@ assert_mcp_trait_test_inventory() {
 }
 
 run_full() {
-  local log_file="/tmp/wax-gate-full.log"
-  local mcp_unit_log="/tmp/wax-gate-full-mcp-unit.log"
-  local mcp_cli_log="/tmp/wax-gate-full-mcp-cli.log"
-  local mcp_process_log="/tmp/wax-gate-full-mcp-process.log"
+  local log_file="$GATE_LOG_DIR/wax-gate-full.log"
+  local mcp_unit_log="$GATE_LOG_DIR/wax-gate-full-mcp-unit.log"
+  local mcp_cli_log="$GATE_LOG_DIR/wax-gate-full-mcp-cli.log"
+  local mcp_process_log="$GATE_LOG_DIR/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
 
@@ -270,8 +275,8 @@ run_full() {
 }
 
 run_soak_smoke() {
-  local stability_log="/tmp/wax-gate-soak-stability.log"
-  local wal_log="/tmp/wax-gate-soak-wal.log"
+  local stability_log="$GATE_LOG_DIR/wax-gate-soak-stability.log"
+  local wal_log="$GATE_LOG_DIR/wax-gate-soak-wal.log"
 
   run_and_capture "$stability_log" env \
     WAX_REPLAY_SEED="${WAX_REPLAY_SEED:-2026021801}" \
@@ -292,8 +297,8 @@ run_soak_smoke() {
 }
 
 run_burn_smoke() {
-  local stability_log="/tmp/wax-gate-burn-stability.log"
-  local wal_log="/tmp/wax-gate-burn-wal.log"
+  local stability_log="$GATE_LOG_DIR/wax-gate-burn-stability.log"
+  local wal_log="$GATE_LOG_DIR/wax-gate-burn-wal.log"
 
   run_and_capture "$stability_log" env \
     WAX_REPLAY_SEED="${WAX_REPLAY_SEED:-2026021802}" \
@@ -313,6 +318,67 @@ run_burn_smoke() {
   assert_no_skips "$wal_log"
 }
 
+# `full` tolerates these opt-in skips (expected_optional_skip_pattern). The
+# opt-in-configs mode turns them on, so the same skip reason must not appear.
+assert_opt_in_suite_ran() {
+  local log_file="$1"
+  local skip_reason="$2"
+  if grep -F "$skip_reason" "$log_file" >/dev/null; then
+    echo "FAIL: opt-in suite was skipped (\"$skip_reason\") in $log_file" >&2
+    grep -F "$skip_reason" "$log_file" | head -n 10 >&2
+    return 1
+  fi
+}
+
+# Configurations that `full` skips: the WaxRepo trait build + its executable
+# smoke tests, and real MiniLM inference (WAX_TEST_MINILM=1). Arctic stays
+# opt-in. Every step runs even if an earlier one fails, so one regression
+# cannot hide another; the mode fails at the end if any step failed.
+# Steps return explicitly on failure: run_opt_in_configs calls them in an
+# `||` context, where bash ignores `set -e`.
+run_opt_in_waxrepo() {
+  local waxrepo_build_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo-build.log"
+  local waxrepo_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo.log"
+
+  require_swiftpm_traits || return 1
+  run_and_capture "$waxrepo_build_log" \
+    swift build --traits WaxRepo --product WaxRepo || return 1
+
+  run_and_capture "$waxrepo_log" \
+    swift test --parallel --traits WaxRepo --filter 'waxTests\.waxRepo' || return 1
+  assert_opt_in_suite_ran "$waxrepo_log" "Build with --traits default,WaxRepo" || return 1
+  # Guard against a filter that silently matches nothing.
+  grep -E "Test waxRepoFullReindexReplacesExistingStore\(\) passed" "$waxrepo_log" >/dev/null \
+    || { echo "FAIL: WaxRepo executable smoke tests did not run" >&2; return 1; }
+  assert_full_pass_rate "$waxrepo_log" || return 1
+}
+
+run_opt_in_minilm() {
+  local minilm_log="$GATE_LOG_DIR/wax-gate-opt-in-minilm.log"
+
+  run_and_capture "$minilm_log" env WAX_TEST_MINILM=1 \
+    swift test --parallel --filter 'WaxIntegrationTests\.(miniLMEmbedder|minilmEmbedding)' || return 1
+  assert_opt_in_suite_ran "$minilm_log" "Set WAX_TEST_MINILM=1" || return 1
+  # Guard against a filter that silently matches nothing.
+  grep -E "Test minilmEmbeddingsStayCloseToBaseline\(\) passed" "$minilm_log" >/dev/null \
+    || { echo "FAIL: MiniLM quality suite did not run" >&2; return 1; }
+  assert_full_pass_rate "$minilm_log" || return 1
+}
+
+run_opt_in_configs() {
+  local step failed=()
+  for step in run_opt_in_waxrepo run_opt_in_minilm; do
+    if ! "$step"; then
+      echo "OPT_IN_STEP_FAILED: $step" >&2
+      failed+=("$step")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: opt-in-configs steps failed: ${failed[*]}" >&2
+    return 1
+  fi
+}
+
 main() {
   local mode="${1:-all}"
   case "$mode" in
@@ -325,13 +391,16 @@ main() {
     burn-smoke)
       run_burn_smoke
       ;;
+    opt-in-configs)
+      run_opt_in_configs
+      ;;
     all)
       run_full
       run_soak_smoke
       run_burn_smoke
       ;;
     *)
-      echo "Usage: $0 [full|soak-smoke|burn-smoke|all]" >&2
+      echo "Usage: $0 [full|soak-smoke|burn-smoke|opt-in-configs|all]" >&2
       exit 64
       ;;
   esac

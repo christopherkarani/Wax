@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -14,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run public repository hygiene gate
@@ -24,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run Hermes plugin tests
         run: bash Resources/scripts/quality/hermes_plugin_tests.sh
 
@@ -32,33 +35,79 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Run installer and MCP handshake tests
         run: npm --prefix Resources/npm/waxmcp test
+
+  # Static contract tests for docs, workflows, packaging, and release scripts.
+  # Portable bash/python/node/ruby only — no Swift toolchain needed.
+  quality-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+      - name: Verify public snippets
+        run: bash Resources/scripts/quality/verify_public_snippets.sh
+      - name: Release workflow contract
+        run: bash Resources/scripts/quality/release_workflow_tests.sh
+      - name: Linux CI workflow contract
+        run: bash Resources/scripts/quality/linux_ci_workflow_tests.sh
+      - name: MiniLM test gating contract
+        run: bash Resources/scripts/quality/minilm_test_gating_tests.sh
+      - name: Docs generation contract
+        run: bash Resources/scripts/quality/docs_generation_tests.sh
+      - name: Homebrew formula contract
+        run: bash Resources/scripts/quality/homebrew_formula_tests.sh
+      - name: Package artifact contract
+        run: bash Resources/scripts/quality/package_artifact_tests.sh
+      - name: Submodule contract
+        run: bash Resources/scripts/quality/submodule_contract_tests.sh
+      - name: Website workflow contract
+        run: bash Resources/scripts/quality/website_workflow_tests.sh
+
+  # The gate script's harness uses BSD `script -q -F`, so its self-tests run on
+  # macOS. No Xcode selection or Swift build is needed.
+  gate-script-tests:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Production gate script self-tests
+        run: bash Resources/scripts/quality/production_readiness_gates_tests.sh
 
   gates:
     # Keep the verification runner aligned with the release build. macos-latest
     # currently resolves to macOS 26, whose CoreML MiniLM runtime emits
     # non-finite vectors for this model on every compute-unit configuration.
-    # 90m is well above a healthy full/soak/burn run and fails a deadlock
-    # instead of sitting on the 6h GitHub default.
+    # 90m is well above a healthy full/soak/burn/opt-in run and fails a
+    # deadlock instead of sitting on the 6h GitHub default.
+    #
+    # opt-in-configs covers what `full` skips: real MiniLM inference
+    # (WAX_TEST_MINILM=1) and the WaxRepo trait build + smoke tests.
     timeout-minutes: 90
     runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
-        mode: [full, soak-smoke, burn-smoke]
+        mode: [full, soak-smoke, burn-smoke, opt-in-configs]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Pinned to the Xcode the floating "latest stable" selector resolved to on macos-15
+      # (runner image 20260907) so a runner-image bump cannot change the
+      # toolchain under the gate. Keep in sync with release-waxmcp.yml.
       - name: Select release Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: latest-stable
+          xcode-version: "26.3"
 
       - name: Run Production Gate
         run: |

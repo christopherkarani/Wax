@@ -203,12 +203,22 @@ struct StoreRepairCommandTests {
         try await memory.flush()
         try await memory.close()
 
-        let command = try VectorHealthCommand.parse([
-            "--direct-store",
-            "--store-path", source.path,
-            "--format", "json",
-        ])
-        try await command.runAsync()
+        let report = try runVectorHealth(storePath: source.path)
+        #expect(report.status == EXIT_SUCCESS, "vector-health failed: \(report.stderr)")
+        #expect(report.json["healthy"] as? Bool == true)
+        let primary = try #require(report.json["primaryStore"] as? [String: Any])
+        #expect(primary["path"] as? String == source.standardizedFileURL.path)
+        #expect(primary["frameCount"] as? Int == 1)
+        #expect(primary["framesWithoutVectors"] as? Int == 0)
+        let probe = try #require(report.json["semanticProbe"] as? [String: Any])
+        #expect(probe["targetStore"] as? Bool == true)
+        #expect(probe["passed"] as? Bool == true)
+        #expect(probe["vectorSourceSeen"] as? Bool == true)
+        // The canary is a real frame from the target store, not a synthetic doc.
+        #expect(probe["expectedDocMatched"] as? Bool == true)
+        #expect(probe["canaryFrameId"] is Int)
+        #expect((probe["topPreview"] as? String)?.contains("target store canary") == true)
+        #expect(probe["queryEmbeddingState"] as? String == "available")
     }
 
     @Test
@@ -222,12 +232,32 @@ struct StoreRepairCommandTests {
         let store = try await Wax.create(at: source)
         try await store.close()
 
-        let command = try VectorHealthCommand.parse([
-            "--direct-store",
-            "--store-path", source.path,
-            "--format", "json",
-        ])
-        try await command.runAsync()
+        let report = try runVectorHealth(storePath: source.path)
+        #expect(report.status == EXIT_SUCCESS, "vector-health failed: \(report.stderr)")
+        let primary = try #require(report.json["primaryStore"] as? [String: Any])
+        #expect(primary["frameCount"] as? Int == 0)
+        let probe = try #require(report.json["semanticProbe"] as? [String: Any])
+        // With no frame to match, the probe must not claim a document match or
+        // invent a canary frame; it only proves the engine/provider path.
+        #expect(probe["expectedDocMatched"] is NSNull)
+        #expect(probe["canaryFrameId"] is NSNull)
+        #expect(probe["topPreview"] as? String == "")
+        #expect(probe["queryEmbeddingState"] as? String == "available")
+    }
+
+    /// Runs the built `wax-cli vector-health` and parses its JSON report, so the
+    /// assertions cover the operator-visible output rather than just "did not throw".
+    private func runVectorHealth(
+        storePath: String
+    ) throws -> (status: Int32, json: [String: Any], stderr: String) {
+        let output = try ProcessRunner.runCaptured(
+            command: try builtProductPath(named: "wax-cli"),
+            arguments: ["vector-health", "--direct-store", "--store-path", storePath, "--format", "json"],
+            timeoutSeconds: 180
+        )
+        let object = try JSONSerialization.jsonObject(with: Data(output.stdout.utf8))
+        let json = try #require(object as? [String: Any], "vector-health stdout was not a JSON object: \(output.stdout)")
+        return (output.status, json, output.stderr)
     }
 #endif
 }

@@ -19,20 +19,25 @@ enum AgentDaemonTransport {
     static func configuration(
         storePath: String,
         embedderChoice: EmbedderChoice,
-        cliPathOverride: String? = nil
+        cliPathOverride: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentBrokerConfiguration {
         let brokerExecutable: String
         if let cliPathOverride {
             brokerExecutable = cliPathOverride
         } else {
             let executablePath = try Pathing.resolveSelfExecutablePath()
-            brokerExecutable = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: executablePath)
+            brokerExecutable = AgentBrokerPathing.resolveBrokerCLIPath(
+                currentExecutablePath: executablePath,
+                environment: environment
+            )
         }
         return try AgentBrokerPathing.configuration(
             brokerExecutablePath: brokerExecutable,
             storePath: storePath,
             embedderChoice: embedderChoice.rawValue,
-            noEmbedder: false
+            noEmbedder: false,
+            environment: environment
         )
     }
 }

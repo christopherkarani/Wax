@@ -150,38 +150,44 @@ func readmeExampleSearchableKnowledge() async throws {
     }
 }
 
-// MARK: - README Example: Quick Start Magic
+// MARK: - README Example: Swift app quick start (public `Memory` API)
 
+/// Runs the README "Swift app" snippet through the public `Memory` facade.
+/// Vector search is disabled so the sample is deterministic on Linux CI and
+/// does not compile MiniLM; the snippet's default hybrid search degrades to text.
 @Test
-func readmeExampleQuickStart() async throws {
+func readmeExampleSwiftAppQuickStart() async throws {
+    let readmeURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("README.md")
+    let readme = try String(contentsOf: readmeURL, encoding: .utf8)
+    // Pin the snippet this test mirrors so README drift fails here.
+    #expect(readme.contains("let memory = try await Memory(at: url)"))
+    #expect(readme.contains(#"try await memory.save("The user is building a habit tracker in SwiftUI.")"#))
+    #expect(readme.contains(#"let results = try await memory.search("What is the user building?")"#))
+
     try await TempFiles.withTempFile { url in
-        // 1️⃣ Create your memory palace
-        var config = OrchestratorConfig.default
-        config.enableVectorSearch = false  // Text-only mode
-
-        let memory = try await MemoryOrchestrator(at: url, config: config)
-
-        // 2️⃣ Feed it knowledge
-        try await memory.remember("Swift 6.2 introduces improved concurrency")
-        try await memory.remember("Async/await makes code more readable")
-
-        // 3️⃣ Ask questions, get answers
-        let context = try await memory.recall(query: "concurrency improvements")
-        for item in context.items {
-            _ = item.text // "Swift 6.2 introduces improved concurrency"
+        let memory = try await Memory(at: url) { config in
+            config.enableVectorSearch = false
         }
 
-        // 4️⃣ Clean up (memory persists to disk automatically)
+        try await memory.save("The user is building a habit tracker in SwiftUI.")
+        let results = try await memory.search("What is the user building?")
+        let best = try #require(results.items.first)
+        #expect(best.text.contains("habit tracker"))
+        #expect(results.diagnostics?.effectiveMode == .textOnly)
+
         try await memory.close()
     }
 }
 
-// MARK: - README Example: Quickstart (MemoryOrchestrator)
+// MARK: - Package-only MemoryOrchestrator text recall (not a README snippet)
 
 @Test
-func readmeExampleQuickstartOrchestrator() async throws {
+func memoryOrchestratorTextOnlyRecallReturnsRememberedItem() async throws {
     try await TempFiles.withTempFile { url in
-        // Text-only mode (no embedder required)
         var config = OrchestratorConfig.default
         config.enableVectorSearch = false
 
@@ -191,9 +197,9 @@ func readmeExampleQuickstartOrchestrator() async throws {
         try await memory.remember("Rust is fearless.")
 
         let ctx = try await memory.recall(query: "safe")
-        for item in ctx.items {
-            _ = (item.kind, item.text)
-        }
+        let texts = ctx.items.map(\.text)
+        #expect(texts.contains { $0.contains("Swift is safe and fast.") })
+        #expect(!texts.contains { $0.contains("Rust is fearless.") })
 
         try await memory.close()
     }

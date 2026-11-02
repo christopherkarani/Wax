@@ -1024,7 +1024,13 @@ package enum MemorySemantics {
     private static func identifiers(in text: String, matching regexes: [NSRegularExpression]) -> Set<String> {
         var ids = Set<String>()
         for regex in regexes {
-            ids.formUnion(regexMatches(regex, in: text).map { $0.lowercased() })
+            var matches = regexMatches(regex, in: text)
+            if regex === pascalCaseRegex {
+                // A PascalCase identifier has lowercase letters; without this, the hex tail of a
+                // token like "AC1F4B6A" also matched as "C1F4B6A" and one shared token counted twice.
+                matches = matches.filter { $0.contains(where: \.isLowercase) }
+            }
+            ids.formUnion(matches.map { $0.lowercased() })
         }
         return ids
     }

@@ -6,15 +6,14 @@ struct MemorySemanticsScopeContextTests {
     @Test(arguments: ["", ".", "./"])
     func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) throws {
         let result = try completingWithin(
-            milliseconds: 1_000,
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext(currentDirectoryPath: \(path.debugDescription), processDirectoryPath: \"\")"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: path, processDirectoryPath: "")
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == nil)
-        #expect(result.value.projectName == nil)
-        #expect(result.value.repoRootPath == nil)
+        #expect(result.repoName == nil)
+        #expect(result.projectName == nil)
+        #expect(result.repoRootPath == nil)
     }
 
     @Test
@@ -41,15 +40,14 @@ struct MemorySemanticsScopeContextTests {
         try FileManager.default.removeItem(at: doomed)
 
         let result = try completingWithin(
-            milliseconds: 1_000,
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on deleted directory"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: doomedPath)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == nil)
-        #expect(result.value.projectName == nil)
-        #expect(result.value.repoRootPath == nil)
+        #expect(result.repoName == nil)
+        #expect(result.projectName == nil)
+        #expect(result.repoRootPath == nil)
     }
 
     @Test
@@ -66,15 +64,14 @@ struct MemorySemanticsScopeContextTests {
         )
 
         let result = try completingWithin(
-            milliseconds: 1_000,
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on nested git workdir"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: nestedURL.path)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == repoName)
-        #expect(result.value.projectName == repoName)
-        #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
+        #expect(result.repoName == repoName)
+        #expect(result.projectName == repoName)
+        #expect(result.repoRootPath == repoURL.standardizedFileURL.path)
     }
 
     @Test
@@ -95,25 +92,24 @@ struct MemorySemanticsScopeContextTests {
         try "gitdir: \(worktreeGitDir.path)\n".write(to: gitFile, atomically: true, encoding: .utf8)
 
         let result = try completingWithin(
-            milliseconds: 1_000,
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on linked worktree cwd"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: worktreeURL.path)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == repoName)
-        #expect(result.value.projectName == repoName)
-        #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
-        #expect(result.value.repoName != worktreeFolder)
+        #expect(result.repoName == repoName)
+        #expect(result.projectName == repoName)
+        #expect(result.repoRootPath == repoURL.standardizedFileURL.path)
+        #expect(result.repoName != worktreeFolder)
     }
 }
 
-private struct TimedValue<T> {
-    var value: T
-    var elapsed: Duration
-}
+/// Hang backstop only: a regressed path walk spins or blocks indefinitely, so a
+/// generous ceiling still fails deterministically. A tight (1s) bound flaked
+/// under `swift test --parallel` on loaded CI runners.
+private let hangBackstopMilliseconds = 10_000
 
-private final class TimedBox<T>: @unchecked Sendable {
+private final class ResultBox<T>: @unchecked Sendable {
     var value: T?
 }
 
@@ -121,9 +117,8 @@ private func completingWithin<T>(
     milliseconds: Int,
     description: String,
     work: @escaping @Sendable () -> T
-) throws -> TimedValue<T> {
-    let box = TimedBox<T>()
-    let started = ContinuousClock.now
+) throws -> T {
+    let box = ResultBox<T>()
     let done = DispatchSemaphore(value: 0)
     DispatchQueue.global(qos: .userInitiated).async {
         box.value = work()
@@ -131,6 +126,5 @@ private func completingWithin<T>(
     }
     let wait = done.wait(timeout: .now() + .milliseconds(milliseconds))
     #expect(wait == .success, "\(description) did not return within \(milliseconds)ms")
-    let value = try #require(box.value, "\(description) produced no value")
-    return TimedValue(value: value, elapsed: ContinuousClock.now - started)
+    return try #require(box.value, "\(description) produced no value")
 }

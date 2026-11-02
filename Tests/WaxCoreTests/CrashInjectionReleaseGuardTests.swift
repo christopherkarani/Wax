@@ -18,6 +18,9 @@ func commitCompletesWithCrashInjectionEnvSetWhenNotDebug() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
+    // Deliberate global env mutation: the contract under test is that release
+    // builds ignore the real process variable, so an injected dictionary would
+    // not prove it. Safe under --parallel because release builds ignore it.
     setenv("WAX_CRASH_INJECT_CHECKPOINT", "after_toc_write_before_footer", 1)
     defer { unsetenv("WAX_CRASH_INJECT_CHECKPOINT") }
 

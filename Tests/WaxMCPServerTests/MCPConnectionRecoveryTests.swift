@@ -227,8 +227,6 @@ struct MCPConnectionRecoveryTests {
     }
 
     @Test func sessionCloseWithoutIdSurvivesHintDropViaConnectionRegistry() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withBroker { broker in
             let key = "http-\(UUID().uuidString)"
             let firstHint = MCPClientSessionHint(connectionKey: key)

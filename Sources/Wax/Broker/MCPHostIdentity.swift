@@ -353,13 +353,6 @@ package final class MCPStickyAttributionRegistry: @unchecked Sendable {
         recency.removeAll { $0 == transportKey }
     }
 
-    package func resetForTests() {
-        lock.lock()
-        defer { lock.unlock() }
-        stored.removeAll()
-        recency.removeAll()
-    }
-
     /// Caller holds `lock`.
     private func touch(_ transportKey: String) {
         recency.removeAll { $0 == transportKey }

@@ -11,9 +11,35 @@ on:
     tags:
       - "waxmcp-v*"
 
+permissions:
+  contents: read
+
+# One release per ref at a time; never cancel a release that is mid-publish.
+concurrency:
+  # One release at a time across all tags: every release touches the shared
+  # Homebrew formula branch and tap.
+  group: release-waxmcp
+  cancel-in-progress: false
+
 jobs:
+  # A tag must not publish binaries the production gate never verified. Same
+  # runner, Xcode, and `full` mode as the quality-gates.yml PR/main gate.
+  gates:
+    name: Production gate (full)
+    timeout-minutes: 90
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Keep in sync with quality-gates.yml.
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "26.3"
+      - name: Run Production Gate
+        run: bash Resources/scripts/quality/production_readiness_gates.sh full
+
   build:
     name: Build wax + wax-mcp (${{ matrix.platform }})
+    needs: gates
     strategy:
       fail-fast: false
       matrix:
@@ -31,13 +57,13 @@ jobs:
             source_build: true
     runs-on: ${{ matrix.runs-on }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: maxim-lobanov/setup-xcode@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: latest-stable
-      - uses: actions/setup-node@v4
+          xcode-version: "26.3"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Show Swift / Xcode toolchain
         run: |
@@ -110,7 +136,7 @@ jobs:
           set -euo pipefail
           Resources/npm/waxmcp/dist/${{ matrix.platform }}/wax-cli mcp serve --help
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: waxmcp-${{ matrix.platform }}
           path: Resources/npm/waxmcp/dist/${{ matrix.platform }}
@@ -118,16 +144,18 @@ jobs:
 
   publish:
     name: Publish waxmcp to npm
-    needs: build
+    needs: [gates, build]
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref_name, 'waxmcp-v') }}
     permissions:
       contents: read
+      # npm provenance: signs the package with this workflow's OIDC identity.
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Restore darwin-arm64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: waxmcp-darwin-arm64
           path: Resources/npm/waxmcp/dist/darwin-arm64
@@ -196,9 +224,9 @@ jobs:
           }
           echo "Cross-channel version congruency check passed"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           # Ensures subsequent steps can authenticate with secrets.NPM_TOKEN
           # via NODE_AUTH_TOKEN (required by the registry-url .npmrc template).
@@ -209,19 +237,21 @@ jobs:
 
       - name: Publish package
         working-directory: Resources/npm/waxmcp
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # bump-version.sh can only hash a local git archive. brew downloads GitHub's
   # tag tarball, which hashes differently — finalize after the tag exists.
+  # The in-repo formula bump goes through a pull request; CI never pushes main.
   homebrew:
     name: Finalize Homebrew formula
-    needs: build
+    needs: [gates, build]
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'waxmcp-v') }}
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Resolve release version
         id: version
@@ -229,11 +259,11 @@ jobs:
           set -euo pipefail
           echo "version=${GITHUB_REF_NAME#waxmcp-v}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           # Prefer a PAT that can also push christopherkarani/homebrew-wax.
-          # Falls back to the job token for in-repo formula commits only.
+          # Falls back to the job token for the in-repo formula PR branch.
           token: ${{ secrets.HOMEBREW_TAP_TOKEN || github.token }}
 
       - name: Finalize formula sha256 from GitHub archive
@@ -241,7 +271,11 @@ jobs:
           set -euo pipefail
           ./Resources/scripts/finalize-homebrew-formula.sh "${{ steps.version.outputs.version }}"
 
-      - name: Commit vendored formula if changed
+      - name: Open pull request for vendored formula if changed
+        env:
+          # A PAT-authored PR triggers the PR gates; a GITHUB_TOKEN PR does not.
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           FORMULA="Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
@@ -249,11 +283,37 @@ jobs:
             echo "Vendored Homebrew formula already matches GitHub archive"
             exit 0
           fi
+          BRANCH="release/homebrew-sha-waxmcp-v${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
           git add "$FORMULA"
-          git commit -m "fix(release): Homebrew sha256 for waxmcp-v${{ steps.version.outputs.version }}"
-          git push origin HEAD:main
+          git commit -m "fix(release): Homebrew sha256 for waxmcp-v${VERSION}"
+          # The branch is bot-owned and rebuilt from main on every run, so a plain
+          # --force keeps reruns idempotent (a fresh checkout has no tracking ref
+          # for --force-with-lease to compare against).
+          git push --force origin "HEAD:refs/heads/${BRANCH}"
+          if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            echo "Formula PR for ${BRANCH} already open"
+            exit 0
+          fi
+          # npm is already published at this point, so a PR the token may not open
+          # (repo blocks Actions-created PRs and HOMEBREW_TAP_TOKEN is unset) must
+          # not turn the release red. Leave the branch and a link to open it by hand.
+          if ! gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "fix(release): Homebrew sha256 for waxmcp-v${VERSION}" \
+            --body "Finalizes the vendored Homebrew formula sha256 from the GitHub archive for tag \`waxmcp-v${VERSION}\`. Opened by the release workflow."; then
+            COMPARE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1"
+            echo "::warning::Could not open the Homebrew formula PR automatically. Open it manually: ${COMPARE_URL}"
+            {
+              echo "### Homebrew formula PR needs a manual open"
+              echo ""
+              echo "Branch \`${BRANCH}\` holds the finalized sha256 for \`waxmcp-v${VERSION}\`."
+              echo "Open the PR here: ${COMPARE_URL}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Sync christopherkarani/homebrew-wax tap
         env:

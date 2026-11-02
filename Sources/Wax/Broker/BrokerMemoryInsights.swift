@@ -46,8 +46,9 @@ package struct BrokerPromotionSettings: Sendable, Equatable {
         maxCandidates: 6
     )
 
-    package static func fromEnvironment() -> BrokerPromotionSettings {
-        let env = ProcessInfo.processInfo.environment
+    package static func fromEnvironment(
+        _ env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> BrokerPromotionSettings {
         let minimumConfidence = env["WAX_OPENCLAW_PROMOTION_MIN_CONFIDENCE"]
             .flatMap(Float.init)
             .map { min(max($0, 0), 1) }

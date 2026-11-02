@@ -222,8 +222,10 @@ func stickyAttributionRegistryEvictsLeastRecentlyUsedPastCapacity() {
 
 @Test
 func stickyAttributionPersistsLastResolvedPerTransportKey() {
-    MCPStickyAttributionRegistry.shared.resetForTests()
-    defer { MCPStickyAttributionRegistry.shared.resetForTests() }
+    // Key-scoped cleanup only: a global reset would wipe the sticky
+    // attribution of MCP tests running in parallel in this process.
+    MCPStickyAttributionRegistry.shared.remove(for: "sticky-a")
+    defer { MCPStickyAttributionRegistry.shared.remove(for: "sticky-a") }
     #expect(MCPStickyAttributionRegistry.shared.current(for: "sticky-a") == nil)
 
     let unresolved = MCPProjectAttribution(source: .unresolved)
