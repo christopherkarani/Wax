@@ -55,7 +55,7 @@ func recallStaleHintFlagsOlderSameTypeSameTopicHit() throws {
     let flagged = try #require(
         RecallPresent.renderRecallHit(old, rank: 2, verbose: false, nowMs: 3_000, staleHint: true).objectValue
     )
-    #expect(flagged["stale_hint"]?.boolValue == true)
+    #expect(try #require(flagged["stale_hint"]?.boolValue))
     let clean = try #require(
         RecallPresent.renderRecallHit(new, rank: 1, verbose: false, nowMs: 3_000).objectValue
     )
@@ -168,8 +168,8 @@ func primeStaleHintFlagsOlderSameTypeSameTopicItem() throws {
     ])
     let old = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
     let new = try #require(envelope.projectItems.first { $0.text == staleNewDecision })
-    #expect(old.staleHint == true)
-    #expect(new.staleHint == false)
+    #expect(old.staleHint)
+    #expect(!new.staleHint)
     #expect(envelope.renderedJSON.contains("\"stale_hint\":true"))
     #expect(envelope.hostContext.contains("stale"))
 }
@@ -180,9 +180,38 @@ func primeStaleHintIgnoresUnrelatedSameTypeItem() {
         primeDecision(staleOldDecision, createdAtMs: 1_000, score: 0.9),
         primeDecision(unrelatedDecision, createdAtMs: 9_000),
     ])
-    #expect(envelope.projectItems.allSatisfy { $0.staleHint == false })
-    #expect(envelope.renderedJSON.contains("stale_hint") == false)
-    #expect(envelope.hostContext.contains(" · stale") == false)
+    #expect(envelope.projectItems.allSatisfy { !$0.staleHint })
+    #expect(!envelope.renderedJSON.contains("stale_hint"))
+    #expect(!envelope.hostContext.contains(" · stale"))
+}
+
+@Test
+func primeStaleHintComparesFullTextNotTruncatedPrefix() {
+    let sharedLead = "Prefer project-scoped recall and never auto-widen an empty project lane; "
+    let sessionTail = sharedLead + "session lanes rank their own working notes first after compaction."
+    let releaseTail = sharedLead + "Homebrew formulas ship from the release workflow with pinned checksums."
+    #expect(!MemorySemantics.isNearTwin(sessionTail, releaseTail))
+    let envelope = MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "claude",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: [
+                primeDecision(sessionTail, createdAtMs: 1_000, score: 0.9),
+                primeDecision(releaseTail, createdAtMs: 9_000),
+            ],
+            handoff: nil
+        ),
+        tokenizer: .character,
+        maxItemTokens: sharedLead.count,
+        nowMs: 10_000
+    )
+    // Both items render as the same truncated lead; only the full texts differ.
+    #expect(envelope.projectItems.count == 2)
+    #expect(envelope.projectItems.allSatisfy { !$0.staleHint })
 }
 
 @Test
@@ -192,7 +221,7 @@ func primeStaleHintLeavesUnknownTimestampUnflagged() throws {
         primeDecision(staleNewDecision, createdAtMs: 9_000),
     ])
     let unknown = try #require(envelope.projectItems.first { $0.text == staleOldDecision })
-    #expect(unknown.staleHint == false)
+    #expect(!unknown.staleHint)
 }
 
 @Test

@@ -28,7 +28,7 @@ func migrationRollbackRestoresBackupAndRethrowsInstallError() throws {
         )
         #expect(error is InstallFailure)
         #expect(try Data(contentsOf: destination) == Data("previous".utf8))
-        #expect(FileManager.default.fileExists(atPath: backup.path) == false)
+        #expect(!FileManager.default.fileExists(atPath: backup.path))
     }
 }
 

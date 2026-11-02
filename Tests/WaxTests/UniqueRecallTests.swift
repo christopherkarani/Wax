@@ -732,7 +732,7 @@ struct UniqueRecallTests {
             metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue]
         )
         #expect(LayeredRecall.looksScorecard(testPass.text))
-        #expect(LayeredRecall.looksSessionRubric(testPass.text) == false)
+        #expect(!LayeredRecall.looksSessionRubric(testPass.text))
         let merged = LayeredRecall.mergeHits(
             sessionHits: [],
             durableHits: [testPass, other],
@@ -756,7 +756,12 @@ struct UniqueRecallTests {
         ("", false),
     ])
     func queryAsksForRatingMatchesWholeWordsOnly(_ query: String, _ expected: Bool) {
-        #expect(LayeredRecall.queryAsksForRating(query) == expected, "\(query)")
+        let asks = LayeredRecall.queryAsksForRating(query)
+        if expected {
+            #expect(asks, "\(query)")
+        } else {
+            #expect(!asks, "\(query)")
+        }
     }
 
     @Test

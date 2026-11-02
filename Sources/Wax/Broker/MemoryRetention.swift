@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -22,8 +25,13 @@ package struct MemoryRetentionSettings: Sendable, Equatable {
         lowEngagementMaxCount: 1
     )
 
+    /// Floor for `WAX_WORKING_QUARANTINE_SECS`. Quarantine soft-deletes working
+    /// notes, so a tiny window would wipe a live session's notes on the next maintain.
+    package static let minimumWorkingQuarantineMs: Int64 = 3_600_000
+
     package static func fromEnvironment(
-        _ environment: [String: String] = ProcessInfo.processInfo.environment
+        _ environment: [String: String] = ProcessInfo.processInfo.environment,
+        warn: (String) -> Void = MemoryRetentionSettings.logWarning
     ) -> MemoryRetentionSettings {
         func seconds(_ key: String, defaultMs: Int64) -> Int64 {
             guard let raw = environment[key], let seconds = Int64(raw) else {
@@ -34,12 +42,41 @@ package struct MemoryRetentionSettings: Sendable, Equatable {
         let threshold = environment["WAX_KEEP_COLD_THRESHOLD"].flatMap(Float.init)
         return MemoryRetentionSettings(
             recentlyClosedMs: seconds("WAX_SESSION_RECENTLY_CLOSED_SECS", defaultMs: Self.default.recentlyClosedMs),
-            workingQuarantineMs: seconds("WAX_WORKING_QUARANTINE_SECS", defaultMs: Self.default.workingQuarantineMs),
+            workingQuarantineMs: workingQuarantineMs(environment["WAX_WORKING_QUARANTINE_SECS"], warn: warn),
             keepColdThreshold: threshold.map { min(max($0, 0), 1) } ?? Self.default.keepColdThreshold,
             coldMinAgeMs: seconds("WAX_COLD_MIN_AGE_SECS", defaultMs: Self.default.coldMinAgeMs),
             lowEngagementAgeMs: Self.default.lowEngagementAgeMs,
             lowEngagementMaxCount: Self.default.lowEngagementMaxCount
         )
+    }
+
+    /// `<= 0` means "unset" (default window); a positive value below one hour is
+    /// raised to the floor. Both cases warn, since either one was likely a typo.
+    private static func workingQuarantineMs(_ raw: String?, warn: (String) -> Void) -> Int64 {
+        let key = "WAX_WORKING_QUARANTINE_SECS"
+        guard let raw, let seconds = Int64(raw) else {
+            return Self.default.workingQuarantineMs
+        }
+        guard seconds > 0 else {
+            warn("\(key)=\(raw) is not positive; using the default \(Self.default.workingQuarantineMs / 1000)s")
+            return Self.default.workingQuarantineMs
+        }
+        let requestedMs = seconds.multipliedReportingOverflow(by: 1000)
+        let ms = requestedMs.overflow ? Int64.max : requestedMs.partialValue
+        guard ms >= minimumWorkingQuarantineMs else {
+            warn("\(key)=\(raw) is below the \(minimumWorkingQuarantineMs / 1000)s minimum; using the minimum")
+            return minimumWorkingQuarantineMs
+        }
+        return ms
+    }
+
+    package static func logWarning(_ message: String) {
+        #if canImport(os)
+        Logger(subsystem: "com.wax.framework", category: "retention")
+            .warning("\(message, privacy: .public)")
+        #else
+        FileHandle.standardError.write(Data("wax retention: \(message)\n".utf8))
+        #endif
     }
 }
 

@@ -308,7 +308,7 @@ struct RememberSupersedeTests {
         let firstText =
             "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
         let secondText =
-            "Do not re-run C01 GitLiveProbe / C02 UniqueRanking / C03 CompactSummary this session."
+            "Remaining open holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose them."
         #expect(MemorySemantics.similarity(lhs: firstText, rhs: secondText) < 0.88)
         try await withSupersedeBroker { service in
             let first = try await rememberDurable(

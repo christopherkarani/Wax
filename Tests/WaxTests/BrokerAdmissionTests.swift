@@ -27,7 +27,7 @@ struct BrokerAdmissionTests {
             "memory_maintain",
             "memory_maintain",
             [:],
-            BrokerAdmission.rememberDrain
+            BrokerAdmission.command
         ),
         (
             "remember",

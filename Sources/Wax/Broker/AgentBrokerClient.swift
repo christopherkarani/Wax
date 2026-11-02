@@ -220,7 +220,8 @@ package enum AgentBrokerClient {
                     return false
                 }
                 // Bind-first loser may still be exiting after the winner answered.
-                try await Task.sleep(for: pollInterval)
+                // The broker is up; cancellation must not turn that into a throw.
+                try? await Task.sleep(for: pollInterval)
                 return process.isRunning
             }
 
@@ -245,7 +246,13 @@ package enum AgentBrokerClient {
                 failedFast = true
                 break
             }
-            try await Task.sleep(for: pollInterval)
+            do {
+                try await Task.sleep(for: pollInterval)
+            } catch {
+                // Cancelled mid-start: do not leave the launched daemon orphaned.
+                await terminateLaunchedBroker(process)
+                throw error
+            }
         }
 
         if let response = try sendIfAvailable(
@@ -283,7 +290,7 @@ package enum AgentBrokerClient {
         guard process.isRunning else { return }
         process.terminate()
         let stopBy = Date().addingTimeInterval(0.5)
-        while process.isRunning, Date() < stopBy {
+        while process.isRunning, Date() < stopBy, !Task.isCancelled {
             // Cleanup must finish even when the caller was cancelled.
             try? await Task.sleep(for: pollInterval)
         }
@@ -314,7 +321,8 @@ package enum AgentBrokerClient {
             ) {
                 return
             }
-            try await Task.sleep(for: pollInterval)
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: pollInterval)
         }
     }
 
@@ -382,15 +390,17 @@ package enum AgentBrokerClient {
         guard isWaxCLIProcess(pid: pid) else { return false }
         kill(pid, SIGTERM)
         let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline {
+        while Date() < deadline, !Task.isCancelled {
             let stillRunning = kill(pid, 0) == 0
             if !stillRunning, !isSocketLive(socketPath: configuration.socketPath) {
                 return true
             }
-            try await Task.sleep(for: pollInterval)
+            try? await Task.sleep(for: pollInterval)
         }
+        // Escalate even when cancelled: a SIGTERM'd, still-mute broker must not linger.
         kill(pid, SIGKILL)
-        try await Task.sleep(for: .milliseconds(150))
+        try? await Task.sleep(for: .milliseconds(150))
+        try Task.checkCancellation()
         return !isSocketLive(socketPath: configuration.socketPath)
         #else
         return false
@@ -545,6 +555,14 @@ package enum AgentBrokerClient {
         #endif
     }
 
+    /// `poll` timeout for the time left before a deadline. Rounds up so a
+    /// sub-millisecond remainder still polls once (≥ 1ms) instead of reading as
+    /// an immediate timeout; 0 only once the deadline has passed.
+    package static func pollTimeoutMilliseconds(remaining seconds: TimeInterval) -> Int32 {
+        guard seconds > 0 else { return 0 }
+        return Int32(min(Double(Int32.max), (seconds * 1000).rounded(.up)))
+    }
+
     private static func readSocketResponseLine(
         fd: Int32,
         timeoutSeconds: Double? = nil,
@@ -554,7 +572,7 @@ package enum AgentBrokerClient {
         // One overall deadline: a broker trickling bytes must not reset the clock per chunk.
         let deadline = Date().addingTimeInterval(timeoutSeconds ?? responseTimeoutSeconds)
         while true {
-            let remainingMS = Int32(max(0, min(Double(Int32.max), deadline.timeIntervalSinceNow * 1000)))
+            let remainingMS = pollTimeoutMilliseconds(remaining: deadline.timeIntervalSinceNow)
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = remainingMS > 0 ? poll(&descriptor, 1, remainingMS) : 0
             if pollResult == 0 {

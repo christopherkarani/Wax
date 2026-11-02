@@ -13,9 +13,13 @@ package enum StaleHint {
         package var signature: MemorySemantics.TextSignature
 
         package init(memoryType: String, createdAtMs: Int64, text: String) {
+            self.init(memoryType: memoryType, createdAtMs: createdAtMs, signature: MemorySemantics.TextSignature(text))
+        }
+
+        package init(memoryType: String, createdAtMs: Int64, signature: MemorySemantics.TextSignature) {
             self.memoryType = memoryType
             self.createdAtMs = createdAtMs
-            self.signature = MemorySemantics.TextSignature(text)
+            self.signature = signature
         }
     }
 

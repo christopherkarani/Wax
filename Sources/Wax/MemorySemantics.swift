@@ -938,10 +938,26 @@ package enum MemorySemantics {
     package struct TextSignature: Sendable, Equatable {
         package let terms: Set<String>
         package let identifiers: Set<String>
+        /// `#123`, SHAs and ticket IDs only (see `extractPreciseIdentifiers`).
+        package let preciseIdentifiers: Set<String>
+        /// Terms minus identifier tokens and stopwords: what the text says
+        /// about its identifiers rather than which identifiers it names.
+        package let contentTerms: Set<String>
+        /// Whether the text contains a negation ("not", "never", "don't", ...).
+        package let negated: Bool
 
         package init(_ text: String) {
-            self.terms = MemorySemantics.terms(text)
-            self.identifiers = MemorySemantics.extractIdentifiers(text)
+            let terms = MemorySemantics.terms(text)
+            let identifiers = MemorySemantics.extractIdentifiers(text)
+            let identifierTerms = Set(identifiers.flatMap { MemorySemantics.terms($0) })
+            self.terms = terms
+            self.identifiers = identifiers
+            self.preciseIdentifiers = MemorySemantics.extractPreciseIdentifiers(text)
+            self.contentTerms = terms
+                .subtracting(identifierTerms)
+                .subtracting(MemorySemantics.nearTwinStopwords)
+                .subtracting(MemorySemantics.negationTerms)
+            self.negated = !terms.isDisjoint(with: MemorySemantics.negationTerms)
         }
     }
 
@@ -950,15 +966,44 @@ package enum MemorySemantics {
         termJaccard(lhs.terms, rhs.terms)
     }
 
+    /// Jaccard over content terms (identifiers, stopwords and negations removed).
+    package static func contentSimilarity(_ lhs: TextSignature, _ rhs: TextSignature) -> Float {
+        termJaccard(lhs.contentTerms, rhs.contentTerms)
+    }
+
+    package static func contentSimilarity(lhs: String, rhs: String) -> Float {
+        contentSimilarity(TextSignature(lhs), TextSignature(rhs))
+    }
+
+    /// Function words dropped before the identifier-path content comparison,
+    /// so shared glue ("must be ... before the") cannot carry two different
+    /// statements about the same identifiers over the floor.
+    private static let nearTwinStopwords: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "for", "by",
+        "with", "from", "as", "into", "is", "are", "was", "were", "be", "been", "being",
+        "it", "its", "this", "that", "these", "those", "them", "they", "we", "you", "i",
+        "do", "does", "did", "must", "should", "will", "would", "can", "could", "may",
+        "might", "shall", "than", "then", "so", "if", "when", "s", "t",
+    ]
+
+    /// Negation markers. Normalization splits "don't" into "don" + "t", so the
+    /// contracted stems are listed rather than the apostrophe forms.
+    private static let negationTerms: Set<String> = [
+        "not", "no", "never", "cannot", "without",
+        "don", "doesn", "didn", "isn", "aren", "wasn", "weren",
+        "shouldn", "mustn", "couldn", "wouldn",
+    ]
+
     package static let identifierJaccardThreshold: Float = 0.5
     package static let identifierSharedCountThreshold = 3
 
     /// Term Jaccard at or above this alone makes two texts near-twins.
     package static let nearTwinSimilarityThreshold: Float = 0.88
-    /// Identifier overlap only counts as a near-twin when the texts also share
-    /// at least this much vocabulary. Two different lessons about the same three
-    /// types share identifiers but little else; a paraphrase shares both.
-    package static let nearTwinIdentifierSimilarityFloor: Float = 0.4
+    /// Identifier overlap only counts as a near-twin when the texts' content
+    /// terms (identifiers, stopwords and negations removed) also overlap at least
+    /// this much. Two different lessons about the same three types share
+    /// identifiers but say different things about them; a paraphrase says the same.
+    package static let nearTwinIdentifierSimilarityFloor: Float = 0.5
 
     private static let pascalCaseRegex = makeRegex(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#)
     private static let issueNumberRegex = makeRegex(#"#\d+"#)
@@ -967,8 +1012,18 @@ package enum MemorySemantics {
 
     /// PascalCase tokens, `#123`, 7+ hex SHAs, and `C01`/`T1`-style IDs.
     package static func extractIdentifiers(_ text: String) -> Set<String> {
+        identifiers(in: text, matching: [pascalCaseRegex, issueNumberRegex, hexSHARegex, ticketIDRegex])
+    }
+
+    /// The exact-reference subset of `extractIdentifiers`: `#123`, SHAs and
+    /// ticket IDs. Unlike type names, one of these differing means a different subject.
+    package static func extractPreciseIdentifiers(_ text: String) -> Set<String> {
+        identifiers(in: text, matching: [issueNumberRegex, hexSHARegex, ticketIDRegex])
+    }
+
+    private static func identifiers(in text: String, matching regexes: [NSRegularExpression]) -> Set<String> {
         var ids = Set<String>()
-        for regex in [pascalCaseRegex, issueNumberRegex, hexSHARegex, ticketIDRegex] {
+        for regex in regexes {
             ids.formUnion(regexMatches(regex, in: text).map { $0.lowercased() })
         }
         return ids
@@ -1012,16 +1067,30 @@ package enum MemorySemantics {
         return overlap.shared >= 2 && overlap.jaccard >= identifierJaccardThreshold
     }
 
-    /// Same-topic test used by write-time auto-supersede, read-time stale-twin
-    /// demotion, and `stale_hint` labels: near-identical wording, or matching
-    /// identifiers backed by real shared vocabulary. Identifiers alone are not
-    /// enough — distinct memories about the same types must both survive.
+    /// Same-topic test used by write-time auto-supersede (destructive), read-time
+    /// stale-twin demotion, and `stale_hint` labels. Tuned for precision:
+    /// - identifiers must be compatible: the same issue numbers, SHAs and ticket
+    ///   IDs (`#123` vs `#124` is a different subject), and one text's type names
+    ///   a subset of the other's (a merged memory may name more types);
+    /// - both texts must agree on negation ("use X" vs "never use X");
+    /// - then either near-identical wording (term Jaccard >= 0.88), or matching
+    ///   identifiers plus content-term Jaccard >= 0.5.
+    /// Loose paraphrases that reword most of the content are deliberately not
+    /// twins; they stay live side by side rather than risk retiring a distinct memory.
     package static func isNearTwin(_ lhs: TextSignature, _ rhs: TextSignature) -> Bool {
-        let textSimilarity = similarity(lhs, rhs)
-        if textSimilarity >= nearTwinSimilarityThreshold {
+        guard identifiersCompatible(lhs, rhs), lhs.negated == rhs.negated else {
+            return false
+        }
+        if similarity(lhs, rhs) >= nearTwinSimilarityThreshold {
             return true
         }
-        return textSimilarity >= nearTwinIdentifierSimilarityFloor && identifiersMatch(lhs, rhs)
+        return identifiersMatch(lhs, rhs)
+            && contentSimilarity(lhs, rhs) >= nearTwinIdentifierSimilarityFloor
+    }
+
+    private static func identifiersCompatible(_ lhs: TextSignature, _ rhs: TextSignature) -> Bool {
+        lhs.preciseIdentifiers == rhs.preciseIdentifiers
+            && (lhs.identifiers.isSubset(of: rhs.identifiers) || rhs.identifiers.isSubset(of: lhs.identifiers))
     }
 
     package static func isNearTwin(_ lhs: String, _ rhs: String) -> Bool {

@@ -58,7 +58,7 @@ private func dryRunQuarantineCount(_ service: AgentBrokerService) async throws -
     let response = await service.handle(.init(command: "memory_maintain", arguments: [:]))
     #expect(response.ok, "memory_maintain failed: \(response.error ?? "nil")")
     let payload = try #require(response.payload?.objectValue)
-    #expect(payload["dry_run"]?.boolValue == true)
+    #expect(try #require(payload["dry_run"]?.boolValue))
     return try #require(payload["quarantine_soft_deletes"]?.intValue)
 }
 
@@ -91,7 +91,7 @@ func statsSurfacesSessionManifestListingFailure() async throws {
         #expect(response.ok, "stats failed: \(response.error ?? "nil")")
         let sessions = try #require(response.payload?.objectValue?["sessions"]?.objectValue)
         let listError = try #require(sessions["list_error"]?.stringValue)
-        #expect(listError.isEmpty == false)
+        #expect(!listError.isEmpty)
 
         // Not cached: once the bad manifest is gone the next stats call recovers.
         try FileManager.default.removeItem(at: corrupt)
@@ -107,4 +107,80 @@ func clientResponseTimeoutOutlastsBrokerEmbedderWait() {
     if ProcessInfo.processInfo.environment["WAX_BROKER_RESPONSE_TIMEOUT_SECS"] == nil {
         #expect(AgentBrokerClient.responseTimeoutSeconds == BrokerLimits.defaultClientResponseTimeoutSeconds)
     }
+}
+
+@Test
+func sessionEndHarvestUsesBrokerRetentionSettings() async throws {
+    var settings = MemoryRetentionSettings.default
+    settings.recentlyClosedMs = 7_200_000
+    try await withMaintainBroker(retentionSettings: settings) { service, _ in
+        let project = "maintain-settings-harvest"
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: [
+                "agent_id": .string("settings-agent"),
+                "run_id": .string("settings-harvest"),
+                "project": .string(project),
+                "repo": .string(project),
+            ]
+        ))
+        #expect(started.ok, "session_start failed: \(started.error ?? "nil")")
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        // A working note is a harvest leftover, so reclaim waits recentlyClosedMs.
+        let write = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Working note that stays in the session store."),
+                "session_id": .string(sessionID),
+                "memory_type": .string("note"),
+                "durability": .string("working"),
+                "scope": .string("session"),
+                "project": .string(project),
+                "repo": .string(project),
+            ]
+        ))
+        #expect(write.ok, "remember failed: \(write.error ?? "nil")")
+
+        let before = BrokerClock.nowMs()
+        let ended = await service.handle(.init(
+            command: "session_end",
+            arguments: ["session_id": .string(sessionID)]
+        ))
+        #expect(ended.ok, "session_end failed: \(ended.error ?? "nil")")
+        let reclaimAfterMs = try #require(ended.payload?.objectValue?["reclaim_after_ms"]?.intValue)
+        #expect(reclaimAfterMs >= before + settings.recentlyClosedMs)
+        #expect(reclaimAfterMs < before + settings.recentlyClosedMs + 600_000)
+    }
+}
+
+@Test(arguments: ["0", "-5"])
+func workingQuarantineNonPositiveFallsBackToDefault(_ raw: String) {
+    var warnings: [String] = []
+    let settings = MemoryRetentionSettings.fromEnvironment(
+        ["WAX_WORKING_QUARANTINE_SECS": raw],
+        warn: { warnings.append($0) }
+    )
+    #expect(settings.workingQuarantineMs == MemoryRetentionSettings.default.workingQuarantineMs)
+    #expect(warnings.count == 1)
+    #expect(warnings.first?.contains("WAX_WORKING_QUARANTINE_SECS") ?? false)
+}
+
+@Test
+func workingQuarantineBelowMinimumIsClampedToOneHour() {
+    var warnings: [String] = []
+    let settings = MemoryRetentionSettings.fromEnvironment(
+        ["WAX_WORKING_QUARANTINE_SECS": "60"],
+        warn: { warnings.append($0) }
+    )
+    #expect(settings.workingQuarantineMs == MemoryRetentionSettings.minimumWorkingQuarantineMs)
+    #expect(MemoryRetentionSettings.minimumWorkingQuarantineMs == 3_600_000)
+    #expect(warnings.count == 1)
+
+    warnings.removeAll()
+    let atMinimum = MemoryRetentionSettings.fromEnvironment(
+        ["WAX_WORKING_QUARANTINE_SECS": "3600"],
+        warn: { warnings.append($0) }
+    )
+    #expect(atMinimum.workingQuarantineMs == 3_600_000)
+    #expect(warnings.isEmpty)
 }

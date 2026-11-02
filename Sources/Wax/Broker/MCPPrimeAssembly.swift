@@ -87,6 +87,9 @@ package enum MCPPrimeAssembly {
         package var createdAtMs: Int64
         /// True when a newer same-type, same-topic item exists in the same primed lane.
         package var staleHint: Bool = false
+        /// Topic signature of the full sanitized candidate text, so `staleHint`
+        /// does not compare two items by their token-truncated `text`.
+        package var topicSignature: MemorySemantics.TextSignature? = nil
     }
 
     package struct Handoff: Sendable, Equatable {
@@ -415,7 +418,11 @@ package enum MCPPrimeAssembly {
     /// Shares ``StaleHint`` with recall: unknown timestamps stay unflagged.
     package static func markStaleHints(_ items: [Item]) -> [Item] {
         let flags = StaleHint.flags(for: items.map {
-            StaleHint.Entry(memoryType: $0.memoryType, createdAtMs: $0.createdAtMs, text: $0.text)
+            StaleHint.Entry(
+                memoryType: $0.memoryType,
+                createdAtMs: $0.createdAtMs,
+                signature: $0.topicSignature ?? MemorySemantics.TextSignature($0.text)
+            )
         })
         return zip(items, flags).map { item, stale in
             var copy = item
@@ -463,7 +470,8 @@ package enum MCPPrimeAssembly {
                     repo: candidate.repo,
                     ageDays: ageDays(createdAtMs: candidate.createdAtMs, nowMs: nowMs),
                     score: candidate.score,
-                    createdAtMs: candidate.createdAtMs
+                    createdAtMs: candidate.createdAtMs,
+                    topicSignature: MemorySemantics.TextSignature(sanitized)
                 )
             )
         }

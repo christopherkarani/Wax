@@ -30,6 +30,8 @@ package actor AgentBrokerService {
     private let rememberMutex = AsyncMutex()
     private var cachedSessionDisk: (atMs: Int64, stats: SessionDiskStats)?
     private static let sessionDiskCacheTTLMs: Int64 = 15_000
+    /// Test seam: awaited between a persisted-session harvest and its manifest write.
+    private var persistedHarvestHookForTesting: (@Sendable (UUID) async -> Void)?
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -233,18 +235,17 @@ package actor AgentBrokerService {
     /// New `BrokerCommand` cases must pick true (teardown) or false.
     package static func requiresRememberDrain(_ command: BrokerCommand) -> Bool {
         switch command {
-        // memory_maintain harvests and marks expired-lease sessions `.ended`.
-        // A concurrent remember (rememberMutex only) could rebind that session
-        // between maintain's liveness snapshot and its manifest write, so
-        // maintain drains remember the same way session teardown does.
-        case .taskStateMigrate, .sessionEnd, .sessionClose, .memoryMaintain:
+        // memory_maintain stays on commandMutex: its harvests can be slow, and
+        // remember must not queue behind them. It takes rememberMutex only for
+        // the liveness re-check + mark-ended step (see harvestPersistedSession).
+        case .taskStateMigrate, .sessionEnd, .sessionClose:
             return true
         case .remember, .recall, .search, .memorySearch, .sessionStart, .sessionResume,
              .handoff, .handoffLatest, .memoryGet, .memoryHealth, .stats, .flush,
              .markdownSync, .entityUpsert, .entityResolve, .factRetract, .shutdown,
              .sessionSynthesize, .knowledgeCapture, .sessionOpen, .compactContext,
              .markdownExport, .factsQuery, .memoryPromote, .promote, .factAssert,
-             .corpusSearch:
+             .corpusSearch, .memoryMaintain:
             return false
         }
     }
@@ -1355,7 +1356,7 @@ extension AgentBrokerService {
         if activeSessions[sessionID] == nil {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
                 if status == .ended {
-                    let harvest = await harvestPersistedSession(sessionID: sessionID)
+                    let harvest = await harvestPersistedSession(sessionID: sessionID, rememberDrained: true)
                     let payload = sessionClosePayload(
                         sessionID: sessionID,
                         ended: true,
@@ -1412,7 +1413,8 @@ extension AgentBrokerService {
         _ = await maintainSessionStores(
             apply: true,
             forceReclaim: false,
-            endExpiredSessions: false
+            endExpiredSessions: false,
+            rememberDrained: true
         )
     }
 
@@ -1653,6 +1655,7 @@ extension AgentBrokerService {
     private func makeHarvestCallback() -> @Sendable (VirtualSessionStore.SessionState) async -> SessionHarvest.Report {
         let longTerm = longTermMemory
         let settings = promotionSettings
+        let retention = retentionSettings
         let scope = scopeContext
         return { state in
             let events = (try? BrokerSessionPersistence.loadEvents(from: state.eventLogURL)) ?? []
@@ -1664,6 +1667,7 @@ extension AgentBrokerService {
                 events: events,
                 scope: scope,
                 settings: settings,
+                retention: retention,
                 nowMs: BrokerClock.nowMs()
             )
         }
@@ -1688,7 +1692,9 @@ extension AgentBrokerService {
         )
     }
 
-    private func harvestPersistedSession(sessionID: UUID) async -> SessionHarvest.Report {
+    /// - Parameter rememberDrained: the caller already holds `rememberMutex`
+    ///   (session teardown under `.rememberDrain`); otherwise it is taken here.
+    private func harvestPersistedSession(sessionID: UUID, rememberDrained: Bool) async -> SessionHarvest.Report {
         guard let manifest = try? BrokerSessionPersistence.loadManifest(
             rootURL: sessionRootURL,
             sessionID: sessionID
@@ -1708,6 +1714,7 @@ extension AgentBrokerService {
                 let longTerm = longTermMemory
                 let scope = scopeContext
                 let settings = promotionSettings
+                let retention = retentionSettings
                 let now = BrokerClock.nowMs()
                 report = try await endedSessions.withMemory(at: storeURL) { memory in
                     await SessionHarvest.run(
@@ -1718,6 +1725,7 @@ extension AgentBrokerService {
                         events: events,
                         scope: scope,
                         settings: settings,
+                        retention: retention,
                         nowMs: now
                     )
                 }
@@ -1743,12 +1751,35 @@ extension AgentBrokerService {
                 alreadyHarvested: false
             )
         }
+        if let hook = persistedHarvestHookForTesting {
+            await hook(sessionID)
+        }
+        if rememberDrained {
+            persistHarvestUnlessRebound(sessionID: sessionID, report: report)
+        } else {
+            // Lock order commandMutex -> rememberMutex, the same as `.rememberDrain`.
+            await rememberMutex.withLock { [self] in
+                await persistHarvestUnlessRebound(sessionID: sessionID, report: report)
+            }
+        }
+        return report
+    }
+
+    /// Marks the harvested session `.ended` unless it is live again. A remember
+    /// (rememberMutex only) can rebind an expired-lease session while the harvest
+    /// awaits; that session is back in use, so its manifest is left alone and its
+    /// own end will harvest it. Run with rememberMutex held so no rebind is in flight.
+    private func persistHarvestUnlessRebound(sessionID: UUID, report: SessionHarvest.Report) {
+        guard activeSessions[sessionID] == nil else { return }
         _ = try? virtualSessions.persistHarvestToDisk(
             sessionID: sessionID,
             report: report,
             markEnded: true
         )
-        return report
+    }
+
+    package func setPersistedHarvestHookForTesting(_ hook: (@Sendable (UUID) async -> Void)?) {
+        persistedHarvestHookForTesting = hook
     }
 
     @discardableResult
@@ -1785,7 +1816,8 @@ extension AgentBrokerService {
     private func maintainSessionStores(
         apply: Bool,
         forceReclaim: Bool,
-        endExpiredSessions: Bool
+        endExpiredSessions: Bool,
+        rememberDrained: Bool
     ) async -> SessionStoreMaintainCounts {
         let now = BrokerClock.nowMs()
         let recentlyClosedMs = retentionSettings.recentlyClosedMs
@@ -1812,7 +1844,7 @@ extension AgentBrokerService {
             zombieIDs.insert(manifest.sessionID)
             harvests += 1
             if apply {
-                _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+                _ = await harvestPersistedSession(sessionID: manifest.sessionID, rememberDrained: rememberDrained)
             }
         }
 
@@ -1823,7 +1855,7 @@ extension AgentBrokerService {
                manifest.harvestedAtMs == nil || manifest.harvestError != nil {
                 harvests += 1
                 if apply {
-                    _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+                    _ = await harvestPersistedSession(sessionID: manifest.sessionID, rememberDrained: rememberDrained)
                 }
             }
             let current = (try? BrokerSessionPersistence.loadManifest(
@@ -1852,10 +1884,12 @@ extension AgentBrokerService {
         let apply = command.apply
         let force = command.forceReclaim
         let now = BrokerClock.nowMs()
+        // memory_maintain holds commandMutex only (startup holds nothing).
         let sessionCounts = await maintainSessionStores(
             apply: apply,
             forceReclaim: force,
-            endExpiredSessions: endExpiredSessions
+            endExpiredSessions: endExpiredSessions,
+            rememberDrained: false
         )
         let zombiesToEnd = sessionCounts.zombiesToEnd
         let harvests = sessionCounts.harvests

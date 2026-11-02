@@ -492,8 +492,11 @@ func rememberAssemblyCapsSupersedeMatchesAt32() {
 
 private let identifierHolesOriginal =
     "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
+/// Same identifiers, same content terms, wording under the 0.88 text Jaccard.
+/// A looser rewording ("Do not re-run C01 ... this session.") shares the
+/// identifiers but not the content, so it is intentionally not auto-superseded.
 private let identifierHolesParaphrase =
-    "Do not re-run C01 GitLiveProbe / C02 UniqueRanking / C03 CompactSummary this session."
+    "Remaining open holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose them."
 /// Two different lessons that name the same three types. Identifiers match,
 /// but the shared vocabulary is low: neither restates the other.
 private let lessonCallOrder =
@@ -505,7 +508,10 @@ private let lessonEmptyCrash =
 func rememberAssemblySelectsIdentifierOverlapBelowTextJaccard() {
     let similarity = MemorySemantics.similarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
     #expect(similarity < RememberAssembly.autoSupersedeSimilarityThreshold)
-    #expect(similarity >= MemorySemantics.nearTwinIdentifierSimilarityFloor)
+    #expect(
+        MemorySemantics.contentSimilarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
+            >= MemorySemantics.nearTwinIdentifierSimilarityFloor
+    )
     let selected = RememberAssembly.selectSupersedeFrameIDs(
         sessionID: nil,
         newFrameId: 2,
@@ -535,7 +541,7 @@ func rememberAssemblyIdentifierOverlapStillRequiresSameType() {
 @Test
 func rememberAssemblyKeepsDistinctLessonsThatShareIdentifiers() {
     #expect(MemorySemantics.identifiersMatch(lessonCallOrder, lessonEmptyCrash))
-    #expect(MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash) == false)
+    #expect(!MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash))
     let selected = RememberAssembly.selectSupersedeFrameIDs(
         sessionID: nil,
         newFrameId: 2,
@@ -551,8 +557,39 @@ func rememberAssemblyKeepsDistinctLessonsThatShareIdentifiers() {
 func nearTwinRequiresVocabularyNotJustIdentifiers() {
     #expect(MemorySemantics.isNearTwin(originalDecision, similarDecision))
     #expect(MemorySemantics.isNearTwin(identifierHolesOriginal, identifierHolesParaphrase))
-    #expect(MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash) == false)
-    #expect(MemorySemantics.isNearTwin("old decision", "new decision") == false)
+    #expect(!MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash))
+    #expect(!MemorySemantics.isNearTwin("old decision", "new decision"))
+}
+
+@Test
+func nearTwinRejectsSameIdentifiersWithDifferentAction() {
+    let closeOrder = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be closed in order before flush."
+    let openLazily = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be opened lazily before search."
+    #expect(MemorySemantics.identifiersMatch(closeOrder, openLazily))
+    #expect(!MemorySemantics.isNearTwin(closeOrder, openLazily))
+}
+
+@Test
+func nearTwinRejectsDifferentIssueNumbers() {
+    let bug123 = "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush."
+    let bug124 = "Bug #124 in WaxSession: MemoryOrchestrator crashes on open."
+    #expect(!MemorySemantics.isNearTwin(bug123, bug124))
+    // The pure-text path is guarded too: identical wording, different ticket.
+    #expect(!MemorySemantics.isNearTwin(
+        "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush after compaction.",
+        "Bug #124 in WaxSession: MemoryOrchestrator crashes on flush after compaction."
+    ))
+}
+
+@Test
+func nearTwinRejectsNegationFlip() {
+    let use = "Use GitLiveProbe for UniqueRanking in CompactSummary."
+    let neverUse = "Never use GitLiveProbe outside UniqueRanking or CompactSummary."
+    #expect(!MemorySemantics.isNearTwin(use, neverUse))
+    #expect(!MemorySemantics.isNearTwin(
+        "Prefer project-scoped recall and auto-widen an empty project lane.",
+        "Prefer project-scoped recall and never auto-widen an empty project lane."
+    ))
 }
 
 @Test
@@ -565,27 +602,27 @@ func supersedeCandidateGateFiltersOnMetadataOnly() {
         )
     )
     #expect(
-        RememberAssembly.isSupersedeCandidate(
+        !RememberAssembly.isSupersedeCandidate(
             metadata: durableMetadata(type: lesson.rawValue),
             supersededBy: 9, type: lesson, project: "wax", nowMs: 0
-        ) == false
+        )
     )
     #expect(
-        RememberAssembly.isSupersedeCandidate(
+        !RememberAssembly.isSupersedeCandidate(
             metadata: durableMetadata(type: MemoryType.fact.rawValue),
             supersededBy: nil, type: lesson, project: "wax", nowMs: 0
-        ) == false
+        )
     )
     #expect(
-        RememberAssembly.isSupersedeCandidate(
+        !RememberAssembly.isSupersedeCandidate(
             metadata: durableMetadata(type: lesson.rawValue, project: "other"),
             supersededBy: nil, type: lesson, project: "wax", nowMs: 0
-        ) == false
+        )
     )
     #expect(
-        RememberAssembly.isSupersedeCandidate(
+        !RememberAssembly.isSupersedeCandidate(
             metadata: durableMetadata(type: lesson.rawValue, durability: MemoryDurability.locked.rawValue),
             supersededBy: nil, type: lesson, project: "wax", nowMs: 0
-        ) == false
+        )
     )
 }

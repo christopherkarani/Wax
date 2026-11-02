@@ -169,8 +169,9 @@ package enum RememberAssembly {
         return other.type == type && other.project == project && other.durability == .durable
     }
 
-    /// Same-project near-twins (`MemorySemantics.isNearTwin`:
-    /// Jaccard ≥ 0.88, or identifier overlap backed by shared vocabulary) retire
+    /// Same-project near-twins (`MemorySemantics.isNearTwin`: compatible
+    /// identifiers and negation, then Jaccard ≥ 0.88 or matching identifiers with
+    /// shared content terms) retire
     /// prior unsuperseded durable twins. Pending or committed `supersededBy` is a
     /// skip so a failed flush cannot restamp the same predecessor. Locked others
     /// stay live. Returns candidate frame IDs; broker still supersedes + flushes.
