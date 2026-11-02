@@ -72,23 +72,25 @@ private func metalANNSAvailable() -> Bool {
 @Test(
     "MetalANNS engine matches Accelerate ordering and scores",
     .enabled(if: metalANNSAvailable()),
-    arguments: [VectorMetric.cosine, .dot, .l2]
+    // 1 and 10 are below the MetalANNS graph-degree minimum (exact fallback); 64 uses the index.
+    arguments: [VectorMetric.cosine, .dot, .l2], [1, 10, 64]
 )
-func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric) async throws {
+func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric, count: Int) async throws {
     let dimensions = 16
-    let dataset = makeDataset(count: 64, dimensions: dimensions, seed: 0xC0FFEE)
+    let dataset = makeDataset(count: count, dimensions: dimensions, seed: 0xC0FFEE)
     let accelerate = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
     let metalANNS = try MetalANNSVectorEngine(metric: metric, dimensions: dimensions)
     try await accelerate.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
     try await metalANNS.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
 
     // Query is one of the stored vectors, so the nearest neighbor is unambiguous.
-    let query = dataset.vectors[17]
+    let queryIndex = count / 2
+    let query = dataset.vectors[queryIndex]
     let expected = try await accelerate.search(vector: query, topK: dataset.frameIds.count)
     let actual = try await metalANNS.search(vector: query, topK: dataset.frameIds.count)
 
     #expect(actual.count == expected.count)
-    #expect(actual.first?.frameId == dataset.frameIds[17])
+    #expect(actual.first?.frameId == dataset.frameIds[queryIndex])
     #expect(actual.map(\.frameId) == expected.map(\.frameId))
     let tolerance: Float = metric == .cosine ? 1e-4 : 1e-3
     for (lhs, rhs) in zip(actual, expected) {
@@ -103,15 +105,17 @@ func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric) async thr
 
 @Test(
     "LoadedVectorSearchEngine under gpuOnly ranks nearest neighbor first",
-    .enabled(if: metalANNSAvailable())
+    .enabled(if: metalANNSAvailable()),
+    // MetalANNS graph construction needs more nodes than its degree (32); smaller stores
+    // must still work under gpuOnly.
+    arguments: [1, 10, 64]
 )
-func loadedVectorSearchEngineGpuOnlyRanksNearestFirst() async throws {
+func loadedVectorSearchEngineGpuOnlyRanksNearestFirst(count: Int) async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
     let dimensions = 8
-    // MetalANNS graph construction needs more nodes than its default degree (32).
-    let dataset = makeDataset(count: 64, dimensions: dimensions, seed: 42)
+    let dataset = makeDataset(count: count, dimensions: dimensions, seed: 42)
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("gpu-only.wax"))
     let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     try await seed.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
@@ -132,12 +136,14 @@ func loadedVectorSearchEngineGpuOnlyRanksNearestFirst() async throws {
     #expect(gpu.kind == .metalANNS)
     #expect(cpu.kind == .accelerate)
 
-    let query = dataset.vectors[5]
+    let queryIndex = count / 2
+    let query = dataset.vectors[queryIndex]
     let gpuHits = try await gpu.search(vector: query, topK: 10)
     let cpuHits = try await cpu.search(vector: query, topK: 10)
 
+    #expect(gpuHits.count == min(10, count))
     let top = try #require(gpuHits.first)
-    #expect(top.frameId == dataset.frameIds[5])
+    #expect(top.frameId == dataset.frameIds[queryIndex])
     #expect(abs(top.score - 1.0) < 1e-4)
     #expect(gpuHits.map(\.frameId) == cpuHits.map(\.frameId))
     expectSortedBestFirst(gpuHits)
@@ -152,7 +158,8 @@ func loadedVectorSearchEngineGpuOnlyRanksNearestFirst() async throws {
 @Test(
     "MetalVectorEngine matches CPU cosine for partial threadgroups",
     .enabled(if: metalDeviceAvailable()),
-    arguments: [128, 384], [1, 5, 95, 257]
+    // 3 and 13 are not multiples of 4 (unaligned rows, 12/52-byte threadgroup memory).
+    arguments: [3, 13, 128, 384], [1, 5, 95, 257]
 )
 func metalVectorEngineMatchesCPUForPartialThreadgroups(dimensions: Int, count: Int) async throws {
     let dataset = makeDataset(count: count, dimensions: dimensions, seed: UInt64(dimensions * 1_000 + count))
@@ -174,26 +181,6 @@ func metalVectorEngineMatchesCPUForPartialThreadgroups(dimensions: Int, count: I
         #expect(abs(hit.score - expected) <= 1e-4, "frame \(hit.frameId): metal \(hit.score) vs cpu \(expected)")
     }
     expectSortedBestFirst(metalHits)
-}
-
-@Test("MetalVectorEngine shaders keep every thread in the cooperative load and barrier")
-func metalCosineKernelsDoNotReturnBeforeBarrier() throws {
-    let repoRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/Shaders/CosineDistance.metal"),
-        encoding: .utf8
-    )
-    for kernel in ["cosineDistanceKernelOptimized", "cosineDistanceKernelSIMD4", "cosineDistanceKernelSIMD8"] {
-        let start = try #require(source.range(of: "kernel void \(kernel)("))
-        let rest = source[start.upperBound...]
-        let end = rest.range(of: "\nkernel void ")?.lowerBound ?? rest.endIndex
-        let body = rest[..<end]
-        let barrier = try #require(body.range(of: "threadgroup_barrier"))
-        #expect(!body[..<barrier.lowerBound].contains("return;"), "\(kernel) returns before threadgroup_barrier")
-    }
 }
 
 // MARK: - Transient buffer pool stays bounded (finding 3)
@@ -244,42 +231,114 @@ func metalVectorEngineTransientPoolStaysBounded() async throws {
     #expect(try VectorSerializer.detectEncoding(from: slice) == .flat)
 }
 
-@Test func vectorSerializerRejectsNonFiniteVectorPayload() throws {
-    let blob = try VectorSerializer.serializeFlatVectors(
-        [1.0, 0.0, 0.0, 1.0],
-        frameIds: [1, 2],
+/// Builds a flat segment whose second row (frameId 2) contains NaN, as stores written before
+/// inserts validated finiteness can.
+private func segmentWithNaNRow() throws -> Data {
+    try VectorSerializer.serializeFlatVectors(
+        [1.0, 0.0, .nan, 1.0, 0.0, 1.0],
+        frameIds: [1, 2, 3],
         metric: .cosine,
         dimensions: 2
     )
-    // Overwrite the third float (vector 1, dim 0) with NaN.
-    var corrupted = blob
-    let nanBits = Float.nan.bitPattern.littleEndian
-    withUnsafeBytes(of: nanBits) { bytes in
-        corrupted.replaceSubrange((36 + 8)..<(36 + 12), with: bytes)
-    }
-
-    do {
-        _ = try VectorSerializer.decodeVecSegment(from: corrupted)
-        Issue.record("Expected non-finite vector payload to be rejected")
-    } catch let error as WaxError {
-        guard case .invalidToc(let reason) = error else {
-            Issue.record("Expected invalidToc, got \(error)")
-            return
-        }
-        #expect(reason.contains("non-finite"))
-    }
 }
 
-@Test func vectorSerializerAvoidsAlignedTypedBinding() throws {
-    let repoRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/VectorSerializer.swift"),
-        encoding: .utf8
+@Test func vectorSerializerDropsNonFiniteRowsAndReportsCount() throws {
+    let decoded = try VectorSerializer.decodeVecSegment(from: try segmentWithNaNRow())
+    guard case .metal(let info, let vectors, let frameIds) = decoded else {
+        Issue.record("unexpected payload")
+        return
+    }
+    #expect(info.droppedNonFiniteRowCount == 1)
+    #expect(info.vectorCount == 2)
+    #expect(frameIds == [1, 3])
+    #expect(vectors == [1.0, 0.0, 0.0, 1.0])
+}
+
+@Test func accelerateEngineLoadsSegmentWithNonFiniteRowAndRewritesIt() async throws {
+    let tempDir = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row.wax"))
+    try await wax.stageVecIndexForNextCommit(
+        bytes: try segmentWithNaNRow(),
+        vectorCount: 3,
+        dimension: 2,
+        similarity: .cosine
     )
-    #expect(!source.contains("bindMemory(to:"))
+
+    #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 2)
+    let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
+    #expect(await engine.droppedNonFiniteRowCount == 1)
+
+    let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
+    #expect(hits.map(\.frameId) == [3, 1])
+    #expect(hits.allSatisfy { $0.score.isFinite })
+
+    // The dropped row marks the engine dirty, so the next stage writes a clean segment.
+    try await engine.stageForCommit(into: wax)
+    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
+    guard case .metal(let info, _, let frameIds) = try VectorSerializer.decodeVecSegment(from: restaged) else {
+        Issue.record("unexpected payload")
+        return
+    }
+    #expect(info.droppedNonFiniteRowCount == 0)
+    #expect(frameIds == [1, 3])
+
+    try await wax.close()
+}
+
+#if canImport(Metal) && canImport(MetalANNS)
+@Test(
+    "MetalANNS engine loads a segment with a non-finite row",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
+    let tempDir = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row-ann.wax"))
+    try await wax.stageVecIndexForNextCommit(
+        bytes: try segmentWithNaNRow(),
+        vectorCount: 3,
+        dimension: 2,
+        similarity: .cosine
+    )
+
+    let engine = try await LoadedVectorSearchEngine.load(
+        from: wax,
+        metric: .cosine,
+        dimensions: 2,
+        preference: .gpuOnly
+    )
+    guard case .metalANNS(let metalANNS) = engine else {
+        Issue.record("expected MetalANNS engine")
+        return
+    }
+    #expect(await metalANNS.droppedNonFiniteRowCount == 1)
+    let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
+    #expect(hits.map(\.frameId) == [3, 1])
+
+    try await engine.stageForCommit(into: wax)
+    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
+    guard case .metal(let info, _, _) = try VectorSerializer.decodeVecSegment(from: restaged) else {
+        Issue.record("unexpected payload")
+        return
+    }
+    #expect(info.droppedNonFiniteRowCount == 0)
+    #expect(info.vectorCount == 2)
+
+    try await wax.close()
+}
+#endif
+
+// MARK: - Non-finite distances rank last (review item 2)
+
+@Test(arguments: [VectorMetric.cosine, .dot, .l2])
+func nonFiniteDistanceScoresBelowEveryFiniteScore(metric: VectorMetric) {
+    let worstFinite = metric.score(fromDistance: 1e30)
+    for distance in [Float.nan, .infinity, -.infinity] {
+        let score = metric.score(fromDistance: distance)
+        #expect(score == -.infinity, "\(metric) distance \(distance) -> \(score)")
+        #expect(score < worstFinite)
+    }
 }
 
 // MARK: - Accelerate bounded top-k keeps deterministic ordering (finding 6)

@@ -522,7 +522,9 @@ package actor MetalVectorEngine {
             computeEncoder.setBuffer(transientCountBuffer, offset: 0, index: 3)
             computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
 
-            let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
+            // Metal requires threadgroup memory lengths to be a multiple of 16 bytes.
+            let queryBytes = dimensions * MemoryLayout<Float>.stride
+            let threadgroupMemorySize = (queryBytes + 15) & ~15
             computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
 
             let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline

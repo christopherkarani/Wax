@@ -15,6 +15,8 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     private var vectors: [Float] = []
     private var squaredNorms: [Float] = []
     private var dirty = false
+    /// Rows dropped from the last loaded segment because they held non-finite values.
+    package private(set) var droppedNonFiniteRowCount = 0
 
     package init(metric: VectorMetric, dimensions: Int) throws {
         guard dimensions > 0 else {
@@ -150,66 +152,7 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
             }
         }
 
-        return Self.selectTopK(frameIds: frameIds, scores: scores, limit: limit)
-    }
-
-    /// Bounded top-k selection, O(n log k). Ordering matches a full sort by score
-    /// descending with ascending frameId as the tie-break.
-    private static func selectTopK(
-        frameIds: [UInt64],
-        scores: [Float],
-        limit: Int
-    ) -> [(frameId: UInt64, score: Float)] {
-        typealias Hit = (frameId: UInt64, score: Float)
-        func ranksBefore(_ lhs: Hit, _ rhs: Hit) -> Bool {
-            if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
-            return lhs.score > rhs.score
-        }
-        guard limit > 0 else { return [] }
-
-        // Heap root is the worst kept hit, so a better candidate replaces it.
-        var heap: [Hit] = []
-        heap.reserveCapacity(limit)
-
-        func siftUp(_ start: Int) {
-            var child = start
-            while child > 0 {
-                let parent = (child - 1) / 2
-                guard ranksBefore(heap[parent], heap[child]) else { return }
-                heap.swapAt(parent, child)
-                child = parent
-            }
-        }
-
-        func siftDown(_ start: Int) {
-            var parent = start
-            while true {
-                let left = parent * 2 + 1
-                guard left < heap.count else { return }
-                var worst = left
-                let right = left + 1
-                if right < heap.count, ranksBefore(heap[left], heap[right]) {
-                    worst = right
-                }
-                guard ranksBefore(heap[parent], heap[worst]) else { return }
-                heap.swapAt(parent, worst)
-                parent = worst
-            }
-        }
-
-        for index in frameIds.indices {
-            let candidate: Hit = (frameIds[index], scores[index])
-            if heap.count < limit {
-                heap.append(candidate)
-                siftUp(heap.count - 1)
-            } else if ranksBefore(candidate, heap[0]) {
-                heap[0] = candidate
-                siftDown(0)
-            }
-        }
-
-        heap.sort(by: ranksBefore)
-        return heap
+        return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
     package func stageForCommit(into wax: Wax) async throws {
@@ -258,7 +201,9 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 let start = index * dimensions
                 squaredNorms.append(squaredNorm(ofSliceStartingAt: start))
             }
-            dirty = false
+            droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
+            // Rewrite a clean segment on the next commit when rows were dropped.
+            dirty = info.droppedNonFiniteRowCount > 0
         }
     }
 

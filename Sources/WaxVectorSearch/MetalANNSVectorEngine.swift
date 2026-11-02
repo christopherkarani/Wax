@@ -1,4 +1,5 @@
 #if canImport(Metal) && canImport(MetalANNS)
+import Accelerate
 import Foundation
 import Metal
 import MetalANNS
@@ -16,6 +17,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private var positions: [UInt64: Int] = [:]
     private var vectors: [Float] = []
     private var dirty = false
+    /// Rows dropped from the last loaded segment because they held non-finite values.
+    package private(set) var droppedNonFiniteRowCount = 0
 
     package static var isAvailable: Bool {
         MTLCreateSystemDefaultDevice() != nil
@@ -149,7 +152,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         }
         frameIds.removeLast()
         vectors.removeLast(dimensions)
-        if frameIds.isEmpty {
+        if !canBuildIndex {
             index = nil
         } else if let index {
             try await index.delete(id: frameId)
@@ -161,8 +164,9 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         try validate(query)
         guard !frameIds.isEmpty else { return [] }
         try await ensureIndex()
-        guard let index else { return [] }
-        let results = try await index.search(query: preparedVector(query), topK: topK)
+        let prepared = preparedVector(query)
+        guard let index else { return exactHits(for: prepared, topK: topK) }
+        let results = try await index.search(query: prepared, topK: topK)
         return hits(from: results)
     }
 
@@ -183,13 +187,16 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             return ([], SearchTiming(prepareMs: 0, indexMs: 0, mapMs: 0, totalMs: 0))
         }
         try await ensureIndex()
-        guard let index else {
-            return ([], SearchTiming(prepareMs: 0, indexMs: 0, mapMs: 0, totalMs: 0))
-        }
         let prepareStart = CFAbsoluteTimeGetCurrent()
         let prepared = preparedVector(query)
         let prepareMs = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1_000
         let indexStart = CFAbsoluteTimeGetCurrent()
+        guard let index else {
+            let mapped = exactHits(for: prepared, topK: topK)
+            let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
+            let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1_000
+            return (mapped, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: 0, totalMs: totalMs))
+        }
         let results = try await index.search(query: prepared, topK: topK)
         let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
         let mapStart = CFAbsoluteTimeGetCurrent()
@@ -242,20 +249,58 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 positions[frameId] = index
             }
             try await rebuildIndex()
-            dirty = false
+            droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
+            // Rewrite a clean segment on the next commit when rows were dropped.
+            dirty = info.droppedNonFiniteRowCount > 0
         }
     }
 
     /// MetalANNS reports distances (lower is better): cosine `1 - cos`, inner product `-dot`,
     /// L2 squared distance. Convert to the similarity scale AccelerateVectorEngine returns
-    /// (higher is better) and order best-first with the same frameId tie-break.
+    /// (higher is better) and order best-first with a frameId tie-break. This only orders
+    /// the set MetalANNS returned; which of several items tied at the k-th place make it
+    /// into that set is decided by MetalANNS. Non-finite scores are dropped.
     private func hits(from neighbors: [VectorNeighbor<UInt64>]) -> [(frameId: UInt64, score: Float)] {
         neighbors
             .map { (frameId: $0.id, score: metric.score(fromDistance: $0.score)) }
+            .filter { $0.score.isFinite }
             .sorted { lhs, rhs in
                 if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
                 return lhs.score > rhs.score
             }
+    }
+
+    /// MetalANNS graph construction requires more nodes than the graph degree.
+    private var canBuildIndex: Bool {
+        frameIds.count > configuration.degree
+    }
+
+    /// Exact scan used while the store is too small for a MetalANNS graph. Scores use the
+    /// same scale and ordering as AccelerateVectorEngine (cosine/dot: dot product of the
+    /// stored and prepared query vectors; L2: negative squared distance).
+    private func exactHits(for query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
+        guard !frameIds.isEmpty else { return [] }
+        var scores = [Float](repeating: 0, count: frameIds.count)
+        let length = vDSP_Length(dimensions)
+        vectors.withUnsafeBufferPointer { rows in
+            query.withUnsafeBufferPointer { queryBuffer in
+                guard let rowBase = rows.baseAddress, let queryBase = queryBuffer.baseAddress else { return }
+                for row in frameIds.indices {
+                    let rowStart = rowBase + row * dimensions
+                    var value: Float = 0
+                    switch metric {
+                    case .cosine, .dot:
+                        vDSP_dotpr(rowStart, 1, queryBase, 1, &value, length)
+                    case .l2:
+                        vDSP_distancesq(rowStart, 1, queryBase, 1, &value, length)
+                        value = -value
+                    }
+                    scores[row] = value
+                }
+            }
+        }
+        let limit = min(max(topK, 1), frameIds.count)
+        return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
     private func ensureIndex() async throws {
@@ -265,7 +310,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     private func rebuildIndex() async throws {
-        guard !frameIds.isEmpty else {
+        guard canBuildIndex else {
             index = nil
             return
         }
