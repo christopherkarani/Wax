@@ -122,7 +122,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     // MARK: - EmbeddingProvider
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
+        guard let vector = try await model.encode(sentence: text) else {
             throw WaxError.io("Arctic embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
@@ -168,7 +168,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// Tokenization happens synchronously on the actor (needs inout access to buffers),
     /// then prediction is dispatched off the cooperative pool via ArcticEmbeddings.
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
+        guard let vectors = try await model.encode(batch: texts) else {
             throw WaxError.io("Arctic batch embedding failed.")
         }
         guard vectors.count == texts.count else {
@@ -219,6 +219,9 @@ extension ArcticEmbedder {
                 let embedder = try ArcticEmbedder(
                     config: Config(batchSize: tuning.batchSize, modelConfiguration: modelConfiguration)
                 )
+                // Probe immediately so failing / non-finite compute-unit paths fall through
+                // to the next candidate instead of failing later on the first real save/search.
+                _ = try await embedder.embed("wax")
                 if !skipPrewarm {
                     try await embedder.prewarm(batchSize: prewarmBatchSize)
                 }
