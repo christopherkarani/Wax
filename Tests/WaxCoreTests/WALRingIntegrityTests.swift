@@ -295,3 +295,51 @@ func walAppendFillingRingToBoundaryReplaysAllPendingRecords(leftover: Int) throw
         #expect(writer.bytesSinceFsync == 220)
     }
 }
+
+// MARK: - Durable anchor and resume sequence
+
+@Test(arguments: [false, true])
+func walFirstAppendAfterResumeIsADurableAnchor(batch: Bool) throws {
+    try withRing(walSize: 4096) { file in
+        let writer = WALRingWriter(
+            file: file,
+            walOffset: 0,
+            walSize: 4096,
+            lastSequence: 900,
+            needsDurableAnchor: true
+        )
+        let payloads = (1...3).map { payload(entrySize: 64, fill: UInt8($0)) }
+        let sequences = batch
+            ? try writer.appendBatch(payloads: payloads)
+            : try payloads.map { try writer.append(payload: $0) }
+        #expect(sequences == [901, 902, 903])
+        // fsync before the first record, then again right after it; none after that under `.onCommit`.
+        #expect(writer.fsyncCount == 2)
+        #expect(!writer.needsDurableAnchor)
+        if batch {
+            // The first record is written on its own; the rest and the sentinel follow in one write.
+            #expect(writer.writeCallCount == 2)
+        }
+        let replayed = try replayedPayloads(file: file, walSize: 4096, from: 0)
+        #expect(replayed == payloads)
+    }
+}
+
+@Test func walAppendWithoutAnchorKeepsSingleCoalescedWrite() throws {
+    try withRing(walSize: 4096) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 4096)
+        _ = try writer.appendBatch(payloads: (1...3).map { payload(entrySize: 64, fill: UInt8($0)) })
+        #expect(writer.writeCallCount == 1)
+        #expect(writer.fsyncCount == 0)
+    }
+}
+
+@Test func walResumeSequenceClearsEveryRecordTheRingCanHold() throws {
+    let walSize: UInt64 = 8 * 1024 * 1024
+    let maxRecords = walSize / UInt64(headerSize)
+    #expect(try PendingReplayPolicy.resumeSequence(above: 0, walSize: walSize) == maxRecords + 1)
+    #expect(try PendingReplayPolicy.resumeSequence(above: 41, walSize: 4096) == 41 + 4096 / 48 + 1)
+    #expect(throws: WaxError.self) {
+        _ = try PendingReplayPolicy.resumeSequence(above: UInt64.max - maxRecords, walSize: walSize)
+    }
+}

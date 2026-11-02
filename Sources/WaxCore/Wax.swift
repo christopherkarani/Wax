@@ -738,8 +738,7 @@ package actor Wax {
             let scanState: WALScanState
             var usedReplaySnapshot = false
             var replayTruncated = false
-            // Highest sequence present in the ring, including dropped torn-tail records. Resuming
-            // above it keeps any stale dropped record unreachable: replay requires increasing sequences.
+            // Highest sequence in the scanned chain, dropped torn-tail records included.
             var highestScannedSequence: UInt64 = 0
             if shouldAttemptPersistedReplaySnapshot,
                let snapshot = persistedReplaySnapshot,
@@ -799,7 +798,17 @@ package actor Wax {
                     replayTruncated = true
                 }
             }
-            let lastSequence = max(committedSeq, scanState.lastSequence, highestScannedSequence)
+            // Resume above every sequence that can still be in the ring, so stale bytes past the
+            // chain end (a dropped tail, or records behind a torn envelope) never chain after a new record.
+            let lastSequence = try PendingReplayPolicy.resumeSequence(
+                above: max(
+                    committedSeq,
+                    scanState.lastSequence,
+                    highestScannedSequence,
+                    persistedReplaySnapshot?.walLastSequence ?? 0
+                ),
+                walSize: header.walSize
+            )
             let effectiveCheckpointPos: UInt64
             let effectivePendingBytes: UInt64
             if scanState.lastSequence <= committedSeq {
@@ -819,7 +828,8 @@ package actor Wax {
                 checkpointPos: effectiveCheckpointPos,
                 pendingBytes: effectivePendingBytes,
                 lastSequence: lastSequence,
-                fsyncPolicy: options.walFsyncPolicy
+                fsyncPolicy: options.walFsyncPolicy,
+                needsDurableAnchor: true
             )
 
             let expectedEnd = footerSlice.footerOffset + Constants.footerSize

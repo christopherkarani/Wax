@@ -26,19 +26,11 @@ struct WALPendingScanResult: Equatable, Sendable {
     package var state: WALScanState
     /// Ring-relative offset of each entry in `pendingMutations`.
     package var pendingOffsets: [UInt64]
-    /// Ring-relative offset of every record in the valid chain (data and padding), in chain order.
-    package var recordOffsets: [UInt64]
 
-    package init(
-        pendingMutations: [PendingMutation],
-        state: WALScanState,
-        pendingOffsets: [UInt64] = [],
-        recordOffsets: [UInt64] = []
-    ) {
+    package init(pendingMutations: [PendingMutation], state: WALScanState, pendingOffsets: [UInt64] = []) {
         self.pendingMutations = pendingMutations
         self.state = state
         self.pendingOffsets = pendingOffsets
-        self.recordOffsets = recordOffsets
     }
 }
 
@@ -97,26 +89,16 @@ package final class WALRingReader {
     ) throws -> WALPendingScanResult {
         var pendingMutations: [PendingMutation] = []
         var pendingOffsets: [UInt64] = []
-        var recordOffsets: [UInt64] = []
-        let state = try walk(
-            from: checkpointPos,
-            onRecord: { recordOffsets.append($0) },
-            visit: { offset, header, payload in
-                guard header.sequence > committedSeq else { return }
-                // Do not silently skip checksum-valid but undecodable payloads: a decode failure is a
-                // codec invariant violation, not a torn write (torn writes fail the checksum and end the
-                // scan earlier), and advancing past it would permanently drop committed mutations.
-                let entry = try WALEntryCodec.decode(payload, offset: offset)
-                pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
-                pendingOffsets.append(offset)
-            }
-        )
-        return WALPendingScanResult(
-            pendingMutations: pendingMutations,
-            state: state,
-            pendingOffsets: pendingOffsets,
-            recordOffsets: recordOffsets
-        )
+        let state = try walk(from: checkpointPos) { offset, header, payload in
+            guard header.sequence > committedSeq else { return }
+            // Do not silently skip checksum-valid but undecodable payloads: a decode failure is a
+            // codec invariant violation, not a torn write (torn writes fail the checksum and end the
+            // scan earlier), and advancing past it would permanently drop committed mutations.
+            let entry = try WALEntryCodec.decode(payload, offset: offset)
+            pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
+            pendingOffsets.append(offset)
+        }
+        return WALPendingScanResult(pendingMutations: pendingMutations, state: state, pendingOffsets: pendingOffsets)
     }
 
     func scanState(from checkpointPos: UInt64) throws -> WALScanState {
@@ -126,12 +108,10 @@ package final class WALRingReader {
     /// Walks the ring from `checkpointPos`, validating each record envelope, and hands every
     /// checksum-valid data record to `visit`. The walk ends at the first sentinel, zero or
     /// non-increasing sequence, torn header/payload/padding, or on returning to the start.
-    /// `onRecord` receives the offset of every accepted record, padding included.
     ///
     /// - Returns: The ring state immediately after the last record the walk advanced past.
     private func walk(
         from checkpointPos: UInt64,
-        onRecord: (_ offset: UInt64) -> Void = { _ in },
         visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> Void
     ) throws -> WALScanState {
         guard walSize > 0 else { return WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0) }
@@ -171,7 +151,6 @@ package final class WALRingReader {
                 visit: visit
             ) else { break }
 
-            onRecord(cursor)
             cursor += advance
             if cursor == walSize {
                 cursor = 0

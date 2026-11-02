@@ -22,13 +22,8 @@ enum PendingReplayDecision: Equatable, Sendable {
     case failClosed(at: Int)
 }
 
-/// A contiguous span of the WAL ring, `length` bytes from `start`, possibly wrapping past the end.
-struct WALRingRange: Equatable, Sendable {
-    var start: UInt64
-    var length: UInt64
-}
-
-/// Decides what to do with damaged pending payloads and drops a torn tail durably.
+/// Decides what to do with damaged pending payloads, drops a torn tail, and picks the sequence
+/// the WAL writer resumes at.
 ///
 /// Pending (uncommitted) mutations are not a durability promise. Unless every payload is synced
 /// before its WAL record (`.always`), a crash can persist any subset of pending payload bytes,
@@ -40,13 +35,35 @@ enum PendingReplayPolicy {
         return allowsTruncation ? .truncateTornTail(at: first) : .failClosed(at: first)
     }
 
-    /// Drops the torn tail starting at pending mutation `index`.
+    /// The WAL writer's last sequence on open (its next record is one higher): strictly above any
+    /// sequence a record physically left anywhere in the ring can carry, so no stale record can
+    /// ever chain after a new one (the reader only follows strictly increasing sequences).
     ///
-    /// Every dropped record, `[cut, end of chain)` in ring order, is zeroed before this returns.
-    /// Records are zeroed last-first with an fsync after each, so a crash part-way leaves only
-    /// a prefix of the dropped records live, still reachable from the cut. The next open sees the
-    /// same damaged record and finishes the job, and no stale record is ever left beyond the end
-    /// of the chain, where a later append could make it replayable again.
+    /// The bound: every record still in the ring was written either before the last commit
+    /// (sequence at most the committed sequence) or after a point whose sequence open can see.
+    /// That point is the last commit, or the first record a session appended after open. The
+    /// writer makes that first record durable, together with everything before it, before
+    /// writing anything after it, so it stays in the chain that `base` covers. Records written
+    /// after that point all fit in the ring at once, and each takes at least one header, so
+    /// there are at most `walSize / headerSize` of them and their sequences stay at or below
+    /// `base + walSize / headerSize`.
+    ///
+    /// - Parameter base: The highest sequence open knows of: the committed sequence, the
+    ///   persisted replay snapshot, and every record in the scanned chain, dropped ones included.
+    static func resumeSequence(above base: UInt64, walSize: UInt64) throws -> UInt64 {
+        let maxRecordsInRing = walSize / UInt64(WALRecord.headerSize)
+        let (resume, overflow) = base.addingReportingOverflow(maxRecordsInRing &+ 1)
+        guard !overflow, resume < UInt64.max - maxRecordsInRing else {
+            throw WaxError.io("WAL sequence space exhausted (base \(base))")
+        }
+        return resume
+    }
+
+    /// Drops the torn tail starting at pending mutation `index`: zeroes `[cut, end of chain)` in
+    /// one pass and fsyncs before returning.
+    ///
+    /// The zeroing is hygiene, not what keeps dropped records out of replay: a crash can persist
+    /// any part of it, and `resumeSequence(above:walSize:)` keeps whatever survives unreachable.
     ///
     /// - Returns: The ring state at the cut, where the writer resumes.
     static func truncateTornTail(
@@ -57,59 +74,23 @@ enum PendingReplayPolicy {
         file: FDFile
     ) throws -> WALScanState {
         let cut = scan.pendingOffsets[index]
-        let dropped = droppedRecordRanges(scan, at: index, checkpointPos: checkpointPos, walSize: ring.size)
-        for range in dropped {
-            try zeroRing(file: file, ring: ring, range: range)
-            try file.fsync()
-        }
+        let keptBytes = (cut + ring.size - checkpointPos % ring.size) % ring.size
+        try zeroRing(file: file, ring: ring, from: cut, length: scan.state.pendingBytes - keptBytes)
+        try file.fsync()
         let lastKeptSequence = index > 0 ? scan.pendingMutations[index - 1].sequence : 0
-        return WALScanState(
-            lastSequence: lastKeptSequence,
-            writePos: cut,
-            pendingBytes: keptBytes(cut: cut, checkpointPos: checkpointPos, walSize: ring.size)
-        )
-    }
-
-    /// The ring span of each record dropped when cutting at pending mutation `index`, padding and
-    /// any zero tail included, in the order they must be zeroed: last record first, cut last.
-    static func droppedRecordRanges(
-        _ scan: WALPendingScanResult,
-        at index: Int,
-        checkpointPos: UInt64,
-        walSize: UInt64
-    ) -> [WALRingRange] {
-        let cut = scan.pendingOffsets[index]
-        let kept = keptBytes(cut: cut, checkpointPos: checkpointPos, walSize: walSize)
-        let droppedBytes = scan.state.pendingBytes - kept
-        // `cut` comes from `pendingOffsets`, a subset of `recordOffsets`; zeroing it as one span
-        // is the conservative fallback should that ever not hold.
-        guard let first = scan.recordOffsets.firstIndex(of: cut) else {
-            return [WALRingRange(start: cut, length: droppedBytes)]
-        }
-        let starts = scan.recordOffsets[first...]
-        var ranges: [WALRingRange] = []
-        var consumed: UInt64 = 0
-        for (start, next) in zip(starts, starts.dropFirst()) {
-            let length = (next + walSize - start) % walSize
-            ranges.append(WALRingRange(start: start, length: length))
-            consumed += length
-        }
-        if let last = starts.last {
-            ranges.append(WALRingRange(start: last, length: droppedBytes - consumed))
-        }
-        return ranges.reversed()
-    }
-
-    /// Ring bytes from the checkpoint up to `cut`.
-    private static func keptBytes(cut: UInt64, checkpointPos: UInt64, walSize: UInt64) -> UInt64 {
-        (cut + walSize - checkpointPos % walSize) % walSize
+        return WALScanState(lastSequence: lastKeptSequence, writePos: cut, pendingBytes: keptBytes)
     }
 
     private static let zeroChunkLimit: UInt64 = 1 << 20
 
-    private static func zeroRing(file: FDFile, ring: (offset: UInt64, size: UInt64), range: WALRingRange) throws {
-        var position = range.start
-        var remaining = range.length
+    private static func zeroRing(
+        file: FDFile,
+        ring: (offset: UInt64, size: UInt64),
+        from start: UInt64,
+        length: UInt64
+    ) throws {
+        var position = start
+        var remaining = length
         while remaining > 0 {
             let count = min(remaining, ring.size - position, zeroChunkLimit)
             try file.writeAll(Data(count: Int(count)), at: ring.offset + position)

@@ -148,7 +148,9 @@ private struct TornTailStore {
     var cut: UInt64 { layout.recordOffsets[cutIndex] }
 }
 
-private let droppedTail: [PendingRecordFixture] = [.corruptPut, .intactPut, .delete(frameId: 0), .intactPut]
+/// The delete directly follows the cut: a stale put there would be cut again as a damaged put
+/// (its payload is gone), so only a stale delete in that slot shows whether it can chain.
+private let droppedTail: [PendingRecordFixture] = [.corruptPut, .delete(frameId: 0), .intactPut, .intactPut]
 
 /// With `wrapsRingEnd`, committed frames first move the checkpoint past the middle of a small
 /// ring and intact pending puts fill it to near the end, so the dropped records wrap to the start.
@@ -191,66 +193,56 @@ private func makeTornTailStore(at url: URL, wrapsRingEnd: Bool) async throws -> 
     )
 }
 
-private func droppedRecordRanges(at url: URL, cutIndex: Int) throws -> [WALRingRange] {
-    let file = try FDFile.openReadOnly(at: url)
-    defer { try? file.close() }
-    let page = try readHeaderPage(file)
-    let reader = WALRingReader(file: file, walOffset: page.walOffset, walSize: page.walSize)
-    let scan = try reader.scanPendingMutationsWithState(
-        from: page.walCheckpointPos,
-        committedSeq: page.walCommittedSeq
-    )
-    return PendingReplayPolicy.droppedRecordRanges(
-        scan,
-        at: cutIndex,
-        checkpointPos: page.walCheckpointPos,
-        walSize: page.walSize
-    )
-}
-
-private func zeroRing(_ bytes: inout Data, layout: PendingRingLayout, range: WALRingRange) {
-    var position = range.start
-    var remaining = range.length
-    while remaining > 0 {
-        let count = min(remaining, layout.walSize - position)
-        let base = Int(layout.walOffset + position)
-        bytes.replaceSubrange(base..<base + Int(count), with: Data(count: Int(count)))
-        remaining -= count
-        position = (position + count) % layout.walSize
+/// Copies `[start, end)` in ring order (wrapping at the ring end) from `source` into `bytes`.
+private func restoreRing(
+    _ bytes: inout Data,
+    from source: Data,
+    layout: PendingRingLayout,
+    start: UInt64,
+    end: UInt64
+) {
+    let ringStart: UInt64 = 0
+    let spans: [(UInt64, UInt64)] = start <= end ? [(start, end)] : [(start, layout.walSize), (ringStart, end)]
+    for (lower, upper) in spans {
+        let range = Int(layout.walOffset + lower)..<Int(layout.walOffset + upper)
+        bytes.replaceSubrange(range, with: source[range])
     }
 }
 
-/// Whether the bytes at ring `offset` still form a record the WAL reader would accept.
-private func isReplayableRecord(_ bytes: Data, layout: PendingRingLayout, at offset: UInt64) -> Bool {
-    let headerSize = WALRecord.headerSize
-    let base = Int(layout.walOffset + offset)
-    let headerBytes = bytes.subdata(in: base..<base + headerSize)
-    guard let header = try? WALRecordHeader.decode(from: headerBytes, offset: offset),
-          !header.isSentinel, header.sequence != 0 else { return false }
-    let remaining = layout.walSize - offset
-    if header.flags.contains(.isPadding) {
-        return header.checksum == WALRecord.paddingChecksum
-            && UInt64(headerSize) + UInt64(header.length) == remaining
-    }
-    let length = Int(header.length)
-    guard length > 0, UInt64(length) <= remaining - UInt64(headerSize) else { return false }
-    let payload = bytes.subdata(in: base + headerSize..<base + headerSize + length)
-    return SHA256Checksum.digest(payload) == header.checksum
-}
-
-private func expectRecovery(from bytes: Data, store: TornTailStore, droppedStarts: [UInt64]) async throws {
+/// Reopens `bytes`, appends a record of the dropped cut record's length at the cut, then
+/// simulates a crash that loses every write after it, so all dropped bytes after the new record
+/// are back exactly as they were before recovery. None of them may be replayed.
+private func expectDroppedRecordsStayUnreachable(
+    from bytes: Data,
+    original: Data,
+    store: TornTailStore,
+    context: String
+) async throws {
     let url = TempFiles.uniqueURL()
-    defer { try? FileManager.default.removeItem(at: url) }
+    let crashURL = TempFiles.uniqueURL()
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: crashURL)
+    }
     try bytes.write(to: url)
+    let newFrameId = UInt64(store.keptFrameIds.count)
+    let next = store.layout.recordOffsets[store.cutIndex + 1]
 
     let wax = try await Wax.open(at: url)
-    #expect(await wax.frameMetasIncludingPending().map(\.id) == store.keptFrameIds)
-    #expect(await wax.walStats().writePos == store.cut)
-    let recovered = try Data(contentsOf: url)
+    #expect(await wax.frameMetasIncludingPending().map(\.id) == store.keptFrameIds, "\(context)")
+    #expect(try await wax.put(Data("pending-\(newFrameId)".utf8), timestampMs: 1_234) == newFrameId)
+    // Same length as the dropped cut record, so the next dropped record directly follows it.
+    #expect(await wax.walStats().writePos == next, "\(context)")
+    var crashed = try Data(contentsOf: url)
+    restoreRing(&crashed, from: original, layout: store.layout, start: next, end: store.layout.chainEnd)
+    try crashed.write(to: crashURL)
     try await wax.close()
 
-    let replayable = droppedStarts.filter { isReplayableRecord(recovered, layout: store.layout, at: $0) }
-    #expect(replayable.isEmpty, "dropped records still replayable at ring offsets \(replayable)")
+    let recovered = try await Wax.open(at: crashURL)
+    let frames = await recovered.frameMetasIncludingPending()
+    #expect(frames.map(\.id) == store.keptFrameIds + [newFrameId], "\(context)")
+    #expect(frames.first?.status == .active, "stale delete must not be replayed (\(context))")
+    try await recovered.close()
 }
 
 private func expectOpenFailsClosedWithoutWriting(
@@ -431,49 +423,75 @@ func openTruncatesGenuineTornTail(fault: PendingRecordFixture) async throws {
     }
 }
 
-/// Simulates a crash at every point of the truncation's zeroing: each prefix of the last-first
-/// zeroing steps, plus the next step persisted as only its header or only the rest. Reopening
-/// must keep the same frames and leave none of the dropped records replayable, so no stale
-/// record can survive beyond the end of the chain.
+/// Truncation zeroes the dropped records in one pass, so a crash can persist any part of that,
+/// including only the cut record's header. For every subset of dropped record headers zeroed,
+/// the records left behind must stay unreachable once a new record reuses the cut's slot.
 @Test(arguments: [false, true])
-func truncationZeroingSurvivesACrashAtEveryStep(wrapsRingEnd: Bool) async throws {
+func droppedRecordsStayUnreachableAfterAnyPartialZeroing(wrapsRingEnd: Bool) async throws {
     try await withStoreURL { url in
         let store = try await makeTornTailStore(at: url, wrapsRingEnd: wrapsRingEnd)
-        let ranges = try droppedRecordRanges(at: url, cutIndex: store.cutIndex)
-        let walSize = store.layout.walSize
-        #expect(ranges.first?.start == store.layout.recordOffsets.last, "the last record is zeroed first")
-        #expect(ranges.last?.start == store.cut, "the cut is zeroed last")
-        // In chain order the ranges tile [cut, chainEnd) exactly.
-        let chain = Array(ranges.reversed())
-        for (range, next) in zip(chain, chain.dropFirst()) {
-            #expect((range.start + range.length) % walSize == next.start)
-        }
-        #expect(chain.last.map { ($0.start + $0.length) % walSize } == store.layout.chainEnd)
         let original = try Data(contentsOf: url)
-        let headerSize = UInt64(WALRecord.headerSize)
+        let dropped = Array(store.layout.recordOffsets[store.cutIndex...])
 
-        for step in 0...ranges.count {
-            var durable = original
-            for range in ranges.prefix(step) {
-                zeroRing(&durable, layout: store.layout, range: range)
+        for mask in 0..<(1 << dropped.count) {
+            var crashed = original
+            for (bit, offset) in dropped.enumerated() where mask & (1 << bit) != 0 {
+                let start = Int(store.layout.walOffset + offset)
+                crashed.replaceSubrange(start..<start + WALRecord.headerSize, with: Data(count: WALRecord.headerSize))
             }
-            var crashStates = [durable]
-            if step < ranges.count {
-                let next = ranges[step]
-                var headerOnly = durable
-                zeroRing(&headerOnly, layout: store.layout, range: WALRingRange(start: next.start, length: headerSize))
-                var restOnly = durable
-                let rest = WALRingRange(
-                    start: (next.start + headerSize) % store.layout.walSize,
-                    length: next.length - headerSize
-                )
-                zeroRing(&restOnly, layout: store.layout, range: rest)
-                crashStates += [headerOnly, restOnly]
-            }
-            for state in crashStates {
-                try await expectRecovery(from: state, store: store, droppedStarts: ranges.map(\.start))
-            }
+            try await expectDroppedRecordsStayUnreachable(
+                from: crashed,
+                original: original,
+                store: store,
+                context: "zeroed headers mask \(mask)"
+            )
         }
+    }
+}
+
+enum TornEnvelope: Sendable {
+    case header
+    case payload
+}
+
+/// Under `.onCommit` a pending WAL record can be torn while later ones reached disk. The chain
+/// ends at the tear, so open never sees or zeroes the later records; they must stay unreachable
+/// once a new record of the same length takes the torn record's slot.
+@Test(arguments: [TornEnvelope.header, .payload])
+func recordsBehindATornEnvelopeStayUnreachable(tear: TornEnvelope) async throws {
+    try await withStoreURL { url in
+        try await createStoreWithOneCommittedFrame(at: url)
+        let layout = try appendPendingRecords(
+            to: url,
+            firstFrameId: 1,
+            records: [.intactPut, .delete(frameId: 0), .intactPut]
+        )
+        var torn = try Data(contentsOf: url)
+        let first = Int(layout.walOffset + layout.recordOffsets[0])
+        switch tear {
+        case .header:
+            torn.replaceSubrange(first..<first + WALRecord.headerSize, with: Data(count: WALRecord.headerSize))
+        case .payload:
+            torn[first + WALRecord.headerSize] ^= 0xFF
+        }
+        try torn.write(to: url)
+        let crashURL = TempFiles.uniqueURL()
+        defer { try? FileManager.default.removeItem(at: crashURL) }
+
+        let reopened = try await Wax.open(at: url)
+        #expect(await reopened.frameMetasIncludingPending().map(\.id) == [0])
+        #expect(try await reopened.put(Data("pending-1".utf8), timestampMs: 1_234) == 1)
+        #expect(await reopened.walStats().writePos == layout.recordOffsets[1])
+        var crashed = try Data(contentsOf: url)
+        restoreRing(&crashed, from: torn, layout: layout, start: layout.recordOffsets[1], end: layout.chainEnd)
+        try crashed.write(to: crashURL)
+        try await reopened.close()
+
+        let recovered = try await Wax.open(at: crashURL)
+        let frames = await recovered.frameMetasIncludingPending()
+        #expect(frames.map(\.id) == [0, 1])
+        #expect(frames.first?.status == .active, "the stale delete behind the tear must not be replayed")
+        try await recovered.close()
     }
 }
 

@@ -34,6 +34,12 @@ package final class WALRingWriter {
     package private(set) var sentinelWriteCount: UInt64
     package private(set) var writeCallCount: UInt64
     package private(set) var bytesSinceFsync: UInt64
+    package private(set) var fsyncCount: UInt64 = 0
+    /// True until the first append of a writer resumed from disk. That append fsyncs the file,
+    /// writes the first record (and any padding before it), and fsyncs again before writing
+    /// anything after it, so the first new record can never be lost while a later one survives.
+    /// `PendingReplayPolicy.resumeSequence(above:walSize:)` relies on this.
+    package private(set) var needsDurableAnchor: Bool
     private var isFaulted = false
 
     package init(
@@ -48,7 +54,8 @@ package final class WALRingWriter {
         checkpointCount: UInt64 = 0,
         sentinelWriteCount: UInt64 = 0,
         writeCallCount: UInt64 = 0,
-        fsyncPolicy: WALFsyncPolicy = .onCommit
+        fsyncPolicy: WALFsyncPolicy = .onCommit,
+        needsDurableAnchor: Bool = false
     ) {
         self.file = file
         self.walOffset = walOffset
@@ -68,6 +75,7 @@ package final class WALRingWriter {
         self.sentinelWriteCount = sentinelWriteCount
         self.writeCallCount = writeCallCount
         self.bytesSinceFsync = 0
+        self.needsDurableAnchor = needsDurableAnchor
     }
 
     @discardableResult
@@ -95,13 +103,20 @@ package final class WALRingWriter {
 
     private struct EncodedPlan {
         var writes = CoalescedWrites()
+        /// Number of leading write operations that end with the first data record.
+        var anchorOperationCount: Int?
         var lastSequence: UInt64
         var sequences: [UInt64] = []
         var bytesBeforeTrailingTail: UInt64 = 0
     }
 
     /// Encodes every planned step into coalesced writes without touching the file.
-    private func encode(_ plan: WALAppendPlan, payloads: [Data], flags: WALFlags) throws -> EncodedPlan {
+    private func encode(
+        _ plan: WALAppendPlan,
+        payloads: [Data],
+        flags: WALFlags,
+        splitAfterFirstRecord: Bool
+    ) throws -> EncodedPlan {
         var encoded = EncodedPlan(lastSequence: lastSequence)
         encoded.sequences.reserveCapacity(payloads.count)
         for step in plan.steps {
@@ -125,6 +140,10 @@ package final class WALRingWriter {
                 encoded.writes.append(try record.encode(), at: walOffset + position)
                 encoded.sequences.append(encoded.lastSequence)
                 encoded.bytesBeforeTrailingTail = encoded.writes.totalBytes
+                if splitAfterFirstRecord, encoded.anchorOperationCount == nil {
+                    encoded.anchorOperationCount = encoded.writes.operations.count
+                    encoded.writes.seal()
+                }
             }
         }
         return encoded
@@ -141,7 +160,7 @@ package final class WALRingWriter {
         guard !payloads.isEmpty else { return [] }
 
         let plan = try makePlan(entrySizes: payloads.map(Self.validatedEntrySize(for:)))
-        let encoded = try encode(plan, payloads: payloads, flags: flags)
+        let encoded = try encode(plan, payloads: payloads, flags: flags, splitAfterFirstRecord: needsDurableAnchor)
         var writes = encoded.writes
         let sequence = encoded.lastSequence
         let sequences = encoded.sequences
@@ -158,10 +177,7 @@ package final class WALRingWriter {
 
         let snapshot = captureState()
         do {
-            for write in writes.operations {
-                try writeAllCounted(write.bytes, at: write.offset)
-            }
-
+            try perform(writes.operations, anchorOperationCount: encoded.anchorOperationCount)
             lastSequence = sequence
             pendingBytes = plan.pendingBytes
             writePos = plan.writePos
@@ -175,6 +191,23 @@ package final class WALRingWriter {
         } catch {
             faultAndRestore(snapshot)
             throw error
+        }
+    }
+
+    /// Issues the planned file writes. While `needsDurableAnchor` is set, everything already on
+    /// disk is fsynced first, and the writes up to the first data record are fsynced before the rest.
+    private func perform(_ operations: [(offset: UInt64, bytes: Data)], anchorOperationCount: Int?) throws {
+        let anchorEnd = needsDurableAnchor ? (anchorOperationCount ?? operations.count) : 0
+        if needsDurableAnchor {
+            try fsyncCounted()
+            for write in operations[..<anchorEnd] {
+                try writeAllCounted(write.bytes, at: write.offset)
+            }
+            try fsyncCounted()
+            needsDurableAnchor = false
+        }
+        for write in operations[anchorEnd...] {
+            try writeAllCounted(write.bytes, at: write.offset)
         }
     }
 
@@ -198,8 +231,13 @@ package final class WALRingWriter {
 
     package func flush() throws {
         guard bytesSinceFsync > 0 else { return }
-        try file.fsync()
+        try fsyncCounted()
         bytesSinceFsync = 0
+    }
+
+    private func fsyncCounted() throws {
+        try file.fsync()
+        fsyncCount &+= 1
     }
 
     private func maybeFsync() throws {
@@ -283,10 +321,17 @@ extension WALRingWriter: @unchecked Sendable {}
 private struct CoalescedWrites {
     private(set) var operations: [(offset: UInt64, bytes: Data)] = []
     private(set) var totalBytes: UInt64 = 0
+    private var sealed = false
+
+    /// Starts a new operation on the next append even if it is contiguous with the last one.
+    mutating func seal() {
+        sealed = true
+    }
 
     mutating func append(_ bytes: Data, at offset: UInt64) {
         totalBytes &+= UInt64(bytes.count)
-        if let last = operations.indices.last,
+        defer { sealed = false }
+        if !sealed, let last = operations.indices.last,
            operations[last].offset + UInt64(operations[last].bytes.count) == offset {
             operations[last].bytes.append(bytes)
         } else {
