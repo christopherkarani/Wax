@@ -19,26 +19,16 @@ package enum RecallPresent {
         return max(0, (nowMs - createdAtMs) / (1000 * 60 * 60 * 24))
     }
 
-    /// True when another hit in the same result set is a newer frame of the
-    /// same memory type. Unknown or tied timestamps fall back to same-horizon
-    /// frameId order, the only newer-signal left.
-    package static func hasNewerSameTypeFrame(_ hit: LayeredRecall.Hit, in hits: [LayeredRecall.Hit]) -> Bool {
-        let type = hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue
-        return hits.contains { other in
-            guard other.id != hit.id else { return false }
-            guard (other.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue) == type else {
-                return false
-            }
-            if other.timestampMs != hit.timestampMs {
-                return other.timestampMs > hit.timestampMs
-            }
-            return other.horizon == hit.horizon && other.frameID > hit.frameID
-        }
-    }
-
     /// Per-hit `stale_hint` flags for a packed result set, in hit order.
+    /// See ``StaleHint`` for the rule (same type, same topic, strictly newer).
     package static func staleHints(for hits: [LayeredRecall.Hit]) -> [Bool] {
-        hits.map { hasNewerSameTypeFrame($0, in: hits) }
+        StaleHint.flags(for: hits.map { hit in
+            StaleHint.Entry(
+                memoryType: hit.metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue,
+                createdAtMs: hit.timestampMs,
+                text: hit.text
+            )
+        })
     }
 
     package static func compactHitObject(

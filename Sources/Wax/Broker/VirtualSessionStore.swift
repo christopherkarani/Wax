@@ -111,10 +111,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package static let defaultSessionLeaseSeconds = 300
 
-    package static func nowMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000)
-    }
-
     package let sessionRootURL: URL
     package let brokerInstanceID: String
     private let leaseSeconds: Int
@@ -151,7 +147,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
         sessionRootURL: URL,
         brokerInstanceID: String,
         leaseSeconds: Int = VirtualSessionStore.defaultSessionLeaseSeconds,
-        nowMs: @escaping @Sendable () -> Int64 = { VirtualSessionStore.nowMs() },
+        nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() },
         waxOptions: WaxOptions = CommandLineEmbedderFactory.waxOptions(),
         openExisting: @escaping @Sendable (URL) async throws -> MemoryOrchestrator
     ) {
