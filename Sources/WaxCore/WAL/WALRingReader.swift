@@ -24,13 +24,13 @@ struct WALScanState: Equatable, Sendable {
 struct WALPendingScanResult: Equatable, Sendable {
     package var pendingMutations: [PendingMutation]
     package var state: WALScanState
-    /// True when replay stopped before a pending record the caller declined to replay.
-    package var truncated: Bool
+    /// Ring-relative offset of each entry in `pendingMutations`.
+    package var pendingOffsets: [UInt64]
 
-    package init(pendingMutations: [PendingMutation], state: WALScanState, truncated: Bool = false) {
+    package init(pendingMutations: [PendingMutation], state: WALScanState, pendingOffsets: [UInt64] = []) {
         self.pendingMutations = pendingMutations
         self.state = state
-        self.truncated = truncated
+        self.pendingOffsets = pendingOffsets
     }
 }
 
@@ -70,11 +70,9 @@ package final class WALRingReader {
     func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
         var locations: [WALRecordLocation] = []
         _ = try walk(from: checkpointPos) { offset, header, payload in
-            if header.sequence > committedSeq {
-                let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
-                locations.append(WALRecordLocation(offset: offset, record: record))
-            }
-            return .replay
+            guard header.sequence > committedSeq else { return }
+            let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
+            locations.append(WALRecordLocation(offset: offset, record: record))
         }
         return locations
     }
@@ -83,42 +81,28 @@ package final class WALRingReader {
         try scanPendingMutationsWithState(from: checkpointPos, committedSeq: committedSeq).pendingMutations
     }
 
-    /// Scans pending mutations and the ring state that follows them.
-    ///
-    /// `shouldReplay` is consulted for every pending (`sequence > committedSeq`) mutation in order.
-    /// Returning `false` ends replay *before* that record: the returned state points at its offset
-    /// so the writer resumes there, and `truncated` is set. Committed records are never offered.
+    /// Scans pending (`sequence > committedSeq`) mutations, their ring offsets, and the ring
+    /// state after the whole valid chain.
     func scanPendingMutationsWithState(
         from checkpointPos: UInt64,
-        committedSeq: UInt64,
-        shouldReplay: (PendingMutation) throws -> Bool = { _ in true }
+        committedSeq: UInt64
     ) throws -> WALPendingScanResult {
         var pendingMutations: [PendingMutation] = []
-        var truncated = false
+        var pendingOffsets: [UInt64] = []
         let state = try walk(from: checkpointPos) { offset, header, payload in
-            guard header.sequence > committedSeq else { return .replay }
+            guard header.sequence > committedSeq else { return }
             // Do not silently skip checksum-valid but undecodable payloads: a decode failure is a
             // codec invariant violation, not a torn write (torn writes fail the checksum and end the
             // scan earlier), and advancing past it would permanently drop committed mutations.
             let entry = try WALEntryCodec.decode(payload, offset: offset)
-            let mutation = PendingMutation(sequence: header.sequence, entry: entry)
-            guard try shouldReplay(mutation) else {
-                truncated = true
-                return .stop
-            }
-            pendingMutations.append(mutation)
-            return .replay
+            pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
+            pendingOffsets.append(offset)
         }
-        return WALPendingScanResult(pendingMutations: pendingMutations, state: state, truncated: truncated)
+        return WALPendingScanResult(pendingMutations: pendingMutations, state: state, pendingOffsets: pendingOffsets)
     }
 
     func scanState(from checkpointPos: UInt64) throws -> WALScanState {
-        try walk(from: checkpointPos) { _, _, _ in .replay }
-    }
-
-    private enum RecordDecision {
-        case replay
-        case stop
+        try walk(from: checkpointPos) { _, _, _ in }
     }
 
     /// Walks the ring from `checkpointPos`, validating each record envelope, and hands every
@@ -128,7 +112,7 @@ package final class WALRingReader {
     /// - Returns: The ring state immediately after the last record the walk advanced past.
     private func walk(
         from checkpointPos: UInt64,
-        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> RecordDecision
+        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> Void
     ) throws -> WALScanState {
         guard walSize > 0 else { return WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0) }
 
@@ -180,13 +164,13 @@ package final class WALRingReader {
         return WALScanState(lastSequence: lastSequence, writePos: cursor, pendingBytes: pendingBytes)
     }
 
-    /// Validates the record at `offset` and returns the ring bytes it occupies,
-    /// or `nil` when the record is torn or `visit` declines it (the walk ends there).
+    /// Validates the record at `offset`, hands data records to `visit`, and returns the ring
+    /// bytes the record occupies, or `nil` when it is torn (the walk ends there).
     private func acceptedRecordLength(
         header: WALRecordHeader,
         at offset: UInt64,
         remaining: UInt64,
-        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> RecordDecision
+        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> Void
     ) throws -> UInt64? {
         let headerSize = UInt64(WALRecord.headerSize)
         if header.flags.contains(.isPadding) {
@@ -201,7 +185,7 @@ package final class WALRingReader {
         guard payloadLen > 0, payloadLen <= remaining - headerSize, payloadLen <= UInt64(Int.max) else { return nil }
         let payload = try file.readExactly(length: Int(payloadLen), at: walOffset + offset + headerSize)
         guard SHA256Checksum.digest(payload) == header.checksum else { return nil }
-        guard try visit(offset, header, payload) == .replay else { return nil }
+        try visit(offset, header, payload)
         return headerSize + payloadLen
     }
 }

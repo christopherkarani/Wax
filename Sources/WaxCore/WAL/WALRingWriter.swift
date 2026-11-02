@@ -33,7 +33,7 @@ package final class WALRingWriter {
     package private(set) var checkpointCount: UInt64
     package private(set) var sentinelWriteCount: UInt64
     package private(set) var writeCallCount: UInt64
-    private var bytesSinceFsync: UInt64
+    package private(set) var bytesSinceFsync: UInt64
     private var isFaulted = false
 
     package init(
@@ -72,7 +72,7 @@ package final class WALRingWriter {
 
     @discardableResult
     func append(payload: Data, flags: WALFlags = []) throws -> UInt64 {
-        let sequences = try appendBatch(payloads: [payload], flags: flags)
+        let sequences = try appendPlanned(payloads: [payload], flags: flags, fsyncAccounting: .ringBytesConsumed)
         guard let sequence = sequences.first else {
             throw WaxError.io("WAL append produced no record")
         }
@@ -82,33 +82,76 @@ package final class WALRingWriter {
     /// Append multiple payloads in a single pass, coalescing contiguous writes.
     /// Returns the sequence numbers for the appended data records (padding records are excluded).
     func appendBatch(payloads: [Data], flags: WALFlags = []) throws -> [UInt64] {
+        try appendPlanned(payloads: payloads, flags: flags, fsyncAccounting: .bytesWrittenBeforeTrailingTail)
+    }
+
+    /// How an append counts toward the `.everyBytes` fsync threshold. Both match the
+    /// pre-planner writer: single appends counted ring bytes consumed (including padding
+    /// skip and zero tails); batches counted bytes written, excluding the trailing zero tail.
+    private enum FsyncAccounting {
+        case ringBytesConsumed
+        case bytesWrittenBeforeTrailingTail
+    }
+
+    private struct EncodedPlan {
+        var writes = CoalescedWrites()
+        var lastSequence: UInt64
+        var sequences: [UInt64] = []
+        var bytesBeforeTrailingTail: UInt64 = 0
+    }
+
+    /// Encodes every planned step into coalesced writes without touching the file.
+    private func encode(_ plan: WALAppendPlan, payloads: [Data], flags: WALFlags) throws -> EncodedPlan {
+        var encoded = EncodedPlan(lastSequence: lastSequence)
+        encoded.sequences.reserveCapacity(payloads.count)
+        for step in plan.steps {
+            switch step {
+            case .zeroTail(let position, let length):
+                encoded.writes.append(Data(repeating: 0, count: Int(length)), at: walOffset + position)
+                if encoded.sequences.count < payloads.count {
+                    encoded.bytesBeforeTrailingTail = encoded.writes.totalBytes
+                }
+            case .padding(let position, let skipBytes):
+                encoded.lastSequence &+= 1
+                let padding = WALRecord.padding(sequence: encoded.lastSequence, skipBytes: skipBytes)
+                encoded.writes.append(try padding.encode(), at: walOffset + position)
+            case .record(let position, let entryIndex):
+                encoded.lastSequence &+= 1
+                let record = WALRecord.data(
+                    sequence: encoded.lastSequence,
+                    flags: flags,
+                    payload: payloads[entryIndex]
+                )
+                encoded.writes.append(try record.encode(), at: walOffset + position)
+                encoded.sequences.append(encoded.lastSequence)
+                encoded.bytesBeforeTrailingTail = encoded.writes.totalBytes
+            }
+        }
+        return encoded
+    }
+
+    private func appendPlanned(
+        payloads: [Data],
+        flags: WALFlags,
+        fsyncAccounting: FsyncAccounting
+    ) throws -> [UInt64] {
         guard !isFaulted else {
             throw WaxError.io("WAL writer is faulted after a partial write failure")
         }
         guard !payloads.isEmpty else { return [] }
 
         let plan = try makePlan(entrySizes: payloads.map(Self.validatedEntrySize(for:)))
-
-        var writes = CoalescedWrites()
-        var sequence = lastSequence
-        var sequences: [UInt64] = []
-        sequences.reserveCapacity(payloads.count)
-        for step in plan.steps {
-            switch step {
-            case .zeroTail(let position, let length):
-                writes.append(Data(repeating: 0, count: Int(length)), at: walOffset + position)
-            case .padding(let position, let skipBytes):
-                sequence &+= 1
-                let padding = WALRecord.padding(sequence: sequence, skipBytes: skipBytes)
-                writes.append(try padding.encode(), at: walOffset + position)
-            case .record(let position, let entryIndex):
-                sequence &+= 1
-                let record = WALRecord.data(sequence: sequence, flags: flags, payload: payloads[entryIndex])
-                writes.append(try record.encode(), at: walOffset + position)
-                sequences.append(sequence)
-            }
+        let encoded = try encode(plan, payloads: payloads, flags: flags)
+        var writes = encoded.writes
+        let sequence = encoded.lastSequence
+        let sequences = encoded.sequences
+        let fsyncBytes: UInt64
+        switch fsyncAccounting {
+        case .ringBytesConsumed:
+            fsyncBytes = plan.pendingBytes - pendingBytes
+        case .bytesWrittenBeforeTrailingTail:
+            fsyncBytes = encoded.bytesBeforeTrailingTail
         }
-        let recordBytes = writes.totalBytes
         if plan.writesSentinel {
             writes.append(Self.sentinelData, at: walOffset + plan.writePos)
         }
@@ -126,7 +169,7 @@ package final class WALRingWriter {
             if plan.writesSentinel {
                 sentinelWriteCount &+= 1
             }
-            bytesSinceFsync &+= recordBytes
+            bytesSinceFsync &+= fsyncBytes
             try maybeFsync()
             return sequences
         } catch {

@@ -243,9 +243,9 @@ func walAppendFillingRingToBoundaryReplaysAllPendingRecords(leftover: Int) throw
     }
 }
 
-// MARK: - Pending replay prefix
+// MARK: - Pending scan offsets
 
-@Test func walPendingScanStopsBeforeFirstRejectedMutation() throws {
+@Test func walPendingScanReportsRingOffsetOfEachPendingMutation() throws {
     let walSize: UInt64 = 1024
     try withRing(walSize: walSize) { file in
         let writer = WALRingWriter(file: file, walOffset: 0, walSize: walSize)
@@ -256,18 +256,42 @@ func walAppendFillingRingToBoundaryReplaysAllPendingRecords(leftover: Int) throw
         }
 
         let reader = WALRingReader(file: file, walOffset: 0, walSize: walSize)
-        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0) { mutation in
-            mutation.sequence != 2
-        }
-        #expect(result.truncated)
-        #expect(result.pendingMutations.map(\.sequence) == [1])
-        #expect(result.state.lastSequence == 1)
-        #expect(result.state.writePos == offsets[1])
-        #expect(result.state.pendingBytes == offsets[1])
+        let result = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 1)
+        #expect(result.pendingMutations.map(\.sequence) == [2, 3])
+        #expect(result.pendingOffsets == Array(offsets.dropFirst()))
+        #expect(result.state.writePos == writer.writePos)
+        #expect(result.state.lastSequence == 3)
+    }
+}
 
-        let full = try reader.scanPendingMutationsWithState(from: 0, committedSeq: 0)
-        #expect(!full.truncated)
-        #expect(full.pendingMutations.map(\.sequence) == [1, 2, 3])
-        #expect(full.state.writePos == writer.writePos)
+// MARK: - Fsync accounting (unchanged from the pre-planner writer)
+
+@Test func walAppendCountsPaddingSkipTowardFsyncThreshold() throws {
+    try withRing(walSize: 256) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256, writePos: 204, checkpointPos: 204)
+        _ = try writer.append(payload: payload(entrySize: 68, fill: 0x01))
+        // 52-byte padding (header + skip) plus the 68-byte record.
+        #expect(writer.bytesSinceFsync == 120)
+    }
+    try withRing(walSize: 256) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256)
+        _ = try writer.append(payload: payload(entrySize: 220, fill: 0x02))
+        // The 36-byte zero tail that wraps the cursor counts as well.
+        #expect(writer.bytesSinceFsync == 256)
+    }
+}
+
+@Test func walAppendBatchCountsBytesWrittenTowardFsyncThreshold() throws {
+    try withRing(walSize: 256) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256, writePos: 204, checkpointPos: 204)
+        _ = try writer.appendBatch(payloads: [payload(entrySize: 68, fill: 0x01)])
+        // Padding header (48) plus record (68); the skip region is not written.
+        #expect(writer.bytesSinceFsync == 116)
+    }
+    try withRing(walSize: 256) { file in
+        let writer = WALRingWriter(file: file, walOffset: 0, walSize: 256)
+        _ = try writer.appendBatch(payloads: [payload(entrySize: 220, fill: 0x02)])
+        // The trailing zero tail is written with the sentinel and is not counted.
+        #expect(writer.bytesSinceFsync == 220)
     }
 }

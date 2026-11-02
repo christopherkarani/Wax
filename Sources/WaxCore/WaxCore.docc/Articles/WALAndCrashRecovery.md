@@ -67,9 +67,11 @@ When opening a store, WaxCore performs the following recovery sequence:
 
 2. **Replay snapshot check** — If the selected header contains a valid WAL replay snapshot (magic `WALSNAP1` at offset 136), recovery can skip already-committed WAL records and resume from the snapshot's position. This significantly speeds up recovery for large WAL buffers.
 
-3. **WAL scan** — Starting from the checkpoint position, the ``WALRingReader`` scans forward through the ring buffer, reading all pending (uncommitted) records. Corrupted records in the pending region are tolerated — scanning continues for position tracking.
+3. **WAL scan** — Starting from the checkpoint position, the ``WALRingReader`` scans forward through the ring buffer, reading all pending (uncommitted) records. The scan stops at the first sentinel, torn record envelope (bad header, payload checksum, non-increasing sequence, or a padding record that does not end exactly at the ring end), or on returning to the checkpoint.
 
-4. **State reconstruction** — Pending mutations are applied to rebuild in-memory indexes and frame metadata.
+4. **Torn-tail handling** — Each pending `putFrame` record points at a data payload written outside the ring. With `.onCommit` or `.everyBytes` fsync, a crash can persist the WAL record while its payload is missing or torn. Uncommitted records are not a durability promise, so open treats this as a *torn tail* when no later pending put has an intact payload: it keeps the longest valid prefix, zeroes the dropped WAL records and fsyncs before returning, and resumes sequence numbers above every dropped record so a stale one can never be replayed. Truncations are counted in the WAL stats (`replayTruncationCount`). Open fails closed and leaves the file untouched instead when an intact pending put follows the damaged one (corruption, not a torn write), when the store is opened with `.always` fsync, or when `repair` is false. Committed data is never truncated.
+
+5. **State reconstruction** — Pending mutations are applied to rebuild in-memory indexes and frame metadata.
 
 ## Proactive Commit
 

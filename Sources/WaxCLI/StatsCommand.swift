@@ -92,6 +92,7 @@ struct StatsCommand: AsyncParsableCommand {
                         "lastSeq": stats.wal.lastSeq,
                         "wrapCount": stats.wal.wrapCount,
                         "checkpointCount": stats.wal.checkpointCount,
+                        "replayTruncationCount": stats.wal.replayTruncationCount,
                     ],
                     "session": [
                         "active": sessionStats.active,
