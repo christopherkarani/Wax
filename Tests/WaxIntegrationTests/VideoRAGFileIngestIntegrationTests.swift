@@ -337,6 +337,61 @@ func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
     }
 }
 
+private struct FailingTranscriptProvider: VideoTranscriptProvider {
+    struct TranscriptUnavailable: Error {}
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        throw TranscriptUnavailable()
+    }
+}
+
+@Test
+func videoRAGTranscriptFailureFallsBackToFrameOnlyIngest() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 60
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 1
+        config.searchTopK = 20
+
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: TestVideoEmbedder(),
+            transcriptProvider: FailingTranscriptProvider()
+        )
+
+        let videoID = VideoID(source: .file, id: "frames-only")
+        try await rag.ingest(files: [VideoFile(id: videoID, url: mp4Url, captureDate: nil)])
+        try await rag.flush()
+
+        let query = VideoQuery(
+            text: "keyframe",
+            timeRange: nil,
+            videoIDs: [videoID],
+            resultLimit: 5,
+            segmentLimitPerVideo: 5,
+            contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 2)
+        )
+        let ctx = try await rag.recall(query)
+        #expect(ctx.items.count == 1)
+        #expect(ctx.items.first?.videoID == videoID)
+        let segments = ctx.items.first?.segments ?? []
+        #expect(!segments.isEmpty)
+        let hasTranscriptText = segments.contains { !($0.transcriptSnippet ?? "").isEmpty }
+        #expect(!hasTranscriptText)
+    }
+}
+
 @Test
 func videoRAGFileIngestWithConcurrentEmbeddingIsDeterministic() async throws {
     try await TempFiles.withTempFile { url in
