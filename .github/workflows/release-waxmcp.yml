@@ -16,7 +16,9 @@ permissions:
 
 # One release per ref at a time; never cancel a release that is mid-publish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # One release at a time across all tags: every release touches the shared
+  # Homebrew formula branch and tap.
+  group: release-waxmcp
   cancel-in-progress: false
 
 jobs:
