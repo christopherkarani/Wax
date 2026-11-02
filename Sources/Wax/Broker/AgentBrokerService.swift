@@ -1158,6 +1158,7 @@ extension AgentBrokerService {
                 "lastSeq": .from(stats.wal.lastSeq),
                 "wrapCount": .from(stats.wal.wrapCount),
                 "checkpointCount": .from(stats.wal.checkpointCount),
+                "replayTruncationCount": .from(stats.wal.replayTruncationCount),
             ]),
             "session": .object([
                 "active": .from(sessionStats.active),

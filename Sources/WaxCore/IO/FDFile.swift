@@ -479,6 +479,19 @@ final class MappedWritableRegion: @unchecked Sendable {
         buffer.copyBytes(from: data)
     }
 
+    /// Writes the mapped pages back to the file and waits for them (`msync(MS_SYNC)`), so a
+    /// later `fsync` on the file descriptor covers bytes written through the mapping.
+    package func sync() throws {
+        try closeLock.withLock {
+            guard !isClosed else {
+                throw WaxError.io("msync on a closed mapped region")
+            }
+            guard msync(basePointer, mappedLength, MS_SYNC) == 0 else {
+                throw WaxError.io("msync failed: \(String(cString: strerror(errno)))")
+            }
+        }
+    }
+
     deinit {
         if !isClosed {
             _ = munmap(basePointer, mappedLength)
