@@ -5,6 +5,9 @@ import Accelerate
 import WaxCore
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
+///
+/// The bundled graph returns sentence-transformers embeddings: token states mean-pooled over
+/// `attention_mask` (output `embeddings`, `[batch, 384]`). `MiniLMEmbedder` L2-normalizes them.
 @available(macOS 15.0, iOS 18.0, *)
 package final class MiniLMEmbeddings {
     package enum InitError: LocalizedError, Sendable {
@@ -149,7 +152,7 @@ package final class MiniLMEmbeddings {
                         attention_mask: attentionMask
                     )
                     let decoded = Self.decodeEmbeddings(
-                        output.var_554,
+                        output.embeddings,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )

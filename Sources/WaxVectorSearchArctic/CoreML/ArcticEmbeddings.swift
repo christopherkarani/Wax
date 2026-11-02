@@ -6,8 +6,8 @@ import WaxBertTokenizer
 
 /// On-device Snowflake Arctic Embed Small sentence embedding model via CoreML, producing 384-dimensional vectors.
 ///
-/// Unlike MiniLM, Arctic's CoreML graph already includes CLS extraction and L2 normalization,
-/// so the output tensor is the final embedding directly — no post-processing tanh or pooling needed.
+/// Arctic's CoreML graph includes CLS extraction and L2 normalization (MiniLM's graph mean-pools
+/// and leaves L2 normalization to `MiniLMEmbedder`), so the output tensor is the final embedding.
 @available(macOS 15.0, iOS 18.0, *)
 package final class ArcticEmbeddings {
     package enum InitError: LocalizedError, Sendable {

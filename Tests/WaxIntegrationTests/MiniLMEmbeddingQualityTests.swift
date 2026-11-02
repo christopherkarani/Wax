@@ -98,6 +98,11 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
         !mil.contains("fp16(nan)"),
         "MiniLM model must not contain NaN quantization scales."
     )
+    #expect(
+        !mil.contains("pooler"),
+        "MiniLM must return mean-pooled token embeddings, not the BERT pooler output (#257)."
+    )
+    #expect(mil.contains("-> (embeddings)"), "MiniLM Core ML output must be named `embeddings`.")
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -126,16 +131,12 @@ func minilmEmbeddingsStayCloseToBaseline() async throws {
     let average = similarities.reduce(0, +) / Float(similarities.count)
     let minimum = similarities.min() ?? 0
 
-    // Tracked regression: observed average 0.668 / minimum 0.575 since the v0.1.32
-    // model swap. Swift Testing flags this wrapper once the drift is fixed.
-    // Hard floors outside the wrapper still catch further degradation (or NaN)
-    // while #257 is open.
-    #expect(average >= 0.6, "Average cosine similarity regressed further: \(average)")
-    #expect(minimum >= 0.5, "Minimum cosine similarity regressed further: \(minimum)")
-    withKnownIssue("https://github.com/christopherkarani/Wax/issues/257") {
-        #expect(average >= 0.98, "Average cosine similarity was \(average)")
-        #expect(minimum >= 0.95, "Minimum cosine similarity was \(minimum)")
-    }
+    // The fixture holds sentence-transformers all-MiniLM-L6-v2 reference vectors
+    // (masked mean pooling + L2 normalize, computed in PyTorch), so this checks the
+    // whole Swift pipeline (tokenizer, Core ML graph, decode) against the reference.
+    // A model that returns the BERT pooler (CLS -> dense -> tanh) scores ~0 here (#257).
+    #expect(average >= 0.99, "Average cosine similarity was \(average)")
+    #expect(minimum >= 0.98, "Minimum cosine similarity was \(minimum)")
 }
 
 @available(macOS 15.0, iOS 18.0, *)

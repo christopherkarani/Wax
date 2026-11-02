@@ -49,15 +49,15 @@ package class all_MiniLM_L6_v2Output : MLFeatureProvider {
     /// Source provided by CoreML
     private let provider : MLFeatureProvider
 
-    /// var_554 as multidimensional array of 16-bit floats
-    package var var_554: MLMultiArray {
-        provider.featureValue(for: "var_554")!.multiArrayValue!
+    /// embeddings as multidimensional array of floats
+    package var embeddings: MLMultiArray {
+        provider.featureValue(for: "embeddings")!.multiArrayValue!
     }
 
-    /// var_554 as multidimensional array of 16-bit floats
+    /// embeddings as multidimensional array of floats
     #if !(os(macOS) || targetEnvironment(macCatalyst))
-    package var var_554ShapedArray: MLShapedArray<Float16> {
-        MLShapedArray<Float16>(var_554)
+    package var embeddingsShapedArray: MLShapedArray<Float> {
+        MLShapedArray<Float>(embeddings)
     }
     #endif
 
@@ -69,8 +69,8 @@ package class all_MiniLM_L6_v2Output : MLFeatureProvider {
         provider.featureValue(for: featureName)
     }
 
-    package init(var_554: MLMultiArray) throws {
-        self.provider = try MLDictionaryFeatureProvider(dictionary: ["var_554" : MLFeatureValue(multiArray: var_554)])
+    package init(embeddings: MLMultiArray) throws {
+        self.provider = try MLDictionaryFeatureProvider(dictionary: ["embeddings" : MLFeatureValue(multiArray: embeddings)])
     }
 
     package init(features: MLFeatureProvider) {

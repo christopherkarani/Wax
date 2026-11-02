@@ -1,6 +1,6 @@
 [
   {
-    "shortDescription" : "MiniLM-L6-v2 with dynamic batching\/sequence length. Inputs: input_ids, attention_mask.",
+    "shortDescription" : "all-MiniLM-L6-v2 sentence embeddings (mean pooled over attention_mask, not L2-normalized) with dynamic batching\/sequence length. Inputs: input_ids, attention_mask.",
     "metadataOutputVersion" : "3.0",
     "outputSchema" : [
       {
@@ -8,13 +8,13 @@
         "isOptional" : "0",
         "dataType" : "Float32",
         "formattedType" : "MultiArray (Float32)",
-        "shortDescription" : "",
+        "shortDescription" : "Mean-pooled sentence embedding [batch, 384].",
         "shape" : "[]",
-        "name" : "var_554",
+        "name" : "embeddings",
         "type" : "MultiArray"
       }
     ],
-    "version" : "3.0",
+    "version" : "4.0",
     "modelParameters" : [
 
     ],
@@ -23,11 +23,11 @@
     "storagePrecision" : "Mixed (Float32, Int32)",
     "license" : "Apache 2.0",
     "mlProgramOperationTypeHistogram" : {
-      "Ios18.expandDims" : 2,
+      "Ios18.expandDims" : 3,
       "Ios18.softmax" : 6,
-      "Ios18.mul" : 7,
+      "Ios18.mul" : 8,
       "Ios18.matmul" : 12,
-      "Ios18.realDiv" : 1,
+      "Ios18.realDiv" : 2,
       "Ios18.equal" : 1,
       "Ios18.greaterEqual" : 3,
       "Select" : 4,
@@ -35,16 +35,17 @@
       "Ios18.gather" : 23,
       "Ios18.add" : 23,
       "Ios18.layerNorm" : 13,
+      "Ios16.reduceSum" : 2,
       "Ios18.reshape" : 24,
       "Shape" : 14,
-      "Ios18.linear" : 37,
+      "Ios18.linear" : 36,
       "Ios18.concat" : 14,
-      "Ios18.cast" : 1,
+      "Ios18.cast" : 2,
       "Ios18.sub" : 1,
       "Ios18.transpose" : 24,
       "Ios18.gelu" : 6,
-      "Ios18.tanh" : 1,
-      "Ios18.sliceByIndex" : 3
+      "Ios18.clip" : 1,
+      "Ios18.sliceByIndex" : 2
     },
     "computePrecision" : "Mixed (Float32, Int32)",
     "stateSchema" : [
@@ -89,12 +90,13 @@
       }
     ],
     "userDefinedMetadata" : {
-      "wax.minilm.reason" : "FP32 reconvert so A17 ANE\/CPU stay finite; do not ship Mixed Float16.",
-      "com.github.apple.coremltools.conversion_date" : "2026-08-14",
-      "wax.minilm.compute_precision" : "FLOAT32",
       "com.github.apple.coremltools.source" : "torch==2.7.1",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "com.github.apple.coremltools.conversion_date" : "2026-11-03",
       "com.github.apple.coremltools.version" : "9.0",
-      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+      "wax.minilm.compute_precision" : "FLOAT32",
+      "wax.minilm.pooling" : "mean",
+      "wax.minilm.reason" : "FP32 reconvert so A17 ANE\/CPU stay finite; do not ship Mixed Float16."
     },
     "generatedClassName" : "all_MiniLM_L6_v2",
     "method" : "predict"
