@@ -314,64 +314,31 @@ package enum UnifiedRanking {
                 }
             }
 
+            // Answer-shape signals only. No phrases from benchmark fixtures:
+            // ordinary words ("health", "checklist") must not move a result.
             if intents.contains(.asksLocation) {
-                if containsMovedToLocationPattern(comparablePreview) {
+                if RerankingHelpers.containsRelocationStatement(comparablePreview) {
                     total += 1.60
                 } else if lower.contains("moved to") || lower.contains("move to") {
                     total += 0.45
-                } else if lower.contains("city") {
-                    total += 0.10
-                }
-                if lower.contains("without a destination")
-                    || lower.contains("city move")
-                    || lower.contains("retrospective")
-                {
-                    total -= 0.75
-                }
-                if lower.contains("allergic") || lower.contains("health") || lower.contains("peanut") {
-                    total -= 1.10
-                }
-                if lower.contains("prefers") || lower.contains("prefer") {
-                    total -= 0.55
                 }
             }
 
             if intents.contains(.asksDate) {
-                let tentative = RerankingHelpers.containsTentativeLaunchLanguage(lower)
-                if lower.contains("public launch is"), !tentative {
-                    total += 1.70
-                } else if lower.contains("public launch") || analyzer.containsDateLiteral(comparablePreview) {
+                if analyzer.containsDateLiteral(comparablePreview) {
                     total += 1.20
                 }
-                if tentative {
+                if RerankingHelpers.containsTentativeLanguage(lower) {
                     let scaledPenalty = max(
                         vectorInfluenced ? 2.90 : 2.45,
                         result.score * (vectorInfluenced ? 1.60 : 1.40)
                     )
                     total -= scaledPenalty
                 }
-                if lower.contains("draft memo") {
-                    total -= vectorInfluenced ? 1.45 : 1.20
-                }
-                if lower.contains(" owns ") || lower.contains("owner") || lower.contains("deployment readiness") {
-                    total -= 0.40
-                }
             }
 
-            if intents.contains(.asksOwnership) {
-                if lower.contains(" owns ")
-                    || lower.contains("owner")
-                    || lower.contains("owns deployment readiness")
-                {
-                    total += 1.10
-                }
-                if lower.contains("public launch") && !lower.contains(" owns ") {
-                    total -= 0.35
-                }
-            }
-
-            if looksDistractorLike(lower) {
-                total -= 0.40
+            if intents.contains(.asksOwnership), RerankingHelpers.containsOwnershipStatement(lower) {
+                total += 1.10
             }
 
             return total
@@ -644,31 +611,6 @@ package enum UnifiedRanking {
         text
             .replacingOccurrences(of: FTS5SearchEngine.snippetOpenMarker, with: "")
             .replacingOccurrences(of: FTS5SearchEngine.snippetCloseMarker, with: "")
-    }
-
-    /// UnifiedSearch distractor check — broader than FastRAGContextBuilder.looksDistractor.
-    /// Includes "allergic", "draft memo", "tentative", "pending approval" because UnifiedSearch
-    /// needs wider filtering for search result quality. Omits "no authoritative" (only relevant
-    /// for answer-focused context assembly where confidence-undermining language matters).
-    private static func looksDistractorLike(_ text: String) -> Bool {
-        text.contains("weekly report")
-            || text.contains("checklist")
-            || text.contains("signoff")
-            || text.contains("allergic")
-            || text.contains("distractor")
-            || text.contains("draft memo")
-            || text.contains("tentative")
-            || text.contains("pending approval")
-    }
-
-    private static let movedToLocationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:moved|move)\s+to\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b"#
-    )
-
-    private static func containsMovedToLocationPattern(_ text: String) -> Bool {
-        guard let regex = movedToLocationRegex else { return false }
-        let range = NSRange(location: 0, length: text.utf16.count)
-        return regex.firstMatch(in: text, range: range) != nil
     }
 
     private static func isDigitsOnly(_ text: String) -> Bool {

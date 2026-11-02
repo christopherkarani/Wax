@@ -105,7 +105,7 @@ package struct FastRAGConfig: Sendable, Equatable {
     /// Max top candidates to rerank for answer-focused ordering.
     package var answerRerankWindow: Int = 12
 
-    /// Penalty for distractor-like snippets during answer-focused ranking.
+    /// Penalty for hedged (tentative) date statements during answer-focused ranking.
     package var answerDistractorPenalty: Float = 0.30
     
     // MARK: - Tier Selection

@@ -228,7 +228,6 @@ package struct QueryAnalyzer: Sendable {
         if lower.contains("who")
             || lower.contains("owner")
             || lower.contains("owns")
-            || lower.contains("deployment readiness")
         {
             intent.insert(.asksOwnership)
         }

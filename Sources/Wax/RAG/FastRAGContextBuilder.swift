@@ -384,19 +384,13 @@ package struct FastRAGContextBuilder: Sendable {
             return true
         }
 
-        if intent.contains(.asksDate) {
-            let hintsTemporal = lower.contains("launch")
-                || lower.contains("appointment")
-                || lower.contains("beta")
-                || lower.contains("timeline")
-            if hintsTemporal && !analyzer.containsDateLiteral(preview) {
-                return true
-            }
+        // The answer may sit outside the preview window: expand when the
+        // preview lacks the value the intent asks for.
+        if intent.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
+            return true
         }
 
-        if intent.contains(.asksOwnership),
-           lower.contains("owns"),
-           !lower.contains("deployment readiness") {
+        if intent.contains(.asksOwnership), lower.contains("owns") {
             return true
         }
 
@@ -476,60 +470,40 @@ package struct FastRAGContextBuilder: Sendable {
                 }
             }
 
+            // Answer-shape signals shared with UnifiedRanking (RerankingHelpers).
+            // No fixture phrases: ordinary words must not move a result.
             if intents.contains(.asksLocation),
-               previewLower.contains("moved to") {
+               RerankingHelpers.containsRelocationStatement(preview) || previewLower.contains("moved to") {
+                total += 0.45
+            }
+            if intents.contains(.asksDate), analyzer.containsDateLiteral(preview) {
                 total += 0.45
             }
             if intents.contains(.asksDate),
-               (previewLower.contains("public launch") || previewLower.contains("launch is") || analyzer.containsDateLiteral(preview)) {
-                total += 0.45
-            }
-            if intents.contains(.asksDate),
-               RerankingHelpers.containsTentativeLaunchLanguage(previewLower) {
+               RerankingHelpers.containsTentativeLanguage(previewLower) {
                 let basePenalty = config.answerDistractorPenalty
                 total -= vectorInfluenced ? basePenalty * 2.8 : basePenalty * 1.8
             }
             if intents.contains(.asksOwnership),
-               (previewLower.contains("owns deployment readiness") || previewLower.contains(" owns ")) {
+               RerankingHelpers.containsOwnershipStatement(previewLower) {
                 total += 0.45
-            }
-            if looksDistractor(previewLower) {
-                let basePenalty = config.answerDistractorPenalty
-                total -= vectorInfluenced ? basePenalty * 2.2 : basePenalty
-                if vectorInfluenced, intents.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
-                    total -= 0.35
-                }
             }
             return total
         }
 
-        var head = Array(results.prefix(cappedWindow))
-        head.sort { lhs, rhs in
-            let lhsKey = sortKey(lhs)
-            let rhsKey = sortKey(rhs)
-            if lhsKey != rhsKey { return lhsKey > rhsKey }
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameId < rhs.frameId
-        }
+        // Compute each key once; the comparator runs O(n log n) times.
+        let head = results.prefix(cappedWindow)
+            .map { (result: $0, key: sortKey($0)) }
+            .sorted { lhs, rhs in
+                if lhs.key != rhs.key { return lhs.key > rhs.key }
+                if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+                return lhs.result.frameId < rhs.result.frameId
+            }
+            .map(\.result)
 
         if cappedWindow == results.count { return head }
         return head + results.dropFirst(cappedWindow)
     }
-
-    /// FastRAG distractor check — narrower than UnifiedSearch.looksDistractorLike.
-    /// Includes "no authoritative" (confidence-undermining language) which UnifiedSearch omits.
-    /// Omits "allergic", "draft memo", "tentative", "pending approval" which are already
-    /// handled by dedicated intent-specific penalties in the FastRAG scoring path.
-    private static func looksDistractor(_ text: String) -> Bool {
-        text.contains("no authoritative")
-            || text.contains("weekly report")
-            || text.contains("checklist")
-            || text.contains("signoff")
-            || text.contains("distractor")
-    }
-
-    // containsTentativeLaunchLanguage → RerankingHelpers (shared with UnifiedSearch)
-    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private func expansionText(
         frameId: UInt64,
