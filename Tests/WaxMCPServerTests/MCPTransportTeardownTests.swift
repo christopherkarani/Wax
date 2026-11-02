@@ -7,9 +7,6 @@ import Testing
 
 @Test(.serialized)
 func transportTeardownIsIdempotentAndExact() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-teardown-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -78,8 +75,6 @@ func teardownCloseSendsNoHandoffContent() async throws {
 
 @Test(.serialized)
 func missingBindingSkipsTeardown() async {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
     let outcome = await MCPTransportTeardown.checkpointBoundTransportSession(
         connectionKey: "missing",
         reason: .shutdown,
@@ -95,8 +90,6 @@ func missingBindingSkipsTeardown() async {
 
 @Test(.serialized)
 func harvestTimeoutDoesNotThrowIntoHTTPPath() async {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
     MCPBoundSessionRegistry.shared.remember(key: "slow", sessionID: UUID(), ownership: .transport)
     let outcome = await MCPTransportTeardown.checkpointBoundTransportSession(
         connectionKey: "slow",
