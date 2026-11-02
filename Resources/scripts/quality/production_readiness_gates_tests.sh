@@ -211,6 +211,27 @@ if ! grep -F 'opt-in-configs)' "$SCRIPT" >/dev/null; then
   echo "FAIL: gate script must expose the opt-in-configs mode" >&2
   exit 1
 fi
+
+# opt-in-configs runs WaxRepo before MiniLM and keeps going after a failed
+# step, so one regression cannot hide another; it still fails overall.
+OPT_IN_ORDER="$TMP_DIR/opt-in-order.log"
+: >"$OPT_IN_ORDER"
+run_opt_in_waxrepo() { echo waxrepo >>"$OPT_IN_ORDER"; return 1; }
+run_opt_in_minilm() { echo minilm >>"$OPT_IN_ORDER"; }
+if run_opt_in_configs >/dev/null 2>&1; then
+  echo "FAIL: opt-in-configs must fail when any step fails" >&2
+  exit 1
+fi
+if [[ "$(tr '\n' ' ' <"$OPT_IN_ORDER")" != "waxrepo minilm " ]]; then
+  echo "FAIL: opt-in-configs must run MiniLM after a failed WaxRepo step (got: $(tr '\n' ' ' <"$OPT_IN_ORDER"))" >&2
+  exit 1
+fi
+: >"$OPT_IN_ORDER"
+run_opt_in_waxrepo() { echo waxrepo >>"$OPT_IN_ORDER"; }
+if ! run_opt_in_configs >/dev/null 2>&1; then
+  echo "FAIL: opt-in-configs must pass when every step passes" >&2
+  exit 1
+fi
 if grep -E '"/tmp/wax-gate-' "$SCRIPT" >/dev/null; then
   echo "FAIL: gate logs must live in the per-run GATE_LOG_DIR, not fixed /tmp paths" >&2
   exit 1

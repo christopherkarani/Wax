@@ -83,6 +83,32 @@ fi
 grep -Fq 'gh pr create' "$WORKFLOW" \
   || fail "release workflow must open a pull request for the vendored Homebrew formula bump"
 
+# npm is already published when the formula PR opens: a token that may not open
+# PRs must warn with a manual compare link, not fail the release.
+grep -Fq 'if ! gh pr create' "$WORKFLOW" \
+  || fail "formula PR creation must be non-fatal (if ! gh pr create ...)"
+grep -Fq '::warning::Could not open the Homebrew formula PR' "$WORKFLOW" \
+  || fail "formula PR failure must emit a ::warning:: with the manual link"
+grep -Fq '/compare/main...${BRANCH}' "$WORKFLOW" \
+  || fail "formula PR fallback must point at the compare URL for the branch"
+grep -Fq 'GITHUB_STEP_SUMMARY' "$WORKFLOW" \
+  || fail "formula PR fallback must write the manual link to the step summary"
+grep -Fq 'GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || github.token }}' "$WORKFLOW" \
+  || fail "formula PR must prefer HOMEBREW_TAP_TOKEN and fall back to github.token"
+
+# A rerun checks out main fresh, so --force-with-lease has no tracking ref and
+# rejects the push of the bot-owned branch.
+if grep -Fq 'push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"' "$WORKFLOW"; then
+  fail "formula branch push must be rerun-safe (--force on the bot-owned branch)"
+fi
+grep -Fq 'git push --force origin "HEAD:refs/heads/${BRANCH}"' "$WORKFLOW" \
+  || fail "formula branch push must force-update the bot-owned branch"
+
+grep -Eq '^concurrency:' "$WORKFLOW" \
+  || fail "release workflow must declare a concurrency group"
+grep -Fq 'cancel-in-progress: false' "$WORKFLOW" \
+  || fail "release workflow must never cancel an in-progress release"
+
 ruby -e '
 require "yaml"
 wf = YAML.load_file(ARGV[0])

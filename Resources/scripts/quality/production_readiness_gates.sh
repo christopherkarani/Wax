@@ -330,31 +330,53 @@ assert_opt_in_suite_ran() {
   fi
 }
 
-# Configurations that `full` skips: real MiniLM inference (WAX_TEST_MINILM=1)
-# and the WaxRepo trait build + its executable smoke tests. Arctic stays opt-in.
-run_opt_in_configs() {
-  local minilm_log="$GATE_LOG_DIR/wax-gate-opt-in-minilm.log"
+# Configurations that `full` skips: the WaxRepo trait build + its executable
+# smoke tests, and real MiniLM inference (WAX_TEST_MINILM=1). Arctic stays
+# opt-in. Every step runs even if an earlier one fails, so one regression
+# cannot hide another; the mode fails at the end if any step failed.
+# Steps return explicitly on failure: run_opt_in_configs calls them in an
+# `||` context, where bash ignores `set -e`.
+run_opt_in_waxrepo() {
   local waxrepo_build_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo-build.log"
   local waxrepo_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo.log"
 
+  require_swiftpm_traits || return 1
+  run_and_capture "$waxrepo_build_log" \
+    swift build --traits WaxRepo --product WaxRepo || return 1
+
+  run_and_capture "$waxrepo_log" \
+    swift test --parallel --traits WaxRepo --filter 'waxTests\.waxRepo' || return 1
+  assert_opt_in_suite_ran "$waxrepo_log" "Build with --traits default,WaxRepo" || return 1
+  # Guard against a filter that silently matches nothing.
+  grep -E "Test waxRepoFullReindexReplacesExistingStore\(\) passed" "$waxrepo_log" >/dev/null \
+    || { echo "FAIL: WaxRepo executable smoke tests did not run" >&2; return 1; }
+  assert_full_pass_rate "$waxrepo_log" || return 1
+}
+
+run_opt_in_minilm() {
+  local minilm_log="$GATE_LOG_DIR/wax-gate-opt-in-minilm.log"
+
   run_and_capture "$minilm_log" env WAX_TEST_MINILM=1 \
-    swift test --parallel --filter 'WaxIntegrationTests\.(miniLMEmbedder|minilmEmbedding)'
-  assert_opt_in_suite_ran "$minilm_log" "Set WAX_TEST_MINILM=1"
+    swift test --parallel --filter 'WaxIntegrationTests\.(miniLMEmbedder|minilmEmbedding)' || return 1
+  assert_opt_in_suite_ran "$minilm_log" "Set WAX_TEST_MINILM=1" || return 1
   # Guard against a filter that silently matches nothing.
   grep -E "Test minilmEmbeddingsStayCloseToBaseline\(\) passed" "$minilm_log" >/dev/null \
     || { echo "FAIL: MiniLM quality suite did not run" >&2; return 1; }
-  assert_full_pass_rate "$minilm_log"
+  assert_full_pass_rate "$minilm_log" || return 1
+}
 
-  require_swiftpm_traits
-  run_and_capture "$waxrepo_build_log" \
-    swift build --traits WaxRepo --product WaxRepo
-
-  run_and_capture "$waxrepo_log" \
-    swift test --parallel --traits WaxRepo --filter 'waxTests\.waxRepo'
-  assert_opt_in_suite_ran "$waxrepo_log" "Build with --traits default,WaxRepo"
-  grep -E "Test waxRepoFullReindexReplacesExistingStore\(\) passed" "$waxrepo_log" >/dev/null \
-    || { echo "FAIL: WaxRepo executable smoke tests did not run" >&2; return 1; }
-  assert_full_pass_rate "$waxrepo_log"
+run_opt_in_configs() {
+  local step failed=()
+  for step in run_opt_in_waxrepo run_opt_in_minilm; do
+    if ! "$step"; then
+      echo "OPT_IN_STEP_FAILED: $step" >&2
+      failed+=("$step")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: opt-in-configs steps failed: ${failed[*]}" >&2
+    return 1
+  fi
 }
 
 main() {
