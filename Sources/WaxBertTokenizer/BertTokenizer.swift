@@ -491,7 +491,14 @@ final class BasicTokenizer: @unchecked Sendable {
             var currentFragment = ""
 
             for character in tokenText.lowercased() {
-                if character.isLetter || character.isNumber || character == "°" {
+                if Self.isCJKIdeograph(character) {
+                    // BERT `_tokenize_chinese_chars`: every CJK ideograph is its own word.
+                    if !currentFragment.isEmpty {
+                        tokenFragments.append(currentFragment)
+                        currentFragment = ""
+                    }
+                    tokenFragments.append(String(character))
+                } else if character.isLetter || character.isNumber || character == "°" {
                     currentFragment.append(character)
                 } else if !currentFragment.isEmpty {
                     tokenFragments.append(currentFragment)
@@ -511,67 +518,71 @@ final class BasicTokenizer: @unchecked Sendable {
 
         return tokens
     }
+
+    /// Matches BERT's `_is_chinese_char`: the CJK Unified Ideographs blocks only.
+    /// Hiragana, Katakana and Hangul are not included and stay part of the surrounding word.
+    static func isCJKIdeograph(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x4E00...0x9FFF, 0x3400...0x4DBF, 0x20000...0x2A6DF, 0x2A700...0x2B73F,
+             0x2B740...0x2B81F, 0x2B820...0x2CEAF, 0xF900...0xFAFF, 0x2F800...0x2FA1F:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 final class WordpieceTokenizer: @unchecked Sendable {
     private let unkToken = "[UNK]"
     private let maxInputCharsPerWord = 100
     private let vocab: [String: Int]
+    /// Longest vocabulary piece in characters (ignoring the `##` prefix). Greedy matching
+    /// never needs to try a longer candidate, which bounds each start offset's work.
+    private let maxPieceLength: Int
 
     init(vocab: [String: Int]) {
         self.vocab = vocab
+        self.maxPieceLength = vocab.keys.reduce(1) { longest, piece in
+            max(longest, piece.hasPrefix("##") ? piece.count - 2 : piece.count)
+        }
     }
 
     /// `word`: A single token.
     /// Warning: this differs from the `pytorch-transformers` implementation.
     /// This should have already been passed through `BasicTokenizer`.
+    ///
+    /// Greedy longest-match-first WordPiece. Words longer than `maxInputCharsPerWord` map to
+    /// `[UNK]`, and candidates are capped at `maxPieceLength`, so the work per word is
+    /// O(n * maxPieceLength) dictionary probes instead of O(n^2) probes of O(n) substrings.
     func tokenize(word: String) -> [String] {
-        if word.count > maxInputCharsPerWord {
+        let characters = Array(word)
+        if characters.count > maxInputCharsPerWord {
             return [unkToken]
         }
 
-        var outputTokens: [String] = []
-        var isBad = false
-        var start = 0
         var subTokens: [String] = []
-
-        while start < word.count {
-            var end = word.count
-            var currentSubstring: String?
-
+        var start = 0
+        while start < characters.count {
+            var end = min(characters.count, start + maxPieceLength)
+            var match: String?
             while start < end {
-                guard var substring = Utils.substr(word, start..<end) else {
-                    end -= 1
-                    continue
-                }
-                if start > 0 {
-                    substring = "##\(substring)"
-                }
-
-                if vocab[substring] != nil {
-                    currentSubstring = substring
+                let piece = String(characters[start..<end])
+                let candidate = start > 0 ? "##" + piece : piece
+                if vocab[candidate] != nil {
+                    match = candidate
                     break
                 }
-
                 end -= 1
             }
 
-            guard let substring = currentSubstring else {
-                isBad = true
-                break
+            guard let match else {
+                return [unkToken]
             }
-
-            subTokens.append(substring)
+            subTokens.append(match)
             start = end
         }
-
-        if isBad {
-            outputTokens.append(unkToken)
-        } else {
-            outputTokens.append(contentsOf: subTokens)
-        }
-
-        return outputTokens
+        return subTokens
     }
 }
 
@@ -606,17 +617,6 @@ enum Utils {
     /// Fake func that can throw.
     static func fakeThrowable<T>(_ input: T) throws -> T {
         return input
-    }
-
-    /// Substring
-    static func substr(_ s: String, _ r: Range<Int>) -> String? {
-        let stringCount = s.count
-        if stringCount < r.upperBound || stringCount < r.lowerBound {
-            return nil
-        }
-        let startIndex = s.index(s.startIndex, offsetBy: r.lowerBound)
-        let endIndex = s.index(s.startIndex, offsetBy: r.upperBound)
-        return String(s[startIndex..<endIndex])
     }
 
     /// Invert a (k, v) dictionary
