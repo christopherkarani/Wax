@@ -971,6 +971,14 @@ private func smokeCheckFailureContext(_ output: MCPSmokeCheckOutput) -> String {
 }
 
 enum ProcessRunner {
+    /// Per-stream cap on captured output. Bytes past it are read and
+    /// discarded, so the child never blocks on a full pipe.
+    static let maxCapturedBytesPerStream = 4 * 1024 * 1024
+
+    static func truncationMarker(limit: Int) -> String {
+        "\n[wax-cli: output truncated after \(limit) bytes]\n"
+    }
+
     @discardableResult
     static func run(
         command: String,
@@ -1027,7 +1035,11 @@ enum ProcessRunner {
         }
 
         try process.run()
-        let drain = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe)
+        let drain = ProcessPipeDrain(
+            stdout: stdoutPipe,
+            stderr: stderrPipe,
+            maxBytesPerStream: maxCapturedBytesPerStream
+        )
 
         if let input, let stdinPipe {
             if let data = input.data(using: .utf8) {
@@ -1036,31 +1048,54 @@ enum ProcessRunner {
             try? stdinPipe.fileHandleForWriting.close()
         }
 
+        let captured: ProcessPipeDrain.Output
         if let timeoutSeconds {
             let deadline = Date().addingTimeInterval(timeoutSeconds)
             while process.isRunning, Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
             if process.isRunning {
-                // Bound the hang: SIGTERM, then a short grace wait. A child
-                // that ignores SIGTERM may briefly outlive this call, but the
-                // caller never blocks past timeout + grace.
-                process.terminate()
-                let grace = Date().addingTimeInterval(2.0)
-                while process.isRunning, Date() < grace {
-                    Thread.sleep(forTimeInterval: 0.02)
-                }
+                stop(process)
+                // Release the readers even if a grandchild still holds a pipe.
+                _ = drain.wait(until: .now() + pipeDrainGraceSeconds)
                 throw CLIError("'\(command)' timed out after \(timeoutSeconds) seconds")
             }
+            // The child exited; a background grandchild may still hold the pipes.
+            let remaining = max(0, deadline.timeIntervalSinceNow) + pipeDrainGraceSeconds
+            captured = drain.wait(until: .now() + remaining)
         } else {
             process.waitUntilExit()
+            captured = drain.wait()
         }
 
-        let captured = drain.wait()
-        let stdout = String(data: captured.stdout, encoding: .utf8) ?? ""
-        let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
+        return CapturedProcessOutput(
+            status: process.terminationStatus,
+            stdout: decodeCaptured(captured.stdout, truncated: captured.stdoutTruncated),
+            stderr: decodeCaptured(captured.stderr, truncated: captured.stderrTruncated)
+        )
+    }
 
-        return CapturedProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+    private static let terminateGraceSeconds: TimeInterval = 2
+    private static let pipeDrainGraceSeconds: TimeInterval = 1
+
+    /// SIGTERM, a grace period, then SIGKILL, so a child that ignores
+    /// SIGTERM cannot outlive the timeout. Reaps the child before returning.
+    private static func stop(_ process: Process) {
+        process.terminate()
+        let grace = Date().addingTimeInterval(terminateGraceSeconds)
+        while process.isRunning, Date() < grace {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+    }
+
+    private static func decodeCaptured(_ data: Data, truncated: Bool) -> String {
+        guard truncated else { return String(data: data, encoding: .utf8) ?? "" }
+        // The cut can split a UTF-8 sequence; decode what arrived.
+        return String(decoding: data, as: UTF8.self) + truncationMarker(limit: maxCapturedBytesPerStream)
     }
 
     fileprivate static func runMCPSmokeCheck(
