@@ -5,7 +5,7 @@ import Testing
 @testable import Wax
 @testable import wax_mcp
 
-private func initializeRequest(sessionID: String? = nil) throws -> HTTPRequest {
+private func initializeRequest(sessionID: String? = nil, authorization: String? = nil) throws -> HTTPRequest {
     let body = try JSONSerialization.data(withJSONObject: [
         "jsonrpc": "2.0",
         "id": 1,
@@ -24,7 +24,155 @@ private func initializeRequest(sessionID: String? = nil) throws -> HTTPRequest {
     if let sessionID {
         headers[HTTPHeaderName.sessionID] = sessionID
     }
+    if let authorization {
+        headers["Authorization"] = authorization
+    }
     return HTTPRequest(method: "POST", headers: headers, body: body, path: "/mcp")
+}
+
+private func openStreamRequest(sessionID: String) -> HTTPRequest {
+    HTTPRequest(
+        method: "GET",
+        headers: [
+            "Accept": "text/event-stream",
+            "Host": "127.0.0.1:3000",
+            HTTPHeaderName.sessionID: sessionID,
+        ],
+        body: nil,
+        path: "/mcp"
+    )
+}
+
+/// Teardown that records how often each session was torn down and can
+/// be held open to model a slow broker harvest.
+private final class SlowTeardownProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    let delay: Duration
+
+    init(delay: Duration) {
+        self.delay = delay
+    }
+
+    func record(_ key: String) async {
+        count(key)
+        try? await Task.sleep(for: delay)
+    }
+
+    private func count(_ key: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        counts[key, default: 0] += 1
+    }
+
+    func snapshot() -> [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts
+    }
+}
+
+@Test
+func loopbackServerWithConfiguredTokenRequiresIt() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(host: "127.0.0.1", authToken: "loopback-secret"),
+        serverFactory: { _, _ in makeTestServer() }
+    )
+    let anonymous = await app.handleHTTPRequest(try initializeRequest())
+    #expect(anonymous.statusCode == 401)
+    let wrong = await app.handleHTTPRequest(try initializeRequest(authorization: "Bearer nope"))
+    #expect(wrong.statusCode == 401)
+    let authorized = await app.handleHTTPRequest(try initializeRequest(authorization: "Bearer loopback-secret"))
+    #expect(authorized.statusCode == 200)
+    #expect(await app.liveSessionIDs().count == 1)
+    await app.stop()
+}
+
+@Test
+func loopbackServerWithoutTokenStaysOpenToLocalClients() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(host: "127.0.0.1"),
+        serverFactory: { _, _ in makeTestServer() }
+    )
+    let anonymous = await app.handleHTTPRequest(try initializeRequest())
+    #expect(anonymous.statusCode == 200)
+    await app.stop()
+}
+
+@Test
+func sessionCapDoesNotWaitForTheEvictedSessionsTeardown() async throws {
+    let probe = SlowTeardownProbe(delay: .seconds(3))
+    let app = MCPHTTPApplication(
+        configuration: .init(maxSessions: 1, shutdownDeadline: .milliseconds(100)),
+        onTransportTeardown: { key, _ in
+            await probe.record(key)
+            return .skipped("test")
+        },
+        serverFactory: { _, _ in makeTestServer() }
+    )
+    let first = await app.handleHTTPRequest(try initializeRequest())
+    let firstID = try #require(first.headers[HTTPHeaderName.sessionID])
+
+    let clock = ContinuousClock()
+    let started = clock.now
+    let second = await app.handleHTTPRequest(try initializeRequest())
+    #expect(second.statusCode == 200)
+    #expect(clock.now - started < .seconds(1), "a new session must not wait on the victim's teardown")
+    #expect(!(await app.liveSessionIDs().contains(firstID)))
+    await app.stop()
+}
+
+@Test
+func concurrentCreatorsAtCapEvictEachVictimOnce() async throws {
+    let probe = SlowTeardownProbe(delay: .milliseconds(300))
+    let app = MCPHTTPApplication(
+        configuration: .init(maxSessions: 2, shutdownDeadline: .milliseconds(100)),
+        onTransportTeardown: { key, _ in
+            await probe.record(key)
+            return .skipped("test")
+        },
+        serverFactory: { _, _ in makeTestServer() }
+    )
+    for _ in 0..<2 {
+        _ = await app.handleHTTPRequest(try initializeRequest())
+    }
+    let requests = try (0..<4).map { _ in try initializeRequest() }
+    await withTaskGroup(of: Void.self) { group in
+        for request in requests {
+            group.addTask { _ = await app.handleHTTPRequest(request) }
+        }
+    }
+    #expect(await app.liveSessionIDs().count <= 2)
+    try await Task.sleep(for: .milliseconds(500))
+    let counts = probe.snapshot()
+    #expect(counts.values.allSatisfy { $0 == 1 }, "victims torn down more than once: \(counts)")
+    await app.stop()
+}
+
+@Test
+func sessionCapPrefersIdleSessionsOverOpenStreams() async throws {
+    let app = MCPHTTPApplication(
+        configuration: .init(maxSessions: 2, shutdownDeadline: .milliseconds(100)),
+        serverFactory: { _, _ in makeTestServer() }
+    )
+    let streaming = try #require(
+        await app.handleHTTPRequest(try initializeRequest()).headers[HTTPHeaderName.sessionID]
+    )
+    let stream = await app.handleHTTPRequest(openStreamRequest(sessionID: streaming))
+    guard case .stream = stream else {
+        Issue.record("GET did not open an SSE stream: \(stream.statusCode)")
+        return
+    }
+    let idle = try #require(
+        await app.handleHTTPRequest(try initializeRequest()).headers[HTTPHeaderName.sessionID]
+    )
+    _ = await app.handleHTTPRequest(try initializeRequest())
+
+    let live = await app.liveSessionIDs()
+    #expect(live.contains(streaming), "the least recently used session holds an open stream")
+    #expect(!live.contains(idle))
+    withExtendedLifetime(stream) {}
+    await app.stop()
 }
 
 private func toolsListRequest(sessionID: String) -> HTTPRequest {
@@ -99,6 +247,10 @@ func httpSessionCapEvictsLeastRecentlyUsedSession() async throws {
     #expect(!live.contains(created[0]))
     #expect(live.contains(created[1]))
     #expect(live.contains(created[2]))
+    // Eviction teardown runs detached from the creating request.
+    for _ in 0..<100 where probe.snapshot().reasons[created[0]] == nil {
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(probe.snapshot().reasons[created[0]] == .capacityEviction)
     await app.stop()
 }

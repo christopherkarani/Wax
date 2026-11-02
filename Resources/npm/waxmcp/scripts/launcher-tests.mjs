@@ -813,6 +813,68 @@ test("vector-health performs the MCP initialize and session handshake", async ()
   }
 });
 
+test("vector-health sends WAX_MCP_HTTP_AUTH_TOKEN on every request", async () => {
+  const token = "probe-secret";
+  const authorizations = [];
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      authorizations.push(request.headers.authorization);
+      if (request.headers.authorization !== `Bearer ${token}`) {
+        response.statusCode = 401;
+        response.end();
+        return;
+      }
+      if (request.method === "DELETE") {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const message = JSON.parse(body);
+      response.setHeader("MCP-Session-Id", "auth-session");
+      if (message.method === "notifications/initialized") {
+        response.statusCode = 202;
+        response.end();
+        return;
+      }
+      response.setHeader("Content-Type", "application/json");
+      if (message.method === "initialize") {
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+        return;
+      }
+      response.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              vectorSearchEnabled: true,
+              queryEmbeddingAvailable: true,
+              embedder: { model: "minilm" },
+            }),
+          }],
+        },
+      }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const result = await runAsync(["vector-health"], {
+      ...process.env,
+      WAX_MCP_HTTP_ENDPOINT: `http://127.0.0.1:${address.port}/mcp`,
+      WAX_MCP_HTTP_AUTH_TOKEN: token,
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(authorizations.length, 4);
+    assert.ok(authorizations.every(value => value === `Bearer ${token}`), JSON.stringify(authorizations));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("vector-health closes the MCP session when stats cannot be parsed", async () => {
   const sessionID = "test-mcp-unparsed-session";
   let deleted = false;

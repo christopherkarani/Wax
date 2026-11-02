@@ -15,6 +15,7 @@
  *   WAX_CLI_BIN            Path to the wax-cli binary
  *   WAX_MCP_HTTP_PORT      HTTP port assumed by vector-health (default 3000)
  *   WAX_MCP_HTTP_ENDPOINT  Full endpoint URL assumed by vector-health
+ *   WAX_MCP_HTTP_AUTH_TOKEN Bearer token vector-health sends, if the server has one
  */
 
 const { spawnSync, spawn } = require("node:child_process");
@@ -801,6 +802,18 @@ if (forwardedArgs[0] === "vector-health") {
 
   console.log(`Checking vector search health at ${endpoint}...`);
 
+  // A server started with a token requires it on every request. Pass it as
+  // curl config on stdin so it never appears in the process list.
+  const authToken = (process.env.WAX_MCP_HTTP_AUTH_TOKEN || "").trim();
+  const authConfig = authToken
+    ? `header = "Authorization: Bearer ${authToken.replace(/[\\"]/g, "\\$&")}"\n`
+    : null;
+
+  function curl(args) {
+    if (!authConfig) return spawnSync("curl", args, { encoding: "utf-8" });
+    return spawnSync("curl", ["-K", "-", ...args], { encoding: "utf-8", input: authConfig });
+  }
+
   function post(payload, sessionId = null, includeHeaders = false) {
     const args = [
       "-sS", "--max-time", "5", "-X", "POST", endpoint,
@@ -810,14 +823,14 @@ if (forwardedArgs[0] === "vector-health") {
     if (sessionId) args.push("-H", `MCP-Session-Id: ${sessionId}`);
     if (includeHeaders) args.push("-D", "-");
     args.push("-d", JSON.stringify(payload));
-    return spawnSync("curl", args, { encoding: "utf-8" });
+    return curl(args);
   }
 
   function closeSession(sessionId) {
-    return spawnSync("curl", [
+    return curl([
       "-sS", "--max-time", "5", "-X", "DELETE", endpoint,
       "-H", `MCP-Session-Id: ${sessionId}`,
-    ], { encoding: "utf-8" });
+    ]);
   }
 
   const initialized = post({

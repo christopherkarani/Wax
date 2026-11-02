@@ -171,6 +171,7 @@ point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 | Text-only mode | `--no-embedder` |
 | Binary override | `WAX_MCP_BIN` / `WAX_CLI_BIN` environment variables |
 | Endpoint override | `WAX_MCP_HTTP_PORT` / `WAX_MCP_HTTP_ENDPOINT` (used by `vector-health`) |
+| HTTP auth token | `--http-auth-token <token>` or `WAX_MCP_HTTP_AUTH_TOKEN`. Once set, every HTTP request must send `Authorization: Bearer <token>`, loopback included; required for non-loopback binds. `vector-health` and the Hermes plugin read `WAX_MCP_HTTP_AUTH_TOKEN` |
 
 Vector search needs both binaries built with embedder traits; the bundled npm
 artifacts already are. Without an embedder, search runs text-only.

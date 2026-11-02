@@ -64,7 +64,7 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
     var httpMaxBodyBytes = 1_048_576
 
-    @Option(name: .customLong("http-auth-token"), help: "Bearer token required for non-loopback HTTP binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    @Option(name: .customLong("http-auth-token"), help: "Bearer token every HTTP request must send once set, loopback included; required for non-loopback binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
     var httpAuthToken: String?
 
     mutating func run() throws {
