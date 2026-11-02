@@ -141,9 +141,13 @@ framework integration.
 them in this order:
 
 1. `$WAX_MCP_BIN` or `$WAX_CLI_BIN`
-2. Bundled `dist/darwin-arm64/` binaries
-3. Same-named binary on `PATH`
-4. `./.build/debug/<binary>` in the current working directory
+2. The installed runtime under `$WAX_MCP_INSTALL_ROOT` (default `~/.local/share/waxmcp`)
+3. Bundled `dist/darwin-arm64/` binaries
+4. Same-named binary on `PATH`
+
+The launcher never runs `./.build/debug/<binary>` from the current directory.
+To use a source build, run `waxmcp install --build` from the Wax checkout or
+point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 
 | Command | Purpose |
 |---|---|

@@ -1038,3 +1038,58 @@ test("install --dry-run without --wire-hooks is rejected before staging", () => 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+function envWithoutWaxBinaries(extra) {
+  const env = { ...process.env, PATH: "/usr/bin:/bin", ...extra };
+  delete env.WAX_MCP_BIN;
+  delete env.WAX_CLI_BIN;
+  return env;
+}
+
+test("launcher never runs ./.build/debug binaries from the working directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-cwd-build-"));
+  try {
+    const marker = path.join(root, "executed");
+    const checkout = path.join(root, "checkout");
+    const debugDir = path.join(checkout, ".build", "debug");
+    fs.mkdirSync(debugDir, { recursive: true });
+    makeExecutable(path.join(debugDir, "wax-mcp"), `#!/bin/sh\necho ran > '${marker}'\n`);
+
+    const result = spawnSync(process.execPath, [launcher, "--transport", "stdio"], {
+      cwd: checkout,
+      env: envWithoutWaxBinaries({ WAX_MCP_INSTALL_ROOT: path.join(root, "installed") }),
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.existsSync(marker), false, "cwd .build binary must not run");
+    assert.doesNotMatch(result.stderr, /\.build\/debug/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("install without --build ignores ./.build/debug in the working directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-install-cwd-build-"));
+  try {
+    const checkout = path.join(root, "checkout");
+    fs.mkdirSync(path.join(checkout, ".build"), { recursive: true });
+    makeRuntimeSource(
+      path.join(checkout, ".build", "debug"),
+      "#!/bin/sh\necho untrusted\n",
+      "#!/bin/sh\necho untrusted\n"
+    );
+    const installRoot = path.join(root, "installed");
+
+    const result = spawnSync(process.execPath, [launcher, "install"], {
+      cwd: checkout,
+      env: envWithoutWaxBinaries({ WAX_MCP_INSTALL_ROOT: installRoot }),
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /both wax-mcp and wax-cli are required/);
+    const platformKey = `${os.platform()}-${os.arch()}`;
+    assert.equal(fs.existsSync(path.join(installRoot, "runtime", platformKey, "wax-mcp")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -98,7 +98,9 @@ function findBinary(name) {
     candidates.push(bundled);
   }
   candidates.push(name);
-  candidates.push(path.join(process.cwd(), ".build", "debug", name));
+  // Never fall back to ./.build in the caller's working directory: running
+  // `npx waxmcp` inside an untrusted checkout must not execute its binaries.
+  // Source builds go through `waxmcp install --build` or WAX_MCP_BIN.
   return candidates;
 }
 
@@ -111,7 +113,6 @@ function firstInstallSource(name, builtFromSource) {
   if (process.env[envKey]) candidates.push(process.env[envKey]);
   const bundled = resolveBundledBinary(name);
   if (bundled) candidates.push(bundled);
-  candidates.push(path.join(process.cwd(), ".build", "debug", name));
   return candidates.find(candidate => path.isAbsolute(candidate) && isExecutable(candidate)) || null;
 }
 
@@ -725,7 +726,6 @@ function runBinary(name, args) {
       : "  1. $WAX_MCP_BIN (not set)",
     `  2. Bundled binary at dist/darwin-${os.arch()}/${name}`,
     `  3. '${name}' in PATH`,
-    `  4. ${path.join(process.cwd(), ".build", "debug", name)}`,
   ];
   console.error(`
 ERROR: No valid ${name} binary found.
@@ -735,7 +735,7 @@ ${checkedLocations.join("\n")}
 
 Fix options:
   Install:  npm install -g waxmcp
-  Build:    swift build --product ${name} --traits MCPServer
+  Build:    waxmcp install --build (from a Wax source checkout)
   Override: export WAX_MCP_BIN=/path/to/${name}
 `);
   process.exit(1);
