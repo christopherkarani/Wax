@@ -129,7 +129,7 @@ package enum AgentBrokerClient {
                     timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
                 )
             }
-            throw BrokerClientError(
+            throw BrokerUnresponsiveError(
                 "Broker socket is live at \(configuration.socketPath) but did not answer (socket_live=true answered=false committed=false). Not starting a second daemon. Restart wax-mcp or `launchctl kickstart -k gui/$(id -u)/ai.wax.mcp-http`, then session_open with conversation_id. Do not invent a session_id."
             )
         }
@@ -589,6 +589,18 @@ package enum AgentBrokerClient {
         }
         return String(data: data, encoding: .utf8)
     }
+}
+
+/// The broker socket accepts connections but never answers. Typed so the
+/// MCP layer maps it to `broker_unresponsive` without parsing messages.
+package struct BrokerUnresponsiveError: LocalizedError, Sendable {
+    package let message: String
+
+    package init(_ message: String) {
+        self.message = message
+    }
+
+    package var errorDescription: String? { message }
 }
 
 private struct BrokerClientError: LocalizedError {

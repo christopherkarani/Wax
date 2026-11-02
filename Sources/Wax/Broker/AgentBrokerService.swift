@@ -178,8 +178,9 @@ package actor AgentBrokerService {
             )
         } catch {
             let message = error.localizedDescription
+            let payload = (error as? BrokerValidationError)?.brokerPayload
             return await commandMutex.withLock {
-                AgentBrokerResponse.failure(id: request.id, message: message)
+                AgentBrokerResponse.failure(id: request.id, payload: payload, message: message)
             }
         }
 
@@ -342,6 +343,12 @@ package actor AgentBrokerService {
             return AgentBrokerResponse.failure(
                 id: request.id,
                 payload: error.brokerPayload(),
+                message: error.localizedDescription
+            )
+        } catch let error as BrokerValidationError {
+            return AgentBrokerResponse.failure(
+                id: request.id,
+                payload: error.brokerPayload,
                 message: error.localizedDescription
             )
         } catch {
