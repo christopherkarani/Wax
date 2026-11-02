@@ -49,6 +49,12 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func hexTokenTailIsNotAlsoExtractedAsPascalCase() {
+        #expect(MemorySemantics.extractIdentifiers("HIT-SCOPE-AC1F4B6A") == ["ac1f4b6a"])
+        #expect(MemorySemantics.extractIdentifiers("UniqueSessionLane").contains("uniquesessionlane"))
+    }
+
+    @Test
     func oneSharedPascalCaseIdentifierDoesNotMatchEvenAtJaccardOne() {
         #expect(MemorySemantics.extractIdentifiers("AgentBroker exact").contains("agentbroker"))
         #expect(MemorySemantics.identifiersMatch("AgentBroker exact", "AgentBroker prefix") == false)
@@ -548,12 +554,7 @@ struct UniqueRecallTests {
         let sessionText = "\(token) session mention that should be recorded UniqueSessionLane."
         let durableText = "\(token) durable fact that shares no session store UniqueDurableLane."
         #expect(MemorySemantics.similarity(lhs: sessionText, rhs: durableText) < 0.55)
-        // Known product bug, hidden until the external swift-testing package was dropped:
-        // the PascalCase identifier regex also matches the hex tail "C1F4B6A", so one
-        // shared token counts twice (shared = 2, jaccard = 0.5) and identifiersMatch is true.
-        withKnownIssue("extractIdentifiers double-counts hex tokens as PascalCase") {
-            #expect(MemorySemantics.identifiersMatch(sessionText, durableText) == false)
-        }
+        #expect(MemorySemantics.identifiersMatch(sessionText, durableText) == false)
         let session = uniqueHit(
             frameID: 1,
             score: 0.40,
