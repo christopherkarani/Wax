@@ -59,7 +59,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 
 ### Memory.Stats
 
-`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`, `framesWithoutVectors` (`0` when vector coverage cannot be read; `embeddingStatus` is then `.degraded` with a "vector coverage unknown" reason).
+`public struct Stats: Sendable, Equatable` with `frameCount`, `pendingFrames`, `vectorSearchEnabled`, `queryEmbedderConfigured`, `queryEmbeddingCircuitOpen`, `embedderIdentity: EmbeddingIdentity?`, `embeddingStatus: EmbeddingStatus`, `framesWithoutVectors` (`0` when vector coverage cannot be read; `embeddingStatus` is then `.degraded` with a "vector coverage unknown" reason), `walReplayTruncationCount` (1 when open dropped a torn tail of uncommitted writes after a crash).
 
 `queryEmbedderConfigured` is derived: `true` only for `active` and `degraded`.
 
