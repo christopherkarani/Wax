@@ -70,23 +70,3 @@ func walAppendBatchWrapsAcrossBoundary() throws {
         #expect(records.last?.record.sequence == sequences.last)
     }
 }
-
-@Test
-func mmapWritableRegionPersistsBytes() throws {
-    try TempFiles.withTempFile { url in
-        let file = try FDFile.create(at: url)
-        defer { try? file.close() }
-
-        let payload = Data("streaming-write".utf8)
-        let targetOffset: UInt64 = 4096 // align away from start to exercise offset math
-        let region = try file.mapWritable(length: payload.count, at: targetOffset)
-        defer { region.close() }
-
-        // Write via mapped buffer
-        region.buffer.copyBytes(from: payload)
-
-        // Read back via FDFile APIs
-        let readBack = try file.readExactly(length: payload.count, at: targetOffset)
-        #expect(readBack == payload)
-    }
-}

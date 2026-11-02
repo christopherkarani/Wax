@@ -6,6 +6,9 @@ package struct WaxOptions: Sendable {
     package var walProactiveCommitMaxWalSizeBytes: UInt64?
     package var walProactiveCommitMinPendingBytes: UInt64
     package var walReplayStateSnapshotEnabled: Bool
+    /// How long opening or creating a store waits for another process's file lock before
+    /// throwing `WaxError.lockUnavailable`. Defaults to `FileLock.defaultAcquireTimeout`;
+    /// `nil` waits indefinitely.
     package var lockWaitTimeout: Duration?
     package var ioQueueLabel: String
     package var ioQueueQosClass: DispatchQoS.QoSClass
@@ -30,7 +33,7 @@ package struct WaxOptions: Sendable {
         walProactiveCommitMaxWalSizeBytes: UInt64? = 4 * 1024 * 1024,
         walProactiveCommitMinPendingBytes: UInt64 = 128 * 1024,
         walReplayStateSnapshotEnabled: Bool = false,
-        lockWaitTimeout: Duration? = nil,
+        lockWaitTimeout: Duration? = FileLock.defaultAcquireTimeout,
         ioQueueLabel: String = "com.wax.io",
         ioQueueQos: DispatchQoS = .userInitiated
     ) {

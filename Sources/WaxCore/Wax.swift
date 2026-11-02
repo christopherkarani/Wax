@@ -487,7 +487,14 @@ package actor Wax {
             let file: FDFile
             do {
                 file = try FDFile.open(at: url)
-                try file.truncate(to: 0)
+                // Create-new semantics: callers check for the file first, but another
+                // process can create it in between. Never clobber a store with bytes;
+                // only an empty file (e.g. left by a crash before the first write) is reused.
+                let existingSize = try file.size()
+                guard existingSize == 0 else {
+                    try? file.close()
+                    throw WaxError.io("refusing to create \(url.path): file already exists (\(existingSize) bytes)")
+                }
             } catch {
                 try? lock.release()
                 throw error
@@ -538,6 +545,7 @@ package actor Wax {
             let pageBBytes = try headerB.encodeWithChecksum()
             try file.writeAll(pageBBytes, at: Constants.headerPageSize)
             try file.fsync()
+            try FDFile.fsyncParentDirectory(of: url)
 
             let wal = WALRingWriter(
                 file: file,
@@ -1092,25 +1100,17 @@ package actor Wax {
             currentOffset += UInt64(frame.storedBytes.count)
         }
 
-        // Single mapped write for payloads
-        let payloadLength = totalPayloadSize
-        if payloadLength > 0 {
+        // Single checked pwrite for all payloads. Writing through an mmap of the file
+        // would turn ENOSPC or a concurrent truncation into SIGBUS instead of an error.
+        if totalPayloadSize > 0 {
+            var payloadBytes = Data()
+            payloadBytes.reserveCapacity(totalPayloadSize)
+            for storedBytes in storedBytesArray {
+                payloadBytes.append(storedBytes)
+            }
+            let batchPayload = payloadBytes
             try await io.run {
-                try file.ensureSize(atLeast: startOffset + UInt64(payloadLength))
-                let region = try file.mapWritable(length: payloadLength, at: startOffset)
-                defer { region.close() }
-
-                var cursor = 0
-                guard let base = region.buffer.baseAddress else {
-                    throw WaxError.io("mapped region baseAddress is nil")
-                }
-                for storedBytes in storedBytesArray {
-                    storedBytes.withUnsafeBytes { src in
-                        guard let srcBase = src.baseAddress else { return }
-                        base.advanced(by: cursor).copyMemory(from: srcBase, byteCount: storedBytes.count)
-                    }
-                    cursor += storedBytes.count
-                }
+                try file.writeAll(batchPayload, at: startOffset)
             }
         }
 
@@ -2835,6 +2835,15 @@ package actor Wax {
             guard toc.memoryBinding != binding else { return }
             toc.memoryBinding = binding
             dirty = true
+        }
+    }
+
+    /// Injects `pread`/`pwrite` faults into the store file. Tests only.
+    func installFileFaultPlanForTesting(_ plan: FDFileFaultPlan?) {
+        if let plan {
+            file.installFaultPlan(plan)
+        } else {
+            file.clearFaultPlan()
         }
     }
 

@@ -137,7 +137,8 @@ package final class FDFile {
 
     private let fd: Int32
     private let url: URL
-    package private(set) var isClosed = false
+    /// Guarded by `closeLock`; read it through `isClosed`.
+    private var closed = false
     private let closeLock = NSLock()
     private var faultInjectionState: FaultInjectionState?
 
@@ -147,9 +148,13 @@ package final class FDFile {
     }
 
     deinit {
-        if !isClosed {
+        if !closed {
             _ = posixClose(fd)
         }
+    }
+
+    package var isClosed: Bool {
+        closeLock.withLock { closed }
     }
 
     // MARK: - Factory
@@ -307,67 +312,31 @@ package final class FDFile {
         }
     }
 
-    /// Ensure the file is at least the requested size, extending with zeros if needed.
-    package func ensureSize(atLeast size: UInt64) throws {
-        let current = try self.size()
-        if current < size {
-            try truncate(to: size)
-        }
-    }
-
-    /// Map a writable region of the file at the given offset and length.
-    /// The returned region must be closed to unmap the memory.
-    func mapWritable(length: Int, at offset: UInt64) throws -> MappedWritableRegion {
-        try ensureOpen()
-        guard length > 0 else {
-            throw WaxError.io("mapWritable length must be > 0")
-        }
-        let endOffset = offset + UInt64(length)
-        try ensureSize(atLeast: endOffset)
-
-        let pageSize = UInt64(getpagesize())
-        let alignedOffset = (offset / pageSize) * pageSize
-        let offsetDelta = Int(offset - alignedOffset)
-        let mapLength = length + offsetDelta
-
-        guard mapLength > 0 else {
-            throw WaxError.io("mapWritable mapLength invalid: \(mapLength)")
-        }
-        let ptr = mmap(
-            nil,
-            mapLength,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED,
-            fd,
-            off_t(alignedOffset)
-        )
-        if ptr == MAP_FAILED {
-            throw WaxError.io("mmap failed: \(stringError())")
-        }
-
-        guard let base = ptr else {
-            munmap(ptr, mapLength)
-            throw WaxError.io("mmap returned nil pointer")
-        }
-        let advanced = base.advanced(by: offsetDelta)
-        return MappedWritableRegion(
-            basePointer: base,
-            mappedLength: mapLength,
-            bufferPointer: UnsafeMutableRawBufferPointer(start: advanced, count: length)
-        )
-    }
-
     package func close() throws {
         try closeLock.withLock {
-            if isClosed { return }
+            if closed { return }
             let result = posixClose(fd)
-            if result == 0 { isClosed = true; return }
-            if errno == EINTR { isClosed = true; return }
+            if result == 0 { closed = true; return }
+            if errno == EINTR { closed = true; return }
             throw WaxError.io("close failed: \(Self.stringError())")
         }
     }
 
     package var fileDescriptor: Int32 { fd }
+
+    /// Flush the directory entry of `url` so a newly created or renamed file survives a
+    /// crash; `fsync` on the file itself does not persist its name.
+    package static func fsyncParentDirectory(of url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        let descriptor = try openFile(at: directory, flags: O_RDONLY | O_CLOEXEC, mode: nil)
+        defer { _ = posixClose(descriptor) }
+        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+        if fcntl(descriptor, F_FULLFSYNC, 0) == 0 { return }
+        #endif
+        guard posixFsync(descriptor) == 0 else {
+            throw WaxError.io("fsync failed for directory \(directory.path): \(stringError())")
+        }
+    }
 
     // MARK: - Helpers
 
@@ -451,37 +420,3 @@ package final class FDFile {
 }
 
 extension FDFile: @unchecked Sendable {}
-
-/// RAII wrapper around a writable mmap region.
-final class MappedWritableRegion: @unchecked Sendable {
-    private let basePointer: UnsafeMutableRawPointer
-    private let mappedLength: Int
-    package let buffer: UnsafeMutableRawBufferPointer
-    private var isClosed = false
-    private let closeLock = NSLock()
-
-    init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeMutableRawBufferPointer) {
-        self.basePointer = basePointer
-        self.mappedLength = mappedLength
-        self.buffer = bufferPointer
-    }
-
-    package func close() {
-        closeLock.withLock {
-            if isClosed { return }
-            _ = munmap(basePointer, mappedLength)
-            isClosed = true
-        }
-    }
-
-    package func copyBytes(from data: Data) {
-        precondition(data.count <= buffer.count, "data length exceeds mapped buffer")
-        buffer.copyBytes(from: data)
-    }
-
-    deinit {
-        if !isClosed {
-            _ = munmap(basePointer, mappedLength)
-        }
-    }
-}

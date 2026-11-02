@@ -35,10 +35,17 @@ package final class FileLock {
         }
     }
 
+    /// Upper bound on a blocking acquisition when the caller does not choose one. Another
+    /// process holding the lock fails the wait with `WaxError.lockUnavailable` instead of
+    /// hanging forever.
+    package static let defaultAcquireTimeout: Duration = .seconds(30)
+
+    /// Acquire, waiting at most `defaultAcquireTimeout`.
     package static func acquire(at url: URL, mode: LockMode) throws -> FileLock {
-        try acquire(at: url, mode: mode, timeout: nil)
+        try acquire(at: url, mode: mode, timeout: defaultAcquireTimeout)
     }
 
+    /// Acquire, waiting at most `timeout`. Pass `nil` to wait indefinitely.
     package static func acquire(at url: URL, mode: LockMode, timeout: Duration?) throws -> FileLock {
         let fd = try openFile(at: url, mode: mode)
         do {
@@ -77,17 +84,19 @@ package final class FileLock {
         }
     }
 
-    package func upgrade() throws {
+    /// Convert to an exclusive lock, waiting at most `timeout` (`nil` waits indefinitely).
+    package func upgrade(timeout: Duration? = FileLock.defaultAcquireTimeout) throws {
         try ensureActive()
         if mode == .exclusive { return }
-        _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false)
+        _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false, timeout: timeout, url: url)
         mode = .exclusive
     }
 
-    package func downgrade() throws {
+    /// Convert to a shared lock, waiting at most `timeout` (`nil` waits indefinitely).
+    package func downgrade(timeout: Duration? = FileLock.defaultAcquireTimeout) throws {
         try ensureActive()
         if mode == .shared { return }
-        _ = try Self.lock(fd: fd, mode: .shared, nonBlocking: false)
+        _ = try Self.lock(fd: fd, mode: .shared, nonBlocking: false, timeout: timeout, url: url)
         mode = .shared
     }
 
@@ -221,7 +230,7 @@ package final class FileLock {
     }
 
     private func ensureActive() throws {
-        if isReleased {
+        if releaseLock.withLock({ isReleased }) {
             throw WaxError.lockUnavailable("Lock already released for \(url.path)")
         }
     }
