@@ -90,3 +90,20 @@ func mmapWritableRegionPersistsBytes() throws {
         #expect(readBack == payload)
     }
 }
+
+@Test
+func mmapWritableRegionSyncWritesBackAndFailsOnceClosed() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        let payload = Data("synced-write".utf8)
+        let region = try file.mapWritable(length: payload.count, at: 4096 + 7)
+        region.copyBytes(from: payload)
+        try region.sync()
+        #expect(try file.readExactly(length: payload.count, at: 4096 + 7) == payload)
+
+        region.close()
+        #expect(throws: WaxError.self) { try region.sync() }
+    }
+}
