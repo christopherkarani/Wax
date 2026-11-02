@@ -28,7 +28,6 @@ package enum RememberAssembly {
         payload.filter { compactRememberKeys.contains($0.key) }
     }
 
-    package static let autoSupersedeSimilarityThreshold = MemorySemantics.nearTwinSimilarityThreshold
     package static let autoSupersedeMaxMatches = 32
     package static let autoSupersedeTypes: Set<MemoryType> = [
         .decision, .lesson, .constraint, .fact, .userPreference,

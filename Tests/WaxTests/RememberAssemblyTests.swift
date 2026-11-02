@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Wax
 
-/// 11/12 Jaccard on `MemorySemantics.similarity` (threshold is 0.88).
+/// The newer text only adds "now", so it subsumes the original.
 private let originalDecision = "Prefer project-scoped recall and never auto-widen an empty project lane."
 private let similarDecision = "Prefer project-scoped recall and never auto-widen an empty project lane now."
 
@@ -492,7 +492,7 @@ func rememberAssemblyCapsSupersedeMatchesAt32() {
 
 private let identifierHolesOriginal =
     "Remaining holes: C01 GitLiveProbe, C02 UniqueRanking, C03 CompactSummary. Do not re-propose."
-/// Same identifiers, same content terms, wording under the 0.88 text Jaccard.
+/// Same identifiers; only adds words ("open", "them"), with text Jaccard under 0.88.
 /// A looser rewording ("Do not re-run C01 ... this session.") shares the
 /// identifiers but not the content, so it is intentionally not auto-superseded.
 private let identifierHolesParaphrase =
@@ -507,10 +507,10 @@ private let lessonEmptyCrash =
 @Test
 func rememberAssemblySelectsIdentifierOverlapBelowTextJaccard() {
     let similarity = MemorySemantics.similarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
-    #expect(similarity < RememberAssembly.autoSupersedeSimilarityThreshold)
+    #expect(similarity < 0.88)
     #expect(
         MemorySemantics.contentSimilarity(lhs: identifierHolesOriginal, rhs: identifierHolesParaphrase)
-            >= MemorySemantics.nearTwinIdentifierSimilarityFloor
+            >= MemorySemantics.nearTwinContentSimilarityFloor
     )
     let selected = RememberAssembly.selectSupersedeFrameIDs(
         sessionID: nil,
@@ -697,8 +697,44 @@ func supersedeMatchesRewordingWithoutIdentifiers() {
 }
 
 @Test
+func supersedeAllowsNewerTextToAddAnIdentifierToAnIdentifierFreeMemory() {
+    #expect(supersedes(
+        older: "Always run the linter before commit.",
+        newer: "Always run the linter before commit in WaxSession."
+    ))
+}
+
+@Test
+func supersedeNeverRetiresAMemoryWhoseContentTermWasSubstituted() {
+    // Sharing a type name must not make a different fact a restatement.
+    #expect(!supersedes(
+        older: "MemoryOrchestrator: flush latency p99 under 5 ms on macOS.",
+        newer: "MemoryOrchestrator: flush latency p99 under 5 ms on Linux."
+    ))
+    #expect(!supersedes(
+        older: "MemoryOrchestrator: cache embeddings in memory for hybrid search.",
+        newer: "MemoryOrchestrator: evict embeddings from memory for hybrid search."
+    ))
+    #expect(!supersedes(
+        older: "VectorIndex benchmark: hybrid recall p50 is 12 ms with 10k documents in the corpus.",
+        newer: "VectorIndex benchmark: hybrid recall p50 is 12 ms with 100k documents in the corpus."
+    ))
+}
+
+@Test
+func supersedeNeverLetsALongMemorySwallowAShortOne() {
+    #expect(!supersedes(
+        older: "Run the linter.",
+        newer: "Run the linter, then the formatter, the type checker, the unit tests and the integration suite before release."
+    ))
+}
+
+@Test
 func identifierExtractionSkipsCommonTokensDatesAndPlainNumbers() {
-    let ids = MemorySemantics.extractIdentifiers("UTF8 on S3 with H264, P1 since 20261102, run 1234567")
+    let ids = MemorySemantics.extractIdentifiers(
+        "UTF8 on S3 with H264, P1 since 20261102, run 1234567; A1 L2 GPT4 ARM64 SHA256 MD5 X86 V2 R2 C4 "
+            + "ISO-8601 UTF-8 AES-256 SHA-256"
+    )
     #expect(ids.isEmpty, "\(ids)")
     let kept = MemorySemantics.extractIdentifiers("C01 on T1, PROJ-42, sha 466c1e6")
     #expect(kept == ["c01", "t1", "proj-42", "466c1e6"])

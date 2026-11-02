@@ -973,14 +973,7 @@ package enum MemorySemantics {
         contentSimilarity(TextSignature(lhs), TextSignature(rhs))
     }
 
-    /// Share of `older`'s content terms that `newer` repeats. Directional: a newer
-    /// memory that drops most of what the older one said does not restate it.
-    package static func contentCoverage(of older: TextSignature, by newer: TextSignature) -> Float {
-        guard !older.contentTerms.isEmpty else { return 0 }
-        return Float(older.contentTerms.intersection(newer.contentTerms).count) / Float(older.contentTerms.count)
-    }
-
-    /// Function words dropped before the identifier-path content comparison,
+    /// Function words dropped before the near-twin content comparison,
     /// so shared glue ("must be ... before the") cannot carry two different
     /// statements about the same identifiers over the floor.
     private static let nearTwinStopwords: Set<String> = [
@@ -1016,26 +1009,23 @@ package enum MemorySemantics {
     package static let identifierJaccardThreshold: Float = 0.5
     package static let identifierSharedCountThreshold = 3
 
-    /// Term Jaccard (or, with no identifiers on either side, content-term
-    /// Jaccard) at or above this makes two texts near-twins.
-    package static let nearTwinSimilarityThreshold: Float = 0.88
-    /// Identifier path: content-term Jaccard floor. Two different lessons about
-    /// the same three types share identifiers but say different things about them.
-    package static let nearTwinIdentifierSimilarityFloor: Float = 0.5
-    /// Identifier path: share of the older text's content terms the newer one must repeat.
-    package static let nearTwinContentCoverageFloor: Float = 0.8
+    /// Content-term Jaccard floor for a near-twin, so a long newer text that
+    /// happens to contain every word of a short memory does not swallow it.
+    package static let nearTwinContentSimilarityFloor: Float = 0.5
 
     private static let pascalCaseRegex = makeRegex(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#)
     private static let issueNumberRegex = makeRegex(#"#\d+"#)
     /// 7-40 hex chars with at least one letter and one digit: dates, plain
     /// numbers and hex-only words ("defaced") are not SHAs.
     private static let hexSHARegex = makeRegex(#"\b(?=[0-9a-fA-F]*[a-fA-F])(?=[0-9a-fA-F]*[0-9])[0-9a-fA-F]{7,40}\b"#)
-    /// `PROJ-42` style keys, or the repo's short `C01` / `T1` IDs.
-    private static let ticketIDRegex = makeRegex(#"\b(?:[A-Z]{2,10}-\d{1,6}|[A-Z]{1,3}\d{1,4})\b"#)
-    /// Short letter+digit tokens that are names of things, not ticket IDs.
-    private static let nonTicketTokens: Set<String> = [
-        "utf8", "utf16", "utf32", "s3", "ec2", "h264", "h265", "mp3", "mp4",
-        "m1", "m2", "m3", "m4", "p0", "p1", "p2", "p3", "p4",
+    /// `PROJ-42` / `PR-145` style keys, or the repo's own `C01` (two or more
+    /// digits) and `T1` IDs. Other letter+digit tokens (A1, L2, GPT4, ARM64,
+    /// SHA256, MD5, X86, V2, S3, H264) name technologies, not tickets.
+    private static let ticketIDRegex = makeRegex(#"\b(?:[A-Z]{2,10}-\d{1,6}|C\d{2,4}|T\d{1,4})\b"#)
+    /// Prefixes of standards written like ticket keys (UTF-8, SHA-256, ISO-8601).
+    private static let standardKeyPrefixes: Set<String> = [
+        "utf", "ucs", "sha", "aes", "des", "iso", "iec", "ieee", "rsa", "hmac",
+        "crc", "tls", "ssl", "http", "ipv", "md", "arm", "gpt", "x",
     ]
 
     /// PascalCase tokens, `#123`, 7+ hex SHAs, and `PROJ-42` / `C01` / `T1`-style IDs.
@@ -1052,7 +1042,10 @@ package enum MemorySemantics {
                 // token like "AC1F4B6A" also matched as "C1F4B6A" and one shared token counted twice.
                 matches = matches.filter { $0.contains(where: \.isLowercase) }
             } else if regex === ticketIDRegex {
-                matches = matches.filter { !nonTicketTokens.contains($0.lowercased()) }
+                matches = matches.filter { match in
+                    guard let dash = match.firstIndex(of: "-") else { return true }
+                    return !standardKeyPrefixes.contains(match[..<dash].lowercased())
+                }
             }
             ids.formUnion(matches.map { $0.lowercased() })
         }
@@ -1097,34 +1090,25 @@ package enum MemorySemantics {
         return overlap.shared >= 2 && overlap.jaccard >= identifierJaccardThreshold
     }
 
-    /// Whether `newer` restates `older` closely enough to retire it. Drives
+    /// Whether `newer` subsumes `older`, so `older` can be retired. Drives
     /// write-time auto-supersede (destructive), read-time stale-twin demotion,
     /// and `stale_hint` labels; callers pass the older and newer memory in order.
-    /// Directional and tuned for precision:
-    /// - every identifier `older` names (types, `#123`, SHAs, tickets) is also in
-    ///   `newer`: a newer text may add a reference or a type, but one that drops
-    ///   or changes one (`#123` vs `#124`, a narrower lesson) is a different memory;
-    /// - both agree on negation ("use X" vs "never use X");
-    /// - then near-identical wording (term Jaccard >= 0.88), or, with no identifiers
-    ///   on either side, content-term Jaccard >= 0.88, or, when `older` names
-    ///   identifiers, `newer` repeats >= 80% of its content terms with content-term
-    ///   Jaccard >= 0.5.
-    /// This is bag-of-words: it cannot tell role swaps apart ("A calls B" vs
-    /// "B calls A"). Loose paraphrases that reword most of the content are not
-    /// twins; they stay live side by side rather than risk retiring a distinct memory.
+    /// True iff all of:
+    /// 1. both agree on negation ("use X" vs "never use X"; "no-op", "not only"
+    ///    and "without" do not count as negation);
+    /// 2. every identifier `older` names (types, `#123`, SHAs, tickets) is also in `newer`;
+    /// 3. every content term of `older` (lowercased terms minus identifier tokens,
+    ///    stopwords and negations; numbers and units included) is also in `newer`:
+    ///    `newer` may add words, never substitute or drop one;
+    /// 4. content-term Jaccard >= `nearTwinContentSimilarityFloor` (0.5).
+    /// A false negative only leaves a duplicate live; a false positive loses a
+    /// fact, so anything short of subsumption stays live side by side. This is
+    /// bag-of-words: it cannot tell role swaps apart ("A calls B" vs "B calls A").
     package static func isNearTwin(older: TextSignature, newer: TextSignature) -> Bool {
-        guard older.identifiers.isSubset(of: newer.identifiers), older.negated == newer.negated else {
-            return false
-        }
-        if similarity(older, newer) >= nearTwinSimilarityThreshold {
-            return true
-        }
-        if older.identifiers.isEmpty, newer.identifiers.isEmpty {
-            return contentSimilarity(older, newer) >= nearTwinSimilarityThreshold
-        }
-        guard !older.identifiers.isEmpty else { return false }
-        return contentCoverage(of: older, by: newer) >= nearTwinContentCoverageFloor
-            && contentSimilarity(older, newer) >= nearTwinIdentifierSimilarityFloor
+        older.negated == newer.negated
+            && older.identifiers.isSubset(of: newer.identifiers)
+            && older.contentTerms.isSubset(of: newer.contentTerms)
+            && contentSimilarity(older, newer) >= nearTwinContentSimilarityFloor
     }
 
     package static func isNearTwin(older: String, newer: String) -> Bool {
