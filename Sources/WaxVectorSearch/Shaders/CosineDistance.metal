@@ -79,11 +79,9 @@ kernel void cosineDistanceKernelOptimized(
 ) {
     uint vectorIndex = gid.x;
     
-    if (vectorIndex >= vectorCount) {
-        return;
-    }
-    
-    // Load query vector into threadgroup memory (only first threads participate)
+    // Every thread in the threadgroup must take part in the cooperative load and
+    // reach the barrier; out-of-range threads are discarded after it.
+    // Load query vector into threadgroup memory
     // We can vectorize this too if dimensions is multiple of 4, but for safety kept scalar for now
     // Actually, let's vectorize the copy if possible.
     // Assuming dimensions is multiple of 4 is risky, so stick to scalar copy or careful vectorized copy.
@@ -99,6 +97,10 @@ kernel void cosineDistanceKernelOptimized(
     
     // Synchronize to ensure query is fully loaded
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    if (vectorIndex >= vectorCount) {
+        return;
+    }
     
     // Compute dot product using cached query and scalar loads with unrolling
     float dotProduct = 0.0;
@@ -162,10 +164,6 @@ kernel void cosineDistanceKernelSIMD4(
 ) {
     uint vectorIndex = gid;
     
-    if (vectorIndex >= vectorCount) {
-        return;
-    }
-    
     // Calculate dimensions in float4 units
     uint dims4 = dimensions >> 2;  // dimensions / 4
     uint remainder = dimensions & 3;  // dimensions % 4
@@ -181,8 +179,13 @@ kernel void cosineDistanceKernelSIMD4(
         }
     }
     
-    // Synchronize to ensure query is fully loaded
+    // Synchronize to ensure query is fully loaded. All threads (including those past
+    // vectorCount in a partial threadgroup) must load their share and reach the barrier.
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    if (vectorIndex >= vectorCount) {
+        return;
+    }
     
     // Main SIMD computation loop using float4
     float4 dotProduct4 = float4(0.0);
@@ -243,11 +246,6 @@ kernel void cosineDistanceKernelSIMD8(
 ) {
     uint vectorIndex = gid;
     
-    if (vectorIndex >= vectorCount) {
-        return;
-    }
-
-    
     uint dims4 = dimensions >> 2;
     uint dims8 = dimensions >> 3;  // dimensions / 8
     uint remainder4 = (dims4 & 1);  // Remaining float4 after processing pairs
@@ -264,7 +262,13 @@ kernel void cosineDistanceKernelSIMD8(
         }
     }
     
+    // All threads (including those past vectorCount in a partial threadgroup) must
+    // load their share and reach the barrier before any thread exits.
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    if (vectorIndex >= vectorCount) {
+        return;
+    }
     
     // Dual accumulator pattern for instruction-level parallelism
     float4 dotProduct4a = float4(0.0);

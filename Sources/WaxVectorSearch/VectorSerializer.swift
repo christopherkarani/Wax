@@ -40,7 +40,7 @@ package enum VectorSerializer {
         guard version == 1 else {
             throw WaxError.invalidToc(reason: "unsupported vec segment version \(version)")
         }
-        let encodingRaw = data[6]
+        let encodingRaw = data[data.startIndex + 6]
         guard let encoding = VecEncoding(rawValue: encodingRaw) else {
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encodingRaw)")
         }
@@ -115,13 +115,14 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
 
+            // Offsets below are relative to data.startIndex (data may be a slice).
             var offset = VecSegmentHeaderV1.encodedSize
             let frameIdLengthOffset = offset + vectorLength
             guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
-            let vectorsData = data[offset..<offset + vectorLength]
+            let vectorsOffset = offset
             offset += vectorLength
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
@@ -140,17 +141,42 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
             }
 
-            let vectors = Array(vectorsData.withUnsafeBytes {
-                Array($0.bindMemory(to: Float.self))
-            })
-            let frameIds = Array(data[offset..<offset + Int(frameIdLength)].withUnsafeBytes {
-                Array($0.bindMemory(to: UInt64.self))
-            })
+            let vectors: [Float] = copyUnaligned(
+                from: data,
+                byteOffset: vectorsOffset,
+                count: vectorLength / MemoryLayout<Float>.stride
+            )
+            if let index = vectors.firstIndex(where: { !$0.isFinite }) {
+                throw WaxError.invalidToc(
+                    reason: "vec segment contains non-finite vector component at element \(index)"
+                )
+            }
+            let frameIds: [UInt64] = copyUnaligned(
+                from: data,
+                byteOffset: offset,
+                count: Int(frameIdLength) / MemoryLayout<UInt64>.stride
+            )
             try validateUniqueFrameIds(frameIds)
 
             return .metal(info: info, vectors: vectors, frameIds: frameIds)
         default:
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
+        }
+    }
+
+    /// Copies `count` trivially-typed elements starting at `byteOffset` (relative to
+    /// `data.startIndex`) into a properly aligned array. Never binds the source bytes
+    /// to `T`, so it is safe for slices and arbitrarily aligned offsets.
+    private static func copyUnaligned<T: BitwiseCopyable>(from data: Data, byteOffset: Int, count: Int) -> [T] {
+        guard count > 0 else { return [] }
+        return data.withUnsafeBytes { raw in
+            [T](unsafeUninitializedCapacity: count) { buffer, initializedCount in
+                let byteCount = count * MemoryLayout<T>.stride
+                UnsafeMutableRawBufferPointer(buffer).copyMemory(
+                    from: UnsafeRawBufferPointer(rebasing: raw[byteOffset..<byteOffset + byteCount])
+                )
+                initializedCount = count
+            }
         }
     }
 

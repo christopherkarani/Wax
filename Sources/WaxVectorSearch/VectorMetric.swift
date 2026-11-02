@@ -24,7 +24,8 @@ package enum VectorMetric: Sendable, Equatable {
             // Metal kernels return cosine distance; expose score where higher is better.
             return 1 - d
         case .dot, .l2:
-            // For ip and L2 distances, lower is better.
+            // Inner-product distance is -dot and L2 distance is squared Euclidean;
+            // negating both matches AccelerateVectorEngine (dot, -squared distance).
             return -d
         }
     }

@@ -163,7 +163,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         try await ensureIndex()
         guard let index else { return [] }
         let results = try await index.search(query: preparedVector(query), topK: topK)
-        return results.map { (frameId: $0.id, score: $0.score) }
+        return hits(from: results)
     }
 
     package struct SearchTiming: Sendable {
@@ -193,10 +193,10 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let results = try await index.search(query: prepared, topK: topK)
         let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
         let mapStart = CFAbsoluteTimeGetCurrent()
-        let hits = results.map { (frameId: $0.id, score: $0.score) }
+        let mapped = hits(from: results)
         let mapMs = (CFAbsoluteTimeGetCurrent() - mapStart) * 1_000
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1_000
-        return (hits, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: mapMs, totalMs: totalMs))
+        return (mapped, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: mapMs, totalMs: totalMs))
     }
 
     package func stageForCommit(into wax: Wax) async throws {
@@ -244,6 +244,18 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             try await rebuildIndex()
             dirty = false
         }
+    }
+
+    /// MetalANNS reports distances (lower is better): cosine `1 - cos`, inner product `-dot`,
+    /// L2 squared distance. Convert to the similarity scale AccelerateVectorEngine returns
+    /// (higher is better) and order best-first with the same frameId tie-break.
+    private func hits(from neighbors: [VectorNeighbor<UInt64>]) -> [(frameId: UInt64, score: Float)] {
+        neighbors
+            .map { (frameId: $0.id, score: metric.score(fromDistance: $0.score)) }
+            .sorted { lhs, rhs in
+                if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
+                return lhs.score > rhs.score
+            }
     }
 
     private func ensureIndex() async throws {
