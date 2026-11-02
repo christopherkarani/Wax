@@ -234,12 +234,19 @@ public actor Memory {
     /// Soft-delete a memory frame and remove it from enabled search indexes.
     ///
     /// Deleting a document frame (the ID ``save(_:metadata:)`` returns) also
-    /// deletes the chunk frames a long text was split into.
+    /// deletes the chunk frames a long text was split into, and frames derived
+    /// from those chunks. This holds even when the document was already deleted.
     ///
     /// Used by forget tooling and callers that need to retract a specific frame ID
     /// returned from ``search(_:options:)``.
     public func delete(frameID: UInt64) async throws {
         try await orchestrator.delete(frameId: frameID)
+    }
+
+    /// Deletes several frames (and their chunk frames) in one commit. An
+    /// unknown ID throws before anything is deleted.
+    package func delete(frameIDs: [UInt64]) async throws {
+        try await orchestrator.delete(frameIds: frameIDs)
     }
 
     /// Force pending writes to durable storage.

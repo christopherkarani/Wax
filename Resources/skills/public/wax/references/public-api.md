@@ -16,7 +16,7 @@ Source: `Sources/Wax/Memory.swift`
 - `public func search(_ query: String, configure: (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
 - `public func search(_ query: String, strategy: (any SearchStrategy)?, reranker: (any ResultReranker)? = nil, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
 - Deprecated aliases: `search(_:strategy:options:)` and `search(_:strategy:options:reranker:)` (generic shims; use the existential form)
-- `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed). Deleting a document frame (the ID `save` returns) also deletes its chunk frames.
+- `public func delete(frameID: UInt64) async throws` — soft-deletes the frame and removes it from enabled text and vector indexes (committed). Deleting a document frame (the ID `save` returns) also deletes its chunk frames and anything derived from them, even when the document itself was already deleted.
 - `public func flush() async throws` — commits pending writes (WAL, FTS, vector index) to durable storage.
 - `public func backfillUnembedded() async throws -> UInt64` — embeds live searchable frames that have no vectors using the attached provider. Idempotent. Throws `WaxError.missingEmbedder` when no provider is attached; never invents vectors. Call `flush()` to commit.
 - `public func close() async throws` — flushes, then closes.

@@ -330,6 +330,64 @@ func committedCoverageCacheFollowsManifestChanges() async throws {
 }
 
 @Test
+func coverageUnknownClearsOnNextSuccessfulStats() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        await orchestrator.setCoverageReadFailureForTesting(CoverageReadFailure())
+        guard case .degraded = await orchestrator.runtimeStats().embeddingStatus else {
+            Issue.record("expected degraded while coverage is unreadable")
+            try await orchestrator.close()
+            return
+        }
+
+        await orchestrator.setCoverageReadFailureForTesting(nil)
+        let status = await orchestrator.runtimeStats().embeddingStatus
+        guard case .active = status else {
+            Issue.record("expected active once coverage reads again, got \(status)")
+            try await orchestrator.close()
+            return
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
+func refreshDuringCoverageScanKeepsNewerAttachReason() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await embeddedOrchestrator(at: url)
+        let newer = ConfigurableIdentityEmbedder(
+            identity: EmbeddingIdentity(provider: "Mock", model: "Newer", dimensions: 2, normalized: true)
+        )
+        // The refresh scan sees an empty store (fully embedded). While it is
+        // suspended, a frame without a vector lands and a newer attach reports
+        // it. The stale refresh result must not overwrite that.
+        await orchestrator.setCoverageScanHookForTesting {
+            await orchestrator.setCoverageScanHookForTesting(nil)
+            do {
+                var options = FrameMetaSubset()
+                options.role = .document
+                options.searchText = "frame saved without a vector"
+                _ = try await orchestrator.wax.put(Data("frame saved without a vector".utf8), options: options)
+                try await orchestrator.flush()
+            } catch {
+                Issue.record("could not write the unembedded frame: \(error)")
+            }
+            await orchestrator.attachEmbedder(newer)
+        }
+        _ = try await orchestrator.backfillUnembedded()
+
+        let status = await orchestrator.runtimeStats().embeddingStatus
+        #expect(status.identity?.model == "Newer")
+        guard case .degraded = status else {
+            Issue.record("expected the newer attach's degraded reason to survive, got \(status)")
+            try await orchestrator.close()
+            return
+        }
+        try await orchestrator.close()
+    }
+}
+
+@Test
 func refreshDuringCoverageScanDoesNotResurrectUnavailableEmbedder() async throws {
     try await TempFiles.withTempFile { url in
         let orchestrator = try await embeddedOrchestrator(at: url)

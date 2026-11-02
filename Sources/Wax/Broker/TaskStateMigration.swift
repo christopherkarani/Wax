@@ -517,9 +517,7 @@ package extension AgentBrokerService {
         _ frameIDs: [UInt64],
         from memory: MemoryOrchestrator
     ) async throws {
-        for frameID in frameIDs.sorted(by: >) {
-            try await memory.delete(frameId: frameID)
-        }
+        try await memory.delete(frameIds: frameIDs.sorted(by: >))
     }
 
     private func validSessionProvenance(_ sessionID: UUID) -> Bool {

@@ -2065,13 +2065,33 @@ package actor MemoryOrchestrator {
     /// frameId`). Long texts are indexed as chunks, so deleting only the
     /// document would leave its text searchable.
     package func delete(frameId: UInt64) async throws {
+        try await delete(frameIds: [frameId])
+    }
+
+    /// Deletes several frames and all their descendants with one metadata scan
+    /// and one commit.
+    ///
+    /// Descendants are found through `parentId` at any depth (document ->
+    /// chunk -> enrichment). A requested frame that is already deleted still
+    /// cascades to its live descendants, which repairs stores written before
+    /// delete cascaded. Every requested id is checked before anything is
+    /// mutated, so an unknown id throws ``WaxError/frameNotFound(frameId:)``
+    /// and deletes nothing.
+    package func delete(frameIds: [UInt64]) async throws {
+        guard !frameIds.isEmpty else { return }
         lastWriteActivityAt = .now
 
-        let chunkIds = await wax.frameMetasIncludingPending()
-            .filter { $0.parentId == frameId && $0.status == .active }
-            .map(\.id)
-        for id in [frameId] + chunkIds {
-            try await wax.delete(frameId: id)
+        let metas = await wax.frameMetasIncludingPending()
+        let statusById = Dictionary(metas.map { ($0.id, $0.status) }, uniquingKeysWith: { _, last in last })
+        if let unknown = frameIds.first(where: { statusById[$0] == nil }) {
+            throw WaxError.frameNotFound(frameId: unknown)
+        }
+        let targets = Self.frameIdsWithDescendants(frameIds, metas: metas)
+
+        for id in targets {
+            if statusById[id] == .active {
+                try await wax.delete(frameId: id)
+            }
             if config.enableTextSearch {
                 try await session.removeText(frameId: id)
             }
@@ -2080,6 +2100,30 @@ package actor MemoryOrchestrator {
             }
         }
         try await session.commit()
+    }
+
+    /// The requested ids plus every frame reachable from them through `parentId`,
+    /// in visit order. Already-deleted descendants are still walked so their own
+    /// live children are found.
+    private static func frameIdsWithDescendants(_ roots: [UInt64], metas: [FrameMeta]) -> [UInt64] {
+        var children: [UInt64: [UInt64]] = [:]
+        for meta in metas {
+            if let parent = meta.parentId {
+                children[parent, default: []].append(meta.id)
+            }
+        }
+        var visited: Set<UInt64> = []
+        var ordered: [UInt64] = []
+        var queue = roots
+        var head = 0
+        while head < queue.count {
+            let id = queue[head]
+            head += 1
+            guard visited.insert(id).inserted else { continue }
+            ordered.append(id)
+            queue.append(contentsOf: children[id] ?? [])
+        }
+        return ordered
     }
 
     // MARK: - Persistence lifecycle
@@ -2508,8 +2552,10 @@ package actor MemoryOrchestrator {
 
     private static let missingVectorsReason = "some saved frames have no vectors"
 
+    private static let coverageUnknownReasonPrefix = "vector coverage unknown"
+
     private static func coverageUnknownReason(_ error: any Error) -> String {
-        "vector coverage unknown: \(error)"
+        "\(coverageUnknownReasonPrefix): \(error)"
     }
 
     /// Frame IDs in the committed vector index, keyed by its manifest so
@@ -2556,9 +2602,19 @@ package actor MemoryOrchestrator {
     }
 
     /// 0 when coverage cannot be read; the embedder is then reported degraded.
+    /// A later successful read replaces a "coverage unknown" reason (and only
+    /// that reason) with the coverage it found.
     private func framesWithoutVectorsCount() async -> UInt64 {
         do {
-            return UInt64(try await unembeddedLiveSources().count)
+            let count = UInt64(try await unembeddedLiveSources().count)
+            if case .ready(let attached, let reason?) = embedderLifecycle,
+               reason.hasPrefix(Self.coverageUnknownReasonPrefix) {
+                embedderLifecycle = .ready(
+                    attached: attached,
+                    degradedReason: count == 0 ? nil : Self.missingVectorsReason
+                )
+            }
+            return count
         } catch {
             WaxDiagnostics.logSwallowed(
                 error,

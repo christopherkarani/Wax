@@ -1820,9 +1820,7 @@ extension AgentBrokerService {
         }
         quarantineSoftDeletes = quarantineIDs.count
         if apply {
-            for frameId in quarantineIDs {
-                try await longTermMemory.delete(frameId: frameId)
-            }
+            try await longTermMemory.delete(frameIds: quarantineIDs)
             if !quarantineIDs.isEmpty {
                 try await longTermMemory.flush()
             }
