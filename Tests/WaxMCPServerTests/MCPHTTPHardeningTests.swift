@@ -225,7 +225,7 @@ func brokerUnresponsiveIsMappedFromTypedErrorNotMessageText() async {
         params: .init(name: "stats", arguments: [:]),
         structuredMemoryEnabled: true,
         sessionHint: nil,
-        pathConfinement: nil
+        pathConfinement: .denyAll
     ) { _ in
         throw BrokerUnresponsiveError("socket accepted but never answered")
     }
@@ -238,7 +238,7 @@ func brokerUnresponsiveIsMappedFromTypedErrorNotMessageText() async {
         params: .init(name: "stats", arguments: [:]),
         structuredMemoryEnabled: true,
         sessionHint: nil,
-        pathConfinement: nil
+        pathConfinement: .denyAll
     ) { _ in
         throw LookalikeError()
     }
@@ -251,7 +251,7 @@ func brokerFailureCodesComeFromPayloadNotMessageText() async {
         params: .init(name: "stats", arguments: [:]),
         structuredMemoryEnabled: true,
         sessionHint: nil,
-        pathConfinement: nil
+        pathConfinement: .denyAll
     ) { request in
         AgentBrokerResponse.failure(id: request.id, message: "store must be repaired before use")
     }
@@ -261,7 +261,7 @@ func brokerFailureCodesComeFromPayloadNotMessageText() async {
         params: .init(name: "stats", arguments: [:]),
         structuredMemoryEnabled: true,
         sessionHint: nil,
-        pathConfinement: nil
+        pathConfinement: .denyAll
     ) { request in
         let error = BrokerValidationError.invalid("limit is out of range")
         return AgentBrokerResponse.failure(id: request.id, payload: error.brokerPayload, message: error.localizedDescription)

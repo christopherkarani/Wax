@@ -24,7 +24,7 @@ private struct ConfinementFixture {
     }
 
     var confinement: MCPPathConfinement {
-        MCPPathConfinement(fixedRoots: [store.path])
+        MCPPathConfinement(fixedRoots: [store.path], storeDirectory: store.path)
     }
 
     func cleanup() {
@@ -170,5 +170,158 @@ func mcpPathToolsRejectOutsidePathsBeforeReachingBroker() async throws {
     )
     #expect(!(allowed.isError ?? false))
     #expect(FileManager.default.fileExists(atPath: allowedExport.appendingPathComponent("MEMORY.md").path))
+}
+
+private extension ConfinementFixture {
+    /// Workspace roots cover the store and project; migration may only
+    /// target the store directory.
+    var migrationConfinement: MCPPathConfinement {
+        MCPPathConfinement(fixedRoots: [store.path, project.path], storeDirectory: store.path)
+    }
+
+    func makeBroker() async throws -> AgentBrokerService {
+        try await AgentBrokerService(
+            storePath: store.appendingPathComponent("memory.wax").path,
+            sessionRootPath: store.appendingPathComponent("sessions").path,
+            noEmbedder: true,
+            embedderChoice: "auto",
+            requireVector: false
+        )
+    }
+}
+
+@Test
+func migrationDestinationIsConfinedToStoreDirectory() throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    let confinement = fixture.migrationConfinement
+
+    let inStore = try confinement.confineMigrationDestination(
+        path: fixture.store.appendingPathComponent("repaired.wax").path
+    )
+    #expect(inStore.hasSuffix("/store/repaired.wax"))
+    // Workspace and host roots are fine for Markdown, never for a store copy.
+    #expect(throws: MCPPathConfinementError.self) {
+        try confinement.confineMigrationDestination(path: fixture.project.appendingPathComponent("repaired.wax").path)
+    }
+    #expect(throws: MCPPathConfinementError.self) {
+        try MCPPathConfinement.denyAll.confineMigrationDestination(
+            path: fixture.store.appendingPathComponent("repaired.wax").path
+        )
+    }
+}
+
+@Test
+func migrationDestinationRequiresWaxExtension() throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+
+    #expect(throws: MCPPathConfinementError.self) {
+        try fixture.migrationConfinement.confineMigrationDestination(
+            path: fixture.store.appendingPathComponent("precious.swift").path
+        )
+    }
+    #expect(throws: MCPPathConfinementError.self) {
+        try fixture.migrationConfinement.confineMigrationDestination(path: fixture.store.path)
+    }
+}
+
+@Test
+func migrationDestinationOnlyOverwritesExistingWaxStores() throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+
+    let notAStore = fixture.store.appendingPathComponent("notes.wax")
+    try Data("precious".utf8).write(to: notAStore)
+    #expect(throws: MCPPathConfinementError.self) {
+        try fixture.migrationConfinement.confineMigrationDestination(path: notAStore.path)
+    }
+
+    let previousCopy = fixture.store.appendingPathComponent("previous.wax")
+    try (Data("WAX1".utf8) + Data(repeating: 0, count: 64)).write(to: previousCopy)
+    #expect(throws: Never.self) {
+        try fixture.migrationConfinement.confineMigrationDestination(path: previousCopy.path)
+    }
+}
+
+@Test
+func taskStateMigrateCannotOverwriteArbitraryFilesInAllowedRoots() async throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    let broker = try await fixture.makeBroker()
+    defer { Task { try? await broker.close() } }
+
+    let precious = fixture.store.appendingPathComponent("precious.swift")
+    let notAStore = fixture.store.appendingPathComponent("notes.wax")
+    let projectCopy = fixture.project.appendingPathComponent("copy.wax")
+    try Data("let keep = true\n".utf8).write(to: precious)
+    try Data("precious".utf8).write(to: notAStore)
+
+    for destination in [precious, notAStore, projectCopy] {
+        let result = await WaxMCPTools.handleCall(
+            params: .init(name: "task_state_migrate", arguments: [
+                "destination_path": .string(destination.path),
+                "overwrite_destination": .bool(true),
+            ]),
+            broker: broker,
+            pathConfinement: fixture.migrationConfinement
+        )
+        #expect(result.isError ?? false, "\(destination.lastPathComponent) must be refused")
+        #expect(errorCode(result) == "path_not_allowed")
+    }
+    #expect(try String(contentsOf: precious, encoding: .utf8) == "let keep = true\n")
+    #expect(try String(contentsOf: notAStore, encoding: .utf8) == "precious")
+    #expect(!FileManager.default.fileExists(atPath: projectCopy.path))
+}
+
+@Test
+func brokerAdapterConfinesPathsByDefault() async throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    let broker = try await fixture.makeBroker()
+    defer { Task { try? await broker.close() } }
+
+    let escaped = fixture.outside.appendingPathComponent("export", isDirectory: true)
+    let refused = await WaxMCPTools.handleCall(
+        params: .init(name: "markdown_export", arguments: ["output_dir": .string(escaped.path)]),
+        broker: broker
+    )
+    #expect(errorCode(refused) == "path_not_allowed")
+    #expect(!FileManager.default.fileExists(atPath: escaped.path))
+
+    let inStore = fixture.store.appendingPathComponent("export", isDirectory: true)
+    let allowed = await WaxMCPTools.handleCall(
+        params: .init(name: "markdown_export", arguments: ["output_dir": .string(inStore.path)]),
+        broker: broker
+    )
+    #expect(!(allowed.isError ?? false))
+}
+
+@Test
+func pathConfinementFetchesHostRootsBeforeTheFirstCall() async throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    let broker = try await fixture.makeBroker()
+    defer { Task { try? await broker.close() } }
+
+    // roots/list has not been captured yet; the provider is registered.
+    let key = "confine-roots-\(UUID().uuidString)"
+    let projectPath = fixture.project.path
+    MCPRootsProviderRegistry.shared.remember(key: key) { [projectPath] }
+    defer { MCPRootsProviderRegistry.shared.remove(key: key) }
+    let hint = MCPClientSessionHint(connectionKey: key, context: nil)
+
+    let export = fixture.project.appendingPathComponent("export", isDirectory: true)
+    let result = await WaxMCPTools.handleCall(
+        params: .init(name: "markdown_export", arguments: [
+            "output_dir": .string(export.path),
+            "all_projects": .bool(true),
+        ]),
+        broker: broker,
+        sessionHint: hint,
+        pathConfinement: fixture.confinement
+    )
+    #expect(errorCode(result) != "path_not_allowed")
+    #expect(FileManager.default.fileExists(atPath: export.appendingPathComponent("MEMORY.md").path))
 }
 #endif

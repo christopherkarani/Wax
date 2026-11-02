@@ -175,6 +175,21 @@ point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 Vector search needs both binaries built with embedder traits; the bundled npm
 artifacts already are. Without an embedder, search runs text-only.
 
+### Filesystem paths
+
+The MCP tools that touch the filesystem take absolute paths and refuse
+anything outside an allowed root (`path_not_allowed`):
+
+- `markdown_export` / `markdown_sync`: the store directory, the session root,
+  roots the host advertises over MCP `roots/list`, and, for stdio servers
+  only, the server's working directory (hosts launch stdio servers inside the
+  workspace they serve). A shared HTTP server never trusts its own working
+  directory.
+- `task_state_migrate`: a `.wax` file inside the store directory. An
+  existing file is only replaced when it is already a Wax store.
+
+Use `wax-cli` for exports to other locations.
+
 ### Prove HTTP and Hermes
 
 After `install`, keep **one** HTTP writer. If LaunchAgent `ai.wax.mcp-http`

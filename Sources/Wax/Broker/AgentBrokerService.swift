@@ -5,8 +5,8 @@ package actor AgentBrokerService {
     typealias SessionState = VirtualSessionStore.SessionState
 
     let longTermMemory: MemoryOrchestrator
-    let longTermStoreURL: URL
-    let sessionRootURL: URL
+    package let longTermStoreURL: URL
+    package let sessionRootURL: URL
     let corpusStoreURL: URL
     let noEmbedder: Bool
     let requireVector: Bool

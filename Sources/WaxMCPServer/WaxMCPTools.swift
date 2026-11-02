@@ -54,23 +54,17 @@ enum MCPRootsFetcher {
     static let timeoutSeconds: TimeInterval = 2
 
     static func fetchRoots(server: Server) async -> [String] {
-        await withTaskGroup(of: [String]?.self) { group in
-            group.addTask {
-                do {
-                    let roots = try await server.listRoots()
-                    return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
-                } catch {
-                    return []
-                }
+        // Not a task group: `listRoots` ignores cancellation, so a group would
+        // wait forever on a client that never answers `roots/list`.
+        let fetch = Task { () -> [String] in
+            do {
+                let roots = try await server.listRoots()
+                return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
+            } catch {
+                return []
             }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeoutSeconds))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? []
         }
+        return await MCPDeadline.value(of: fetch, within: .seconds(timeoutSeconds), orElse: [])
     }
 }
 
@@ -185,11 +179,21 @@ enum WaxMCPTools {
         sessionHint: MCPClientSessionHint? = nil,
         pathConfinement: MCPPathConfinement? = nil
     ) async -> CallTool.Result {
-        await executeCall(
+        // Fail closed: without an explicit policy, paths are held to this
+        // broker's own store layout.
+        var confinement = pathConfinement
+        if confinement == nil {
+            confinement = MCPPathConfinement(
+                storeURL: await broker.longTermStoreURL,
+                sessionRootURL: await broker.sessionRootURL,
+                includeProcessDirectory: false
+            )
+        }
+        return await executeCall(
             params: params,
             structuredMemoryEnabled: structuredMemoryEnabled,
             sessionHint: sessionHint,
-            pathConfinement: pathConfinement
+            pathConfinement: confinement ?? .denyAll
         ) { request in
             await broker.handle(request)
         }
@@ -199,7 +203,7 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         structuredMemoryEnabled: Bool,
         sessionHint: MCPClientSessionHint?,
-        pathConfinement: MCPPathConfinement?,
+        pathConfinement: MCPPathConfinement,
         perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
     ) async -> CallTool.Result {
         do {
@@ -236,10 +240,11 @@ enum WaxMCPTools {
             migrateLegacyFilterKeysIfNeeded(name: params.name, arguments: &forwarded)
             try validateArgumentSurface(name: params.name, arguments: forwarded)
             do {
-                try pathConfinement?.apply(
+                try await confinePaths(
                     command: params.name,
                     arguments: &forwarded,
-                    projectRoots: sessionHint?.connectionContext()?.mcpRoots ?? []
+                    confinement: pathConfinement,
+                    sessionHint: sessionHint
                 )
             } catch {
                 return errorResult(message: error.message, code: "path_not_allowed")
@@ -313,6 +318,30 @@ enum WaxMCPTools {
             )
         } catch {
             return errorResult(message: error.localizedDescription, code: "execution_failed")
+        }
+    }
+
+    /// Confines the command's path argument. `roots/list` is captured in the
+    /// background after initialize, so a path outside the cached roots
+    /// fetches host roots once before it is refused. Accepted paths never wait.
+    private static func confinePaths(
+        command: String,
+        arguments: inout [String: Value],
+        confinement: MCPPathConfinement,
+        sessionHint: MCPClientSessionHint?
+    ) async throws(MCPPathConfinementError) {
+        let cachedRoots = sessionHint?.connectionContext()?.mcpRoots ?? []
+        do {
+            try confinement.apply(command: command, arguments: &arguments, projectRoots: cachedRoots)
+        } catch {
+            guard case .outsideAllowedRoots = error,
+                  MCPPathConfinement.usesProjectRoots(command: command),
+                  let sessionHint
+            else { throw error }
+            await sessionHint.refreshRootsIfNeeded()
+            let refreshedRoots = sessionHint.connectionContext()?.mcpRoots ?? []
+            guard refreshedRoots != cachedRoots else { throw error }
+            try confinement.apply(command: command, arguments: &arguments, projectRoots: refreshedRoots)
         }
     }
 }
