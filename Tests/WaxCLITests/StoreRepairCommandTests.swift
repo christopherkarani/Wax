@@ -251,25 +251,13 @@ struct StoreRepairCommandTests {
         storePath: String
     ) throws -> (status: Int32, json: [String: Any], stderr: String) {
         let output = try ProcessRunner.runCaptured(
-            command: try builtCLIPath(),
+            command: try builtProductPath(named: "wax-cli"),
             arguments: ["vector-health", "--direct-store", "--store-path", storePath, "--format", "json"],
             timeoutSeconds: 180
         )
         let object = try JSONSerialization.jsonObject(with: Data(output.stdout.utf8))
         let json = try #require(object as? [String: Any], "vector-health stdout was not a JSON object: \(output.stdout)")
         return (output.status, json, output.stderr)
-    }
-
-    private func builtCLIPath() throws -> String {
-        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let candidates = [
-            root.appendingPathComponent(".build/debug/wax-cli").path,
-            root.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli").path,
-        ]
-        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return match
-        }
-        throw CLIError("Unable to locate built product 'wax-cli'")
     }
 #endif
 }

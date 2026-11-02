@@ -971,8 +971,10 @@ func requireVectorOpenPreservesLockUnavailableError() async throws {
     defer { Task { try? await holder.close() } }
 
     // No `setenv("WAX_LOCK_TIMEOUT_SECS")`: mutating the process environment
-    // races with every concurrently running broker test. The default 2s
-    // command-line lock wait yields the same lockUnavailable error.
+    // races with every concurrently running broker test. The broker opens via
+    // CommandLineEmbedderFactory.waxOptions(), whose default lock wait is 2s
+    // (the CLI StoreSession default is 5s, not used here); waiting it out
+    // yields the same lockUnavailable error, just 2s later instead of 0.2s.
     do {
         _ = try await AgentBrokerService(
             storePath: storeURL.path,

@@ -141,7 +141,8 @@ import Glibc
     }
 }
 
-@Test func exclusiveLockTimesOutWhenAlreadyLocked() throws {
+@Test(.timeLimit(.minutes(1)))
+func exclusiveLockTimesOutWhenAlreadyLocked() throws {
     try TempFiles.withTempFile { url in
         FileManager.default.createFile(atPath: url.path, contents: nil)
 
@@ -163,7 +164,8 @@ import Glibc
             // Structural: the timed-polling path (not the non-blocking probe)
             // produced the error, and it honored the requested wait. An upper
             // wall-clock bound flakes under `swift test --parallel`; a timeout
-            // that is ignored would block forever and trip the test time limit.
+            // that is ignored would block forever and trip the one-minute
+            // `.timeLimit` on this test.
             #expect(elapsed >= .milliseconds(150))
         }
     }

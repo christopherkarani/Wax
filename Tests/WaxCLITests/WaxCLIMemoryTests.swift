@@ -236,7 +236,9 @@ struct WaxCLIMemoryTests {
         }
     }
 
-    @Test func orchestratorOpenFailsFastWhenStoreIsLocked() async throws {
+    // The time limit is the hang backstop for an ignored lock wait.
+    @Test(.timeLimit(.minutes(1)))
+    func orchestratorOpenFailsFastWhenStoreIsLocked() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-lock-timeout-\(UUID().uuidString)")
             .appendingPathExtension("wax")
@@ -261,14 +263,16 @@ struct WaxCLIMemoryTests {
         } catch {
             let elapsed = start.duration(to: clock.now)
             // Structural: the configured 150ms wait was honored and reported.
-            // No upper wall-clock bound — it flakes under `--parallel`.
+            // No tight upper wall-clock bound — it flakes under `--parallel`;
+            // the one-minute `.timeLimit` above fails a wait that never ends.
             #expect(elapsed >= .milliseconds(150))
             #expect(error.localizedDescription.contains("timed out waiting for exclusive lock"))
         }
         try await holder.close()
     }
 
-    @Test func vectorHealthFailsFastWhenStoreIsHeld() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func vectorHealthFailsFastWhenStoreIsHeld() async throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-vector-health-lock-\(UUID().uuidString)")
             .appendingPathExtension("wax")
@@ -1063,6 +1067,19 @@ struct WaxCLIMemoryTests {
         #expect(first.socketPath != second.socketPath)
     }
 
+    @Test func brokerPathingDefaultTuningComesFromInjectedEnvironment() throws {
+        let environment = testEnvironment(["WAX_EMBEDDER_BATCH_SIZE": "7"])
+        let configuration = try AgentBrokerPathing.configuration(
+            brokerExecutablePath: "/usr/bin/true",
+            storePath: "~/Library/Application Support/Wax/a.wax",
+            embedderChoice: "minilm",
+            noEmbedder: false,
+            environment: environment
+        )
+        #expect(configuration.embedderTuning == CommandLineEmbedderRuntimeTuning.fromEnvironment(environment))
+        #expect(configuration.embedderTuning.batchSize == 7)
+    }
+
     @Test func brokerConfigurationChangesWhenRequireVectorChanges() throws {
         let first = try AgentBrokerCLI.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
@@ -1742,18 +1759,6 @@ struct WaxCLIMemoryTests {
         let status: Int32
         let stdout: String
         let stderr: String
-    }
-
-    private func builtProductPath(named name: String) throws -> String {
-        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let candidates = [
-            root.appendingPathComponent(".build/debug/\(name)").path,
-            root.appendingPathComponent(".build/arm64-apple-macosx/debug/\(name)").path,
-        ]
-        if let match = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return match
-        }
-        throw CLIError("Unable to locate built product '\(name)'")
     }
 
     private func runProcess(

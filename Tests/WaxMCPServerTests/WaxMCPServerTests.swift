@@ -9107,7 +9107,7 @@ struct WaxMCPProcessTests {
         // Reuse is pinned structurally: a second process that tried to take the
         // store lock itself fails with the "use a unique --store-path" guidance
         // asserted below. A wall-clock bound on process spawn flakes under
-        // `swift test --parallel`; the suite time limit catches hangs.
+        // `swift test --parallel`; this test's one-minute `.timeLimit` catches hangs.
         let stderr = second.stderrSnapshot()
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
