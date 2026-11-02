@@ -60,6 +60,14 @@ enum PayloadCompressor {
         }
         return max(plus128, quadruple)
     }
+
+    /// `.lz4` payloads are stored as one raw LZ4 block on every platform. Older Apple
+    /// builds stored `COMPRESSION_LZ4` output instead: LZ4 blocks wrapped in `bv41` /
+    /// `bv4-` frames and terminated by `bv4$`. Readers try that framing first when the
+    /// magic is present and fall back to a raw block.
+    static func hasAppleLZ4FrameMagic(_ data: Data) -> Bool {
+        data.starts(with: [0x62, 0x76, 0x34]) // "bv4"
+    }
 }
 
 #if canImport(Compression)
@@ -103,6 +111,18 @@ private extension PayloadCompressor {
         algorithm: CompressionKind,
         uncompressedLength: Int
     ) throws -> Data {
+        if algorithm == .lz4, hasAppleLZ4FrameMagic(data),
+           let legacy = try? appleDecode(data, algorithm: COMPRESSION_LZ4, uncompressedLength: uncompressedLength) {
+            return legacy
+        }
+        return try appleDecode(data, algorithm: algorithm.appleAlgorithm, uncompressedLength: uncompressedLength)
+    }
+
+    static func appleDecode(
+        _ data: Data,
+        algorithm: compression_algorithm,
+        uncompressedLength: Int
+    ) throws -> Data {
         var dst = [UInt8](repeating: 0, count: uncompressedLength)
         let written = data.withUnsafeBytes { raw -> Int in
             guard let src = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
@@ -114,7 +134,7 @@ private extension PayloadCompressor {
                     src,
                     raw.count,
                     nil,
-                    algorithm.appleAlgorithm
+                    algorithm
                 )
             }
         }
@@ -134,7 +154,8 @@ private extension CompressionKind {
         case .lzfse:
             return COMPRESSION_LZFSE
         case .lz4:
-            return COMPRESSION_LZ4
+            // Raw block, byte-compatible with liblz4 on Linux (not the `bv41` framing).
+            return COMPRESSION_LZ4_RAW
         case .deflate:
             return COMPRESSION_ZLIB
         }
@@ -252,12 +273,22 @@ private extension PayloadCompressor {
     }
 
     static func linuxLZ4Decompress(_ data: Data, uncompressedLength: Int) throws -> Data {
+        if hasAppleLZ4FrameMagic(data),
+           let legacy = try? linuxLZ4Decode(data, uncompressedLength: uncompressedLength, appleFramed: true) {
+            return legacy
+        }
+        return try linuxLZ4Decode(data, uncompressedLength: uncompressedLength, appleFramed: false)
+    }
+
+    static func linuxLZ4Decode(_ data: Data, uncompressedLength: Int, appleFramed: Bool) throws -> Data {
         var dst = [UInt8](repeating: 0, count: uncompressedLength)
         let rc = data.withUnsafeBytes { srcRaw -> Int32 in
             guard let src = srcRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
             return dst.withUnsafeMutableBytes { dstRaw -> Int32 in
                 guard let out = dstRaw.bindMemory(to: UInt8.self).baseAddress else { return -1 }
-                return wax_lz4_decompress(src, srcRaw.count, out, dstRaw.count)
+                return appleFramed
+                    ? wax_lz4_decompress_apple_framed(src, srcRaw.count, out, dstRaw.count)
+                    : wax_lz4_decompress(src, srcRaw.count, out, dstRaw.count)
             }
         }
         guard rc == 0 else {
