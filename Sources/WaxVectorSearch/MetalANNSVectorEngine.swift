@@ -31,9 +31,10 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     /// deserialize). A build whose snapshot is newer than this saw only appends since, so
     /// it can be installed and caught up instead of discarded.
     private var lastNonAppendGeneration: UInt64 = 0
-    /// Set when a stale build is discarded. Until a search sees no mutation since the
-    /// previous check, no new build starts, so writes faster than a build don't keep
-    /// restarting it.
+    /// `lastNonAppendGeneration` when a stale build was discarded. Until a search sees no
+    /// non-append mutation since the previous check, no new build starts, so removes or
+    /// overwrites faster than a build don't keep restarting it. Appends don't delay a
+    /// build: a build that saw only appends is caught up instead of discarded.
     private var rebuildDebounceGeneration: UInt64?
     /// The single in-flight background graph build, if any.
     private var graphBuildTask: Task<Void, Never>?
@@ -86,8 +87,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         self.graphBuildHook = graphBuildHook
     }
 
-    /// Cancellation is advisory: a pending build stops before or after the MetalANNS build
-    /// call, but a GPU build already in progress runs to completion and is then dropped.
+    /// Cancellation is advisory: a pending build stops before the MetalANNS build call, but
+    /// a GPU build already in progress runs to completion and its result is dropped.
     deinit {
         graphBuildTask?.cancel()
     }
@@ -388,8 +389,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
               canBuildIndex,
               failedGraphBuildGeneration != mutationGeneration
         else { return }
-        if let debounce = rebuildDebounceGeneration, debounce != mutationGeneration {
-            rebuildDebounceGeneration = mutationGeneration
+        if let debounce = rebuildDebounceGeneration, debounce != lastNonAppendGeneration {
+            rebuildDebounceGeneration = lastNonAppendGeneration
             return
         }
         let generation = mutationGeneration
@@ -443,7 +444,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         case .success(let built):
             guard index == nil else { return }
             guard lastNonAppendGeneration <= generation else {
-                rebuildDebounceGeneration = mutationGeneration
+                rebuildDebounceGeneration = lastNonAppendGeneration
                 return
             }
             index = built
@@ -457,6 +458,9 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             // Appends that arrive during this await see the installed graph and insert
             // themselves; any insert failure drops the graph for a rebuild as usual.
             await insertIntoIndex(appended)
+        case .failure(is CancellationError):
+            // Not a build failure: leave the retry state alone so the next search can build.
+            return
         case .failure(let error):
             graphBuildFailureCount += 1
             failedGraphBuildGeneration = generation
@@ -473,15 +477,13 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         configuration: IndexConfiguration,
         hook: GraphBuildHook?
     ) async -> Result<ReadyIndex, any Error> {
-        // Cancellation (the engine was released) is checked around the build, but a GPU
-        // build already in progress runs to completion; its result is then dropped.
+        // Cancellation is checked before the build only: a GPU build already in progress
+        // runs to completion, and a finished graph is still worth installing.
         do {
             try await hook?()
             try Task.checkCancellation()
             let builder = VectorIndex<UInt64, VectorIndexState.Unbuilt>(configuration: configuration)
-            let built = try await builder.build(vectors: rows, ids: ids)
-            try Task.checkCancellation()
-            return .success(built)
+            return .success(try await builder.build(vectors: rows, ids: ids))
         } catch {
             return .failure(error)
         }

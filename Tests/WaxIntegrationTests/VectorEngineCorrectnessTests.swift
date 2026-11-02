@@ -408,6 +408,87 @@ func metalANNSAppendsDuringGraphBuildAreCaughtUp() async throws {
 }
 
 @Test(
+    "MetalANNS append-only ingest after a discarded build still installs a graph",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSAppendOnlyIngestAfterDiscardedBuildInstallsGraph() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0xDEB0)
+    let extra = makeDataset(count: 20, dimensions: dimensions, seed: 0xDEB1)
+    let gate = GraphBuildGate()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .cosine,
+        dimensions: dimensions,
+        searchMode: .exact,
+        graphBuildHook: { await gate.enter() }
+    )
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await expectExactParity(metalANNS, accelerate, query: base.vectors[0], count: 100)
+
+    // One non-append mutation during the held build: that build is discarded.
+    try await metalANNS.remove(frameId: base.frameIds[7])
+    try await accelerate.remove(frameId: base.frameIds[7])
+    await gate.release()
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(!(await metalANNS.isGraphReady))
+
+    // Steady append-only ingest with a search after each append.
+    for (offset, vector) in extra.vectors.enumerated() {
+        let frameId = 1_000_000 + UInt64(offset)
+        try await metalANNS.add(frameId: frameId, vector: vector)
+        try await accelerate.add(frameId: frameId, vector: vector)
+        _ = try await metalANNS.search(vector: vector, topK: 10)
+    }
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await gate.started == 2)
+    #expect(await metalANNS.isGraphReady)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[19], count: 119)
+}
+
+@Test(
+    "MetalANNS load in a cancelled task does not record a build failure",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSCancelledLoadDoesNotBlockGraphBuild() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0xCA4C)
+    let tempDir = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("cancelled-load.wax"))
+    // Segments store cosine vectors already normalized, as the engines write them.
+    let normalized = base.vectors.map { row in
+        let norm = sqrt(row.reduce(Float.zero) { $0 + $1 * $1 })
+        return row.map { $0 / norm }
+    }
+    try await wax.stageVecIndexForNextCommit(
+        bytes: try VectorSerializer.serializeFlatVectors(
+            normalized.flatMap { $0 },
+            frameIds: base.frameIds,
+            metric: .cosine,
+            dimensions: dimensions
+        ),
+        vectorCount: UInt64(base.frameIds.count),
+        dimension: UInt32(dimensions),
+        similarity: .cosine
+    )
+
+    let engine = try await Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
+    }.value
+    // Cancellation is not a build failure: no count, and the next search may build.
+    #expect(await engine.graphBuildFailureCount == 0)
+    #expect(!(await engine.isGraphReady))
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await expectMetalANNSParity(engine, accelerate, query: base.vectors[5], count: 100)
+    #expect(await engine.isGraphReady)
+    try await wax.close()
+}
+
+@Test(
     "MetalANNS falls back to exact search when the graph build fails",
     .enabled(if: metalANNSAvailable())
 )
