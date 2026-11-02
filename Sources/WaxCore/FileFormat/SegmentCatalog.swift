@@ -88,6 +88,11 @@ extension SegmentCatalog: BinaryCodable {
         guard count <= Constants.maxArrayCount else {
             throw WaxError.invalidToc(reason: "segment catalog count \(count) exceeds limit \(Constants.maxArrayCount)")
         }
+        // segment_id, offset, length (3 x UInt64) + 32-byte checksum + compression + kind.
+        let entryEncodedSize = 3 * 8 + 32 + 1 + 1
+        guard decoder.canFit(count: count, minimumElementBytes: entryEncodedSize) else {
+            throw WaxError.invalidToc(reason: "segment catalog count \(count) exceeds remaining bytes (\(decoder.remainingByteCount))")
+        }
 
         var entries: [SegmentCatalogEntry] = []
         entries.reserveCapacity(count)

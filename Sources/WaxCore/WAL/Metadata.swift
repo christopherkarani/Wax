@@ -32,6 +32,10 @@ extension Metadata: BinaryDecodable {
         guard count <= Constants.maxArrayCount else {
             throw WaxError.decodingError(reason: "metadata count \(count) exceeds limit \(Constants.maxArrayCount)")
         }
+        // Each entry is two strings, each with a 4-byte length prefix.
+        guard decoder.canFit(count: count, minimumElementBytes: 8) else {
+            throw WaxError.decodingError(reason: "metadata count \(count) exceeds remaining bytes (\(decoder.remainingByteCount))")
+        }
 
         var entries: [String: String] = [:]
         entries.reserveCapacity(count)
