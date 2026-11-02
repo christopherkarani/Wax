@@ -401,9 +401,12 @@ package enum AgentBrokerPathing {
         embedderChoice: String,
         noEmbedder: Bool,
         requireVector: Bool = false,
-        embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
+        embedderTuning: CommandLineEmbedderRuntimeTuning? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentBrokerConfiguration {
+        // Default tuning comes from the same (possibly injected) environment as
+        // every other setting here, not from the live process environment.
+        let embedderTuning = embedderTuning ?? .fromEnvironment(environment)
         let expandedStore = expandPath(storePath)
         let expandedSessionRoot = resolveSessionRootPath(
             storePath: expandedStore,
