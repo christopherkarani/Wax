@@ -116,6 +116,9 @@ public actor Memory {
     /// Embedder selection lives on ``Config/embedding`` and defaults to
     /// ``EmbeddingSource/automatic``: the store opens while the built-in provider
     /// loads, then live-attaches. Inspect ``RAGContext/diagnostics`` or ``stats()``.
+    ///
+    /// If another process holds the store file's lock, opening waits up to 30 seconds and
+    /// then throws `WaxError.lockUnavailable`.
     public init(at url: URL, config: Config = .default) async throws {
         try await self.init(at: url, config: config, readiness: .shared, readinessFactory: nil)
     }

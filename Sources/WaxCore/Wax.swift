@@ -545,6 +545,8 @@ package actor Wax {
             let pageBBytes = try headerB.encodeWithChecksum()
             try file.writeAll(pageBBytes, at: Constants.headerPageSize)
             try file.fsync()
+            // Throws only for real I/O errors; filesystems that cannot sync a directory
+            // (EINVAL/ENOTSUP on some network/FUSE mounts) are skipped inside.
             try FDFile.fsyncParentDirectory(of: url)
 
             let wal = WALRingWriter(
@@ -1100,17 +1102,17 @@ package actor Wax {
             currentOffset += UInt64(frame.storedBytes.count)
         }
 
-        // Single checked pwrite for all payloads. Writing through an mmap of the file
-        // would turn ENOSPC or a concurrent truncation into SIGBUS instead of an error.
+        // Checked pwrites of each payload at its contiguous offset, in one I/O hop.
+        // Writing through an mmap of the file would turn ENOSPC or a concurrent
+        // truncation into SIGBUS instead of an error; concatenating first would double
+        // peak memory for large batches.
         if totalPayloadSize > 0 {
-            var payloadBytes = Data()
-            payloadBytes.reserveCapacity(totalPayloadSize)
-            for storedBytes in storedBytesArray {
-                payloadBytes.append(storedBytes)
-            }
-            let batchPayload = payloadBytes
             try await io.run {
-                try file.writeAll(batchPayload, at: startOffset)
+                var offset = startOffset
+                for storedBytes in storedBytesArray {
+                    try file.writeAll(storedBytes, at: offset)
+                    offset += UInt64(storedBytes.count)
+                }
             }
         }
 
@@ -2518,13 +2520,16 @@ package actor Wax {
         guard canonicalLength <= UInt64(Int.max) else {
             throw WaxError.io("canonical payload too large: \(canonicalLength)")
         }
-        let canonical = try PayloadCompressor.decompress(
+        // Decompress also bounds canonical_length by the codec's maximum expansion of
+        // the stored bytes before allocating, and tries each candidate decoding until
+        // one matches the canonical checksum.
+        let expectedChecksum = frame.checksum
+        guard let canonical = try PayloadCompressor.decompress(
             stored,
             algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-            uncompressedLength: Int(canonicalLength)
-        )
-        let canonicalChecksum = SHA256Checksum.digest(canonical)
-        guard canonicalChecksum == frame.checksum else {
+            uncompressedLength: Int(canonicalLength),
+            verifiedBy: { SHA256Checksum.digest($0) == expectedChecksum }
+        ) else {
             throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
         }
         return canonical
@@ -3005,13 +3010,14 @@ package actor Wax {
                     let storedBytes = try await io.run {
                         try file.readExactly(length: Int(frame.payloadLength), at: frame.payloadOffset)
                     }
+                    let expectedChecksum = frame.checksum
                     let canonicalBytes = try PayloadCompressor.decompress(
                         storedBytes,
                         algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-                        uncompressedLength: Int(canonicalLength)
+                        uncompressedLength: Int(canonicalLength),
+                        verifiedBy: { SHA256Checksum.digest($0) == expectedChecksum }
                     )
-                    let canonicalChecksum = SHA256Checksum.digest(canonicalBytes)
-                    guard canonicalChecksum == frame.checksum else {
+                    guard canonicalBytes != nil else {
                         throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
                     }
                 }

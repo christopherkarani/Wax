@@ -142,6 +142,11 @@ package final class FDFile {
     private let closeLock = NSLock()
     private var faultInjectionState: FaultInjectionState?
 
+    /// Largest single `pread`/`pwrite`. Darwin rejects transfers over `INT_MAX` bytes with
+    /// EINVAL, so larger buffers are moved in chunks. Tests may lower it.
+    static let defaultIOChunkLimit = 1 << 30
+    var ioChunkLimit = FDFile.defaultIOChunkLimit
+
     private init(fd: Int32, url: URL) {
         self.fd = fd
         self.url = url
@@ -228,7 +233,7 @@ package final class FDFile {
             }
             while totalRead < length {
                 let currentOffset = try checkedOffset(offset, adding: totalRead)
-                let remaining = length - totalRead
+                let remaining = min(length - totalRead, ioChunkLimit)
                 let result = preadWithFaults(
                     base: base.advanced(by: totalRead),
                     length: remaining,
@@ -260,7 +265,7 @@ package final class FDFile {
             }
             while totalWritten < data.count {
                 let currentOffset = try checkedOffset(offset, adding: totalWritten)
-                let remaining = data.count - totalWritten
+                let remaining = min(data.count - totalWritten, ioChunkLimit)
                 let result = pwriteWithFaults(
                     base: base.advanced(by: totalWritten),
                     length: remaining,
@@ -326,6 +331,10 @@ package final class FDFile {
 
     /// Flush the directory entry of `url` so a newly created or renamed file survives a
     /// crash; `fsync` on the file itself does not persist its name.
+    ///
+    /// Some network and FUSE filesystems cannot sync a directory and return EINVAL or
+    /// ENOTSUP; that is treated as success (there is nothing more to flush there). Any
+    /// other failure throws.
     package static func fsyncParentDirectory(of url: URL) throws {
         let directory = url.deletingLastPathComponent()
         let descriptor = try openFile(at: directory, flags: O_RDONLY | O_CLOEXEC, mode: nil)
@@ -334,8 +343,13 @@ package final class FDFile {
         if fcntl(descriptor, F_FULLFSYNC, 0) == 0 { return }
         #endif
         guard posixFsync(descriptor) == 0 else {
+            if isDirectorySyncUnsupported(errno) { return }
             throw WaxError.io("fsync failed for directory \(directory.path): \(stringError())")
         }
+    }
+
+    static func isDirectorySyncUnsupported(_ code: Int32) -> Bool {
+        code == EINVAL || code == ENOTSUP || code == EOPNOTSUPP
     }
 
     // MARK: - Helpers

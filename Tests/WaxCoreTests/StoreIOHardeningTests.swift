@@ -97,7 +97,47 @@ func fileLockUpgradeTimesOutWhileAnotherSharedHolderExists() throws {
         #expect(throws: WaxError.self) {
             try mine.upgrade(timeout: .milliseconds(100))
         }
+
+        // A failed upgrade must leave the shared lock held (Linux flock drops it on a
+        // failed conversion unless it is re-taken).
+        #expect(mine.mode == .shared)
+        try other.release()
+        let intruder = try FileLock.tryAcquire(at: url, mode: .exclusive)
+        #expect(intruder == nil)
+        try intruder?.release()
     }
+}
+
+@Test func directorySyncTreatsOnlyUnsupportedErrnosAsSuccess() {
+    #expect(FDFile.isDirectorySyncUnsupported(EINVAL))
+    #expect(FDFile.isDirectorySyncUnsupported(ENOTSUP))
+    #expect(!FDFile.isDirectorySyncUnsupported(EIO))
+    #expect(!FDFile.isDirectorySyncUnsupported(EACCES))
+}
+
+@Test func fdFileChunksReadsAndWritesLargerThanTheIOLimit() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+        file.ioChunkLimit = 3
+        let payload = Data((0..<20).map { UInt8($0) })
+        try file.writeAll(payload, at: 5)
+        #expect(try file.readExactly(length: payload.count, at: 5) == payload)
+        #expect(try file.size() == 25)
+    }
+}
+
+@Test func putBatchWritesEachPayloadAtContiguousOffsets() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url)
+    let contents = [Data("alpha".utf8), Data(), Data(repeating: 9, count: 4096), Data("omega".utf8)]
+    let ids = try await wax.putBatch(contents, options: contents.map { _ in FrameMetaSubset() })
+    try await wax.commit()
+    for (id, content) in zip(ids, contents) {
+        #expect(try await wax.frameContent(frameId: id) == content)
+    }
+    try await wax.close()
 }
 
 // MARK: - Directory durability

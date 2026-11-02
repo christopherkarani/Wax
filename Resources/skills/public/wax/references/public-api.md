@@ -9,6 +9,7 @@ Source: `Sources/Wax/Memory.swift`
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
   - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while the built-in MiniLM provider loads (default `MiniLMEmbeddings` trait, iOS 18/macOS 15+), then live-attaches. Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
+  - Opening waits for another process's lock on the store file for at most 30 seconds, then throws `WaxError.lockUnavailable`. Earlier releases waited indefinitely. Share one process (for example the MCP HTTP server) per store instead of opening it from several.
 - `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
 - `public func save(_ text: String, metadata: [String: String] = [:]) async throws`
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws`

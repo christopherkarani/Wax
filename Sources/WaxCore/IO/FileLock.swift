@@ -85,10 +85,25 @@ package final class FileLock {
     }
 
     /// Convert to an exclusive lock, waiting at most `timeout` (`nil` waits indefinitely).
+    ///
+    /// `flock` conversion is not atomic. On Linux a failed exclusive attempt drops the
+    /// shared lock (macOS keeps it), so after a failure the shared lock is re-taken
+    /// without blocking. If another process took the file in between, this lock is
+    /// released and the error says so; otherwise it is still held in `.shared` mode.
     package func upgrade(timeout: Duration? = FileLock.defaultAcquireTimeout) throws {
         try ensureActive()
         if mode == .exclusive { return }
-        _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false, timeout: timeout, url: url)
+        do {
+            _ = try Self.lock(fd: fd, mode: .exclusive, nonBlocking: false, timeout: timeout, url: url)
+        } catch {
+            if (try? Self.lock(fd: fd, mode: .shared, nonBlocking: true)) == true {
+                throw error
+            }
+            try? release()
+            throw WaxError.lockUnavailable(
+                "upgrade failed and the shared lock on \(url.path) was lost; the lock is released: \(error)"
+            )
+        }
         mode = .exclusive
     }
 

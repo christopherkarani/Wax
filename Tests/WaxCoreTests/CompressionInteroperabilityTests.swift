@@ -131,10 +131,15 @@ private let lz4StoredBlockFixture = dataFromHex(
     #expect(decoded == canonicalFixture)
 }
 
-@Test func lz4CompressionWritesRawBlockFormat() throws {
+@Test func lz4CompressionKeepsEachPlatformsWriterFormat() throws {
     let compressed = try PayloadCompressor.compress(lz4MultiBlockInput, algorithm: .lz4)
-    // Raw LZ4 blocks carry no `bv4` frame magic, so liblz4 on Linux decodes them directly.
+    #if canImport(Compression)
+    // Apple keeps writing `bv41` frames: older Apple builds can only read that form.
+    #expect(compressed.starts(with: Data("bv41".utf8)))
+    #else
+    // Linux keeps writing one raw liblz4 block.
     #expect(!compressed.starts(with: Data("bv4".utf8)))
+    #endif
     let decoded = try PayloadCompressor.decompress(
         compressed,
         algorithm: .lz4,
@@ -152,5 +157,101 @@ private let lz4StoredBlockFixture = dataFromHex(
             algorithm: .lz4,
             uncompressedLength: lz4MultiBlockInput.count
         )
+    }
+}
+
+// MARK: - Candidate verification
+
+private enum StubDecodeError: Error { case failed }
+
+@Test func firstVerifiedSkipsDecodedCandidateThatFailsVerification() throws {
+    // Models a raw LZ4 block that also frame-parses: the framed candidate decodes to the
+    // wrong bytes, so the raw candidate must still be tried.
+    let wrong = Data("framed-misparse".utf8)
+    let right = Data("raw-block".utf8)
+    let picked = try PayloadCompressor.firstVerified([{ wrong }, { right }], verifiedBy: { $0 == right })
+    #expect(picked == right)
+}
+
+@Test func firstVerifiedSkipsFailingDecoder() throws {
+    let right = Data("raw-block".utf8)
+    let picked = try PayloadCompressor.firstVerified(
+        [{ throw StubDecodeError.failed }, { right }],
+        verifiedBy: { $0 == right }
+    )
+    #expect(picked == right)
+}
+
+@Test func firstVerifiedReturnsNilWhenNothingVerifies() throws {
+    let picked = try PayloadCompressor.firstVerified(
+        [{ Data([1]) }, { throw StubDecodeError.failed }],
+        verifiedBy: { _ in false }
+    )
+    #expect(picked == nil)
+}
+
+@Test func firstVerifiedRethrowsWhenNothingDecodes() {
+    #expect(throws: StubDecodeError.self) {
+        _ = try PayloadCompressor.firstVerified(
+            [{ throw StubDecodeError.failed }],
+            verifiedBy: { _ in true }
+        )
+    }
+}
+
+@Test func verifiedLZ4DecompressAcceptsBothOnDiskForms() throws {
+    let framed = try PayloadCompressor.decompress(
+        lz4MultiBlockFixture,
+        algorithm: .lz4,
+        uncompressedLength: lz4MultiBlockInput.count,
+        verifiedBy: { $0 == lz4MultiBlockInput }
+    )
+    #expect(framed == lz4MultiBlockInput)
+    let raw = try PayloadCompressor.decompress(
+        lz4RawBlockFixture,
+        algorithm: .lz4,
+        uncompressedLength: canonicalFixture.count,
+        verifiedBy: { $0 == canonicalFixture }
+    )
+    #expect(raw == canonicalFixture)
+}
+
+// MARK: - Untrusted canonical length
+
+@Test func decompressRejectsLengthBeyondCodecExpansionBeforeAllocating() {
+    let stored = Data(repeating: 0, count: 10)
+    for (algorithm, ratio) in [(CompressionKind.lz4, 255), (.deflate, 1032), (.lzfse, 4096)] {
+        let claimed = stored.count * ratio + 1
+        #expect(throws: WaxError.self) {
+            _ = try PayloadCompressor.decompress(stored, algorithm: algorithm, uncompressedLength: claimed)
+        }
+        do {
+            _ = try PayloadCompressor.decompress(
+                stored,
+                algorithm: algorithm,
+                uncompressedLength: Int.max,
+                verifiedBy: { _ in true }
+            )
+            Issue.record("expected \(algorithm) to reject an Int.max canonical length")
+        } catch let WaxError.decodingError(reason) {
+            #expect(reason.contains("exceeds"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+}
+
+@Test func expansionBoundsAdmitMostCompressibleInput() throws {
+    // All-zero input is the most compressible payload each codec sees in practice.
+    let zeros = Data(repeating: 0, count: 4 << 20)
+    #if canImport(Compression)
+    let kinds: [CompressionKind] = [.lz4, .deflate, .lzfse]
+    #else
+    let kinds: [CompressionKind] = [.lz4, .deflate]
+    #endif
+    for kind in kinds {
+        let stored = try PayloadCompressor.compress(zeros, algorithm: kind)
+        let decoded = try PayloadCompressor.decompress(stored, algorithm: kind, uncompressedLength: zeros.count)
+        #expect(decoded == zeros)
     }
 }
