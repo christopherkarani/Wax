@@ -44,6 +44,7 @@ Resolution order for the MCP endpoint:
 |----------|-------------|
 | `WAX_MCP_HTTP_ENDPOINT` | Wax MCP HTTP endpoint |
 | `WAX_MCP_AUTO_START` | Set to `1` to auto-start `wax-mcp` during `initialize()` |
+| `WAX_MCP_HTTP_AUTH_TOKEN` | Bearer token sent as `Authorization` (or `auth_token` in `wax-memory.json`); needed when the server binds off loopback |
 | `WAX_STRUCTURED_MEMORY` | Enable structured memory tools (`1` default) |
 | `WAX_HERMES_EXTENDED_TOOLS` | Expose additional markdown/compact/search tools; lifecycle stays provider-owned |
 | `WAX_STORE_PATH` | Extra path included in `hermes backup` |
