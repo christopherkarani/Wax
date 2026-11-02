@@ -80,8 +80,6 @@ func waxCoreDocCTopicsDoNotLinkPackageOnlySymbols() throws {
         "PendingEmbeddingSnapshot": "Sources/WaxCore/Wax.swift",
         "AsyncReadWriteLock": "Sources/WaxCore/Concurrency/ReadWriteLock.swift",
         "AsyncMutex": "Sources/WaxCore/Concurrency/AsyncMutex.swift",
-        "ReadWriteLock": "Sources/WaxCore/Concurrency/ReadWriteLock.swift",
-        "UnfairLock": "Sources/WaxCore/Concurrency/ReadWriteLock.swift",
         "FileLock": "Sources/WaxCore/IO/FileLock.swift",
         "BlockingIOExecutor": "Sources/WaxCore/IO/BlockingIOExecutor.swift",
         "WaxWriterPolicy": "Sources/WaxCore/WaxWriterPolicy.swift",
