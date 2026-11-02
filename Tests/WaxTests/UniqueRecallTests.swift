@@ -49,6 +49,12 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func hexTokenTailIsNotAlsoExtractedAsPascalCase() {
+        #expect(MemorySemantics.extractIdentifiers("HIT-SCOPE-AC1F4B6A") == ["ac1f4b6a"])
+        #expect(MemorySemantics.extractIdentifiers("UniqueSessionLane").contains("uniquesessionlane"))
+    }
+
+    @Test
     func oneSharedPascalCaseIdentifierDoesNotMatchEvenAtJaccardOne() {
         #expect(MemorySemantics.extractIdentifiers("AgentBroker exact").contains("agentbroker"))
         #expect(MemorySemantics.identifiersMatch("AgentBroker exact", "AgentBroker prefix") == false)

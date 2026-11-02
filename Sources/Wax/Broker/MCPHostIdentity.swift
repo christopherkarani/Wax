@@ -328,10 +328,4 @@ package final class MCPStickyAttributionRegistry: @unchecked Sendable {
         defer { lock.unlock() }
         stored.removeValue(forKey: transportKey)
     }
-
-    package func resetForTests() {
-        lock.lock()
-        defer { lock.unlock() }
-        stored.removeAll()
-    }
 }

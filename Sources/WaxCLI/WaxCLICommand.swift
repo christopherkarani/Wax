@@ -1339,7 +1339,8 @@ enum Pathing {
     static func prepareMCPInstallRuntime(
         cliPath: String,
         serverPath: String,
-        dryRun: Bool
+        dryRun: Bool,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> MCPInstallRuntime {
         let cliBundledDir = bundledRuntimeDirectory(forExecutablePath: cliPath)
         let serverBundledDir = bundledRuntimeDirectory(forExecutablePath: serverPath)
@@ -1348,7 +1349,10 @@ enum Pathing {
             return MCPInstallRuntime(cliPath: cliPath, serverPath: serverPath, staged: false)
         }
 
-        let targetDir = stableRuntimeDirectory(forPlatformDirectory: sourceDir.lastPathComponent)
+        let targetDir = stableRuntimeDirectory(
+            forPlatformDirectory: sourceDir.lastPathComponent,
+            environment: environment
+        )
         if !dryRun {
             let sourceValidation = try validateRuntimeDirectory(
                 sourceDir,
@@ -1420,8 +1424,11 @@ enum Pathing {
         return directoryURL
     }
 
-    static func stableRuntimeDirectory(forPlatformDirectory platformDirectory: String) -> URL {
-        let root = ProcessInfo.processInfo.environment["WAX_MCP_INSTALL_ROOT"].flatMap { raw -> URL? in
+    static func stableRuntimeDirectory(
+        forPlatformDirectory platformDirectory: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        let root = environment["WAX_MCP_INSTALL_ROOT"].flatMap { raw -> URL? in
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
             return URL(fileURLWithPath: expandPath(trimmed)).standardizedFileURL
@@ -1436,8 +1443,11 @@ enum Pathing {
 
     /// Stable skill install path: `~/.local/share/waxmcp/skills/wax-mcp` by default,
     /// or `$WAX_MCP_INSTALL_ROOT/skills/wax-mcp` when the install root is overridden.
-    static func stableSkillDirectory(skillName: String = "wax-mcp") -> URL {
-        if let raw = ProcessInfo.processInfo.environment["WAX_MCP_INSTALL_ROOT"] {
+    static func stableSkillDirectory(
+        skillName: String = "wax-mcp",
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let raw = environment["WAX_MCP_INSTALL_ROOT"] {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 return URL(fileURLWithPath: expandPath(trimmed))
@@ -1463,9 +1473,10 @@ enum Pathing {
     /// `Resources/skills/public/wax-mcp`, already-staged skill path.
     static func resolveWaxMCPSkillSource(
         cliPath: String? = nil,
-        serverPath: String? = nil
+        serverPath: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        if let raw = ProcessInfo.processInfo.environment["WAX_MCP_SKILL_SOURCE"] {
+        if let raw = environment["WAX_MCP_SKILL_SOURCE"] {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 let candidate = URL(fileURLWithPath: expandPath(trimmed)).standardizedFileURL
@@ -1503,7 +1514,7 @@ enum Pathing {
         }
         candidates.append(contentsOf: skillCandidatesWalkingUp(from: cwd))
 
-        candidates.append(stableSkillDirectory())
+        candidates.append(stableSkillDirectory(environment: environment))
 
         var seen = Set<String>()
         for candidate in candidates {
@@ -1553,14 +1564,19 @@ enum Pathing {
         cliPath: String,
         serverPath: String,
         dryRun: Bool,
-        skip: Bool
+        skip: Bool,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> MCPSkillInstall {
         if skip {
             return .skippedResult
         }
 
-        let source = resolveWaxMCPSkillSource(cliPath: cliPath, serverPath: serverPath)
-        let target = stableSkillDirectory()
+        let source = resolveWaxMCPSkillSource(
+            cliPath: cliPath,
+            serverPath: serverPath,
+            environment: environment
+        )
+        let target = stableSkillDirectory(environment: environment)
 
         guard let source else {
             return MCPSkillInstall(

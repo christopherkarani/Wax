@@ -933,7 +933,13 @@ package enum MemorySemantics {
     /// PascalCase tokens, `#123`, 7+ hex SHAs, and `C01`/`T1`-style IDs.
     package static func extractIdentifiers(_ text: String) -> Set<String> {
         var ids = Set<String>()
-        ids.formUnion(regexMatches(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#, in: text).map { $0.lowercased() })
+        // A PascalCase identifier has lowercase letters; without this, the hex tail of a
+        // token like "AC1F4B6A" also matched as "C1F4B6A" and one shared token counted twice.
+        ids.formUnion(
+            regexMatches(#"[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]+)+"#, in: text)
+                .filter { $0.contains(where: \.isLowercase) }
+                .map { $0.lowercased() }
+        )
         ids.formUnion(regexMatches(#"#\d+"#, in: text).map { $0.lowercased() })
         ids.formUnion(regexMatches(#"\b[0-9a-fA-F]{7,40}\b"#, in: text).map { $0.lowercased() })
         ids.formUnion(regexMatches(#"\b[A-Z]{1,3}\d{1,4}\b"#, in: text).map { $0.lowercased() })
