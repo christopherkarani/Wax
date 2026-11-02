@@ -62,7 +62,8 @@ Edit one path.
 
 - Swift 6.1+ package traits. Default trait: `MiniLMEmbeddings`. Opt-in: `ArcticEmbeddings`, `MCPServer`, `WaxRepo`. Linux CI uses Swift 6.2.
 - Day-to-day: `swift test --filter <TestTargetOrCase>`. MCP process tests require `--traits MCPServer`. MiniLM/Arctic suites stay skipped unless `WAX_TEST_MINILM=1` / `WAX_TEST_ARCTIC=1`.
-- Do not start with unfiltered `swift test` — it pulls benches. PR gate: `bash Resources/scripts/quality/production_readiness_gates.sh full` (skips soak/burn benches).
+- Do not start with unfiltered `swift test` — it pulls benches. PR gate: `bash Resources/scripts/quality/production_readiness_gates.sh full` (skips soak/burn benches). CI also runs `opt-in-configs` (MiniLM inference + `--traits WaxRepo`); Arctic stays opt-in.
+- Tests must not `setenv`/`unsetenv`: `--parallel` runs suites concurrently. Inject an `environment:` dictionary into the code under test (or into a spawned `Process`). Assert ordering/events, not tight wall-clock bounds.
 - Linux CI (`.github/workflows/waxcore-linux.yml`) is WaxCore + Wax + `wax-cli`/`wax-mcp` with `default,MCPServer` and `swift test --filter WaxCoreTests`. It is not a full Apple/integration proof. Never add `-DGRDBCUSTOMSQLITE`.
 - After Linux workflow edits: `bash Resources/scripts/quality/linux_ci_workflow_tests.sh`. After Hermes plugin edits: `bash Resources/scripts/quality/hermes_plugin_tests.sh`.
 - Linux `Package.swift` excludes Darwin-only integration files via `waxIntegrationLinuxExcludes`; keep that list honest (`PackageTraitManifestTests`).

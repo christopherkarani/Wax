@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-grep -Fq 'swift-actions/setup-swift@v2' "$WORKFLOW" \
+grep -Eq 'swift-actions/setup-swift@[0-9a-f]{40} # v2' "$WORKFLOW" \
   || fail "Linux CI must install the requested Swift toolchain"
 
 grep -Eq 'swift build --product Wax([[:space:]]|$)' "$WORKFLOW" \
