@@ -240,6 +240,9 @@ public actor Memory {
         public var embeddingStatus: EmbeddingStatus
         /// Live searchable frames that currently have no pending or committed vector.
         public var framesWithoutVectors: UInt64
+        /// 1 when this open dropped a torn tail of uncommitted writes left by a crash, otherwise 0.
+        /// Committed data is never dropped.
+        public var walReplayTruncationCount: UInt64
 
         public init(
             frameCount: UInt64,
@@ -249,7 +252,8 @@ public actor Memory {
             queryEmbeddingCircuitOpen: Bool,
             embedderIdentity: EmbeddingIdentity?,
             embeddingStatus: EmbeddingStatus = .disabled,
-            framesWithoutVectors: UInt64 = 0
+            framesWithoutVectors: UInt64 = 0,
+            walReplayTruncationCount: UInt64 = 0
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -259,6 +263,7 @@ public actor Memory {
             self.embedderIdentity = embedderIdentity
             self.embeddingStatus = embeddingStatus
             self.framesWithoutVectors = framesWithoutVectors
+            self.walReplayTruncationCount = walReplayTruncationCount
         }
     }
 
@@ -276,7 +281,8 @@ public actor Memory {
             queryEmbeddingCircuitOpen: runtime.queryEmbeddingCircuitOpen,
             embedderIdentity: runtime.embeddingStatus.identity,
             embeddingStatus: runtime.embeddingStatus,
-            framesWithoutVectors: runtime.framesWithoutVectors
+            framesWithoutVectors: runtime.framesWithoutVectors,
+            walReplayTruncationCount: runtime.wal.replayTruncationCount
         )
     }
 
