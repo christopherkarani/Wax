@@ -317,7 +317,8 @@ func hintedSessionStampsProjectOnOmittedSessionDurableRemember() async throws {
         #expect(remembered.isError != true)
         let payload = try requireJSONObject(firstTextContent(remembered))
         #expect(payload["scope"] as? String == "durable")
-        #expect(payload["unresolved_project"] as? Bool == false)
+        // Compact remember payloads omit `unresolved_project` (RememberAssembly.compactRememberKeys).
+        #expect(payload["unresolved_project"] as? Bool != true)
         #expect(payload["project"] as? String == "HintRepo")
     }
 }

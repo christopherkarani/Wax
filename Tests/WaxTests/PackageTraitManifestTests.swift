@@ -81,6 +81,13 @@ import Testing
     }
 }
 
+@Test func testTargetsUseToolchainSwiftTesting() throws {
+    // The external swiftlang/swift-testing package's #expect silently passed false
+    // Bool comparisons such as `#expect(flag == false)` on the Swift 6.4 toolchain.
+    let manifest = try PackageManifest.load()
+    #expect(!manifest.source.contains("swift-testing"))
+}
+
 @Test func waxRepoUIDependenciesAreMacOSScoped() throws {
     let manifest = try PackageManifest.load()
 

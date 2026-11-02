@@ -1554,10 +1554,7 @@ struct WaxCLIMemoryTests {
 
         #expect(output.status == EXIT_SUCCESS, "wax-cli mcp doctor should pass against the daily tool surface without a host CLI")
         #expect(output.stdout.contains("Doctor passed."))
-        // See mcpDoctorFailsWhenDailyToolSurfaceIsIncomplete: the host matrix names claude.
-        withKnownIssue("doctor host matrix always names claude") {
-            #expect(output.stdout.lowercased().contains("claude") == false)
-        }
+        expectHostAgnosticDoctorOutput(output.stdout)
         #expect(output.stdout.lowercased().contains("vector: healthy") == false)
         #expect(output.stdout.contains("Vector search is working") == false)
     }
@@ -1661,11 +1658,7 @@ struct WaxCLIMemoryTests {
         #expect(output.stdout.contains("recall"))
         #expect(output.stdout.contains("stats"))
         #expect(output.stdout.contains("Doctor passed.") == false)
-        // Known stale expectation, hidden until the external swift-testing package was
-        // dropped: doctor prints a host-registration matrix ("claude: ...") since e3af70cc0.
-        withKnownIssue("doctor host matrix always names claude") {
-            #expect(output.stdout.lowercased().contains("claude") == false)
-        }
+        expectHostAgnosticDoctorOutput(output.stdout)
     }
 
     @Test(.disabled(if: !mcpServerTraitEnabled,
@@ -2069,4 +2062,26 @@ struct WaxCLIMemoryTests {
 /// every other test (and spawned child process) under `swift test --parallel`.
 private func testEnvironment(_ overrides: [String: String]) -> [String: String] {
     ProcessInfo.processInfo.environment.merging(overrides) { _, override in override }
+}
+
+/// `mcp doctor` lists every supported host in a registration matrix (since e3af70cc0).
+/// Host-agnostic means the matrix names all hosts and nothing outside it is host-specific.
+private func expectHostAgnosticDoctorOutput(
+    _ stdout: String,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    let hosts = ["claude", "muse", "cursor", "codex", "grok", "opencode"]
+    let lines = stdout.components(separatedBy: .newlines)
+    #expect(lines.contains { $0.hasPrefix("## Host registrations") }, sourceLocation: sourceLocation)
+    for host in hosts {
+        #expect(lines.contains { $0.hasPrefix("\(host): ") }, "matrix is missing \(host)", sourceLocation: sourceLocation)
+    }
+    let outsideMatrix = lines.filter { line in
+        !line.hasPrefix("## Host registrations") && !hosts.contains { line.hasPrefix("\($0): ") }
+    }
+    #expect(
+        outsideMatrix.joined(separator: "\n").lowercased().contains("claude") == false,
+        "doctor output outside the host matrix is claude-specific",
+        sourceLocation: sourceLocation
+    )
 }
