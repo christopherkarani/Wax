@@ -50,6 +50,9 @@ package struct WaxWALStats: Equatable, Sendable {
     package var writeCallCount: UInt64
     package var autoCommitCount: UInt64
     package var replaySnapshotHitCount: UInt64
+    /// Number of opens that stopped pending WAL replay early because an uncommitted
+    /// record referenced a torn or missing payload (the longest valid prefix was kept).
+    package var replayTruncationCount: UInt64
 
     package init(
         walSize: UInt64,
@@ -63,7 +66,8 @@ package struct WaxWALStats: Equatable, Sendable {
         sentinelWriteCount: UInt64,
         writeCallCount: UInt64,
         autoCommitCount: UInt64,
-        replaySnapshotHitCount: UInt64
+        replaySnapshotHitCount: UInt64,
+        replayTruncationCount: UInt64
     ) {
         self.walSize = walSize
         self.writePos = writePos
@@ -77,6 +81,7 @@ package struct WaxWALStats: Equatable, Sendable {
         self.writeCallCount = writeCallCount
         self.autoCommitCount = autoCommitCount
         self.replaySnapshotHitCount = replaySnapshotHitCount
+        self.replayTruncationCount = replayTruncationCount
     }
 }
 
@@ -187,6 +192,7 @@ package actor Wax {
     private var dirty: Bool
     private var walAutoCommitCount: UInt64
     private var walReplaySnapshotHitCount: UInt64
+    private let walReplayTruncationCount: UInt64
     private let walProactiveCommitThresholdBytes: UInt64?
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
@@ -221,6 +227,7 @@ package actor Wax {
         dirty: Bool,
         walAutoCommitCount: UInt64,
         walReplaySnapshotHitCount: UInt64,
+        walReplayTruncationCount: UInt64,
         walProactiveCommitThresholdBytes: UInt64?,
         walProactiveCommitMaxWalSizeBytes: UInt64?,
         walProactiveCommitMinPendingBytes: UInt64,
@@ -248,6 +255,7 @@ package actor Wax {
         self.dirty = dirty
         self.walAutoCommitCount = walAutoCommitCount
         self.walReplaySnapshotHitCount = walReplaySnapshotHitCount
+        self.walReplayTruncationCount = walReplayTruncationCount
         self.walProactiveCommitThresholdBytes = walProactiveCommitThresholdBytes
         self.walProactiveCommitMaxWalSizeBytes = walProactiveCommitMaxWalSizeBytes
         self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
@@ -579,6 +587,7 @@ package actor Wax {
             dirty: false,
             walAutoCommitCount: 0,
             walReplaySnapshotHitCount: 0,
+            walReplayTruncationCount: 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,
@@ -630,7 +639,8 @@ package actor Wax {
             dataEnd: UInt64,
             generation: UInt64,
             dirty: Bool,
-            replaySnapshotUsed: Bool
+            replaySnapshotUsed: Bool,
+            replayTruncated: Bool
         ) in
             let lock = try FileLock.acquire(
                 at: url,
@@ -727,6 +737,7 @@ package actor Wax {
             let pendingMutations: [PendingMutation]
             let scanState: WALScanState
             var usedReplaySnapshot = false
+            var replayTruncated = false
             if shouldAttemptPersistedReplaySnapshot,
                let snapshot = persistedReplaySnapshot,
                snapshot.walCheckpointPos == snapshot.walWritePos,
@@ -754,10 +765,14 @@ package actor Wax {
             } else {
                 let pendingScan = try walReader.scanPendingMutationsWithState(
                     from: header.walCheckpointPos,
-                    committedSeq: committedSeq
+                    committedSeq: committedSeq,
+                    shouldReplay: { mutation in
+                        try Self.pendingPayloadIsIntact(mutation, file: file, fileSize: fileSize)
+                    }
                 )
                 pendingMutations = pendingScan.pendingMutations
                 scanState = pendingScan.state
+                replayTruncated = pendingScan.truncated
             }
             let lastSequence = max(committedSeq, scanState.lastSequence)
             let effectiveCheckpointPos: UInt64
@@ -796,7 +811,15 @@ package actor Wax {
             guard requiredEnd <= fileSize else {
                 throw WaxError.invalidToc(reason: "pending WAL references bytes beyond file size")
             }
-            try Self.validatePendingPayloadChecksums(pendingMutations, file: file)
+            if repair, replayTruncated {
+                // Terminate the ring at the first dropped record so a later crash cannot
+                // resurrect it (or anything after it) once new records are appended here.
+                try file.writeAll(
+                    Data(repeating: 0, count: WALRecord.headerSize),
+                    at: header.walOffset + scanState.writePos
+                )
+                try file.fsync()
+            }
             if repair, fileSize > requiredEnd {
                 try file.truncate(to: requiredEnd)
                 try file.fsync()
@@ -815,7 +838,8 @@ package actor Wax {
                 dataEnd: dataEnd,
                 generation: footerSlice.footer.generation,
                 dirty: !pendingMutations.isEmpty,
-                replaySnapshotUsed: usedReplaySnapshot
+                replaySnapshotUsed: usedReplaySnapshot,
+                replayTruncated: replayTruncated
             )
         }
 
@@ -841,6 +865,7 @@ package actor Wax {
             dirty: opened.dirty,
             walAutoCommitCount: 0,
             walReplaySnapshotHitCount: opened.replaySnapshotUsed ? 1 : 0,
+            walReplayTruncationCount: opened.replayTruncated ? 1 : 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: opened.header.walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,
@@ -2557,28 +2582,30 @@ package actor Wax {
         return storedChecksum
     }
 
-    private static func validatePendingPayloadChecksums(
-        _ mutations: [PendingMutation],
-        file: FDFile
-    ) throws {
-        for mutation in mutations {
-            guard case .putFrame(let put) = mutation.entry else { continue }
-            guard put.payloadLength <= UInt64(Int.max) else {
-                throw WaxError.io("pending frame \(put.frameId) payload too large: \(put.payloadLength)")
-            }
-
-            let payload: Data
-            if put.payloadLength == 0 {
-                payload = Data()
-            } else {
-                payload = try file.readExactly(length: Int(put.payloadLength), at: put.payloadOffset)
-            }
-
-            let storedChecksum = SHA256Checksum.digest(payload)
-            guard storedChecksum == put.storedChecksum else {
-                throw WaxError.checksumMismatch("pending frame \(put.frameId) stored_checksum mismatch")
-            }
+    /// Whether a pending (uncommitted) mutation's payload bytes are fully present and intact.
+    ///
+    /// Pending WAL records are not a durability promise: with `.onCommit` fsync a crash can persist a
+    /// `putFrame` record while its data payload is missing or torn. Replay keeps the longest prefix of
+    /// intact records instead of refusing to open. A checksum-valid record whose payload range
+    /// overflows is structural corruption, not a torn write, and still fails closed.
+    private static func pendingPayloadIsIntact(
+        _ mutation: PendingMutation,
+        file: FDFile,
+        fileSize: UInt64
+    ) throws -> Bool {
+        guard case .putFrame(let put) = mutation.entry else { return true }
+        guard put.payloadOffset <= UInt64.max - put.payloadLength else {
+            throw WaxError.invalidToc(reason: "pending frame \(put.frameId) payload range overflows")
         }
+        guard put.payloadOffset + put.payloadLength <= fileSize else { return false }
+        guard put.payloadLength <= UInt64(Int.max) else {
+            throw WaxError.io("pending frame \(put.frameId) payload too large: \(put.payloadLength)")
+        }
+
+        let payload = put.payloadLength == 0
+            ? Data()
+            : try file.readExactly(length: Int(put.payloadLength), at: put.payloadOffset)
+        return SHA256Checksum.digest(payload) == put.storedChecksum
     }
 
     private func frameMetaUnlocked(frameId: UInt64) throws -> FrameMeta {
@@ -2872,7 +2899,8 @@ package actor Wax {
                 sentinelWriteCount: wal.sentinelWriteCount,
                 writeCallCount: wal.writeCallCount,
                 autoCommitCount: walAutoCommitCount,
-                replaySnapshotHitCount: walReplaySnapshotHitCount
+                replaySnapshotHitCount: walReplaySnapshotHitCount,
+                replayTruncationCount: walReplayTruncationCount
             )
         }
     }

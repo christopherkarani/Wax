@@ -24,10 +24,13 @@ struct WALScanState: Equatable, Sendable {
 struct WALPendingScanResult: Equatable, Sendable {
     package var pendingMutations: [PendingMutation]
     package var state: WALScanState
+    /// True when replay stopped before a pending record the caller declined to replay.
+    package var truncated: Bool
 
-    package init(pendingMutations: [PendingMutation], state: WALScanState) {
+    package init(pendingMutations: [PendingMutation], state: WALScanState, truncated: Bool = false) {
         self.pendingMutations = pendingMutations
         self.state = state
+        self.truncated = truncated
     }
 }
 
@@ -65,121 +68,71 @@ package final class WALRingReader {
     }
 
     func scanRecords(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [WALRecordLocation] {
-        return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
-            let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
-            return WALRecordLocation(offset: offset, record: record)
+        var locations: [WALRecordLocation] = []
+        _ = try walk(from: checkpointPos) { offset, header, payload in
+            if header.sequence > committedSeq {
+                let record = WALRecord.data(sequence: header.sequence, flags: header.flags, payload: payload)
+                locations.append(WALRecordLocation(offset: offset, record: record))
+            }
+            return .replay
         }
+        return locations
     }
 
     package func scanPendingMutations(from checkpointPos: UInt64, committedSeq: UInt64) throws -> [PendingMutation] {
-        return try scanInternal(from: checkpointPos, committedSeq: committedSeq) { offset, header, payload in
-            let entry = try WALEntryCodec.decode(payload, offset: offset)
-            return PendingMutation(sequence: header.sequence, entry: entry)
-        }
+        try scanPendingMutationsWithState(from: checkpointPos, committedSeq: committedSeq).pendingMutations
     }
 
-    func scanPendingMutationsWithState(from checkpointPos: UInt64, committedSeq: UInt64) throws -> WALPendingScanResult {
-        guard walSize > 0 else {
-            return WALPendingScanResult(
-                pendingMutations: [],
-                state: WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0)
-            )
-        }
-
-        let start = checkpointPos % walSize
-        var cursor = start
-        var lastSequence: UInt64 = 0
-        var pendingBytes: UInt64 = 0
-        var wrapped = false
+    /// Scans pending mutations and the ring state that follows them.
+    ///
+    /// `shouldReplay` is consulted for every pending (`sequence > committedSeq`) mutation in order.
+    /// Returning `false` ends replay *before* that record: the returned state points at its offset
+    /// so the writer resumes there, and `truncated` is set. Committed records are never offered.
+    func scanPendingMutationsWithState(
+        from checkpointPos: UInt64,
+        committedSeq: UInt64,
+        shouldReplay: (PendingMutation) throws -> Bool = { _ in true }
+    ) throws -> WALPendingScanResult {
         var pendingMutations: [PendingMutation] = []
-
-        while true {
-            let remaining = walSize - cursor
-            if remaining < UInt64(WALRecord.headerSize) {
-                if wrapped { break }
-                pendingBytes += remaining
-                cursor = 0
-                wrapped = true
-                if cursor == start { break }
-                continue
+        var truncated = false
+        let state = try walk(from: checkpointPos) { offset, header, payload in
+            guard header.sequence > committedSeq else { return .replay }
+            // Do not silently skip checksum-valid but undecodable payloads: a decode failure is a
+            // codec invariant violation, not a torn write (torn writes fail the checksum and end the
+            // scan earlier), and advancing past it would permanently drop committed mutations.
+            let entry = try WALEntryCodec.decode(payload, offset: offset)
+            let mutation = PendingMutation(sequence: header.sequence, entry: entry)
+            guard try shouldReplay(mutation) else {
+                truncated = true
+                return .stop
             }
-
-            let headerData = try file.readExactly(length: WALRecord.headerSize, at: walOffset + cursor)
-            let header: WALRecordHeader
-            do {
-                header = try WALRecordHeader.decode(from: headerData, offset: cursor)
-            } catch let error as WaxError {
-                if case .walCorruption = error { break }
-                throw error
-            } catch {
-                throw error
-            }
-
-            if header.isSentinel || header.sequence == 0 {
-                break
-            }
-
-            if lastSequence != 0 && header.sequence <= lastSequence {
-                break
-            }
-
-            if header.flags.contains(.isPadding) {
-                if header.checksum != WALRecord.paddingChecksum {
-                    break
-                }
-                let skipBytes = UInt64(header.length)
-                let advance = UInt64(WALRecord.headerSize) + skipBytes
-                if cursor + advance > walSize {
-                    break
-                }
-                cursor = (cursor + advance) % walSize
-                pendingBytes += advance
-                lastSequence = header.sequence
-                if cursor == 0 { wrapped = true }
-                if cursor == start { break }
-                continue
-            }
-
-            let payloadLen = UInt64(header.length)
-            if payloadLen == 0 { break }
-
-            let maxPayload = walSize >= UInt64(WALRecord.headerSize) ? walSize - UInt64(WALRecord.headerSize) : 0
-            if payloadLen > maxPayload { break }
-            if payloadLen > remaining - UInt64(WALRecord.headerSize) { break }
-            if payloadLen > UInt64(Int.max) { break }
-
-            let payloadOffset = cursor + UInt64(WALRecord.headerSize)
-            let payload = try file.readExactly(length: Int(payloadLen), at: walOffset + payloadOffset)
-            let computed = SHA256Checksum.digest(payload)
-            if computed != header.checksum {
-                break
-            }
-
-            if header.sequence > committedSeq {
-                // Do not silently skip checksum-valid but undecodable payloads.
-                // Advancing replay state past them would permanently drop committed mutations.
-                let entry = try WALEntryCodec.decode(payload, offset: cursor)
-                pendingMutations.append(PendingMutation(sequence: header.sequence, entry: entry))
-            }
-
-            let advance = UInt64(WALRecord.headerSize) + payloadLen
-            cursor = cursor + advance
-            if cursor == walSize {
-                cursor = 0
-                wrapped = true
-            }
-            pendingBytes += advance
-            lastSequence = header.sequence
-            if cursor == start { break }
+            pendingMutations.append(mutation)
+            return .replay
         }
-
-        let state = WALScanState(lastSequence: lastSequence, writePos: cursor, pendingBytes: pendingBytes)
-        return WALPendingScanResult(pendingMutations: pendingMutations, state: state)
+        return WALPendingScanResult(pendingMutations: pendingMutations, state: state, truncated: truncated)
     }
 
     func scanState(from checkpointPos: UInt64) throws -> WALScanState {
+        try walk(from: checkpointPos) { _, _, _ in .replay }
+    }
+
+    private enum RecordDecision {
+        case replay
+        case stop
+    }
+
+    /// Walks the ring from `checkpointPos`, validating each record envelope, and hands every
+    /// checksum-valid data record to `visit`. The walk ends at the first sentinel, zero or
+    /// non-increasing sequence, torn header/payload/padding, or on returning to the start.
+    ///
+    /// - Returns: The ring state immediately after the last record the walk advanced past.
+    private func walk(
+        from checkpointPos: UInt64,
+        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> RecordDecision
+    ) throws -> WALScanState {
         guard walSize > 0 else { return WALScanState(lastSequence: 0, writePos: 0, pendingBytes: 0) }
 
+        let headerSize = UInt64(WALRecord.headerSize)
         let start = checkpointPos % walSize
         var cursor = start
         var lastSequence: UInt64 = 0
@@ -188,7 +141,7 @@ package final class WALRingReader {
 
         while true {
             let remaining = walSize - cursor
-            if remaining < UInt64(WALRecord.headerSize) {
+            if remaining < headerSize {
                 if wrapped { break }
                 pendingBytes += remaining
                 cursor = 0
@@ -201,52 +154,20 @@ package final class WALRingReader {
             let header: WALRecordHeader
             do {
                 header = try WALRecordHeader.decode(from: headerData, offset: cursor)
-            } catch let error as WaxError {
-                if case .walCorruption = error { break }
-                throw error
-            } catch {
-                throw error
-            }
-
-            if header.isSentinel || header.sequence == 0 {
+            } catch WaxError.walCorruption {
                 break
             }
 
-            if lastSequence != 0 && header.sequence <= lastSequence {
-                break
-            }
+            if header.isSentinel || header.sequence == 0 { break }
+            if lastSequence != 0 && header.sequence <= lastSequence { break }
+            guard let advance = try acceptedRecordLength(
+                header: header,
+                at: cursor,
+                remaining: remaining,
+                visit: visit
+            ) else { break }
 
-            if header.flags.contains(.isPadding) {
-                if header.checksum != WALRecord.paddingChecksum {
-                    break
-                }
-                let skipBytes = UInt64(header.length)
-                let advance = UInt64(WALRecord.headerSize) + skipBytes
-                if cursor + advance > walSize {
-                    break
-                }
-                cursor = (cursor + advance) % walSize
-                pendingBytes += advance
-                lastSequence = header.sequence
-                if cursor == 0 { wrapped = true }
-                if cursor == start { break }
-                continue
-            }
-
-            let payloadLen = UInt64(header.length)
-            if payloadLen == 0 { break }
-
-            let maxPayload = walSize >= UInt64(WALRecord.headerSize) ? walSize - UInt64(WALRecord.headerSize) : 0
-            if payloadLen > maxPayload { break }
-            if payloadLen > remaining - UInt64(WALRecord.headerSize) { break }
-            if payloadLen > UInt64(Int.max) { break }
-
-            let payload = try file.readExactly(length: Int(payloadLen), at: walOffset + cursor + UInt64(WALRecord.headerSize))
-            let computed = SHA256Checksum.digest(payload)
-            if computed != header.checksum { break }
-
-            let advance = UInt64(WALRecord.headerSize) + payloadLen
-            cursor = cursor + advance
+            cursor += advance
             if cursor == walSize {
                 cursor = 0
                 wrapped = true
@@ -259,100 +180,28 @@ package final class WALRingReader {
         return WALScanState(lastSequence: lastSequence, writePos: cursor, pendingBytes: pendingBytes)
     }
 
-    private func scanInternal<T>(
-        from checkpointPos: UInt64,
-        committedSeq: UInt64,
-        decode: (UInt64, WALRecordHeader, Data) throws -> T
-    ) throws -> [T] {
-        guard walSize > 0 else { return [] }
-
-        let start = checkpointPos % walSize
-        var cursor = start
-        var results: [T] = []
-        var wrapped = false
-        var lastSequence: UInt64 = 0
-
-        while true {
-            let remaining = walSize - cursor
-            if remaining < UInt64(WALRecord.headerSize) {
-                if wrapped { break }
-                cursor = 0
-                wrapped = true
-                if cursor == start { break }
-                continue
-            }
-
-            let headerData = try file.readExactly(length: WALRecord.headerSize, at: walOffset + cursor)
-            let header: WALRecordHeader
-            do {
-                header = try WALRecordHeader.decode(from: headerData, offset: cursor)
-            } catch let error as WaxError {
-                if case .walCorruption = error { break }
-                throw error
-            } catch {
-                throw error
-            }
-
-            if header.isSentinel {
-                break
-            }
-
-            if header.sequence == 0 {
-                break
-            }
-
-            if lastSequence != 0 && header.sequence <= lastSequence {
-                break
-            }
-
-            if header.flags.contains(.isPadding) {
-                if header.checksum != WALRecord.paddingChecksum {
-                    break
-                }
-                let skipBytes = UInt64(header.length)
-                let advance = UInt64(WALRecord.headerSize) + skipBytes
-                if cursor + advance > walSize {
-                    break
-                }
-                cursor = (cursor + advance) % walSize
-                lastSequence = header.sequence
-                if cursor == 0 { wrapped = true }
-                if cursor == start { break }
-                continue
-            }
-
-            let payloadLen = UInt64(header.length)
-            if payloadLen == 0 { break }
-
-            let maxPayload = walSize >= UInt64(WALRecord.headerSize) ? walSize - UInt64(WALRecord.headerSize) : 0
-            if payloadLen > maxPayload { break }
-            if payloadLen > remaining - UInt64(WALRecord.headerSize) { break }
-            if payloadLen > UInt64(Int.max) { break }
-
-            let payload = try file.readExactly(length: Int(payloadLen), at: walOffset + cursor + UInt64(WALRecord.headerSize))
-            let computed = SHA256Checksum.digest(payload)
-            if computed != header.checksum {
-                break
-            }
-
-            if header.sequence > committedSeq {
-                // Re-throw decode failures: a checksum-validated record that cannot be decoded
-                // indicates structural corruption in the WAL entry format, not a partial write.
-                // Partial writes are caught earlier by the checksum mismatch check (which causes
-                // a `break`), so a decode failure here means a codec invariant violation that
-                // cannot be silently recovered from by skipping mutations.
-                results.append(try decode(cursor, header, payload))
-            }
-
-            cursor = cursor + UInt64(WALRecord.headerSize) + payloadLen
-            if cursor == walSize {
-                cursor = 0
-                wrapped = true
-            }
-            lastSequence = header.sequence
-            if cursor == start { break }
+    /// Validates the record at `offset` and returns the ring bytes it occupies,
+    /// or `nil` when the record is torn or `visit` declines it (the walk ends there).
+    private func acceptedRecordLength(
+        header: WALRecordHeader,
+        at offset: UInt64,
+        remaining: UInt64,
+        visit: (_ offset: UInt64, _ header: WALRecordHeader, _ payload: Data) throws -> RecordDecision
+    ) throws -> UInt64? {
+        let headerSize = UInt64(WALRecord.headerSize)
+        if header.flags.contains(.isPadding) {
+            // Padding headers carry no payload checksum, so a torn `length` is only detectable by
+            // position: the writer always pads exactly to the ring end. Anything else is a torn tail.
+            guard header.checksum == WALRecord.paddingChecksum,
+                  headerSize + UInt64(header.length) == remaining else { return nil }
+            return remaining
         }
 
-        return results
+        let payloadLen = UInt64(header.length)
+        guard payloadLen > 0, payloadLen <= remaining - headerSize, payloadLen <= UInt64(Int.max) else { return nil }
+        let payload = try file.readExactly(length: Int(payloadLen), at: walOffset + offset + headerSize)
+        guard SHA256Checksum.digest(payload) == header.checksum else { return nil }
+        guard try visit(offset, header, payload) == .replay else { return nil }
+        return headerSize + payloadLen
     }
 }
