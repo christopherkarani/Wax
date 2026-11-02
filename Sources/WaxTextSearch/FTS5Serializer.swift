@@ -56,8 +56,10 @@ enum FTS5Serializer {
             Int64(size),
             flags
         )
+        // With SQLITE_DESERIALIZE_FREEONCLOSE, SQLite takes ownership of `buffer` even when
+        // sqlite3_deserialize fails (it calls sqlite3_free before returning), so it must not
+        // be freed here.
         guard rc == SQLITE_OK else {
-            sqlite3_free(buffer)
             throw WaxError.io("sqlite3_deserialize failed: \(sqliteMessage(connection))")
         }
     }
