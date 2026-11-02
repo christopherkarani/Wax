@@ -45,8 +45,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func concurrentFirstRememberCallsShareOneSession() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "concurrent-open")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -93,8 +91,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func statsNeverAutoOpensASession() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let hint = MCPClientSessionHint(
                 connectionKey: "auto-stats",
@@ -112,8 +108,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func twoTransportKeysDoNotShareWorkingMemory() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "isolate-work")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -166,8 +160,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func explicitHostConversationIDsStayDistinct() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "host-ids")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -218,8 +210,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func sameTransportKeyRecoversBinding() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "reconnect")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -251,8 +241,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func staleBindingRetriesInactiveSessionOnce() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "stale-retry")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -310,8 +298,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func rememberScopeGlobalFailsLikeBrokerWriteScopeParse() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "scope-global")
             defer { try? FileManager.default.removeItem(at: repo) }
@@ -362,8 +348,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func userPreferenceRememberSkipsProjectGateWhenUnresolved() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let hint = MCPClientSessionHint(
                 connectionKey: "auto-pref",
@@ -390,8 +374,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func userPreferenceRememberWithGlobalScopeStillFailsParse() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let hint = MCPClientSessionHint(
                 connectionKey: "auto-pref-global",
@@ -420,8 +402,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func missingRecallScopeRemainsProjectGated() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let hint = MCPClientSessionHint(
                 connectionKey: "auto-recall-default-project",
@@ -446,8 +426,6 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func unknownMemoryTypeRemainsProjectGated() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         try await withAutoSessionBroker { broker in
             let hint = MCPClientSessionHint(
                 connectionKey: "auto-unknown-type",
@@ -473,15 +451,11 @@ struct MCPAutoSessionCoordinatorTests {
 
     @Test
     func killSwitchRestoresExplicitOpen() async throws {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         #expect(!MCPAutoSessionPolicy.isEnabled(["WAX_MCP_AUTO_SESSION": "0"]))
     }
 
     @Test
     func reverseInvalidationClearsEveryKeyForBrokerUUID() {
-        MCPBoundSessionRegistry.shared.resetForTests()
-        defer { MCPBoundSessionRegistry.shared.resetForTests() }
         let brokerID = UUID()
         MCPBoundSessionRegistry.shared.remember(key: "k1", sessionID: brokerID, ownership: .transport)
         MCPBoundSessionRegistry.shared.remember(key: "k2", sessionID: brokerID, ownership: .transport)
