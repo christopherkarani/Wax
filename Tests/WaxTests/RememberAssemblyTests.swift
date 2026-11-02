@@ -541,7 +541,7 @@ func rememberAssemblyIdentifierOverlapStillRequiresSameType() {
 @Test
 func rememberAssemblyKeepsDistinctLessonsThatShareIdentifiers() {
     #expect(MemorySemantics.identifiersMatch(lessonCallOrder, lessonEmptyCrash))
-    #expect(!MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash))
+    #expect(!MemorySemantics.isNearTwin(older: lessonCallOrder, newer: lessonEmptyCrash))
     let selected = RememberAssembly.selectSupersedeFrameIDs(
         sessionID: nil,
         newFrameId: 2,
@@ -555,10 +555,10 @@ func rememberAssemblyKeepsDistinctLessonsThatShareIdentifiers() {
 
 @Test
 func nearTwinRequiresVocabularyNotJustIdentifiers() {
-    #expect(MemorySemantics.isNearTwin(originalDecision, similarDecision))
-    #expect(MemorySemantics.isNearTwin(identifierHolesOriginal, identifierHolesParaphrase))
-    #expect(!MemorySemantics.isNearTwin(lessonCallOrder, lessonEmptyCrash))
-    #expect(!MemorySemantics.isNearTwin("old decision", "new decision"))
+    #expect(MemorySemantics.isNearTwin(older: originalDecision, newer: similarDecision))
+    #expect(MemorySemantics.isNearTwin(older: identifierHolesOriginal, newer: identifierHolesParaphrase))
+    #expect(!MemorySemantics.isNearTwin(older: lessonCallOrder, newer: lessonEmptyCrash))
+    #expect(!MemorySemantics.isNearTwin(older: "old decision", newer: "new decision"))
 }
 
 @Test
@@ -566,18 +566,18 @@ func nearTwinRejectsSameIdentifiersWithDifferentAction() {
     let closeOrder = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be closed in order before flush."
     let openLazily = "Lesson: WaxSession, MemoryOrchestrator and VectorIndex must be opened lazily before search."
     #expect(MemorySemantics.identifiersMatch(closeOrder, openLazily))
-    #expect(!MemorySemantics.isNearTwin(closeOrder, openLazily))
+    #expect(!MemorySemantics.isNearTwin(older: closeOrder, newer: openLazily))
 }
 
 @Test
 func nearTwinRejectsDifferentIssueNumbers() {
     let bug123 = "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush."
     let bug124 = "Bug #124 in WaxSession: MemoryOrchestrator crashes on open."
-    #expect(!MemorySemantics.isNearTwin(bug123, bug124))
+    #expect(!MemorySemantics.isNearTwin(older: bug123, newer: bug124))
     // The pure-text path is guarded too: identical wording, different ticket.
     #expect(!MemorySemantics.isNearTwin(
-        "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush after compaction.",
-        "Bug #124 in WaxSession: MemoryOrchestrator crashes on flush after compaction."
+        older: "Bug #123 in WaxSession: MemoryOrchestrator crashes on flush after compaction.",
+        newer: "Bug #124 in WaxSession: MemoryOrchestrator crashes on flush after compaction."
     ))
 }
 
@@ -585,10 +585,10 @@ func nearTwinRejectsDifferentIssueNumbers() {
 func nearTwinRejectsNegationFlip() {
     let use = "Use GitLiveProbe for UniqueRanking in CompactSummary."
     let neverUse = "Never use GitLiveProbe outside UniqueRanking or CompactSummary."
-    #expect(!MemorySemantics.isNearTwin(use, neverUse))
+    #expect(!MemorySemantics.isNearTwin(older: use, newer: neverUse))
     #expect(!MemorySemantics.isNearTwin(
-        "Prefer project-scoped recall and auto-widen an empty project lane.",
-        "Prefer project-scoped recall and never auto-widen an empty project lane."
+        older: "Prefer project-scoped recall and auto-widen an empty project lane.",
+        newer: "Prefer project-scoped recall and never auto-widen an empty project lane."
     ))
 }
 
@@ -625,4 +625,81 @@ func supersedeCandidateGateFiltersOnMetadataOnly() {
             supersededBy: nil, type: lesson, project: "wax", nowMs: 0
         )
     )
+}
+
+/// True when writing `newer` auto-supersedes an existing durable `older` of the same type.
+private func supersedes(older: String, newer: String, type: MemoryType = .decision) -> Bool {
+    !RememberAssembly.selectSupersedeFrameIDs(
+        sessionID: nil,
+        newFrameId: 2,
+        content: newer,
+        metadata: durableMetadata(type: type.rawValue),
+        documents: [candidate(frameId: 1, text: older, type: type.rawValue)],
+        nowMs: 0
+    ).isEmpty
+}
+
+@Test
+func supersedeAllowsNewerTextToAddAPreciseReference() {
+    let withRef = originalDecision + " (#212)"
+    #expect(supersedes(older: originalDecision, newer: withRef))
+    // Dropping the reference loses information: the referenced memory stays live.
+    #expect(!supersedes(older: withRef, newer: originalDecision))
+}
+
+private let broadFlushLesson =
+    "Lesson: GitLiveProbe, UniqueRanking, CompactSummary, WalRing and VectorIndex flush ordering matters for crash recovery and replay."
+private let narrowFlushLesson = "Lesson: GitLiveProbe, UniqueRanking, CompactSummary flush ordering matters."
+
+@Test
+func supersedeNeverRetiresABroaderOlderMemory() {
+    #expect(!supersedes(older: broadFlushLesson, newer: narrowFlushLesson, type: .lesson))
+    #expect(supersedes(older: narrowFlushLesson, newer: broadFlushLesson, type: .lesson))
+}
+
+@Test
+func staleHintIsDirectionalForBroaderOlderMemory() {
+    let flags = StaleHint.flags(for: [
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 1_000, text: broadFlushLesson),
+        StaleHint.Entry(memoryType: "lesson", createdAtMs: 2_000, text: narrowFlushLesson),
+    ])
+    #expect(flags == [false, false])
+}
+
+@Test
+func supersedeIgnoresIncidentalNegationTokens() {
+    #expect(supersedes(
+        older: "FlushPolicy batches WAL writes and fsyncs once per batch.",
+        newer: "FlushPolicy batches WAL writes and fsyncs once per batch; no-op when empty."
+    ))
+    #expect(supersedes(
+        older: "VectorIndex rebuilds run in the background after compaction.",
+        newer: "VectorIndex rebuilds run in the background after compaction without blocking recall."
+    ))
+    #expect(supersedes(
+        older: "VectorIndex rebuilds cut tail latency after compaction.",
+        newer: "VectorIndex rebuilds not only cut tail latency after compaction."
+    ))
+    // A real polarity flip still blocks.
+    #expect(!supersedes(
+        older: "Prefer project-scoped recall and auto-widen an empty project lane.",
+        newer: "Prefer project-scoped recall and never auto-widen an empty project lane."
+    ))
+}
+
+@Test
+func supersedeMatchesRewordingWithoutIdentifiers() {
+    #expect(supersedes(
+        older: "We should always run the linter before commit.",
+        newer: "Always run the linter before you commit."
+    ))
+    #expect(!supersedes(older: "old decision", newer: "new decision"))
+}
+
+@Test
+func identifierExtractionSkipsCommonTokensDatesAndPlainNumbers() {
+    let ids = MemorySemantics.extractIdentifiers("UTF8 on S3 with H264, P1 since 20261102, run 1234567")
+    #expect(ids.isEmpty, "\(ids)")
+    let kept = MemorySemantics.extractIdentifiers("C01 on T1, PROJ-42, sha 466c1e6")
+    #expect(kept == ["c01", "t1", "proj-42", "466c1e6"])
 }

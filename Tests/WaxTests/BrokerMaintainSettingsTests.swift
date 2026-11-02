@@ -153,6 +153,17 @@ func sessionEndHarvestUsesBrokerRetentionSettings() async throws {
     }
 }
 
+@Test(arguments: ["abc", "1h", ""])
+func workingQuarantineNonNumericWarnsAndUsesDefault(_ raw: String) {
+    var warnings: [String] = []
+    let settings = MemoryRetentionSettings.fromEnvironment(
+        ["WAX_WORKING_QUARANTINE_SECS": raw],
+        warn: { warnings.append($0) }
+    )
+    #expect(settings.workingQuarantineMs == MemoryRetentionSettings.default.workingQuarantineMs)
+    #expect(warnings.count == 1)
+}
+
 @Test(arguments: ["0", "-5"])
 func workingQuarantineNonPositiveFallsBackToDefault(_ raw: String) {
     var warnings: [String] = []

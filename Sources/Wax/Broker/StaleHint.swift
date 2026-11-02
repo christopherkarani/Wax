@@ -3,7 +3,7 @@ import Foundation
 /// One `stale_hint` rule for recall hits and primed items: a strictly newer
 /// item of the same memory type, on the same topic, is in the same result set.
 ///
-/// Topic uses `MemorySemantics.isNearTwin` (the auto-supersede rule), so two
+/// Topic uses `MemorySemantics.isNearTwin(older:newer:)` (the auto-supersede rule), so two
 /// unrelated decisions never mark each other stale. Unknown timestamps (`<= 0`)
 /// are never flagged and never count as newer; equal timestamps are not newer.
 package enum StaleHint {
@@ -33,7 +33,7 @@ package enum StaleHint {
                 let other = entries[otherIndex]
                 guard other.memoryType == entry.memoryType else { return false }
                 guard other.createdAtMs > entry.createdAtMs else { return false }
-                return MemorySemantics.isNearTwin(entry.signature, other.signature)
+                return MemorySemantics.isNearTwin(older: entry.signature, newer: other.signature)
             }
         }
     }

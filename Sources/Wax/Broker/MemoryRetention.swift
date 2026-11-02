@@ -54,7 +54,11 @@ package struct MemoryRetentionSettings: Sendable, Equatable {
     /// raised to the floor. Both cases warn, since either one was likely a typo.
     private static func workingQuarantineMs(_ raw: String?, warn: (String) -> Void) -> Int64 {
         let key = "WAX_WORKING_QUARANTINE_SECS"
-        guard let raw, let seconds = Int64(raw) else {
+        guard let raw else {
+            return Self.default.workingQuarantineMs
+        }
+        guard let seconds = Int64(raw.trimmingCharacters(in: .whitespaces)) else {
+            warn("\(key)=\(raw) is not a whole number of seconds; using the default \(Self.default.workingQuarantineMs / 1000)s")
             return Self.default.workingQuarantineMs
         }
         guard seconds > 0 else {

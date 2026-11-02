@@ -169,9 +169,8 @@ package enum RememberAssembly {
         return other.type == type && other.project == project && other.durability == .durable
     }
 
-    /// Same-project near-twins (`MemorySemantics.isNearTwin`: compatible
-    /// identifiers and negation, then Jaccard ≥ 0.88 or matching identifiers with
-    /// shared content terms) retire
+    /// Same-project near-twins (`MemorySemantics.isNearTwin(older:newer:)`, with
+    /// the new content as `newer`) retire
     /// prior unsuperseded durable twins. Pending or committed `supersededBy` is a
     /// skip so a failed flush cannot restamp the same predecessor. Locked others
     /// stay live. Returns candidate frame IDs; broker still supersedes + flushes.
@@ -203,7 +202,7 @@ package enum RememberAssembly {
                 nowMs: nowMs
             ) else { continue }
             let other = MemorySemantics.TextSignature(document.text)
-            guard MemorySemantics.isNearTwin(newSignature, other) else { continue }
+            guard MemorySemantics.isNearTwin(older: other, newer: newSignature) else { continue }
             selected.append(document.frameId)
         }
         return selected

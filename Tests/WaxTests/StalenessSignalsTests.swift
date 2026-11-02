@@ -190,7 +190,7 @@ func primeStaleHintComparesFullTextNotTruncatedPrefix() {
     let sharedLead = "Prefer project-scoped recall and never auto-widen an empty project lane; "
     let sessionTail = sharedLead + "session lanes rank their own working notes first after compaction."
     let releaseTail = sharedLead + "Homebrew formulas ship from the release workflow with pinned checksums."
-    #expect(!MemorySemantics.isNearTwin(sessionTail, releaseTail))
+    #expect(!MemorySemantics.isNearTwin(older: sessionTail, newer: releaseTail))
     let envelope = MCPPrimeAssembly.assemble(
         MCPPrimeAssembly.Input(
             host: "claude",
