@@ -319,7 +319,7 @@ package enum UnifiedRanking {
             if intents.contains(.asksLocation) {
                 if RerankingHelpers.containsRelocationStatement(comparablePreview) {
                     total += 1.60
-                } else if lower.contains("moved to") || lower.contains("move to") {
+                } else if RerankingHelpers.containsMoveToPhrase(lower) {
                     total += 0.45
                 }
             }

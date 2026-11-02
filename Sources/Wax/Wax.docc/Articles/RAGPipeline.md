@@ -32,18 +32,18 @@ Reranking factors:
 
 ### Intent Detection
 
-The ``QueryAnalyzer`` detects query intent patterns that influence scoring:
+The ``QueryAnalyzer`` detects query intent from whole-word cues ("update" does not signal a date):
 
-| Intent | Pattern Examples | Effect |
-|--------|-----------------|--------|
-| Location | "where", "location", "address" | Boosts results with location data |
-| Date | "when", "what date", "what time" | Boosts results with temporal content |
-| Ownership | "whose", "who owns", "belong to" | Boosts results with ownership assertions |
-| Multi-hop | Multiple entity references | Enables broader search |
+| Intent | Cue words | Effect |
+|--------|-----------|--------|
+| Location | "where", "city", "move", "moved", "moving" | Boosts relocation statements ("moved to Lisbon"; calendar moves excluded) |
+| Date | "when", "date", "dates" | Boosts results with date literals |
+| Ownership | "who", "whose", "owner", "owns" | Boosts results with ownership statements |
+| Multi-hop | "and" plus two or more intents | Enables broader search |
 
 ### Distractor Penalties
 
-For date-intent queries, hedged date statements ("tentative", "proposed", "pending approval", "target date", "estimate") receive a configurable penalty (`answerDistractorPenalty`, default 0.70). Ranking does not key on document topics or fixture phrases; words such as "checklist" or "health" carry no penalty.
+For date-intent queries, hedged date statements ("tentative", "proposed", "pending approval", "target date", "estimate") receive a configurable penalty (`answerDistractorPenalty`, default 0.30) during answer ordering. Unified ranking applies its own fixed hedged-date demotion before that. Cues match whole words only ("drafted" is not "draft"), and ranking does not key on document topics or fixture phrases; words such as "checklist" or "health" carry no penalty.
 
 ### 3. Token Budget Assembly
 

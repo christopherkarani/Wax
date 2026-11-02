@@ -257,6 +257,9 @@ package struct FastRAGContextBuilder: Sendable {
                     clamped.expansionMaxBytes,
                     max(4 * 1024, clamped.previewMaxBytes * 64)
                 )
+                // ~3 characters per token keeps a date-centered window inside the
+                // snippet token budget for typical text.
+                let snippetMaxCharacters = clamped.snippetMaxTokens * 3
                 var previews = Array<String>(repeating: "", count: snippetCandidates.count)
                 await withTaskGroup(of: (Int, String).self) { group in
                     for (index, (result, preview)) in snippetCandidates.enumerated() {
@@ -271,7 +274,13 @@ package struct FastRAGContextBuilder: Sendable {
                                     maxBytes: snippetFallbackMaxBytes
                                 ),
                                 !expanded.isEmpty {
-                                    return (index, expanded)
+                                    return (index, Self.expandedSnippetText(
+                                        preview: preview,
+                                        frameText: expanded,
+                                        intent: queryIntent,
+                                        analyzer: queryAnalyzer,
+                                        maxCharacters: snippetMaxCharacters
+                                    ))
                                 }
                             } catch {
                                 WaxDiagnostics.logSwallowed(
@@ -384,17 +393,54 @@ package struct FastRAGContextBuilder: Sendable {
             return true
         }
 
-        // The answer may sit outside the preview window: expand when the
-        // preview lacks the value the intent asks for.
+        // The date may sit outside the preview window. Fetch the frame; the
+        // expansion is only kept if the frame has a date (see expandedSnippetText).
         if intent.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
             return true
         }
 
-        if intent.contains(.asksOwnership), lower.contains("owns") {
+        if intent.contains(.asksOwnership), RerankingHelpers.words(lower).contains("owns") {
             return true
         }
 
         return false
+    }
+
+    /// Text to use for a snippet once the full frame was fetched.
+    ///
+    /// For a date question whose preview lacks a date, the frame is used only
+    /// when it contains one, and a long frame is cut to `maxCharacters`
+    /// centered on that date (a cut from the frame start could drop it).
+    /// Otherwise a truncated ("...") or ownership preview gets the full frame.
+    static func expandedSnippetText(
+        preview: String,
+        frameText: String,
+        intent: QueryIntent,
+        analyzer: QueryAnalyzer,
+        maxCharacters: Int
+    ) -> String {
+        if intent.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
+            if let window = dateCenteredWindow(in: frameText, analyzer: analyzer, maxCharacters: maxCharacters) {
+                return window
+            }
+            if !preview.contains("...") { return preview }
+        }
+        return frameText
+    }
+
+    /// `text` itself when it fits, else a `maxCharacters` slice centered on the
+    /// first date literal. `nil` when `text` has no date literal.
+    static func dateCenteredWindow(in text: String, analyzer: QueryAnalyzer, maxCharacters: Int) -> String? {
+        guard let literal = analyzer.dateLiterals(in: text).first,
+              let match = text.range(of: literal) else { return nil }
+        guard maxCharacters > 0, text.count > maxCharacters else { return text }
+        let matchStart = text.distance(from: text.startIndex, to: match.lowerBound)
+        let center = matchStart + literal.count / 2
+        let end = min(text.count, max(maxCharacters, center + maxCharacters / 2))
+        let start = end - maxCharacters
+        let lower = text.index(text.startIndex, offsetBy: start)
+        let upper = text.index(lower, offsetBy: maxCharacters)
+        return String(text[lower..<upper])
     }
 
     /// Reorder already-ranked hits for an answer budget. Does not rewrite Ranking's published score.
@@ -473,7 +519,7 @@ package struct FastRAGContextBuilder: Sendable {
             // Answer-shape signals shared with UnifiedRanking (RerankingHelpers).
             // No fixture phrases: ordinary words must not move a result.
             if intents.contains(.asksLocation),
-               RerankingHelpers.containsRelocationStatement(preview) || previewLower.contains("moved to") {
+               RerankingHelpers.containsRelocationStatement(preview) || RerankingHelpers.containsMoveToPhrase(previewLower) {
                 total += 0.45
             }
             if intents.contains(.asksDate), analyzer.containsDateLiteral(preview) {
