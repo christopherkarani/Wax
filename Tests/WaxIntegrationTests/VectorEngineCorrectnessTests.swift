@@ -106,7 +106,11 @@ func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric, count: In
         expectSortedBestFirst(timed.hits)
         await metalANNS.waitForPendingGraphBuild()
     }
-    #expect(await metalANNS.isGraphReady == (count > 32))
+    if count > 32 {
+        #expect(await metalANNS.isGraphReady)
+    } else {
+        #expect(!(await metalANNS.isGraphReady))
+    }
 }
 
 @Test(
@@ -327,7 +331,7 @@ func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
     }
     #expect(!(await metalANNS.isGraphReady))
 
-    // Mutate while the build is held: its snapshot is now stale.
+    // Remove while the build is held: its snapshot is now stale.
     let newId: UInt64 = 1_000_000
     let removedId = base.frameIds[7]
     for engine in [metalANNS, accelerate] as [any VectorSearchEngine] {
@@ -342,6 +346,15 @@ func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
     #expect(await gate.started == 1)
     #expect(!(await metalANNS.isGraphReady))
 
+    // Debounce: after a discard, a search that saw a mutation since the last check does not
+    // start another build; the next search with no mutation in between does.
+    let removedAgainId = base.frameIds[8]
+    try await metalANNS.remove(frameId: removedAgainId)
+    try await accelerate.remove(frameId: removedAgainId)
+    try await expectExactParity(metalANNS, accelerate, query: extra.vectors[0], count: 100)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await gate.started == 1)
+
     // The next search schedules a fresh build from current data.
     try await expectExactParity(metalANNS, accelerate, query: extra.vectors[0], count: 100)
     await metalANNS.waitForPendingGraphBuild()
@@ -351,6 +364,47 @@ func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
     let all = try await metalANNS.search(vector: base.vectors[7], topK: 100)
     #expect(!all.contains { $0.frameId == removedId })
     #expect(all.contains { $0.frameId == newId })
+}
+
+@Test(
+    "MetalANNS installs a graph built before concurrent appends and catches them up",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSAppendsDuringGraphBuildAreCaughtUp() async throws {
+    let dimensions = 16
+    let base = makeDataset(count: 100, dimensions: dimensions, seed: 0xA99E)
+    let extra = makeDataset(count: 20, dimensions: dimensions, seed: 0xA99F)
+    let gate = GraphBuildGate()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .cosine,
+        dimensions: dimensions,
+        searchMode: .exact,
+        graphBuildHook: { await gate.enter() }
+    )
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await expectExactParity(metalANNS, accelerate, query: base.vectors[0], count: 100)
+
+    // Only appends while the build is held, through add and addBatch.
+    let singleIds = (0..<5).map { 1_000_000 + UInt64($0) }
+    let batchIds = (5..<20).map { 1_000_000 + UInt64($0) }
+    for engine in [metalANNS, accelerate] as [any VectorSearchEngine] {
+        for (offset, frameId) in singleIds.enumerated() {
+            try await engine.add(frameId: frameId, vector: extra.vectors[offset])
+        }
+        try await engine.addBatch(frameIds: batchIds, vectors: Array(extra.vectors[5..<20]))
+    }
+    try await expectExactParity(metalANNS, accelerate, query: extra.vectors[3], count: 120)
+
+    await gate.release()
+    await metalANNS.waitForPendingGraphBuild()
+    // The appends-only build is installed and caught up, without a second build.
+    #expect(await metalANNS.isGraphReady)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[3], count: 120)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[17], count: 120)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: base.vectors[50], count: 120)
+    #expect(await gate.started == 1)
 }
 
 @Test(

@@ -27,6 +27,14 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     /// Bumped on every change to `vectors`/`frameIds`. A graph built from a snapshot is
     /// installed only if the generation is unchanged when the build finishes.
     private var mutationGeneration: UInt64 = 0
+    /// Generation of the last mutation that was not a pure append (remove, overwrite,
+    /// deserialize). A build whose snapshot is newer than this saw only appends since, so
+    /// it can be installed and caught up instead of discarded.
+    private var lastNonAppendGeneration: UInt64 = 0
+    /// Set when a stale build is discarded. Until a search sees no mutation since the
+    /// previous check, no new build starts, so writes faster than a build don't keep
+    /// restarting it.
+    private var rebuildDebounceGeneration: UInt64?
     /// The single in-flight background graph build, if any.
     private var graphBuildTask: Task<Void, Never>?
     /// Generation whose graph build failed; no retry until the next mutation.
@@ -78,6 +86,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         self.graphBuildHook = graphBuildHook
     }
 
+    /// Cancellation is advisory: a pending build stops before or after the MetalANNS build
+    /// call, but a GPU build already in progress runs to completion and is then dropped.
     deinit {
         graphBuildTask?.cancel()
     }
@@ -116,6 +126,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
 
         if let existingIndex = positions[frameId] {
             overwriteVector(at: existingIndex, with: stored)
+            lastNonAppendGeneration = mutationGeneration
             // MetalANNS has no in-place update; rebuild lazily from the stored vectors.
             invalidateIndex()
         } else {
@@ -155,6 +166,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         }
 
         if overwroteExisting {
+            lastNonAppendGeneration = mutationGeneration
             // MetalANNS has no in-place update; rebuild lazily from the stored vectors.
             invalidateIndex()
         } else {
@@ -166,6 +178,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     package func remove(frameId: UInt64) async throws {
         guard let indexToRemove = positions.removeValue(forKey: frameId) else { return }
         mutationGeneration &+= 1
+        lastNonAppendGeneration = mutationGeneration
         let lastIndex = frameIds.count - 1
         if indexToRemove != lastIndex {
             let movedFrameId = frameIds[lastIndex]
@@ -279,6 +292,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 positions[frameId] = index
             }
             mutationGeneration &+= 1
+            lastNonAppendGeneration = mutationGeneration
             await buildGraphNow()
             droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
             // Rewrite a clean segment on the next commit when rows were dropped.
@@ -365,7 +379,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     /// Starts a background graph build from a snapshot of the stored vectors, unless one is
-    /// already running, the store is too small, or the build for this generation failed.
+    /// already running, the store is too small, the build for this generation failed, or a
+    /// stale build was just discarded and mutations are still arriving (debounce).
     /// Searches never wait on it; they scan exactly until a current graph is installed.
     private func scheduleGraphBuildIfNeeded() {
         guard index == nil,
@@ -373,6 +388,10 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
               canBuildIndex,
               failedGraphBuildGeneration != mutationGeneration
         else { return }
+        if let debounce = rebuildDebounceGeneration, debounce != mutationGeneration {
+            rebuildDebounceGeneration = mutationGeneration
+            return
+        }
         let generation = mutationGeneration
         let rows = matrixVectors()
         let ids = frameIds
@@ -381,13 +400,17 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         // Weak: a pending build must not keep a discarded engine alive.
         graphBuildTask = Task { [weak self] in
             let result = await Self.buildGraph(rows: rows, ids: ids, configuration: configuration, hook: hook)
-            await self?.finishBackgroundGraphBuild(result, generation: generation)
+            await self?.finishBackgroundGraphBuild(result, generation: generation, snapshotCount: ids.count)
         }
     }
 
-    private func finishBackgroundGraphBuild(_ result: Result<ReadyIndex, any Error>, generation: UInt64) {
+    private func finishBackgroundGraphBuild(
+        _ result: Result<ReadyIndex, any Error>,
+        generation: UInt64,
+        snapshotCount: Int
+    ) async {
         graphBuildTask = nil
-        installGraph(result, generation: generation)
+        await installGraph(result, generation: generation, snapshotCount: snapshotCount)
     }
 
     /// Builds the graph inline (used on load), under the same generation rule.
@@ -395,24 +418,45 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         invalidateIndex()
         guard canBuildIndex else { return }
         let generation = mutationGeneration
+        let snapshotCount = frameIds.count
         let result = await Self.buildGraph(
             rows: matrixVectors(),
             ids: frameIds,
             configuration: configuration,
             hook: graphBuildHook
         )
-        installGraph(result, generation: generation)
+        await installGraph(result, generation: generation, snapshotCount: snapshotCount)
     }
 
-    /// Installs a graph only if no mutation happened since its snapshot was taken; a stale
-    /// graph is discarded and the next search schedules a fresh build. A failed build is
-    /// logged and not retried until the next mutation.
-    private func installGraph(_ result: Result<ReadyIndex, any Error>, generation: UInt64) {
+    /// Installs a built graph if it is still valid for the stored vectors:
+    /// - no mutation since its snapshot: install as is;
+    /// - only appends since its snapshot: install, then insert the appended rows (they are
+    ///   exactly `frameIds[snapshotCount...]`, since appends never reorder);
+    /// - otherwise: discard it, and debounce the next build.
+    /// A failed build is logged and not retried until the next mutation.
+    private func installGraph(
+        _ result: Result<ReadyIndex, any Error>,
+        generation: UInt64,
+        snapshotCount: Int
+    ) async {
         switch result {
         case .success(let built):
-            guard generation == mutationGeneration else { return }
+            guard index == nil else { return }
+            guard lastNonAppendGeneration <= generation else {
+                rebuildDebounceGeneration = mutationGeneration
+                return
+            }
             index = built
             softDeletedFrameIds.removeAll()
+            rebuildDebounceGeneration = nil
+            guard frameIds.count > snapshotCount else { return }
+            let appended = (snapshotCount..<frameIds.count).map { row in
+                let start = row * dimensions
+                return VectorRecord(id: frameIds[row], vector: Array(vectors[start..<(start + dimensions)]))
+            }
+            // Appends that arrive during this await see the installed graph and insert
+            // themselves; any insert failure drops the graph for a rebuild as usual.
+            await insertIntoIndex(appended)
         case .failure(let error):
             graphBuildFailureCount += 1
             failedGraphBuildGeneration = generation
@@ -429,10 +473,15 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         configuration: IndexConfiguration,
         hook: GraphBuildHook?
     ) async -> Result<ReadyIndex, any Error> {
+        // Cancellation (the engine was released) is checked around the build, but a GPU
+        // build already in progress runs to completion; its result is then dropped.
         do {
             try await hook?()
+            try Task.checkCancellation()
             let builder = VectorIndex<UInt64, VectorIndexState.Unbuilt>(configuration: configuration)
-            return .success(try await builder.build(vectors: rows, ids: ids))
+            let built = try await builder.build(vectors: rows, ids: ids)
+            try Task.checkCancellation()
+            return .success(built)
         } catch {
             return .failure(error)
         }
