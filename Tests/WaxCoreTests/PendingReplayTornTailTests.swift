@@ -38,37 +38,50 @@ private func makePut(frameId: UInt64, payload: Data, payloadOffset: UInt64, uri:
     )
 }
 
-private func openRingWriter(_ file: FDFile) throws -> WALRingWriter {
+private func readHeaderPage(_ file: FDFile) throws -> WaxHeaderPage {
     let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
     let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-    let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+    return try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)).page
+}
+
+private func openRingWriter(_ file: FDFile) throws -> WALRingWriter {
+    let page = try readHeaderPage(file)
     return WALRingWriter(
         file: file,
-        walOffset: selected.page.walOffset,
-        walSize: selected.page.walSize,
-        writePos: selected.page.walWritePos,
-        checkpointPos: selected.page.walCheckpointPos,
+        walOffset: page.walOffset,
+        walSize: page.walSize,
+        writePos: page.walWritePos,
+        checkpointPos: page.walCheckpointPos,
         pendingBytes: 0,
-        lastSequence: selected.page.walCommittedSeq
+        lastSequence: page.walCommittedSeq
     )
 }
 
-/// Appends uncommitted records (no commit). Put frame ids start at `firstFrameId` and
-/// increase only for puts; payload bytes are written at the end of the file.
-@discardableResult
-private func appendPendingRecords(
-    to url: URL,
-    firstFrameId: UInt64,
-    records: [PendingRecordFixture]
-) throws -> PendingRingLayout {
-    let file = try FDFile.open(at: url)
-    defer { try? file.close() }
-    let writer = try openRingWriter(file)
-
+/// Appends uncommitted records straight to the ring (no commit). Put frame ids increase only
+/// for puts; payload bytes are written at the end of the file.
+private struct PendingRecordAppender {
+    let file: FDFile
+    let writer: WALRingWriter
+    var nextFrameId: UInt64
     var offsets: [UInt64] = []
-    var nextFrameId = firstFrameId
-    for record in records {
-        offsets.append(writer.writePos)
+
+    init(file: FDFile, firstFrameId: UInt64) throws {
+        self.file = file
+        self.writer = try openRingWriter(file)
+        self.nextFrameId = firstFrameId
+    }
+
+    var layout: PendingRingLayout {
+        PendingRingLayout(
+            walOffset: writer.walOffset,
+            walSize: writer.walSize,
+            recordOffsets: offsets,
+            chainEnd: writer.writePos,
+            lastSequence: writer.lastSequence
+        )
+    }
+
+    mutating func append(_ record: PendingRecordFixture) throws {
         let entry: WALEntry
         switch record {
         case .delete(let frameId):
@@ -88,16 +101,28 @@ private func appendPendingRecords(
             }
             entry = .putFrame(makePut(frameId: frameId, payload: payload, payloadOffset: payloadOffset))
         }
-        _ = try writer.append(payload: try WALEntryCodec.encode(entry))
+        let encoded = try WALEntryCodec.encode(entry)
+        _ = try writer.append(payload: encoded)
+        // The record ends at the new write position; it may sit after padding at the ring start.
+        let recordSize = UInt64(WALRecord.headerSize + encoded.count)
+        offsets.append((writer.writePos + writer.walSize - recordSize) % writer.walSize)
+    }
+}
+
+@discardableResult
+private func appendPendingRecords(
+    to url: URL,
+    firstFrameId: UInt64,
+    records: [PendingRecordFixture]
+) throws -> PendingRingLayout {
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    var appender = try PendingRecordAppender(file: file, firstFrameId: firstFrameId)
+    for record in records {
+        try appender.append(record)
     }
     try file.fsync()
-    return PendingRingLayout(
-        walOffset: writer.walOffset,
-        walSize: writer.walSize,
-        recordOffsets: offsets,
-        chainEnd: writer.writePos,
-        lastSequence: writer.lastSequence
-    )
+    return appender.layout
 }
 
 private func createStoreWithOneCommittedFrame(at url: URL, walSize: UInt64 = 256 * 1024) async throws {
@@ -111,6 +136,121 @@ private func withStoreURL(_ body: (URL) async throws -> Void) async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
     try await body(url)
+}
+
+/// A store with a torn pending tail: an intact prefix, a corrupt put at `cutIndex`, then
+/// intact puts and a delete that recovery must drop.
+private struct TornTailStore {
+    var layout: PendingRingLayout
+    var cutIndex: Int
+    var keptFrameIds: [UInt64]
+
+    var cut: UInt64 { layout.recordOffsets[cutIndex] }
+}
+
+private let droppedTail: [PendingRecordFixture] = [.corruptPut, .intactPut, .delete(frameId: 0), .intactPut]
+
+/// With `wrapsRingEnd`, committed frames first move the checkpoint past the middle of a small
+/// ring and intact pending puts fill it to near the end, so the dropped records wrap to the start.
+private func makeTornTailStore(at url: URL, wrapsRingEnd: Bool) async throws -> TornTailStore {
+    guard wrapsRingEnd else {
+        try await createStoreWithOneCommittedFrame(at: url)
+        let layout = try appendPendingRecords(to: url, firstFrameId: 1, records: [.intactPut] + droppedTail)
+        return TornTailStore(layout: layout, cutIndex: 1, keptFrameIds: [0, 1])
+    }
+
+    let walSize: UInt64 = 4096
+    var committed: UInt64 = 0
+    do {
+        let wax = try await Wax.create(at: url, walSize: walSize)
+        while await wax.walStats().writePos < walSize / 2 {
+            _ = try await wax.put(Data("committed-\(committed)".utf8))
+            try await wax.commit()
+            committed += 1
+        }
+        try await wax.close()
+    }
+
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    var appender = try PendingRecordAppender(file: file, firstFrameId: committed)
+    try appender.append(.intactPut)
+    let recordSize = appender.writer.writePos - appender.offsets[0]
+    while appender.writer.writePos + 3 * recordSize < walSize {
+        try appender.append(.intactPut)
+    }
+    let cutIndex = appender.offsets.count
+    for record in droppedTail {
+        try appender.append(record)
+    }
+    try file.fsync()
+    return TornTailStore(
+        layout: appender.layout,
+        cutIndex: cutIndex,
+        keptFrameIds: Array(0..<(committed + UInt64(cutIndex)))
+    )
+}
+
+private func droppedRecordRanges(at url: URL, cutIndex: Int) throws -> [WALRingRange] {
+    let file = try FDFile.openReadOnly(at: url)
+    defer { try? file.close() }
+    let page = try readHeaderPage(file)
+    let reader = WALRingReader(file: file, walOffset: page.walOffset, walSize: page.walSize)
+    let scan = try reader.scanPendingMutationsWithState(
+        from: page.walCheckpointPos,
+        committedSeq: page.walCommittedSeq
+    )
+    return PendingReplayPolicy.droppedRecordRanges(
+        scan,
+        at: cutIndex,
+        checkpointPos: page.walCheckpointPos,
+        walSize: page.walSize
+    )
+}
+
+private func zeroRing(_ bytes: inout Data, layout: PendingRingLayout, range: WALRingRange) {
+    var position = range.start
+    var remaining = range.length
+    while remaining > 0 {
+        let count = min(remaining, layout.walSize - position)
+        let base = Int(layout.walOffset + position)
+        bytes.replaceSubrange(base..<base + Int(count), with: Data(count: Int(count)))
+        remaining -= count
+        position = (position + count) % layout.walSize
+    }
+}
+
+/// Whether the bytes at ring `offset` still form a record the WAL reader would accept.
+private func isReplayableRecord(_ bytes: Data, layout: PendingRingLayout, at offset: UInt64) -> Bool {
+    let headerSize = WALRecord.headerSize
+    let base = Int(layout.walOffset + offset)
+    let headerBytes = bytes.subdata(in: base..<base + headerSize)
+    guard let header = try? WALRecordHeader.decode(from: headerBytes, offset: offset),
+          !header.isSentinel, header.sequence != 0 else { return false }
+    let remaining = layout.walSize - offset
+    if header.flags.contains(.isPadding) {
+        return header.checksum == WALRecord.paddingChecksum
+            && UInt64(headerSize) + UInt64(header.length) == remaining
+    }
+    let length = Int(header.length)
+    guard length > 0, UInt64(length) <= remaining - UInt64(headerSize) else { return false }
+    let payload = bytes.subdata(in: base + headerSize..<base + headerSize + length)
+    return SHA256Checksum.digest(payload) == header.checksum
+}
+
+private func expectRecovery(from bytes: Data, store: TornTailStore, droppedStarts: [UInt64]) async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    try bytes.write(to: url)
+
+    let wax = try await Wax.open(at: url)
+    #expect(await wax.frameMetasIncludingPending().map(\.id) == store.keptFrameIds)
+    #expect(await wax.walStats().writePos == store.cut)
+    let recovered = try Data(contentsOf: url)
+    try await wax.close()
+
+    let replayable = droppedStarts.filter { isReplayableRecord(recovered, layout: store.layout, at: $0) }
+    #expect(replayable.isEmpty, "dropped records still replayable at ring offsets \(replayable)")
 }
 
 private func expectOpenFailsClosedWithoutWriting(
@@ -262,25 +402,103 @@ func openTruncatesGenuineTornTail(fault: PendingRecordFixture) async throws {
     }
 }
 
-// MARK: - Not a torn tail: fail closed and keep the evidence
-
-@Test(arguments: [PendingRecordFixture.corruptPut, .putBeyondFileEnd])
-func openFailsClosedWhenAnIntactPutFollowsTheBadRecord(fault: PendingRecordFixture) async throws {
+@Test func openTruncatesATornTailThatWrapsAcrossTheRingEnd() async throws {
     try await withStoreURL { url in
-        try await createStoreWithOneCommittedFrame(at: url)
-        try appendPendingRecords(to: url, firstFrameId: 1, records: [.intactPut, fault, .intactPut])
+        let store = try await makeTornTailStore(at: url, wrapsRingEnd: true)
+        let ring = store.layout
+        #expect(ring.chainEnd < store.cut, "fixture must wrap the dropped records across the ring end")
+        let newFrameId = UInt64(store.keptFrameIds.count)
 
-        try await expectOpenFailsClosedWithoutWriting(url) { error in
-            if case .corruptPut = fault { return isChecksumMismatch(error) }
-            return isInvalidToc(error)
+        do {
+            let reopened = try await Wax.open(at: url)
+            #expect(await reopened.frameMetasIncludingPending().map(\.id) == store.keptFrameIds)
+            #expect(await reopened.walStats().writePos == store.cut)
+            let bytes = try Data(contentsOf: url)
+            let tail = bytes[Int(ring.walOffset + store.cut)..<Int(ring.walOffset + ring.walSize)]
+            let head = bytes[Int(ring.walOffset)..<Int(ring.walOffset + ring.chainEnd)]
+            #expect(tail.allSatisfy { $0 == 0 }, "dropped records before the ring end must be zeroed")
+            #expect(head.allSatisfy { $0 == 0 }, "dropped records after the wrap must be zeroed")
+
+            #expect(try await reopened.put(Data("after-wrap".utf8)) == newFrameId)
+            try await reopened.commit()
+            try await reopened.close()
+        }
+
+        let verified = try await Wax.open(at: url)
+        #expect(await verified.frameMetas().map(\.id) == store.keptFrameIds + [newFrameId])
+        #expect(try await verified.frameContent(frameId: newFrameId) == Data("after-wrap".utf8))
+        try await verified.close()
+    }
+}
+
+/// Simulates a crash at every point of the truncation's zeroing: each prefix of the last-first
+/// zeroing steps, plus the next step persisted as only its header or only the rest. Reopening
+/// must keep the same frames and leave none of the dropped records replayable, so no stale
+/// record can survive beyond the end of the chain.
+@Test(arguments: [false, true])
+func truncationZeroingSurvivesACrashAtEveryStep(wrapsRingEnd: Bool) async throws {
+    try await withStoreURL { url in
+        let store = try await makeTornTailStore(at: url, wrapsRingEnd: wrapsRingEnd)
+        let ranges = try droppedRecordRanges(at: url, cutIndex: store.cutIndex)
+        let walSize = store.layout.walSize
+        #expect(ranges.first?.start == store.layout.recordOffsets.last, "the last record is zeroed first")
+        #expect(ranges.last?.start == store.cut, "the cut is zeroed last")
+        // In chain order the ranges tile [cut, chainEnd) exactly.
+        let chain = Array(ranges.reversed())
+        for (range, next) in zip(chain, chain.dropFirst()) {
+            #expect((range.start + range.length) % walSize == next.start)
+        }
+        #expect(chain.last.map { ($0.start + $0.length) % walSize } == store.layout.chainEnd)
+        let original = try Data(contentsOf: url)
+        let headerSize = UInt64(WALRecord.headerSize)
+
+        for step in 0...ranges.count {
+            var durable = original
+            for range in ranges.prefix(step) {
+                zeroRing(&durable, layout: store.layout, range: range)
+            }
+            var crashStates = [durable]
+            if step < ranges.count {
+                let next = ranges[step]
+                var headerOnly = durable
+                zeroRing(&headerOnly, layout: store.layout, range: WALRingRange(start: next.start, length: headerSize))
+                var restOnly = durable
+                let rest = WALRingRange(
+                    start: (next.start + headerSize) % store.layout.walSize,
+                    length: next.length - headerSize
+                )
+                zeroRing(&restOnly, layout: store.layout, range: rest)
+                crashStates += [headerOnly, restOnly]
+            }
+            for state in crashStates {
+                try await expectRecovery(from: state, store: store, droppedStarts: ranges.map(\.start))
+            }
         }
     }
 }
 
-@Test func openFailsClosedOnTornPendingPayloadWhenFsyncPolicyIsAlways() async throws {
+/// Under `.onCommit` a crash can persist a later payload but lose an earlier one, so an intact
+/// put after the damaged one is no sign of corruption: recovery still cuts at the first damage.
+@Test(arguments: [PendingRecordFixture.corruptPut, .putBeyondFileEnd])
+func openCutsAtTheFirstDamagedPutEvenWhenAnIntactPutFollows(fault: PendingRecordFixture) async throws {
     try await withStoreURL { url in
         try await createStoreWithOneCommittedFrame(at: url)
-        try appendPendingRecords(to: url, firstFrameId: 1, records: [.corruptPut])
+        try appendPendingRecords(to: url, firstFrameId: 1, records: [.intactPut, fault, .intactPut])
+
+        let reopened = try await Wax.open(at: url)
+        #expect(await reopened.frameMetasIncludingPending().map(\.id) == [0, 1])
+        #expect(await reopened.walStats().replayTruncationCount == 1)
+        try await reopened.close()
+    }
+}
+
+// MARK: - Fail closed and keep the evidence
+
+@Test(arguments: [[PendingRecordFixture.corruptPut], [.intactPut, .corruptPut, .intactPut]])
+func openFailsClosedOnDamagedPendingPayloadWhenFsyncPolicyIsAlways(records: [PendingRecordFixture]) async throws {
+    try await withStoreURL { url in
+        try await createStoreWithOneCommittedFrame(at: url)
+        try appendPendingRecords(to: url, firstFrameId: 1, records: records)
 
         try await expectOpenFailsClosedWithoutWriting(
             url,
@@ -293,7 +511,7 @@ func openFailsClosedWhenAnIntactPutFollowsTheBadRecord(fault: PendingRecordFixtu
 @Test func openWithoutRepairFailsClosedOnTornTail() async throws {
     try await withStoreURL { url in
         try await createStoreWithOneCommittedFrame(at: url)
-        try appendPendingRecords(to: url, firstFrameId: 1, records: [.intactPut, .corruptPut])
+        try appendPendingRecords(to: url, firstFrameId: 1, records: [.intactPut, .corruptPut, .intactPut])
 
         try await expectOpenFailsClosedWithoutWriting(url, repair: false, expected: isChecksumMismatch)
     }
@@ -378,7 +596,7 @@ func openFailsClosedWhenAnIntactPutFollowsTheBadRecord(fault: PendingRecordFixtu
 
 // MARK: - Policy
 
-@Test func pendingReplayPolicyDistinguishesTornTailFromCorruption() {
+@Test func pendingReplayPolicyCutsAtTheFirstDamagedPayload() {
     #expect(PendingReplayPolicy.decide([], allowsTruncation: true) == .replayAll)
     #expect(PendingReplayPolicy.decide([.intact, .notApplicable], allowsTruncation: true) == .replayAll)
     #expect(
@@ -386,8 +604,11 @@ func openFailsClosedWhenAnIntactPutFollowsTheBadRecord(fault: PendingRecordFixtu
             == .truncateTornTail(at: 1)
     )
     #expect(
-        PendingReplayPolicy.decide([.outOfBounds, .notApplicable, .intact], allowsTruncation: true)
-            == .failClosed(at: 0)
+        PendingReplayPolicy.decide([.notApplicable, .outOfBounds, .intact], allowsTruncation: true)
+            == .truncateTornTail(at: 1)
     )
-    #expect(PendingReplayPolicy.decide([.intact, .checksumMismatch], allowsTruncation: false) == .failClosed(at: 1))
+    #expect(
+        PendingReplayPolicy.decide([.intact, .checksumMismatch, .intact], allowsTruncation: false)
+            == .failClosed(at: 1)
+    )
 }

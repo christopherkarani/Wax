@@ -60,8 +60,8 @@ func walAppendRefusesToLeaveLessThanHeaderOfFreeSpace(leftover: Int) throws {
 
         let thirdEntry = 500 - leftover
         let third = payload(entrySize: thirdEntry, fill: 0x33)
-        #expect(writer.canAppend(payloadSize: third.count) == false)
-        #expect(writer.canAppendBatch(payloadSizes: [third.count]) == false)
+        #expect(!writer.canAppend(payloadSize: third.count))
+        #expect(!writer.canAppendBatch(payloadSizes: [third.count]))
         #expect(isCapacityExceeded { _ = try writer.append(payload: third) })
 
         // Simulated crash without commit: everything appended must still replay.
@@ -80,7 +80,7 @@ func walAppendBatchRefusesToLeaveLessThanHeaderOfFreeSpace(leftover: Int) throws
             payload(entrySize: 100, fill: 0x22),
             payload(entrySize: 500 - leftover, fill: 0x33)
         ]
-        #expect(writer.canAppendBatch(payloadSizes: batch.map(\.count)) == false)
+        #expect(!writer.canAppendBatch(payloadSizes: batch.map(\.count)))
         #expect(isCapacityExceeded { _ = try writer.appendBatch(payloads: batch) })
 
         _ = try writer.appendBatch(payloads: Array(batch.prefix(2)))
@@ -142,7 +142,7 @@ func walAppendFillingRingToBoundaryReplaysAllPendingRecords(leftover: Int) throw
 
         // 60-byte record at [0, 60) would leave 40 free bytes before checkpoint 100.
         let second = payload(entrySize: 60, fill: 0x55)
-        #expect(writer.canAppend(payloadSize: second.count) == false)
+        #expect(!writer.canAppend(payloadSize: second.count))
         #expect(isCapacityExceeded { _ = try writer.append(payload: second) })
 
         let replayed = try replayedPayloads(file: file, walSize: walSize, from: 100)

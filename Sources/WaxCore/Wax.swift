@@ -776,6 +776,7 @@ package actor Wax {
                 }
                 // Truncation is destructive, so it needs `repair`. With `.always` fsync every payload
                 // was synced before its WAL record, so any damage is corruption rather than a torn write.
+                // The policy that wrote the WAL is not persisted; this is the opener's policy.
                 let decision = PendingReplayPolicy.decide(
                     statuses,
                     allowsTruncation: repair && options.walFsyncPolicy != .always
@@ -791,8 +792,7 @@ package actor Wax {
                         pendingScan,
                         at: index,
                         checkpointPos: header.walCheckpointPos,
-                        walOffset: header.walOffset,
-                        walSize: header.walSize,
+                        ring: (offset: header.walOffset, size: header.walSize),
                         file: file
                     )
                     pendingMutations = Array(pendingScan.pendingMutations.prefix(index))
