@@ -76,4 +76,47 @@ grep -Fq 'HOMEBREW_TAP_TOKEN' "$WORKFLOW" \
 grep -Fq -e '--push-tap' "$FINALIZE_SCRIPT" \
   || fail "finalize-homebrew-formula.sh must support --push-tap for the external tap"
 
+if grep -Fq 'git push origin HEAD:main' "$WORKFLOW"; then
+  fail "release workflow must not push to main; open a pull request for the formula bump"
+fi
+
+grep -Fq 'gh pr create' "$WORKFLOW" \
+  || fail "release workflow must open a pull request for the vendored Homebrew formula bump"
+
+ruby -e '
+require "yaml"
+wf = YAML.load_file(ARGV[0])
+jobs = wf.fetch("jobs")
+needs = ->(name) { Array(jobs.fetch(name)["needs"]) }
+
+gates = jobs["gates"] or abort "release workflow must have a gates job"
+gate_runs = gates.fetch("steps").map { |step| step["run"].to_s }
+unless gate_runs.any? { |run| run.include?("production_readiness_gates.sh full") }
+  abort "release gates job must run production_readiness_gates.sh full"
+end
+%w[build publish homebrew].each do |job|
+  abort "#{job} must depend on gates" unless needs.(job).include?("gates")
+end
+
+publish = jobs.fetch("publish")
+unless publish.dig("permissions", "id-token") == "write"
+  abort "publish job needs id-token: write for npm provenance"
+end
+publish_run = publish.fetch("steps").map { |step| step["run"].to_s }.find { |run| run.include?("npm publish") }
+abort "publish job must npm publish --provenance" unless publish_run&.include?("--provenance")
+
+if jobs.fetch("homebrew").dig("permissions", "pull-requests") != "write"
+  abort "homebrew job needs pull-requests: write to open the formula PR"
+end
+' "$WORKFLOW" || fail "release workflow gate/provenance/PR contract violated"
+
+# Every action reference is pinned to a full commit SHA (tags are mutable).
+unpinned="$(grep -hE '^[[:space:]]*-?[[:space:]]*uses:' "$ROOT_DIR"/.github/workflows/*.yml \
+  | grep -vE 'uses:[[:space:]]*(\./|[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$))' || true)"
+[[ -z "$unpinned" ]] || fail "workflow actions must be pinned to commit SHAs: $unpinned"
+
+if grep -Fq 'latest-stable' "$WORKFLOW" "$ROOT_DIR/.github/workflows/quality-gates.yml"; then
+  fail "release and gate workflows must pin a concrete Xcode version, not latest-stable"
+fi
+
 echo "release_workflow_tests: ok"

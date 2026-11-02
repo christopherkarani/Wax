@@ -7,6 +7,9 @@ SCRIPT="$ROOT_DIR/Resources/scripts/quality/production_readiness_gates.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# Keep the gate's per-run log directory inside this test's temp dir.
+export GATE_LOG_DIR="$TMP_DIR/gate-logs"
+
 # Load gate functions without invoking the production gate modes.
 FUNCTIONS_FILE="$TMP_DIR/production_readiness_gates_functions.sh"
 awk '$0 != "main \"$@\"" { print }' "$SCRIPT" >"$FUNCTIONS_FILE"
@@ -193,6 +196,27 @@ printf '%s\n' \
   >"$MISSING_DOCTOR_LOG"
 if assert_mcp_cli_doctor_smokes_ran "$MISSING_DOCTOR_LOG" >/dev/null 2>&1; then
   echo "FAIL: expected missing doctor smoke to fail run-log inventory" >&2
+  exit 1
+fi
+
+OPT_IN_SKIPPED_LOG="$TMP_DIR/opt-in-skipped.log"
+printf '%s\n' \
+  'Test miniLMEmbedderProducesFiniteVectors() skipped: "Set WAX_TEST_MINILM=1 to run MiniLM inference tests"' \
+  >"$OPT_IN_SKIPPED_LOG"
+if assert_opt_in_suite_ran "$OPT_IN_SKIPPED_LOG" "Set WAX_TEST_MINILM=1" >/dev/null 2>&1; then
+  echo "FAIL: opt-in-configs must reject a skipped MiniLM suite" >&2
+  exit 1
+fi
+if ! grep -F 'opt-in-configs)' "$SCRIPT" >/dev/null; then
+  echo "FAIL: gate script must expose the opt-in-configs mode" >&2
+  exit 1
+fi
+if grep -E '"/tmp/wax-gate-' "$SCRIPT" >/dev/null; then
+  echo "FAIL: gate logs must live in the per-run GATE_LOG_DIR, not fixed /tmp paths" >&2
+  exit 1
+fi
+if [[ "$GATE_LOG_DIR" != "$TMP_DIR/gate-logs" || ! -d "$GATE_LOG_DIR" ]]; then
+  echo "FAIL: gate script must honor GATE_LOG_DIR and create it" >&2
   exit 1
 fi
 
