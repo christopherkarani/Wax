@@ -325,14 +325,40 @@ private func resolveExecutableOnPath(named executable: String) -> URL? {
     return nil
 }
 
+/// First SIGINT/SIGTERM shuts down gracefully; any later one forces exit so
+/// a wedged teardown never needs SIGKILL.
+final class MCPShutdownSignalLatch: @unchecked Sendable {
+    enum Action: Equatable {
+        case graceful
+        case forceExit
+    }
+
+    private let lock = NSLock()
+    private var received = 0
+
+    func record() -> Action {
+        lock.lock()
+        defer { lock.unlock() }
+        received += 1
+        return received == 1 ? .graceful : .forceExit
+    }
+}
+
 private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
     var sources: [DispatchSourceSignal] = []
+    let latch = MCPShutdownSignalLatch()
     for sig in [SIGINT, SIGTERM] {
         signal(sig, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         source.setEventHandler {
-            writeStderr("Received signal \(sig), shutting down gracefully…")
-            Task { await stop() }
+            switch latch.record() {
+            case .graceful:
+                writeStderr("Received signal \(sig), shutting down gracefully… (send again to force exit)")
+                Task { await stop() }
+            case .forceExit:
+                writeStderr("Received signal \(sig) again, forcing exit")
+                exitProcess(128 + sig)
+            }
         }
         source.resume()
         sources.append(source)

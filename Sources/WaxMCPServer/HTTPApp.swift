@@ -22,6 +22,11 @@ actor MCPHTTPApplication {
         var retryInterval: Int?
         var maxRequestBodyBytes: Int
         var authToken: String?
+        /// Live session cap. Creating a session beyond it evicts the least
+        /// recently used one; clients recover under their old id on next use.
+        var maxSessions: Int
+        /// Upper bound on how long shutdown waits for session teardown.
+        var shutdownDeadline: Duration
 
         init(
             host: String = "127.0.0.1",
@@ -31,7 +36,9 @@ actor MCPHTTPApplication {
             sessionCleanupInterval: Duration = .seconds(60),
             retryInterval: Int? = nil,
             maxRequestBodyBytes: Int = 1_048_576,
-            authToken: String? = nil
+            authToken: String? = nil,
+            maxSessions: Int = 256,
+            shutdownDeadline: Duration = .seconds(5)
         ) {
             self.host = host
             self.port = port
@@ -41,6 +48,8 @@ actor MCPHTTPApplication {
             self.retryInterval = retryInterval
             self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
             self.authToken = HTTPAuthPolicy.normalizedToken(authToken)
+            self.maxSessions = max(1, maxSessions)
+            self.shutdownDeadline = shutdownDeadline
         }
     }
 
@@ -151,6 +160,10 @@ actor MCPHTTPApplication {
         cleanupTask != nil
     }
 
+    func liveSessionIDs() -> Set<String> {
+        Set(sessions.keys)
+    }
+
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
         if !HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
            !HTTPAuthPolicy.isSafeLoopbackRequest(
@@ -215,8 +228,25 @@ actor MCPHTTPApplication {
         func generateSessionID() -> String { sessionID }
     }
 
+    /// Client-chosen ids are kept in memory and echoed in headers and logs.
+    static let maxClientSessionIDBytes = 128
+
     private func isValidClientSessionID(_ sessionID: String) -> Bool {
-        !sessionID.isEmpty && sessionID.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
+        !sessionID.isEmpty
+            && sessionID.utf8.count <= Self.maxClientSessionIDBytes
+            && sessionID.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
+    }
+
+    /// Evicts least-recently-used sessions so one more fits under the cap.
+    private func makeRoomForNewSession() async {
+        while sessions.count >= configuration.maxSessions,
+              let oldest = sessions.min(by: { $0.value.lastAccessedAt < $1.value.lastAccessedAt })?.key {
+            logger.warning(
+                "HTTP session cap reached; evicting least recently used session",
+                metadata: ["sessionID": "\(oldest)", "maxSessions": "\(configuration.maxSessions)"]
+            )
+            await closeSession(oldest, reason: .capacityEviction)
+        }
     }
 
     private func resolveSessionID(preferred: String?) -> String {
@@ -242,6 +272,7 @@ actor MCPHTTPApplication {
             rememberInitializeContext(sessionID: sessionID, request: request, isRecovery: false)
             let server = try await serverFactory(sessionID, transport)
             try await server.start(transport: transport)
+            await makeRoomForNewSession()
             sessions[sessionID] = SessionContext(
                 server: server,
                 transport: transport,
@@ -362,6 +393,7 @@ actor MCPHTTPApplication {
             )
             _ = await transport.handleRequest(initializedNotification)
 
+            await makeRoomForNewSession()
             sessions[sessionID] = SessionContext(
                 server: server,
                 transport: transport,
@@ -466,13 +498,45 @@ actor MCPHTTPApplication {
         logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)", "reason": "\(reason.rawValue)"])
     }
 
+    /// Closes every session concurrently and stops waiting at
+    /// `shutdownDeadline`, so one wedged teardown cannot hold shutdown.
     private func closeAllSessions() async {
         for task in sessionRecoveryTasks.values {
             task.cancel()
         }
         sessionRecoveryTasks.removeAll()
-        for sessionID in sessions.keys {
-            await closeSession(sessionID)
+        let sessionIDs = Array(sessions.keys)
+        guard !sessionIDs.isEmpty else { return }
+        let closers = sessionIDs.map { sessionID in
+            Task { await self.closeSession(sessionID, reason: .shutdown) }
+        }
+        let allClosed = Task {
+            for closer in closers { await closer.value }
+        }
+        let finished = await Self.awaitWithDeadline(allClosed, deadline: configuration.shutdownDeadline)
+        if !finished {
+            logger.warning(
+                "HTTP shutdown deadline reached before every session closed",
+                metadata: ["deadline": "\(configuration.shutdownDeadline)", "sessions": "\(sessionIDs.count)"]
+            )
+        }
+    }
+
+    /// True when `task` finished before `deadline`. Does not wait for the
+    /// task past the deadline (a task group would).
+    static func awaitWithDeadline(_ task: Task<Void, Never>, deadline: Duration) async -> Bool {
+        let gate = DeadlineGate()
+        return await withCheckedContinuation { continuation in
+            gate.install(continuation)
+            let timer = Task {
+                try? await Task.sleep(for: deadline)
+                gate.finish(false)
+            }
+            Task {
+                await task.value
+                timer.cancel()
+                gate.finish(true)
+            }
         }
     }
 
@@ -624,7 +688,21 @@ enum HTTPAuthPolicy {
         let trimmed = requestToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "Bearer "
         guard trimmed.hasPrefix(prefix) else { return false }
-        return String(trimmed.dropFirst(prefix.count)) == configuredToken
+        return constantTimeEquals(String(trimmed.dropFirst(prefix.count)), configuredToken)
+    }
+
+    /// Compares every byte of the longer input so timing does not reveal
+    /// the length of the matching prefix.
+    static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf8)
+        let right = Array(rhs.utf8)
+        var difference = UInt(left.count ^ right.count)
+        for index in 0..<max(left.count, right.count) {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            difference |= UInt(a ^ b)
+        }
+        return difference == 0
     }
 
     static func isSafeLoopbackRequest(hostHeader: String?, originHeader: String?) -> Bool {
@@ -687,6 +765,25 @@ enum HTTPRequestBodyLimit {
         }
         guard incomingBytes <= maxBytes else { return true }
         return currentBytes > maxBytes - incomingBytes
+    }
+}
+
+private final class DeadlineGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func install(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ value: Bool) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 }
 
