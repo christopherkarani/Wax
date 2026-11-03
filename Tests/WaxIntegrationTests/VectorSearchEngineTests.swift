@@ -194,7 +194,7 @@ import WaxVectorSearch
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine+Serialization.swift"),
         encoding: .utf8
     )
 
@@ -207,7 +207,7 @@ import WaxVectorSearch
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine+Search.swift"),
         encoding: .utf8
     )
 
