@@ -129,12 +129,21 @@ package actor WaxVectorSearchSession {
         return frameIds
     }
 
+    /// Embedding writes wait for the whole stage and commit, as in ``WaxSession/commit(compact:)``.
     package func commit() async throws {
-        try await stageForCommit()
-        try await wax.commit()
+        try await wax.withEmbeddingWritesPaused { [self] in
+            try await self.stageHoldingEmbeddingWrites()
+            try await self.wax.commit()
+        }
     }
 
     package func stageForCommit() async throws {
+        try await wax.withEmbeddingWritesPaused { [self] in
+            try await self.stageHoldingEmbeddingWrites()
+        }
+    }
+
+    private func stageHoldingEmbeddingWrites() async throws {
         lastPendingEmbeddingSequence = try await Self.syncPendingEmbeddings(
             wax: wax,
             into: concreteEngine,

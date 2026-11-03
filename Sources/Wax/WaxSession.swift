@@ -55,6 +55,15 @@ package actor WaxSession {
     private var pendingRemovedFrameIds: Set<UInt64> = []
     private var writerLeaseId: UUID?
     private var isClosed = false
+    private var commitCheckpointHook: (@Sendable (CommitCheckpoint) async -> Void)?
+
+    /// Points inside `commit` where a test can interleave concurrent writes.
+    package enum CommitCheckpoint: Sendable, Equatable {
+        /// Pending embeddings were synced into the vector engine; the index is not yet staged.
+        case afterVectorSync
+        /// Text and vector indexes are staged; the store commit has not started.
+        case afterStage
+    }
 
     package init(wax: Wax, mode: Mode = .readOnly, config: Config = .default) async throws {
         self.wax = wax
@@ -449,7 +458,34 @@ package actor WaxSession {
 
     package func stage(compact: Bool = false) async throws {
         try ensureWritable()
+        try await wax.withEmbeddingWritesPaused { [self] in
+            try await self.stageIndexes(compact: compact)
+        }
+    }
 
+    /// Embedding writes wait for the whole stage and commit. One landing after the vector
+    /// sync would be stamped into a staged index that lacks it, and one landing after
+    /// staging would make the commit refuse the staged index as stale.
+    package func commit(compact: Bool = false) async throws {
+        try ensureWritable()
+        try await wax.withEmbeddingWritesPaused { [self] in
+            try await self.stageIndexes(compact: compact)
+            await self.reachCommitCheckpoint(.afterStage)
+            try await self.wax.commit()
+        }
+    }
+
+    /// Test seam: awaited at each ``CommitCheckpoint`` during `commit`.
+    package func setCommitCheckpointHook(_ hook: (@Sendable (CommitCheckpoint) async -> Void)?) {
+        commitCheckpointHook = hook
+    }
+
+    private func reachCommitCheckpoint(_ checkpoint: CommitCheckpoint) async {
+        await commitCheckpointHook?(checkpoint)
+    }
+
+    /// Callers hold ``Wax/withEmbeddingWritesPaused(_:)``.
+    private func stageIndexes(compact: Bool) async throws {
         let localTextEngine = textEngine
         let localVectorEngine = concreteVectorEngine
         let localWax = wax
@@ -475,11 +511,6 @@ package actor WaxSession {
 
         try await textStaging
         try await vectorStaging
-    }
-
-    package func commit(compact: Bool = false) async throws {
-        try await stage(compact: compact)
-        try await wax.commit()
     }
 
     private func ensureWritable() throws {
@@ -509,6 +540,7 @@ package actor WaxSession {
             watermark: lastPendingEmbeddingSequence,
             removedFrameIds: pendingRemovedFrameIds
         )
+        await reachCommitCheckpoint(.afterVectorSync)
         try await engine.stageForCommit(into: wax)
         pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }

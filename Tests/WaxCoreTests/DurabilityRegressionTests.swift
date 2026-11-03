@@ -40,10 +40,11 @@ import Testing
         try await wax.close()
         #expect(Bool(false))
     } catch let error as WaxError {
-        guard case .io(let reason) = error else {
+        guard case .vectorIndexStale = error else {
             #expect(Bool(false))
             return
         }
+        let reason = error.errorDescription ?? ""
         #expect(reason.contains("vector index is stale relative to pending embeddings"))
     }
 }

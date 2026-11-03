@@ -179,6 +179,9 @@ package actor Wax {
     private let url: URL
     private let io: BlockingIOExecutor
     private let opLock = AsyncReadWriteLock()
+    /// Held by embedding writes and by vector-index stage/commit, so no embedding lands
+    /// between the vector engine syncing pending embeddings and the commit that covers them.
+    private let embeddingWriteGate = AsyncMutex()
     private var writerLeaseId: UUID?
     private var file: FDFile
     private var lock: FileLock
@@ -284,6 +287,29 @@ package actor Wax {
             await opLock.writeUnlock()
             throw error
         }
+    }
+
+    /// Embedding writes take the embedding write gate before the op lock, the same order as
+    /// ``withEmbeddingWritesPaused(_:)`` holders, so they wait out an in-flight stage/commit.
+    private func withEmbeddingWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
+        await embeddingWriteGate.lock()
+        do {
+            let value = try await withWriteLock(body)
+            await embeddingWriteGate.unlock()
+            return value
+        } catch {
+            await embeddingWriteGate.unlock()
+            throw error
+        }
+    }
+
+    /// Runs `body` while embedding writes wait. A vector index synced, staged and committed
+    /// inside `body` therefore covers exactly the embeddings the commit marks committed.
+    /// `body` must not write embeddings itself: the gate is not reentrant.
+    package func withEmbeddingWritesPaused<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        try await embeddingWriteGate.withLock(body)
     }
 
     private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
@@ -1236,7 +1262,7 @@ package actor Wax {
             throw WaxError.encodingError(reason: "putEmbeddingBatch: frameIds.count != vectors.count")
         }
 
-        try await withWriteLock {
+        try await withEmbeddingWriteLock {
             // Validate all vectors first
             var dimension: UInt32?
             for vector in vectors {
@@ -1314,7 +1340,7 @@ package actor Wax {
     }
 
     package func putEmbedding(frameId: UInt64, vector: [Float]) async throws {
-        try await withWriteLock {
+        try await withEmbeddingWriteLock {
             guard !vector.isEmpty else {
                 throw WaxError.encodingError(reason: "embedding vector must be non-empty")
             }
@@ -1356,6 +1382,11 @@ package actor Wax {
             appendPendingMutation(sequence: seq, entry: entry)
             dirty = true
         }
+    }
+
+    /// Tasks (embedding writes, or other stage/commits) parked on the embedding write gate.
+    package func embeddingWriteGateWaiterCount() async -> Int {
+        await embeddingWriteGate.waiterCount
     }
 
     package func pendingEmbeddingMutations() async -> [PutEmbedding] {
@@ -1745,22 +1776,6 @@ package actor Wax {
         }
     }
 
-    package static let staleVectorIndexReason =
-        "vector index is stale relative to pending embeddings; restage vector index before commit"
-
-    /// `true` for the two commit refusals caused by an embedding written after staging.
-    /// Both are thrown before the commit mutates anything, so restaging and retrying is safe.
-    package static func isStaleVectorStage(_ error: any Error) -> Bool {
-        switch error as? WaxError {
-        case .vectorIndexNotStaged:
-            return true
-        case .io(let reason):
-            return reason == staleVectorIndexReason
-        default:
-            return false
-        }
-    }
-
     private func commitLocked() async throws {
         guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
 
@@ -1771,7 +1786,7 @@ package actor Wax {
         } else if let stagedVecIndex {
             let latestPendingEmbeddingSequence = pendingMutationSummary.latestPendingEmbeddingSequence
             if latestPendingEmbeddingSequence != stagedVecIndex.pendingEmbeddingMaxSequence {
-                throw WaxError.io(Self.staleVectorIndexReason)
+                throw WaxError.vectorIndexStale
             }
         }
 

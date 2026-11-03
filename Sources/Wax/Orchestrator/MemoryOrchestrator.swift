@@ -1486,7 +1486,7 @@ package actor MemoryOrchestrator {
             try await embeddingBackfillStoreMutex.withLock { [self] in
                 try Task.checkCancellation()
                 guard !(await isClosed) else { throw CancellationError() }
-                try await putBackgroundEmbeddings(frameIds: batch.map(\.id), vectors: vectors)
+                try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                 if let identity = embedder.identity {
                     try await ensureMemoryBindingIfNeeded(
                         MemoryBindingCompatibility.binding(from: identity)
@@ -1553,7 +1553,7 @@ package actor MemoryOrchestrator {
                 try await embeddingBackfillStoreMutex.withLock { [self] in
                     try Task.checkCancellation()
                     guard !(await isClosed) else { throw CancellationError() }
-                    try await putBackgroundEmbeddings(frameIds: batch.map(\.id), vectors: vectors)
+                    try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                 }
                 reembedded += UInt64(batch.count)
                 sinceCheckpoint += UInt64(batch.count)
@@ -1632,31 +1632,8 @@ package actor MemoryOrchestrator {
             if let previousMarkerFrameId {
                 try await wax.delete(frameId: previousMarkerFrameId)
             }
-            try await flushAllowingConcurrentEmbeddingWrites()
-            return markerFrameId
-        }
-    }
-
-    /// Background embedding writes hold `flushMutex`, so they never land between a
-    /// caller's flush staging the vector index and committing it.
-    private func putBackgroundEmbeddings(frameIds: [UInt64], vectors: [[Float]]) async throws {
-        try await flushMutex.withLock { [self] in
-            try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: vectors)
-        }
-    }
-
-    /// A concurrent remember can add an embedding while this flush stages; the commit is
-    /// then refused before it changes anything. The marker, binding and vectors stay
-    /// pending and land together in the next successful commit, so progress is not lost.
-    private func flushAllowingConcurrentEmbeddingWrites() async throws {
-        do {
             try await flush()
-        } catch where Wax.isStaleVectorStage(error) {
-            WaxDiagnostics.logSwallowed(
-                error,
-                context: "superseded re-embed checkpoint",
-                fallback: "checkpoint commits with the next flush"
-            )
+            return markerFrameId
         }
     }
 
@@ -1671,7 +1648,7 @@ package actor MemoryOrchestrator {
             if let markerFrameId {
                 try await wax.delete(frameId: markerFrameId)
             }
-            try await flushAllowingConcurrentEmbeddingWrites()
+            try await flush()
             await markSupersededVectorsReplaced()
         }
     }

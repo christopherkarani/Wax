@@ -584,22 +584,20 @@ import WaxVectorSearch
         try await wax.commit()
         Issue.record("Expected error for stale staged vector index")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexStale = error else {
+            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
             return
         }
-        #expect(message.contains("vector index is stale"))
     }
 
     do {
         try await wax.close()
         Issue.record("Expected close to propagate stale auto-commit failure")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexStale = error else {
+            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
             return
         }
-        #expect(message.contains("vector index is stale"))
     }
 }
 
