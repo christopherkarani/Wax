@@ -166,8 +166,10 @@ package actor MemoryOrchestrator {
         // work out-of-the-box with text-only search instead of throwing an error.
         // Callers that pass `initialEmbeddingStatus` own the missing-provider rule
         // (index remains + unavailable / loading + live attach).
-        var resolvedConfig = config
         let existingMemoryBinding = await wax.memoryBinding()
+        var resolvedConfig = config.sizingChunks(
+            forEmbedderModel: embedder?.identity?.model ?? existingMemoryBinding?.embeddingModel
+        )
         var lifecycle: EmbedderLifecycle
         if let initialEmbeddingStatus {
             lifecycle = Self.lifecycle(from: initialEmbeddingStatus, provider: embedder)

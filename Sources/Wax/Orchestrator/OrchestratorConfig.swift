@@ -9,7 +9,10 @@ package struct OrchestratorConfig: Sendable {
     package var enableAsyncEnrichment: Bool = false
 
     package var rag: FastRAGConfig = .init()
-    package var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
+    package static let defaultChunking = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
+    package var chunking: ChunkingStrategy = defaultChunking
+    /// Re-split chunks that overflow the MiniLM input window. Set by ``sizingChunks(forEmbedderModel:)``.
+    package var fitsChunksToMiniLMInput: Bool = false
     package var ingestConcurrency: Int = 1
     package var ingestBatchSize: Int = 32
     package var embeddingCacheCapacity: Int = 2_048

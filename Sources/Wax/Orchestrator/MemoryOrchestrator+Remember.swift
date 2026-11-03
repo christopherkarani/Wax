@@ -21,7 +21,7 @@ extension MemoryOrchestrator {
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        let chunks = await ingestChunks(for: content)
         let attached = readyEmbedderSnapshot
         let localEmbedder = attached
 
@@ -300,6 +300,13 @@ extension MemoryOrchestrator {
             deduplicated: false,
             searchable: config.enableTextSearch || writeVectors
         )
+    }
+
+    /// Internal only for tests.
+    func ingestChunks(for content: String) async -> [String] {
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        guard config.fitsChunksToMiniLMInput else { return chunks }
+        return await MiniLMChunkSizing.fit(chunks)
     }
 
     private static func rememberDedupEmbeddingIdentity(
