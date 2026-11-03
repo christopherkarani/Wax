@@ -57,11 +57,12 @@ package actor WaxSession {
     private var isClosed = false
     private var commitCheckpointHook: (@Sendable (CommitCheckpoint) async -> Void)?
 
-    /// Points inside `commit` where a test can interleave concurrent writes.
+    /// Points inside `stage` and `commit` where a test can interleave concurrent writes.
     package enum CommitCheckpoint: Sendable, Equatable {
-        /// Pending embeddings were synced into the vector engine; the index is not yet staged.
+        /// Pending embeddings were synced into the vector engine; the vector index is not yet
+        /// staged. Reached from both `stage` and `commit`.
         case afterVectorSync
-        /// Text and vector indexes are staged; the store commit has not started.
+        /// Text and vector indexes are staged; the store commit has not started. `commit` only.
         case afterStage
     }
 
@@ -458,24 +459,26 @@ package actor WaxSession {
 
     package func stage(compact: Bool = false) async throws {
         try ensureWritable()
+        try await stageTextIndex(compact: compact)
         try await wax.withEmbeddingWritesPaused { [self] in
-            try await self.stageIndexes(compact: compact)
+            try await self.stageVectorIndex()
         }
     }
 
-    /// Embedding writes wait for the whole stage and commit. One landing after the vector
-    /// sync would be stamped into a staged index that lacks it, and one landing after
-    /// staging would make the commit refuse the staged index as stale.
+    /// Text staging does not read embeddings, so it runs before the embedding write gate.
+    /// Embedding writes then wait only for the vector sync, vector stage and store commit:
+    /// one landing in between would make the commit refuse the staged index as stale.
     package func commit(compact: Bool = false) async throws {
         try ensureWritable()
+        try await stageTextIndex(compact: compact)
         try await wax.withEmbeddingWritesPaused { [self] in
-            try await self.stageIndexes(compact: compact)
+            try await self.stageVectorIndex()
             await self.reachCommitCheckpoint(.afterStage)
             try await self.wax.commit()
         }
     }
 
-    /// Test seam: awaited at each ``CommitCheckpoint`` during `commit`.
+    /// Test seam: awaited at each ``CommitCheckpoint`` during `stage` and `commit`.
     package func setCommitCheckpointHook(_ hook: (@Sendable (CommitCheckpoint) async -> Void)?) {
         commitCheckpointHook = hook
     }
@@ -484,33 +487,22 @@ package actor WaxSession {
         await commitCheckpointHook?(checkpoint)
     }
 
+    private func stageTextIndex(compact: Bool) async throws {
+        guard let textEngine else { return }
+        try await textEngine.stageForCommit(into: wax, compact: compact)
+    }
+
     /// Callers hold ``Wax/withEmbeddingWritesPaused(_:)``.
-    private func stageIndexes(compact: Bool) async throws {
-        let localTextEngine = textEngine
-        let localVectorEngine = concreteVectorEngine
-        let localWax = wax
-        let localConfig = config
-
-        async let textStaging: Void = {
-            if let engine = localTextEngine {
-                try await engine.stageForCommit(into: localWax, compact: compact)
+    private func stageVectorIndex() async throws {
+        if let concreteVectorEngine {
+            try await stageVectorForCommit(using: concreteVectorEngine)
+        } else if config.enableVectorSearch {
+            let hasPendingEmbeddings = !(await wax.pendingEmbeddingMutations()).isEmpty
+            let hasCommittedIndex = (await wax.committedVecIndexManifest()) != nil
+            if hasPendingEmbeddings || hasCommittedIndex {
+                throw WaxError.io("vector search enabled but no vector engine configured; set vectorDimensions")
             }
-        }()
-
-        async let vectorStaging: Void = {
-            if let engine = localVectorEngine {
-                try await self.stageVectorForCommit(using: engine)
-            } else if localConfig.enableVectorSearch {
-                let hasPendingEmbeddings = !(await localWax.pendingEmbeddingMutations()).isEmpty
-                let hasCommittedIndex = (await localWax.committedVecIndexManifest()) != nil
-                if hasPendingEmbeddings || hasCommittedIndex {
-                    throw WaxError.io("vector search enabled but no vector engine configured; set vectorDimensions")
-                }
-            }
-        }()
-
-        try await textStaging
-        try await vectorStaging
+        }
     }
 
     private func ensureWritable() throws {
