@@ -204,43 +204,40 @@ package struct QueryAnalyzer: Sendable {
         !dateLiterals(in: text).isEmpty
     }
 
+    /// Whole-word intent cues. Substrings never count ("update" is not "date",
+    /// "capacity" is not "city", "whole" is not "who").
     package func detectIntent(query: String) -> QueryIntent {
-        let lower = query.lowercased()
-        let terms = Set(normalizedTerms(query: query))
+        let words = Set(RerankingHelpers.words(query.lowercased()))
 
         var intent: QueryIntent = []
-        if lower.contains("city")
-            || lower.contains("where")
-            || terms.contains("move")
-            || terms.contains("mov")
-            || lower.contains("moved")
-            || lower.contains("moving")
-        {
+        if !words.isDisjoint(with: Self.locationCueWords) {
             intent.insert(.asksLocation)
         }
-        if lower.contains("date")
-            || lower.contains("when")
-            || lower.contains("launch")
-            || lower.contains("timeline")
-        {
+        if !words.isDisjoint(with: Self.dateCueWords) {
             intent.insert(.asksDate)
         }
-        if lower.contains("who")
-            || lower.contains("owner")
-            || lower.contains("owns")
-            || lower.contains("deployment readiness")
-        {
+        if !words.isDisjoint(with: Self.ownershipCueWords) {
             intent.insert(.asksOwnership)
         }
         let enabledIntentCount =
             (intent.contains(.asksLocation) ? 1 : 0) +
             (intent.contains(.asksDate) ? 1 : 0) +
             (intent.contains(.asksOwnership) ? 1 : 0)
-        if lower.contains(" and ") && enabledIntentCount > 1 {
+        if words.contains("and") && enabledIntentCount > 1 {
             intent.insert(.multiHop)
         }
         return intent
     }
+
+    private static let locationCueWords: Set<Substring> = [
+        "where", "city", "move", "moves", "moved", "moving",
+    ]
+
+    private static let dateCueWords: Set<Substring> = ["when", "date", "dates"]
+
+    private static let ownershipCueWords: Set<Substring> = [
+        "who", "whom", "whose", "owner", "owners", "ownership", "owns",
+    ]
 
     // MARK: - Private
 
@@ -274,13 +271,14 @@ package struct QueryAnalyzer: Sendable {
     ]
 
     private static let nameFollowerCueWords: Set<String> = [
-        "moved", "move", "owns", "owned", "launch", "launched"
+        "moved", "move", "owns", "owned"
     ]
 
+    /// Capitalized query words that name an intent or a generic work artifact,
+    /// not an entity. Keep it generic; no benchmark-fixture vocabulary.
     private static let entityNoiseTerms: Set<String> = [
-        "city", "date", "owner", "owns", "launch", "public", "project", "beta",
-        "deployment", "readiness", "timeline", "status", "updates", "update",
-        "report", "checklist", "signoff", "team", "health", "allergic",
+        "city", "date", "owner", "owns", "project", "timeline", "status",
+        "updates", "update", "report", "team",
     ]
 
     private static let fullMonthDateRegex = try? NSRegularExpression(

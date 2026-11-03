@@ -257,6 +257,7 @@ package struct FastRAGContextBuilder: Sendable {
                     clamped.expansionMaxBytes,
                     max(4 * 1024, clamped.previewMaxBytes * 64)
                 )
+                let snippetMaxTokens = clamped.snippetMaxTokens
                 var previews = Array<String>(repeating: "", count: snippetCandidates.count)
                 await withTaskGroup(of: (Int, String).self) { group in
                     for (index, (result, preview)) in snippetCandidates.enumerated() {
@@ -271,7 +272,14 @@ package struct FastRAGContextBuilder: Sendable {
                                     maxBytes: snippetFallbackMaxBytes
                                 ),
                                 !expanded.isEmpty {
-                                    return (index, expanded)
+                                    return (index, await Self.tokenFittedSnippetText(
+                                        preview: preview,
+                                        frameText: expanded,
+                                        intent: queryIntent,
+                                        analyzer: queryAnalyzer,
+                                        maxTokens: snippetMaxTokens,
+                                        countTokens: { await counter.count($0) }
+                                    ))
                                 }
                             } catch {
                                 WaxDiagnostics.logSwallowed(
@@ -384,23 +392,91 @@ package struct FastRAGContextBuilder: Sendable {
             return true
         }
 
-        if intent.contains(.asksDate) {
-            let hintsTemporal = lower.contains("launch")
-                || lower.contains("appointment")
-                || lower.contains("beta")
-                || lower.contains("timeline")
-            if hintsTemporal && !analyzer.containsDateLiteral(preview) {
-                return true
-            }
+        // The date may sit outside the preview window. Fetch the frame; the
+        // expansion is only kept if the frame has a date (see expandedSnippetText).
+        if intent.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
+            return true
         }
 
-        if intent.contains(.asksOwnership),
-           lower.contains("owns"),
-           !lower.contains("deployment readiness") {
+        if intent.contains(.asksOwnership), RerankingHelpers.words(lower).contains("owns") {
             return true
         }
 
         return false
+    }
+
+    /// ``expandedSnippetText(preview:frameText:intent:analyzer:maxCharacters:)``
+    /// sized for a token budget. The window starts at ~3 characters per token;
+    /// when that overshoots (CJK, emoji), it is cut once more in proportion to
+    /// the measured tokens so the date stays inside the budget.
+    static func tokenFittedSnippetText(
+        preview: String,
+        frameText: String,
+        intent: QueryIntent,
+        analyzer: QueryAnalyzer,
+        maxTokens: Int,
+        countTokens: (String) async -> Int
+    ) async -> String {
+        let maxCharacters = maxTokens * 3
+        let text = expandedSnippetText(
+            preview: preview,
+            frameText: frameText,
+            intent: intent,
+            analyzer: analyzer,
+            maxCharacters: maxCharacters
+        )
+        guard intent.contains(.asksDate), text != preview else { return text }
+        let tokens = await countTokens(text)
+        guard tokens > maxTokens else { return text }
+        // Never cut below the date literal itself.
+        let literalLength = analyzer.dateLiterals(in: frameText).first?.count ?? 1
+        let fitted = max(literalLength, maxCharacters * maxTokens / tokens)
+        return expandedSnippetText(
+            preview: preview,
+            frameText: frameText,
+            intent: intent,
+            analyzer: analyzer,
+            maxCharacters: fitted
+        )
+    }
+
+    /// Text to use for a snippet once the full frame was fetched.
+    ///
+    /// For a date question whose preview lacks a date, the frame is used only
+    /// when it contains one, and a long frame is cut to `maxCharacters`
+    /// centered on that date (a cut from the frame start could drop it).
+    /// Otherwise a truncated ("...") or ownership preview gets the full frame.
+    static func expandedSnippetText(
+        preview: String,
+        frameText: String,
+        intent: QueryIntent,
+        analyzer: QueryAnalyzer,
+        maxCharacters: Int
+    ) -> String {
+        if intent.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
+            if let window = dateCenteredWindow(in: frameText, analyzer: analyzer, maxCharacters: maxCharacters) {
+                return window
+            }
+            if !preview.contains("...") { return preview }
+        }
+        return frameText
+    }
+
+    /// `text` itself when it fits, else a `maxCharacters` slice centered on the
+    /// first date literal, with the date in the first third of the slice.
+    /// Recall assembly truncates snippets from the start, so the date must sit
+    /// early. `nil` when `text` has no date literal.
+    static func dateCenteredWindow(in text: String, analyzer: QueryAnalyzer, maxCharacters: Int) -> String? {
+        guard let literal = analyzer.dateLiterals(in: text).first,
+              let match = text.range(of: literal) else { return nil }
+        guard maxCharacters > 0, text.count > maxCharacters else { return text }
+        let matchStart = text.distance(from: text.startIndex, to: match.lowerBound)
+        let lead = min(matchStart, maxCharacters / 3)
+        let end = min(text.count, matchStart - lead + maxCharacters)
+        let start = end - maxCharacters
+        let lower = text.index(text.startIndex, offsetBy: start)
+        let upper = text.index(lower, offsetBy: maxCharacters)
+        return String(text[lower..<upper])
     }
 
     /// Reorder already-ranked hits for an answer budget. Does not rewrite Ranking's published score.
@@ -476,60 +552,40 @@ package struct FastRAGContextBuilder: Sendable {
                 }
             }
 
+            // Answer-shape signals shared with UnifiedRanking (RerankingHelpers).
+            // No fixture phrases: ordinary words must not move a result.
             if intents.contains(.asksLocation),
-               previewLower.contains("moved to") {
+               RerankingHelpers.containsRelocationStatement(preview) || RerankingHelpers.containsMoveToPhrase(previewLower) {
+                total += 0.45
+            }
+            if intents.contains(.asksDate), analyzer.containsDateLiteral(preview) {
                 total += 0.45
             }
             if intents.contains(.asksDate),
-               (previewLower.contains("public launch") || previewLower.contains("launch is") || analyzer.containsDateLiteral(preview)) {
-                total += 0.45
-            }
-            if intents.contains(.asksDate),
-               RerankingHelpers.containsTentativeLaunchLanguage(previewLower) {
+               RerankingHelpers.containsTentativeLanguage(previewLower) {
                 let basePenalty = config.answerDistractorPenalty
                 total -= vectorInfluenced ? basePenalty * 2.8 : basePenalty * 1.8
             }
             if intents.contains(.asksOwnership),
-               (previewLower.contains("owns deployment readiness") || previewLower.contains(" owns ")) {
+               RerankingHelpers.containsOwnershipStatement(previewLower) {
                 total += 0.45
-            }
-            if looksDistractor(previewLower) {
-                let basePenalty = config.answerDistractorPenalty
-                total -= vectorInfluenced ? basePenalty * 2.2 : basePenalty
-                if vectorInfluenced, intents.contains(.asksDate), !analyzer.containsDateLiteral(preview) {
-                    total -= 0.35
-                }
             }
             return total
         }
 
-        var head = Array(results.prefix(cappedWindow))
-        head.sort { lhs, rhs in
-            let lhsKey = sortKey(lhs)
-            let rhsKey = sortKey(rhs)
-            if lhsKey != rhsKey { return lhsKey > rhsKey }
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.frameId < rhs.frameId
-        }
+        // Compute each key once; the comparator runs O(n log n) times.
+        let head = results.prefix(cappedWindow)
+            .map { (result: $0, key: sortKey($0)) }
+            .sorted { lhs, rhs in
+                if lhs.key != rhs.key { return lhs.key > rhs.key }
+                if lhs.result.score != rhs.result.score { return lhs.result.score > rhs.result.score }
+                return lhs.result.frameId < rhs.result.frameId
+            }
+            .map(\.result)
 
         if cappedWindow == results.count { return head }
         return head + results.dropFirst(cappedWindow)
     }
-
-    /// FastRAG distractor check — narrower than UnifiedSearch.looksDistractorLike.
-    /// Includes "no authoritative" (confidence-undermining language) which UnifiedSearch omits.
-    /// Omits "allergic", "draft memo", "tentative", "pending approval" which are already
-    /// handled by dedicated intent-specific penalties in the FastRAG scoring path.
-    private static func looksDistractor(_ text: String) -> Bool {
-        text.contains("no authoritative")
-            || text.contains("weekly report")
-            || text.contains("checklist")
-            || text.contains("signoff")
-            || text.contains("distractor")
-    }
-
-    // containsTentativeLaunchLanguage → RerankingHelpers (shared with UnifiedSearch)
-    // containsDateLiteral → use analyzer.containsDateLiteral() directly (avoids throwaway QueryAnalyzer)
 
     private func expansionText(
         frameId: UInt64,
