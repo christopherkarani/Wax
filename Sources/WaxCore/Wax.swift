@@ -103,17 +103,23 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
     package var model: String?
     package var dimensions: Int?
     package var normalized: Bool?
+    /// Trimmed, lowercased model names whose chunks also count as a match: revisions that
+    /// `model` supersedes. Chunk metadata is immutable, so chunks written before a re-embed
+    /// keep the old model name even after their vectors are replaced.
+    package var supersededModels: Set<String>
 
     package init(
         provider: String? = nil,
         model: String? = nil,
         dimensions: Int? = nil,
-        normalized: Bool? = nil
+        normalized: Bool? = nil,
+        supersededModels: Set<String> = []
     ) {
         self.provider = provider
         self.model = model
         self.dimensions = dimensions
         self.normalized = normalized
+        self.supersededModels = supersededModels
     }
 
     fileprivate func matches(metadataEntries: [String: String]) -> Bool {
@@ -121,7 +127,10 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
             return false
         }
         if let model, metadataEntries["wax.embedding.model"] != model {
-            return false
+            let recorded = metadataEntries["wax.embedding.model"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard let recorded, supersededModels.contains(recorded) else { return false }
         }
         if let dimensions, metadataEntries["wax.embedding.dimension"] != String(dimensions) {
             return false
@@ -1738,6 +1747,22 @@ package actor Wax {
         }
     }
 
+    package static let staleVectorIndexReason =
+        "vector index is stale relative to pending embeddings; restage vector index before commit"
+
+    /// `true` for the two commit refusals caused by an embedding written after staging.
+    /// Both are thrown before the commit mutates anything, so restaging and retrying is safe.
+    package static func isStaleVectorStage(_ error: any Error) -> Bool {
+        switch error as? WaxError {
+        case .vectorIndexNotStaged:
+            return true
+        case .io(let reason):
+            return reason == staleVectorIndexReason
+        default:
+            return false
+        }
+    }
+
     private func commitLocked() async throws {
         guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
 
@@ -1748,9 +1773,7 @@ package actor Wax {
         } else if let stagedVecIndex {
             let latestPendingEmbeddingSequence = pendingMutationSummary.latestPendingEmbeddingSequence
             if latestPendingEmbeddingSequence != stagedVecIndex.pendingEmbeddingMaxSequence {
-                throw WaxError.io(
-                    "vector index is stale relative to pending embeddings; restage vector index before commit"
-                )
+                throw WaxError.io(Self.staleVectorIndexReason)
             }
         }
 
@@ -2141,22 +2164,54 @@ package actor Wax {
             var sources: [SurrogateSourceFrame] = []
             sources.reserveCapacity(toc.frames.count)
 
-            for frame in toc.frames {
-                guard frame.status == .active, frame.supersededBy == nil else { continue }
-                // Single-chunk remember writes only a searchable document.
-                // Corpus ingest already does the same. Chunks stay the
-                // multi-chunk source.
-                guard frame.role == .chunk || frame.role == .document else { continue }
-                guard frame.kind != "surrogate" else { continue }
-                guard let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !searchText.isEmpty else {
-                    continue
-                }
+            for frame in toc.frames where Self.isLiveSurrogateSource(frame) {
+                guard let searchText = Self.embeddableText(of: frame) else { continue }
                 sources.append(.init(id: frame.id, searchText: searchText))
             }
 
             return sources
         }
+    }
+
+    /// Committed frames in `frameIds` whose vectors must be rewritten after an embedding
+    /// model change, in ascending id order: every non-deleted frame that already has a vector
+    /// (live, superseded, or surrogate) plus every live source that still lacks one.
+    package func reembedSources(
+        frameIds: Range<UInt64>,
+        embeddedFrameIds: Set<UInt64>
+    ) async -> [SurrogateSourceFrame] {
+        await withReadLock {
+            let upper = min(frameIds.upperBound, UInt64(toc.frames.count))
+            guard frameIds.lowerBound < upper else { return [] }
+            var sources: [SurrogateSourceFrame] = []
+            for id in frameIds.lowerBound..<upper {
+                let frame = toc.frames[Int(id)]
+                guard frame.status != .deleted, frame.role != .system else { continue }
+                guard embeddedFrameIds.contains(id) || Self.isLiveSurrogateSource(frame) else { continue }
+                // Every vector-writing path embeds `searchText`; a frame without one has
+                // nothing to re-embed from.
+                guard let searchText = Self.embeddableText(of: frame) else { continue }
+                sources.append(.init(id: id, searchText: searchText))
+            }
+            return sources
+        }
+    }
+
+    private static func isLiveSurrogateSource(_ frame: FrameMeta) -> Bool {
+        guard frame.status == .active, frame.supersededBy == nil else { return false }
+        // Single-chunk remember writes only a searchable document.
+        // Corpus ingest already does the same. Chunks stay the
+        // multi-chunk source.
+        guard frame.role == .chunk || frame.role == .document else { return false }
+        return frame.kind != "surrogate"
+    }
+
+    private static func embeddableText(of frame: FrameMeta) -> String? {
+        guard let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !searchText.isEmpty else {
+            return nil
+        }
+        return searchText
     }
 
     package func rememberDedupProbe(
@@ -2893,9 +2948,9 @@ package actor Wax {
         }
     }
 
-    /// Replace the store's binding after every live frame was re-embedded with the new
-    /// identity. Callers commit the vectors first, so a crash before the next commit keeps
-    /// the old binding and the re-embed restarts.
+    /// Replace the store's binding once every vector was re-embedded with the new identity.
+    /// The binding lives in the TOC, so it becomes durable only in the same commit as the
+    /// last re-embedded vectors; a crash before that commit keeps the old binding.
     package func replaceMemoryBinding(_ binding: MemoryBinding) async throws {
         await withWriteLock {
             guard !binding.isEmpty, toc.memoryBinding != binding else { return }

@@ -1526,37 +1526,52 @@ struct WaxCLIMemoryTests {
             )
         )
         #expect(
-            VectorHealthCommand.isHealthy(
+            !VectorHealthCommand.isHealthy(
                 vectorSearchEnabled: true,
                 queryEmbeddingAvailable: false,
                 embedderPresent: true,
                 framesWithoutVectors: 0,
                 canaryPassed: true
-            ) == false
+            )
         )
         #expect(
-            VectorHealthCommand.isHealthy(
+            !VectorHealthCommand.isHealthy(
                 vectorSearchEnabled: false,
                 queryEmbeddingAvailable: true,
                 embedderPresent: true,
                 framesWithoutVectors: 0,
                 canaryPassed: true
-            ) == false
+            )
         )
         #expect(
-            VectorHealthCommand.isHealthy(
+            !VectorHealthCommand.isHealthy(
                 vectorSearchEnabled: true,
                 queryEmbeddingAvailable: true,
                 embedderPresent: true,
                 framesWithoutVectors: 0,
                 canaryPassed: true,
                 vectorsNeedReembed: true
-            ) == false
+            )
         )
+    }
+
+    @Test
+    func vectorHealthFixCommandShellQuotesStorePaths() {
         #expect(
             VectorHealthCommand.reembedFixCommand(storePath: "/tmp/memory.wax")
                 == "wax-cli embed-backfill --direct-store --store-path /tmp/memory.wax --output /tmp/memory-reembedded.wax"
         )
+        #expect(
+            VectorHealthCommand.reembedFixCommand(storePath: "/tmp/my notes/it's.wax")
+                == "wax-cli embed-backfill --direct-store --store-path '/tmp/my notes/it'\\''s.wax' --output '/tmp/my notes/it'\\''s-reembedded.wax'"
+        )
+        #expect(VectorHealthCommand.shellQuoted("$(rm -rf ~)") == "'$(rm -rf ~)'")
+    }
+
+    @Test
+    func directStoreCommandsNeverStartSupersededReembedOnTheirOwn() {
+        #expect(!StoreSession.orchestratorConfig().automaticallyReembedSupersededVectors)
+        #expect(OrchestratorConfig.default.automaticallyReembedSupersededVectors)
     }
 
     @Test(.disabled(if: !mcpServerTraitEnabled,

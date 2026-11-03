@@ -35,6 +35,21 @@ enum MemoryBindingCompatibility {
         )
     }
 
+    /// Trimmed, lowercased model names that `identity` supersedes, spelled every way they can
+    /// appear in chunk metadata (canonical name plus aliases). Remember dedup accepts chunks
+    /// recorded under these names, because chunk metadata is never rewritten by a re-embed.
+    static func supersededModelNames(for identity: EmbeddingIdentity) -> Set<String> {
+        guard let model = identity.model,
+              let superseding = supersededModels[canonicalModel(model)] else {
+            return []
+        }
+        var names = superseding.replaces
+        for (alias, canonical) in modelAliases where superseding.replaces.contains(canonical) {
+            names.insert(alias)
+        }
+        return names
+    }
+
     /// `true` when a store with vectors but no binding must be treated as superseded for
     /// `identity` (legacy stores predate the binding, so their vector space is unknown).
     static func treatsUnboundVectorsAsSuperseded(for identity: EmbeddingIdentity) -> Bool {

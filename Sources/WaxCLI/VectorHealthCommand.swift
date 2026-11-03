@@ -31,7 +31,16 @@ struct VectorHealthCommand: AsyncParsableCommand {
     /// Operator command that re-embeds a store whose vectors come from a superseded model.
     static func reembedFixCommand(storePath: String) -> String {
         let output = (storePath as NSString).deletingPathExtension + "-reembedded.wax"
-        return "wax-cli embed-backfill --direct-store --store-path \(storePath) --output \(output)"
+        return "wax-cli embed-backfill --direct-store --store-path \(shellQuoted(storePath)) --output \(shellQuoted(output))"
+    }
+
+    /// POSIX single-quoting for paths that contain anything outside a conservative safe set.
+    static func shellQuoted(_ value: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./+:@%,=")
+        guard value.isEmpty || value.unicodeScalars.contains(where: { !safe.contains($0) }) else {
+            return value
+        }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     func runAsync() async throws {
