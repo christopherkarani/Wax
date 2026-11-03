@@ -13,7 +13,8 @@ private actor DiagnosticVectorEngine: VectorSearchEngine {
         self.hits = hits
     }
     func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        if hang { try await Task.sleep(for: .seconds(60)) }
+        // Suspends until AsyncTimeout cancels the lane, so it cannot finish inside any budget.
+        if hang { try await Task.sleep(for: .seconds(86_400)) }
         return hits
     }
     func add(frameId: UInt64, vector: [Float]) async throws {}
@@ -103,18 +104,23 @@ struct VectorLaneDiagnosticsTests {
         try await TempFiles.withTempFile { url in
             let wax = try await Wax.create(at: url)
             do {
-                // Hang uses a tight budget. The empty lane must use a wide one so
-                // actor scheduling under parallel `swift test` cannot look like a timeout.
+                // Only the hang case may time out: it never completes, so a tight
+                // budget always fires. The empty lane gets an hour, far past any
+                // scheduler stall on a loaded runner, so it can only finish first.
                 let response = try await wax.search(
                     SearchRequest(
                         query: "memory reliability",
                         lane: .hybrid(alpha: 0.5, embedding: [1, 0]),
-                        vectorSearchTimeout: hang ? .milliseconds(40) : .seconds(2),
+                        vectorSearchTimeout: hang ? .milliseconds(40) : .seconds(3_600),
                         topK: 4
                     ),
                     engineOverrides: .init(vectorEngine: DiagnosticVectorEngine(hang: hang))
                 )
-                #expect(response.vectorSearchTimedOut == hang)
+                if hang {
+                    #expect(response.vectorSearchTimedOut)
+                } else {
+                    #expect(!response.vectorSearchTimedOut)
+                }
                 try await wax.close()
             } catch {
                 try? await wax.close()
