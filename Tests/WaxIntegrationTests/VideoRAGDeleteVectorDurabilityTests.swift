@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxVectorSearch
 import WaxCore
 import WaxTextSearch
@@ -9,30 +10,6 @@ import WaxTextSearch
 // Byte-level proof that VideoRAG delete and re-ingest (supersede) remove segment
 // vectors from the committed vector index. Before the fix, VideoRAGOrchestrator only
 // deleted frames and left ghost keyframe vectors searchable.
-
-private struct DeleteDurabilityVideoEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 8
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "DeleteDurabilityVideo",
-        dimensions: 8,
-        normalized: true
-    )
-
-    func embed(text: String) async throws -> [Float] {
-        let hash = text.utf8.reduce(0) { $0 &+ Int($1) }
-        let raw = (0..<dimensions).map { i in Float((hash &+ i) % 97) / 97.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-
-    func embed(image: CGImage) async throws -> [Float] {
-        let hash = (image.width &* 31) &+ image.height
-        let raw = (0..<dimensions).map { i in Float((hash &+ i &* 13) % 101) / 101.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-}
 
 private func videoDeleteCommittedVecFrameIds(from bytes: Data) throws -> [UInt64] {
     let decoded = try VectorSerializer.decodeVecSegment(from: bytes)
@@ -64,7 +41,7 @@ private func videoDeleteMakeOrchestrator(storeURL: URL) async throws -> VideoRAG
     return try await VideoRAGOrchestrator(
         storeURL: storeURL,
         config: config,
-        embedder: DeleteDurabilityVideoEmbedder()
+        embedder: ByteSumMultimodalEmbedder(model: "DeleteDurabilityVideo")
     )
 }
 

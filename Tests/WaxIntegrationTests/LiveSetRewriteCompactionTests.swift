@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 import WaxVectorSearch
 
@@ -426,7 +427,8 @@ func rewriteLiveSetPreservesMemoryBindingAndRejectsIncompatibleProvider() async 
             _ = try await MemoryOrchestrator(
                 at: destinationURL,
                 config: vectorConfig,
-                embedder: RewriteBindingEmbedder(
+                embedder: ConstantEmbedder(
+                    vector: [0.5, 0.5, 0.5, 0.5],
                     provider: "rewrite-provider",
                     model: "rewrite-model-v2"
                 )
@@ -670,26 +672,6 @@ private func seedDeadPayloadStore(at url: URL) async throws {
 
     try await wax.commit()
     try await wax.close()
-}
-
-private struct RewriteBindingEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity?
-
-    init(provider: String, model: String) {
-        identity = EmbeddingIdentity(
-            provider: provider,
-            model: model,
-            dimensions: 4,
-            normalized: true
-        )
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return [0.5, 0.5, 0.5, 0.5]
-    }
 }
 
 private func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
 @Test
@@ -19,7 +20,7 @@ func memoryOrchestratorRecallUsesVectorEmbedding() async throws {
             searchMode: .vectorOnly // Enforce vector only
         )
 
-        let embedder = TestEmbedder()
+        let embedder = ConstantEmbedder(vector: VectorMath.normalizeL2([0.5, 0.5]), provider: "Test", model: "Deterministic")
         let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
         
         // Ingest: "Hello World" -> Embedder returns [0.5, 0.5] (deterministic)
@@ -39,39 +40,6 @@ func memoryOrchestratorRecallUsesVectorEmbedding() async throws {
     }
 }
 
-private struct TestEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "Deterministic",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        // Simple deterministic embedding
-        // For "Hello World", count is 11.
-        return VectorMath.normalizeL2([0.5, 0.5])
-    }
-}
-
-private struct NetworkEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "Network",
-        dimensions: 2,
-        normalized: true
-    )
-    let executionMode: ProviderExecutionMode = .mayUseNetwork
-
-    func embed(_ text: String) async throws -> [Float] {
-        return VectorMath.normalizeL2([0.5, 0.5])
-    }
-}
-
 @Test
 func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
     await TempFiles.withTempFile { url in
@@ -81,7 +49,12 @@ func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
             _ = try await MemoryOrchestrator(
                 at: url,
                 config: config,
-                embedder: NetworkEmbedder()
+                embedder: ConstantEmbedder(
+                    vector: VectorMath.normalizeL2([0.5, 0.5]),
+                    provider: "Test",
+                    model: "Network",
+                    executionMode: .mayUseNetwork
+                )
             )
             Issue.record("Expected WaxError for network embedding provider")
         } catch let error as WaxError {

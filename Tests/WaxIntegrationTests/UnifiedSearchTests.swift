@@ -4,6 +4,7 @@ import Metal
 #endif
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
@@ -610,21 +611,6 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
-private struct TestEmbedder2D: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "Deterministic",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        VectorMath.normalizeL2([1.0, 0.0])
-    }
-}
-
 #if canImport(Metal)
 @Test
 func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
@@ -638,7 +624,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let orchestrator = try await MemoryOrchestrator(
             at: url,
             config: config,
-            embedder: TestEmbedder2D()
+            embedder: ConstantEmbedder(vector: [1, 0], provider: "Test", model: "Deterministic")
         )
         try await orchestrator.remember("hello world")
 

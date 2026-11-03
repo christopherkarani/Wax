@@ -2,17 +2,13 @@ import Foundation
 import CoreGraphics
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
-private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
-
-    func embed(text: String) async throws -> [Float] { [1, 0, 0, 0] }
-    func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
-}
+/// Text → `[1, 0, 0, 0]`, image → `[0, 1, 0, 0]`.
+private let stubMultimodalEmbedder = DeterministicMultimodalEmbedder(
+    identity: EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
+)
 
 private struct NetworkOCRProvider: OCRProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
@@ -96,7 +92,7 @@ func photoRAGRecallReturnsAssetIDsFromOCR() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let query = PhotoQuery(
@@ -131,7 +127,7 @@ func photoRAGSyncLibraryWritesSyncStateCheckpoint() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         try await orchestrator.syncLibrary(scope: .assetIDs([]))
@@ -141,7 +137,7 @@ func photoRAGSyncLibraryWritesSyncStateCheckpoint() async throws {
         let reopened = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let syncState = await reopened.wax.frameMetas().filter {
@@ -168,7 +164,7 @@ func photoRAGRejectsNetworkOCRProviderByDefault() async throws {
             _ = try await PhotoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: StubMultimodalEmbedder(),
+                embedder: stubMultimodalEmbedder,
                 ocr: NetworkOCRProvider(),
                 captioner: nil
             )
@@ -234,7 +230,7 @@ func photoRAGRecallIncludesSearchableTagsFromIndexedFrames() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let query = PhotoQuery(

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 
 // MARK: - Pasteable samples (kept in lockstep with Resources/website/docs/ios)
 
