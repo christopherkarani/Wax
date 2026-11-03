@@ -255,10 +255,38 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "await wax.clearPendingMutations()",
         "_ = try await wax.applyPendingMutationsIntoTOC(&copy)",
         "extension Wax {\n    func peek() -> Int { toc.frames.count }\n}",
+        // Parenthesized, optional, subscripted and closure-argument receivers.
+        "let toc = (await wax).toc",
+        "let toc = wax!.toc",
+        "let toc = stores[0].toc",
+        "let tocs = stores.map { $0.toc }",
+        // Member chains split across lines.
+        "let toc = wax\n    .toc",
+        "let count = await wax?\n    .pendingMutations.count",
+        // The WAL writer, the staged vector index and the `*Locked`/`*Unlocked` helpers.
+        "let wal = await wax.wal",
+        "let staged = await wax.stagedVecIndex",
+        "try await wax.commitLocked()",
+        "let metas = await wax.frameMetasIncludingPendingUnlocked(frameIds: ids)",
+        "extension Wax {\n    func size() -> UInt64 { wal.writePos }\n}",
+        "extension Wax {\n    func flush() async throws { try await commitLocked() }\n}",
+        "extension Wax {\n    func dims() -> Int? { stagedVecIndex?.dimension }\n}",
     ]
     for source in flagged {
         #expect(try !waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
     }
+    // A multi-line chain is reported on the line that names the member.
+    #expect(try waxGuardedStateReferences(in: "let toc = wax\n    .toc", relativePath: "Search/New.swift")
+        == ["Search/New.swift:2: .toc"])
+    // The file-scoped allow-list names the call whose result is read, not any `)` receiver.
+    #expect(try !waxGuardedStateReferences(
+        in: "let toc = (await wax).toc",
+        relativePath: "WAL/WALRingReader.swift"
+    ).isEmpty)
+    #expect(try !waxGuardedStateReferences(
+        in: "let pending = try await wax.pendingSnapshot().pendingMutations",
+        relativePath: "WAL/WALRingReader.swift"
+    ).isEmpty)
     // The same receiver is allowed only in the file whose own type owns that property.
     #expect(try !waxGuardedStateReferences(
         in: "let n = scan.pendingMutations.count",
@@ -271,6 +299,9 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "// wax.toc is guarded by opLock",
         "throw WaxError.invalidToc(reason: \"wax.toc must be at least 32 bytes\")",
         "extension WaxTOC {\n    var toc: Int { 0 }\n}",
+        "let size = options.walSize",
+        "private var isLocked = false",
+        "if !self.isLocked { isLocked = true }",
     ]
     for source in allowed {
         #expect(try waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
@@ -278,6 +309,14 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
     #expect(try waxGuardedStateReferences(
         in: "let n = scan.pendingMutations.count",
         relativePath: "WAL/PendingReplayPolicy.swift"
+    ).isEmpty)
+    #expect(try waxGuardedStateReferences(
+        in: "try scanPendingMutationsWithState(from: position, committedSeq: seq).pendingMutations",
+        relativePath: "WAL/WALRingReader.swift"
+    ).isEmpty)
+    #expect(try waxGuardedStateReferences(
+        in: "try scanPendingMutationsWithState(from: position, committedSeq: seq)\n    .pendingMutations",
+        relativePath: "WAL/WALRingReader.swift"
     ).isEmpty)
 }
 
@@ -287,29 +326,36 @@ private func isWaxActorSource(_ relativePath: String) -> Bool {
         && (relativePath == "Wax.swift" || (relativePath.hasPrefix("Wax+") && relativePath.hasSuffix(".swift")))
 }
 
-/// Wax members reachable only because of the file split, and which must stay under `opLock`.
-private let waxGuardedMembers = ["toc", "header", "pendingMutations", "clearPendingMutations", "applyPendingMutationsIntoTOC"]
+/// Wax members reachable only because of the file split, and which must stay under `opLock`:
+/// the named state and helpers, plus every `*Locked` / `*Unlocked` helper (they assume the
+/// caller already holds `opLock`).
+private let waxGuardedMemberPattern = #"(?:toc|header|wal|pendingMutations|stagedVecIndex|"#
+    + #"clearPendingMutations|applyPendingMutationsIntoTOC|[A-Za-z_][A-Za-z0-9_]*(?:Locked|Unlocked))"#
 
-/// Member accesses that name a guarded member but belong to another type, keyed by file:
-/// `WALPendingScanResult.pendingMutations` is read through these receivers.
+/// Member accesses that name a guarded member but belong to another type, keyed by file.
+/// `WALPendingScanResult.pendingMutations` is read through these receivers. A call result is
+/// spelled `name()`, so only that call's result is allowed, not every parenthesized receiver.
 private let nonWaxGuardedNameReceivers: [String: Set<String>] = [
-    "WAL/WALRingReader.swift": [")"],
+    "WAL/WALRingReader.swift": ["scanPendingMutationsWithState()"],
     "WAL/PendingReplayPolicy.swift": ["scan"],
 ]
 
 /// Returns a description of every line in `source` that reaches a guarded `Wax` member:
-/// any use of a guarded helper name, any member access `x.toc`/`x.header`/`x.pendingMutations`
-/// whose receiver is not `self` or an allow-listed non-Wax value, and any bare use of a
-/// guarded name inside a file that extends `Wax`. Comments and string literals are ignored.
+/// any use of a guarded helper name, any member access `x.toc` / `x.wal` / `x.commitLocked()`
+/// (also when split across lines) whose receiver is not `self` or an allow-listed non-Wax
+/// value, and any bare use of a guarded name inside a file that extends `Wax`. Comments and
+/// string literals are ignored.
 private func waxGuardedStateReferences(in source: String, relativePath: String) throws -> [String] {
-    let names = waxGuardedMembers.joined(separator: "|")
     // Simple (ASCII) word boundaries: the default Unicode boundaries treat `a.b` as one
     // word, so `\b` would not match inside member chains such as `toc.frames`.
     let helperUse = try Regex(#"\b(?:clearPendingMutations|applyPendingMutationsIntoTOC)\b"#)
         .wordBoundaryKind(.simple)
-    let memberAccess = try Regex(#"([A-Za-z_][A-Za-z0-9_]*|\))\s*\??\s*\.\s*(?:"# + names + #")\b"#)
-        .wordBoundaryKind(.simple)
-    let bareUse = try Regex(#"\b(?:"# + names + #")\b"#).wordBoundaryKind(.simple)
+    // The receiver is an identifier, `$0`, or the closing `)` / `]` of a call, parenthesized
+    // expression or subscript. `\s` also matches newlines, so `wax\n    .toc` is one access.
+    let memberAccess = try Regex(
+        #"([A-Za-z_][A-Za-z0-9_]*|\$[0-9]+|[)\]])\s*[?!]?\s*\.\s*"# + waxGuardedMemberPattern + #"\b"#
+    ).wordBoundaryKind(.simple)
+    let bareUse = try Regex(#"\b"# + waxGuardedMemberPattern + #"\b"#).wordBoundaryKind(.simple)
     let extendsWax = try Regex(#"\bextension\s+Wax\b"#).wordBoundaryKind(.simple)
     let stringLiteral = try Regex(#""(?:[^"\\]|\\.)*""#)
 
@@ -320,23 +366,51 @@ private func waxGuardedStateReferences(in source: String, relativePath: String) 
         }
         return code
     }
-    let fileExtendsWax = lines.contains { $0.contains(extendsWax) }
+    let code = lines.joined(separator: "\n")
+    let fileExtendsWax = code.contains(extendsWax)
     let allowedReceivers = nonWaxGuardedNameReceivers[relativePath, default: []].union(["self"])
 
-    var violations: [String] = []
-    for (index, code) in lines.enumerated() {
-        let location = "\(relativePath):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))"
-        if code.contains(helperUse) || (fileExtendsWax && code.contains(bareUse)) {
-            violations.append(location)
-            continue
-        }
-        for match in code.matches(of: memberAccess) {
-            let receiver = match.output[1].substring.map(String.init) ?? ""
-            if !allowedReceivers.contains(receiver) {
-                violations.append(location)
-                break
-            }
+    var flaggedLines = Set<Int>()
+    for (index, line) in lines.enumerated()
+    where line.contains(helperUse) || (fileExtendsWax && line.contains(bareUse)) {
+        flaggedLines.insert(index)
+    }
+    for match in code.matches(of: memberAccess) {
+        let receiverRange = try #require(match.output[1].range)
+        if !allowedReceivers.contains(receiverName(in: code, endingAt: receiverRange)) {
+            // Report the line that names the member: the last line of the match.
+            flaggedLines.insert(code[..<match.range.upperBound].filter { $0 == "\n" }.count)
         }
     }
-    return violations
+    return flaggedLines.sorted().map { index in
+        "\(relativePath):\(index + 1): \(lines[index].trimmingCharacters(in: .whitespaces))"
+    }
+}
+
+/// The receiver as the allow-list spells it: the identifier itself or, for a closing `)` / `]`,
+/// the identifier directly before its matching opener followed by `()` / `[]`. So
+/// `scan(from: x).pendingMutations` has receiver `scan()` and `(await wax).toc` has `()`.
+private func receiverName(in code: String, endingAt range: Range<String.Index>) -> String {
+    let token = code[range]
+    guard let close = token.first, close == ")" || close == "]" else { return String(token) }
+    let open: Character = close == ")" ? "(" : "["
+    var depth = 0
+    var index = range.lowerBound
+    while true {
+        if code[index] == close {
+            depth += 1
+        } else if code[index] == open {
+            depth -= 1
+            if depth == 0 { break }
+        }
+        guard index > code.startIndex else { return "\(open)\(close)" }
+        index = code.index(before: index)
+    }
+    var start = index
+    while start > code.startIndex {
+        let previous = code.index(before: start)
+        guard code[previous].isLetter || code[previous].isNumber || code[previous] == "_" else { break }
+        start = previous
+    }
+    return "\(code[start..<index])\(open)\(close)"
 }
