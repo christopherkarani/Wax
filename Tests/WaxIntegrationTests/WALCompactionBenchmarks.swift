@@ -98,52 +98,80 @@ final class WALCompactionBenchmarks: XCTestCase {
             vectorDimensions: 0
         )
 
-        let disabled = try await WALCompactionHarness.run(
-            workload: workload,
-            sampleEveryWrites: 250,
-            reopenIterations: 5,
-            waxOptions: WaxOptions(
-                walProactiveCommitThresholdPercent: nil,
-                walProactiveCommitMaxWalSizeBytes: nil
-            )
-        )
-        let enabled = try await WALCompactionHarness.run(
-            workload: workload,
-            sampleEveryWrites: 250,
-            reopenIterations: 5,
-            waxOptions: WaxOptions()
-        )
+        // A run has only about a dozen auto-commit puts, so its auto-commit p95 is in effect its
+        // slowest auto-commit, and one stalled fsync on a shared runner decides the comparison.
+        // Run both modes over several rounds, alternating which goes first so host-load drift
+        // hits both, and compare the median of the per-round percentiles: one stalled round can
+        // no longer fail the guardrail, but a slowdown in every proactive run still does.
+        var disabledRuns: [WALCompactionWorkloadResult] = []
+        var enabledRuns: [WALCompactionWorkloadResult] = []
+        for round in 0..<Self.proactiveGuardrailRounds {
+            let order = round.isMultiple(of: 2) ? [false, true] : [true, false]
+            for proactive in order {
+                let result = try await WALCompactionHarness.run(
+                    workload: workload,
+                    sampleEveryWrites: 250,
+                    reopenIterations: 5,
+                    waxOptions: proactive
+                        ? WaxOptions()
+                        : WaxOptions(walProactiveCommitThresholdPercent: nil, walProactiveCommitMaxWalSizeBytes: nil)
+                )
+                XCTAssertGreaterThan(result.autoCommitPutLatencyMs.samples, 0)
+                if proactive {
+                    enabledRuns.append(result)
+                } else {
+                    disabledRuns.append(result)
+                }
+            }
+        }
 
-        XCTAssertGreaterThan(disabled.autoCommitPutLatencyMs.samples, 0)
-        XCTAssertGreaterThan(enabled.autoCommitPutLatencyMs.samples, 0)
+        let disabledPutP95 = Self.median(disabledRuns.map(\.putLatencyMs.p95Ms))
+        let enabledPutP95 = Self.median(enabledRuns.map(\.putLatencyMs.p95Ms))
+        let disabledAutoCommitP95 = Self.median(disabledRuns.map(\.autoCommitPutLatencyMs.p95Ms))
+        let enabledAutoCommitP95 = Self.median(enabledRuns.map(\.autoCommitPutLatencyMs.p95Ms))
+        let roundAutoCommitP95s = zip(disabledRuns, enabledRuns).map { disabled, enabled in
+            "\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs)/\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs)"
+        }
 
         print(
-            "🧪 WAL proactive guardrail: "
-                + "disabled put p95=\(disabled.putLatencyMs.p95Ms.formatMs) "
-                + "enabled put p95=\(enabled.putLatencyMs.p95Ms.formatMs) "
-                + "disabled auto-commit put p95=\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
-                + "enabled auto-commit put p95=\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
-                + "disabled pending p95=\(disabled.pressure.pendingBytesP95) "
-                + "enabled pending p95=\(enabled.pressure.pendingBytesP95)"
+            "🧪 WAL proactive guardrail (median of \(Self.proactiveGuardrailRounds) rounds): "
+                + "disabled put p95=\(disabledPutP95.formatMs) "
+                + "enabled put p95=\(enabledPutP95.formatMs) "
+                + "disabled auto-commit put p95=\(disabledAutoCommitP95.formatMs) "
+                + "enabled auto-commit put p95=\(enabledAutoCommitP95.formatMs) "
+                + "per-round auto-commit p95 disabled/enabled=\(roundAutoCommitP95s) "
+                + "disabled pending p95=\(disabledRuns.map(\.pressure.pendingBytesP95)) "
+                + "enabled pending p95=\(enabledRuns.map(\.pressure.pendingBytesP95))"
         )
 
         // Percentile guardrails: avoid large tail regressions while pressure improves.
         XCTAssertLessThanOrEqual(
-            enabled.putLatencyMs.p95Ms,
-            disabled.putLatencyMs.p95Ms * 1.20 + 2.0
+            enabledPutP95,
+            disabledPutP95 * 1.20 + 2.0
         )
         // This workload has no explicit commit schedule, so commitLatencyMs only
         // measures the single final commit and is not a proactive-compaction metric.
         // Explicit commit latency is covered by testWALCompactionWorkloadMatrix().
         XCTAssertLessThanOrEqual(
-            enabled.autoCommitPutLatencyMs.p95Ms,
-            disabled.autoCommitPutLatencyMs.p95Ms * 1.15 + 10.0
+            enabledAutoCommitP95,
+            disabledAutoCommitP95 * 1.15 + 10.0
         )
 
-        XCTAssertLessThan(
-            enabled.pressure.pendingBytesP95,
-            disabled.pressure.pendingBytesP95
-        )
+        // Pending bytes do not depend on timing, so every round must show the improvement.
+        for (disabled, enabled) in zip(disabledRuns, enabledRuns) {
+            XCTAssertLessThan(
+                enabled.pressure.pendingBytesP95,
+                disabled.pressure.pendingBytesP95
+            )
+        }
+    }
+
+    /// Odd, so the median is one round's value.
+    private static let proactiveGuardrailRounds = 3
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        return sorted.isEmpty ? 0 : sorted[sorted.count / 2]
     }
 
     func testReplayStateSnapshotGuardrails() async throws {
