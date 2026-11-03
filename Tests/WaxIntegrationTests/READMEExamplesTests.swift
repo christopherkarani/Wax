@@ -126,8 +126,13 @@ func readmeExampleSwiftAppQuickStartFindsWhatItSaves() async throws {
     #expect(context.totalTokens > 0)
 }
 
-/// Saves the snippet's one `memory.save` literal, searches its one `memory.search` literal and
-/// requires the best hit to be the saved text. Returns the search result.
+/// An unrelated note that shares the README note's common words ("The user is …"), so the
+/// README text outscores it only when the README query matches what the note says.
+private let readmeDistractorNote = "The user is drinking coffee every morning before work."
+
+/// Saves an unrelated distractor and the snippet's one `memory.save` literal, searches its one
+/// `memory.search` literal and requires the best hit to be the saved text. Returns the search
+/// result.
 @discardableResult
 private func expectReadmeSnippetFindsWhatItSaves(
     _ block: Substring,
@@ -143,11 +148,17 @@ private func expectReadmeSnippetFindsWhatItSaves(
             config.enableVectorSearch = false
         }
         try await memory.save(saved[0])
+        try await memory.save(readmeDistractorNote)
         let context = try await memory.search(queries[0])
         try await memory.close()
 
         let best = try #require(context.items.first, sourceLocation: sourceLocation)
         #expect(best.text == saved[0], sourceLocation: sourceLocation)
+        // Strictly ahead of every other hit (the distractor comes back as a highlighted snippet,
+        // so its text is not the saved string), so a tie-break on frame order cannot put it first.
+        let otherScores = context.items.dropFirst().map(\.score)
+        #expect(otherScores.allSatisfy { $0 < best.score }, "\(otherScores) vs \(best.score)",
+                sourceLocation: sourceLocation)
         return context
     }
 }
