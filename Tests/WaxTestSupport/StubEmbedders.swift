@@ -102,10 +102,12 @@ package struct DeterministicTextEmbedder: EmbeddingProvider, Sendable {
 
 /// Seeds a 64-bit LCG with the FNV-1a hash of the text's UTF-8 bytes and fills `dimensions`
 /// components from it, so equal texts get equal vectors and different texts spread out.
-package struct SeededHashEmbedder: EmbeddingProvider, Sendable {
-    package let dimensions: Int
-    package let normalize: Bool
-    package let identity: EmbeddingIdentity?
+/// An actor, like the benchmark embedders it replaces, so benchmark timings keep the same
+/// actor hop per `embed` call.
+package actor SeededHashEmbedder: EmbeddingProvider {
+    package nonisolated let dimensions: Int
+    package nonisolated let normalize: Bool
+    package nonisolated let identity: EmbeddingIdentity?
 
     /// Identified as `provider`, model `fnv1a-lcg`.
     package init(dimensions: Int, normalize: Bool = true, provider: String = "bench") {
