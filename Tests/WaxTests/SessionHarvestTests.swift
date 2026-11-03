@@ -513,17 +513,17 @@ func maintainDoesNotEndZombieReboundByConcurrentRemember() async throws {
             reachedSignal.yield()
             for await _ in release { break }
         }
+        let maintainDone = RaceFlag()
         let maintain = Task {
-            await second.handle(.init(command: "memory_maintain", arguments: ["apply": .bool(true)]))
+            defer { maintainDone.set() }
+            return await second.handle(.init(command: "memory_maintain", arguments: ["apply": .bool(true)]))
         }
         for await _ in reached { break }
 
         // Maintain is parked between harvest and mark-ended. Remember must not
         // wait for it, and its rebind must survive maintain finishing.
-        let rememberDone = RaceFlag()
         let remember = Task {
-            defer { rememberDone.set() }
-            return await second.handle(.init(
+            await second.handle(.init(
                 command: "remember",
                 arguments: [
                     "content": .string("Working note written during maintain."),
@@ -536,16 +536,19 @@ func maintainDoesNotEndZombieReboundByConcurrentRemember() async throws {
                 ]
             ))
         }
-        // Bounded wait: if remember is (wrongly) queued behind maintain, release anyway.
-        let waitDeadline = Date().addingTimeInterval(10)
-        while !rememberDone.isSet, Date() < waitDeadline {
-            try await Task.sleep(for: .milliseconds(20))
+        // Maintain stays parked until released, so remember returning here shows it
+        // did not queue behind maintain. Wait for the event, not a wall-clock
+        // window: a remember that wrongly queues never returns and the time limit
+        // fails the test; its cancellation releases maintain so nothing is left parked.
+        let written = await withTaskCancellationHandler {
+            await remember.value
+        } onCancel: {
+            releaseSignal.finish()
         }
-        let rememberFinishedFirst = rememberDone.isSet
+        let rememberFinishedFirst = !maintainDone.isSet
         releaseSignal.yield()
         releaseSignal.finish()
         let applied = await maintain.value
-        let written = await remember.value
 
         #expect(rememberFinishedFirst, "remember waited on memory_maintain")
         #expect(applied.ok, "memory_maintain failed: \(applied.error ?? "nil")")
@@ -1103,7 +1106,9 @@ func findActiveConversationRequiresMatchingAgentProjectAndRepo() throws {
     #expect(repoMiss == nil)
 }
 
-@Test(.timeLimit(.minutes(1)))
+/// Wall time under `swift test --parallel` tracks the whole run, not this test;
+/// the limit is only a hang backstop for a close that never drains.
+@Test(.timeLimit(.minutes(2)))
 func sessionEndHarvestsAdmittedInFlightRemember() async throws {
     let needle = "WAXDRAIN-\(UUID().uuidString.prefix(8))"
     let rootURL = FileManager.default.temporaryDirectory
@@ -1139,6 +1144,9 @@ func sessionEndHarvestsAdmittedInFlightRemember() async throws {
             command: "session_end",
             arguments: ["session_id": .string(sessionID)]
         ))
+        // Release only once teardown is parked behind the in-flight remember, so
+        // the drain is exercised on every run instead of racing the release.
+        await service.rememberMutex.waitUntilWaiting(atLeast: 1)
 
         await embedder.release()
         let remembered = await remembering
@@ -1162,7 +1170,9 @@ func sessionEndHarvestsAdmittedInFlightRemember() async throws {
     }
 }
 
-@Test(.timeLimit(.minutes(1)))
+/// Wall time under `swift test --parallel` tracks the whole run, not this test;
+/// the limit is only a hang backstop for a close that never drains.
+@Test(.timeLimit(.minutes(2)))
 func sessionCloseHarvestsAdmittedInFlightRemember() async throws {
     let needle = "WAXCLOSEDRAIN-\(UUID().uuidString.prefix(8))"
     let rootURL = FileManager.default.temporaryDirectory
@@ -1202,6 +1212,9 @@ func sessionCloseHarvestsAdmittedInFlightRemember() async throws {
                 "project": .string(harvestProject),
             ]
         ))
+        // Release only once teardown is parked behind the in-flight remember, so
+        // the drain is exercised on every run instead of racing the release.
+        await service.rememberMutex.waitUntilWaiting(atLeast: 1)
 
         await embedder.release()
         let remembered = await remembering

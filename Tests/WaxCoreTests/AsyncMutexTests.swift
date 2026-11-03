@@ -14,6 +14,28 @@ import Testing
     #expect(result == 42)
 }
 
+@Test(.timeLimit(.minutes(1)))
+func asyncMutexWaitUntilWaitingResumesOnceATaskIsParked() async {
+    let mutex = AsyncMutex()
+    await mutex.lock()
+
+    let contender = Task {
+        await mutex.withLock { 7 }
+    }
+    // Event-driven: resumes when the contender parks in lock(), with no poll.
+    await mutex.waitUntilWaiting(atLeast: 1)
+    #expect(await mutex.waiterCount == 1)
+
+    await mutex.unlock()
+    #expect(await contender.value == 7)
+    #expect(await mutex.waiterCount == 0)
+}
+
+@Test func asyncMutexWaitUntilWaitingReturnsWhenAlreadySatisfied() async {
+    let mutex = AsyncMutex()
+    await mutex.waitUntilWaiting(atLeast: 0)
+}
+
 @Test func asyncMutexWithLockThrowingBody() async {
     let mutex = AsyncMutex()
     do {
