@@ -6,16 +6,20 @@ import WaxVectorSearch
 package actor MemoryOrchestrator {
     /// Internal only because of the file split.
     static let accessStatsFrameKind = "wax.internal.access_stats"
-    private static let accessStatsLabel = "wax.internal"
+    /// Internal only because of the file split.
+    static let accessStatsLabel = "wax.internal"
     /// Internal only because of the file split.
     static let accessStatsMarkerKey = "wax.internal.kind"
     /// Internal only because of the file split.
     static let accessStatsMarkerValue = "access_stats"
     /// System frame recording how far a superseded-model re-embed got. Its metadata is
     /// committed together with the re-embedded vectors, so a restart resumes after it.
-    private static let reembedProgressFrameKind = "wax.internal.reembed_progress"
-    private static let reembedTargetModelKey = "wax.reembed.target_model"
-    private static let reembedNextFrameIdKey = "wax.reembed.next_frame_id"
+    /// Internal only because of the file split.
+    static let reembedProgressFrameKind = "wax.internal.reembed_progress"
+    /// Internal only because of the file split.
+    static let reembedTargetModelKey = "wax.reembed.target_model"
+    /// Internal only because of the file split.
+    static let reembedNextFrameIdKey = "wax.reembed.next_frame_id"
     /// Internal only because of the file split.
     static let contentHashMetadataKey = "wax.content.hash"
 
@@ -26,7 +30,8 @@ package actor MemoryOrchestrator {
     private let handoffWriteMutex = AsyncMutex()
     private let flushMutex = AsyncMutex()
     private let embeddingBackfillMutex = AsyncMutex()
-    private let embeddingBackfillStoreMutex = AsyncMutex()
+    /// Internal only because of the file split.
+    let embeddingBackfillStoreMutex = AsyncMutex()
 
     let session: WaxSession
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
@@ -79,6 +84,10 @@ package actor MemoryOrchestrator {
     /// Fraction (0...1) of the frame-id range already re-embedded while superseded.
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var supersededReembedProgress: Double = 0
+    /// Re-embed progress written to the WAL but past the last committed marker. An interrupted
+    /// run (cancel, error, `close`) commits it as a final checkpoint so a resume skips it.
+    /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
+    var uncheckpointedSupersededReembed: (targetModel: String, nextFrameId: UInt64, markerFrameId: UInt64?)?
     /// Injectable wall-clock source (ms since epoch). Defaults to real time at this
     /// shell boundary so recall decisions remain pure functions of `(store, query, nowMs)`.
     /// Internal only because of the file split; immutable after init.
@@ -415,38 +424,46 @@ package actor MemoryOrchestrator {
         var markerFrameId = plan.markerFrameId
         var sinceCheckpoint: UInt64 = 0
         var reembedded: UInt64 = 0
-        while cursor < plan.endFrameId {
-            try Task.checkCancellation()
-            let windowEnd = min(cursor + batchSize, plan.endFrameId)
-            let batch = await wax.reembedSources(
-                frameIds: cursor..<windowEnd,
-                embeddedFrameIds: plan.embeddedFrameIds
-            )
-            if !batch.isEmpty {
-                let vectors = try await Self.prepareEmbeddingsBatchOptimized(
-                    chunks: batch.map(\.searchText),
-                    attached: attached,
-                    cache: embeddingCache,
-                    timeout: config.ingestEmbeddingTimeout
+        do {
+            while cursor < plan.endFrameId {
+                try Task.checkCancellation()
+                let windowEnd = min(cursor + batchSize, plan.endFrameId)
+                let batch = await wax.reembedSources(
+                    frameIds: cursor..<windowEnd,
+                    embeddedFrameIds: plan.embeddedFrameIds
                 )
-                try await embeddingBackfillStoreMutex.withLock { [self] in
-                    try Task.checkCancellation()
-                    guard !(await isClosed) else { throw CancellationError() }
-                    try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
+                if !batch.isEmpty {
+                    let vectors = try await Self.prepareEmbeddingsBatchOptimized(
+                        chunks: batch.map(\.searchText),
+                        attached: attached,
+                        cache: embeddingCache,
+                        timeout: config.ingestEmbeddingTimeout
+                    )
+                    try await embeddingBackfillStoreMutex.withLock { [self] in
+                        try Task.checkCancellation()
+                        guard !(await isClosed) else { throw CancellationError() }
+                        try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
+                    }
+                    reembedded += UInt64(batch.count)
+                    sinceCheckpoint += UInt64(batch.count)
                 }
-                reembedded += UInt64(batch.count)
-                sinceCheckpoint += UInt64(batch.count)
+                cursor = windowEnd
+                // Every frame below `cursor` now has its new vector in the WAL.
+                uncheckpointedSupersededReembed = (targetModel, cursor, markerFrameId)
+                supersededReembedProgress = plan.endFrameId == 0 ? 1 : Double(cursor) / Double(plan.endFrameId)
+                if sinceCheckpoint >= checkpointEvery, cursor < plan.endFrameId {
+                    markerFrameId = try await checkpointSupersededReembed(
+                        nextFrameId: cursor,
+                        targetModel: targetModel,
+                        previousMarkerFrameId: markerFrameId
+                    )
+                    uncheckpointedSupersededReembed = nil
+                    sinceCheckpoint = 0
+                }
             }
-            cursor = windowEnd
-            supersededReembedProgress = plan.endFrameId == 0 ? 1 : Double(cursor) / Double(plan.endFrameId)
-            if sinceCheckpoint >= checkpointEvery, cursor < plan.endFrameId {
-                markerFrameId = try await checkpointSupersededReembed(
-                    nextFrameId: cursor,
-                    targetModel: targetModel,
-                    previousMarkerFrameId: markerFrameId
-                )
-                sinceCheckpoint = 0
-            }
+        } catch {
+            await checkpointInterruptedSupersededReembed()
+            throw error
         }
 
         try await completeSupersededReembed(identity: identity, markerFrameId: markerFrameId)
@@ -488,35 +505,6 @@ package actor MemoryOrchestrator {
         supersededReembedProgress = frameCount == 0 ? 0 : min(1, Double(marker.nextFrameId) / Double(frameCount))
     }
 
-    /// Writes the new marker and commits it with every vector re-embedded so far.
-    private func checkpointSupersededReembed(
-        nextFrameId: UInt64,
-        targetModel: String,
-        previousMarkerFrameId: UInt64?
-    ) async throws -> UInt64 {
-        try await embeddingBackfillStoreMutex.withLock { [self] in
-            try Task.checkCancellation()
-            guard !(await isClosed) else { throw CancellationError() }
-            var metadata = Metadata()
-            metadata.entries[Self.reembedTargetModelKey] = targetModel
-            metadata.entries[Self.reembedNextFrameIdKey] = String(nextFrameId)
-            let markerFrameId = try await session.put(
-                Data(),
-                options: FrameMetaSubset(
-                    kind: Self.reembedProgressFrameKind,
-                    labels: [Self.accessStatsLabel],
-                    role: .system,
-                    metadata: metadata
-                )
-            )
-            if let previousMarkerFrameId {
-                try await wax.delete(frameId: previousMarkerFrameId)
-            }
-            try await flush()
-            return markerFrameId
-        }
-    }
-
     /// Swaps the binding to `identity` and drops the progress marker in the same commit as
     /// the last re-embedded vectors. A crash before that commit keeps the old binding and
     /// the last committed marker, so the next open resumes instead of starting over.
@@ -534,6 +522,7 @@ package actor MemoryOrchestrator {
     }
 
     private func markSupersededVectorsReplaced() {
+        uncheckpointedSupersededReembed = nil
         supersededVectorsReason = nil
         supersededReembedProgress = 1
         hasEnsuredMemoryBinding = true
@@ -745,7 +734,18 @@ package actor MemoryOrchestrator {
         automaticEmbeddingBackfillTask?.cancel()
         // Inference may ignore cancellation. Drain only store work; any late
         // inference result checks cancellation/isClosed before entering this lock.
-        await embeddingBackfillStoreMutex.withLock {}
+        // An interrupted re-embed's progress is committed by the flush below.
+        await embeddingBackfillStoreMutex.withLock { [self] in
+            do {
+                _ = try await putUncheckpointedSupersededReembedMarker()
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "superseded re-embed checkpoint during close",
+                    fallback: "resume redoes frames since the last committed checkpoint"
+                )
+            }
+        }
         try await flush()
         if let enrichmentPipeline {
             do {
