@@ -223,7 +223,7 @@ func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
     #expect(started == false)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -253,14 +253,19 @@ func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
         embedderTuning: configuration.embedderTuning
     )
 
+    // The dead peer must fail as soon as it exits, not wait out the start
+    // deadline. The deadline is large so that a regression waiting on it
+    // misses the bound below by a wide margin, however slow the host is.
+    let startTimeoutSeconds: TimeInterval = 60
     let started = Date()
     do {
-        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: configuration,
+            startTimeoutSecondsOverride: startTimeoutSeconds
+        )
         Issue.record("expected lock contention to throw")
     } catch {
-        // Well under the 10s start timeout: the dead peer fails fast
-        // instead of waiting out the deadline.
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(Date().timeIntervalSince(started) < startTimeoutSeconds / 2)
         #expect(error.localizedDescription.contains("http://127.0.0.1:3000/mcp"))
         #expect(error.localizedDescription.contains("identical server settings"))
     }
@@ -290,7 +295,7 @@ func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     #expect(started == false)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -311,8 +316,10 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
         )
         Issue.record("expected mute live socket to fail")
     } catch {
+        // A mute socket costs two pings capped at 5s each. A regression that
+        // waits the full response timeout on either ping misses this bound.
         let elapsed = Date().timeIntervalSince(startedAt)
-        #expect(elapsed < 15)
+        #expect(elapsed < AgentBrokerClient.responseTimeoutSeconds)
         #expect(error.localizedDescription.contains("did not answer"))
         #expect(error.localizedDescription.contains("not starting a second daemon")
             || error.localizedDescription.contains("Not starting a second daemon"))
