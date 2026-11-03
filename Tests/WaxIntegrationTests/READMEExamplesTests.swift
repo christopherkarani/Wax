@@ -126,9 +126,10 @@ func readmeExampleSwiftAppQuickStartFindsWhatItSaves() async throws {
     #expect(context.totalTokens > 0)
 }
 
-/// An unrelated note that shares the README note's common words ("The user is …"), so the
-/// README text outscores it only when the README query matches what the note says.
-private let readmeDistractorNote = "The user is drinking coffee every morning before work."
+/// An unrelated note made only of the README note's common words. Being shorter, it wins any
+/// match that rests on those words alone, so the README text outscores it only when the
+/// README query matches what the note says.
+private let readmeDistractorNote = "The user is here."
 
 /// Saves an unrelated distractor and the snippet's one `memory.save` literal, searches its one
 /// `memory.search` literal and requires the best hit to be the saved text. Returns the search

@@ -279,6 +279,14 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "let s = \"\"\"\n    \\(wax.toc)\n    \"\"\"",
         "log(\"\\(label(\")\")) \\(wax.toc)\")",
         "/* a /* b */ c */ let t = wax.toc",
+        // A `"` inside a regex literal opens no string, and an unterminated single-line string
+        // ends at its line. CRLF line endings end `//` comments.
+        "let r = /a\"b/; let t = wax.toc",
+        "let r = #/a\"b/#; let t = wax.toc",
+        "let r = ##/a\"b/##; let t = wax.toc",
+        "let r = /a\"b/\nlet t = wax.toc",
+        "let s = \"unterminated\nlet t = wax.toc",
+        "// note\r\nlet t = wax.toc",
     ]
     for source in flagged {
         #expect(try !waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
@@ -291,6 +299,10 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         in: "/* a\n b */ let s = \"\"\"\n    text\n    \"\"\"\nlet toc = wax.toc",
         relativePath: "Search/New.swift"
     ) == ["Search/New.swift:5: let toc = wax.toc"])
+    #expect(try waxGuardedStateReferences(
+        in: "// a\r\n/* b\r\n */\r\nlet toc = wax.toc\r\n",
+        relativePath: "Search/New.swift"
+    ) == ["Search/New.swift:4: let toc = wax.toc"])
     // The file-scoped allow-list names the call whose result is read, not any `)` receiver.
     #expect(try !waxGuardedStateReferences(
         in: "let toc = (await wax).toc",
@@ -320,6 +332,10 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "let s = #\"wax.toc \\(wax.toc)\"#",
         "/* outer /* inner */ wax.toc */",
         "let url = \"https://example.com\"; let n = 1",
+        "let r = /wax.toc/",
+        "let r = #/wax.toc/#",
+        "let ratio = a / b / c; let s = \"wax.toc\"",
+        "let n = (a)/b/c; let s = \"wax.toc\"",
     ]
     for source in allowed {
         #expect(try waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
@@ -429,10 +445,12 @@ private func receiverName(in code: String, endingAt range: Range<String.Index>) 
     return "\(code[start..<index])\(open)\(close)"
 }
 
-/// `source` with comments and the text of string literals removed. Every newline is kept, so
-/// line numbers do not move, and the code inside `\(…)` interpolations is kept so it is
-/// scanned too. Handles `//` and nested `/* */` comments, `"…"` and `"""…"""` strings, and raw
-/// strings with any number of `#` (whose interpolation is spelled `\#(…)`).
+/// `source` with comments and the text of string and regex literals removed. Every line break
+/// is kept as `\n` (CRLF included), so line numbers do not move, and the code inside `\(…)`
+/// interpolations is kept so it is scanned too. Handles `//` and nested `/* */` comments,
+/// `"…"` and `"""…"""` strings, raw strings with any number of `#` (whose interpolation is
+/// spelled `\#(…)`), `#/…/#` regex literals, and bare `/…/` regex literals in expression
+/// position. An unterminated single-line string or bare regex ends at its line.
 private func swiftCodeOnly(_ source: String) -> String {
     var lexer = SwiftCodeLexer(source: Array(source))
     lexer.copyCode(insideInterpolation: false)
@@ -462,11 +480,16 @@ private struct SwiftCodeLexer {
         var depth = 0
         while index < source.count {
             if hasPrefix("//") {
-                while index < source.count, source[index] != "\n" { index += 1 }
+                while index < source.count, !source[index].isNewline { index += 1 }
             } else if hasPrefix("/*") {
                 skipBlockComment()
-            } else if let hashes = stringOpeningHashes() {
+            } else if let hashes = openingHashes(before: "\"") {
                 skipString(hashes: hashes)
+            } else if let hashes = openingHashes(before: "/"), hashes > 0 {
+                skipExtendedRegex(hashes: hashes)
+            } else if let end = bareRegexEnd() {
+                index = end
+                output.append("\"\"")
             } else {
                 let character = source[index]
                 index += 1
@@ -476,16 +499,16 @@ private struct SwiftCodeLexer {
                     if depth == 0 { return }
                     depth -= 1
                 }
-                output.append(character)
+                output.append(character.isNewline ? "\n" : character)
             }
         }
     }
 
-    /// The number of `#` before a `"` that opens a string at `index`, or nil when none opens here.
-    private func stringOpeningHashes() -> Int? {
+    /// The number of `#` before `delimiter` at `index`, or nil when `delimiter` does not follow.
+    private func openingHashes(before delimiter: Character) -> Int? {
         var position = index
         while position < source.count, source[position] == "#" { position += 1 }
-        guard position < source.count, source[position] == "\"" else { return nil }
+        guard position < source.count, source[position] == delimiter else { return nil }
         return position - index
     }
 
@@ -500,42 +523,82 @@ private struct SwiftCodeLexer {
                 index += 2
                 if depth == 0 { return }
             } else {
-                if source[index] == "\n" { output.append("\n") }
+                if source[index].isNewline { output.append("\n") }
                 index += 1
             }
         }
     }
 
     /// Skips a string opened at `index` by `hashes` `#` and `"` or `"""`, writing `""` for it
-    /// plus its newlines and the code of each interpolation.
+    /// plus its line breaks and the code of each interpolation.
     private mutating func skipString(hashes: Int) {
         let delimiter = String(repeating: "#", count: hashes)
         index += hashes
-        let quote = hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+        let multiline = hasPrefix("\"\"\"")
+        let quote = multiline ? "\"\"\"" : "\""
         index += quote.count
         let terminator = quote + delimiter
         let escape = "\\" + delimiter
         output.append("\"")
         while index < source.count {
+            // A single-line string cannot span lines; stop there if it is unterminated.
+            if !multiline, source[index].isNewline { break }
             if hasPrefix(terminator) {
                 index += terminator.count
                 break
             }
             if hasPrefix(escape) {
                 index += escape.count
-                if index < source.count, source[index] == "(" {
+                guard index < source.count else { break }
+                if source[index] == "(" {
                     index += 1
                     output.append("(")
                     copyCode(insideInterpolation: true)
                     output.append(")")
                     continue
                 }
+                // A line continuation: the line break is handled at the top of the loop.
+                if source[index].isNewline { continue }
             }
-            if index < source.count {
-                if source[index] == "\n" { output.append("\n") }
-                index += 1
-            }
+            if source[index].isNewline { output.append("\n") }
+            index += 1
         }
         output.append("\"")
+    }
+
+    /// Skips a `#/…/#` regex literal opened at `index` by `hashes` `#`, writing `""` for it
+    /// plus its line breaks.
+    private mutating func skipExtendedRegex(hashes: Int) {
+        let terminator = "/" + String(repeating: "#", count: hashes)
+        index += hashes + 1
+        while index < source.count, !hasPrefix(terminator) {
+            if source[index].isNewline { output.append("\n") }
+            index += 1
+        }
+        index = min(index + terminator.count, source.count)
+        output.append("\"\"")
+    }
+
+    /// The index just past a bare `/…/` regex literal at `index`, or nil. Swift parses one only
+    /// in expression position and never with whitespace after the opening `/`. To stay
+    /// conservative it must follow `(`, `[`, `{`, `,`, `=`, `:`, `;`, `!`, `&`, `|` or `?` (or
+    /// open the file) and close on the same line; anything else is a division operator.
+    private func bareRegexEnd() -> Int? {
+        guard source[index] == "/", index + 1 < source.count, !source[index + 1].isWhitespace else {
+            return nil
+        }
+        if let previous = output.last(where: { !$0.isWhitespace }), !"([{,=:;!&|?".contains(previous) {
+            return nil
+        }
+        var position = index + 1
+        while position < source.count, !source[position].isNewline {
+            if source[position] == "/" { return position + 1 }
+            // `\/` does not close the literal; a `\` before a line break does not continue it.
+            if source[position] == "\\", position + 1 < source.count, !source[position + 1].isNewline {
+                position += 1
+            }
+            position += 1
+        }
+        return nil
     }
 }
