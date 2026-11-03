@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -9354,7 +9355,7 @@ struct WaxMCPProcessTests {
     }
 
     @Test
-    func waxMCPAndCLIVersionFlagsExitZero() throws {
+    func waxMCPAndCLIVersionFlagsExitZero() async throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -9366,7 +9367,7 @@ struct WaxMCPProcessTests {
         let expectedVersion = try #require(packageObject?["version"] as? String)
 
         let mcp = try MCPServerProcessHarness.waxMCPBinaryURLForTests(packageRoot: packageRoot)
-        try expectVersion(executable: mcp, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: mcp, expectedSubstring: expectedVersion)
 
         let cliCandidates = [
             mcp.deletingLastPathComponent().appendingPathComponent("wax-cli"),
@@ -9374,11 +9375,18 @@ struct WaxMCPProcessTests {
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
         ]
         let cli = try #require(cliCandidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
-        try expectVersion(executable: cli, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: cli, expectedSubstring: expectedVersion)
     }
 }
 
-private func expectVersion(executable: URL, expectedSubstring: String) throws {
+private func expectVersion(executable: URL, expectedSubstring: String) async throws {
+    let (status, output, err) = try await BlockingWork.run { try runVersion(executable: executable) }
+    #expect(status == 0)
+    #expect((output + err).contains(expectedSubstring))
+}
+
+/// Runs `--version` on a GCD thread, off the cooperative pool.
+private func runVersion(executable: URL) throws -> (Int32, String, String) {
     let process = Process()
     process.executableURL = executable
     process.arguments = ["--version"]
@@ -9390,8 +9398,7 @@ private func expectVersion(executable: URL, expectedSubstring: String) throws {
     process.waitUntilExit()
     let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    #expect(process.terminationStatus == 0)
-    #expect((output + err).contains(expectedSubstring))
+    return (process.terminationStatus, output, err)
 }
 
 #else

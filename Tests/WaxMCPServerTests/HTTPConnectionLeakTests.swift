@@ -1,5 +1,6 @@
 #if MCPServer
 import Foundation
+import WaxCore
 import MCP
 import NIOCore
 import NIOPosix
@@ -47,14 +48,14 @@ func abortedGETStreamDoesNotLeaveClosedSockets() async throws {
     let port = try #require(server.localAddress?.port)
 
     let sessionID = try initializeMCPSession(port: port)
-    #expect(try connectedSockets(port: port) == 0)
+    #expect(try await connectedSockets(port: port) == 0)
 
     for _ in 0..<6 {
         try abortGETStream(port: port, sessionID: sessionID)
     }
     try await Task.sleep(for: .milliseconds(900))
 
-    let lingering = try connectedSockets(port: port)
+    let lingering = try await connectedSockets(port: port)
     #expect(lingering == 0, "aborted GET left \(lingering) sockets on port \(port)")
 }
 
@@ -104,7 +105,7 @@ func abortedGETStreamDoesNotCloseTheMCPSession() async throws {
     try await Task.sleep(for: .milliseconds(900))
 
     #expect(await teardown.snapshot() == 0)
-    #expect(try connectedSockets(port: port) == 0)
+    #expect(try await connectedSockets(port: port) == 0)
 
     let followUp = try postJSON(
         port: port,
@@ -154,7 +155,7 @@ func abortedGETWithUnreadBytesDoesNotLeaveClosedSockets() async throws {
     try abortGETStream(port: port, sessionID: sessionID, extraBytes: 65_536)
     try await Task.sleep(for: .milliseconds(900))
 
-    let lingering = try connectedSockets(port: port)
+    let lingering = try await connectedSockets(port: port)
     #expect(lingering == 0, "aborted GET with unread bytes left \(lingering) sockets on port \(port)")
 }
 
@@ -253,7 +254,12 @@ private func postJSON(port: Int, sessionID: String, body: Data) throws -> String
     return String(decoding: response, as: UTF8.self)
 }
 
-private func connectedSockets(port: Int) throws -> Int {
+/// Runs lsof on a GCD thread, off the cooperative pool.
+private func connectedSockets(port: Int) async throws -> Int {
+    try await BlockingWork.run { try connectedSocketsBlocking(port: port) }
+}
+
+private func connectedSocketsBlocking(port: Int) throws -> Int {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
     process.arguments = ["-n", "-P", "-p", String(getpid())]

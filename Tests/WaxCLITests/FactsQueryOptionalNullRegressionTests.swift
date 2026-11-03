@@ -11,7 +11,7 @@ import Glibc
 /// Regression: `facts-query` with omitted optional filters used to fail with
 /// "subject must be a string" because the broker treated JSON null as invalid.
 @Test
-func factsQueryWithoutFiltersSucceedsViaCLI() throws {
+func factsQueryWithoutFiltersSucceedsViaCLI() async throws {
     let repoRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // WaxCLITests
         .deletingLastPathComponent() // Tests
@@ -35,7 +35,12 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
     try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    func run(_ args: [String]) throws -> (Int32, String) {
+    // The subprocess wait runs on a GCD thread, not a cooperative one.
+    func run(_ args: [String]) async throws -> (Int32, String) {
+        try await BlockingWork.run { try runBlocking(args) }
+    }
+
+    @Sendable func runBlocking(_ args: [String]) throws -> (Int32, String) {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
@@ -55,13 +60,13 @@ func factsQueryWithoutFiltersSucceedsViaCLI() throws {
     }
 
     let storePath = store.path
-    let assert = try run([
+    let assert = try await run([
         "fact-assert", "--store-path", storePath, "--no-embedder",
         "--subject", "user", "--predicate", "prefers", "--object", "Helix",
     ])
     #expect(assert.0 == 0, Comment(rawValue: "fact-assert failed: \(assert.1)"))
 
-    let queryAll = try run([
+    let queryAll = try await run([
         "facts-query", "--store-path", storePath, "--no-embedder",
     ])
     #expect(queryAll.0 == 0, Comment(rawValue: "facts-query failed: \(queryAll.1)"))

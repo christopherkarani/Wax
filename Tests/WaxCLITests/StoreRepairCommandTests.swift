@@ -203,7 +203,7 @@ struct StoreRepairCommandTests {
         try await memory.flush()
         try await memory.close()
 
-        let report = try runVectorHealth(storePath: source.path)
+        let report = try await runVectorHealth(storePath: source.path)
         #expect(report.status == EXIT_SUCCESS, "vector-health failed: \(report.stderr)")
         #expect(report.json["healthy"] as? Bool == true)
         let primary = try #require(report.json["primaryStore"] as? [String: Any])
@@ -232,7 +232,7 @@ struct StoreRepairCommandTests {
         let store = try await Wax.create(at: source)
         try await store.close()
 
-        let report = try runVectorHealth(storePath: source.path)
+        let report = try await runVectorHealth(storePath: source.path)
         #expect(report.status == EXIT_SUCCESS, "vector-health failed: \(report.stderr)")
         let primary = try #require(report.json["primaryStore"] as? [String: Any])
         #expect(primary["frameCount"] as? Int == 0)
@@ -249,12 +249,16 @@ struct StoreRepairCommandTests {
     /// assertions cover the operator-visible output rather than just "did not throw".
     private func runVectorHealth(
         storePath: String
-    ) throws -> (status: Int32, json: [String: Any], stderr: String) {
-        let output = try ProcessRunner.runCaptured(
-            command: try builtProductPath(named: "wax-cli"),
-            arguments: ["vector-health", "--direct-store", "--store-path", storePath, "--format", "json"],
-            timeoutSeconds: 180
-        )
+    ) async throws -> (status: Int32, json: [String: Any], stderr: String) {
+        let command = try builtProductPath(named: "wax-cli")
+        // ProcessRunner blocks for the child's lifetime; keep that off the cooperative pool.
+        let output = try await BlockingWork.run {
+            try ProcessRunner.runCaptured(
+                command: command,
+                arguments: ["vector-health", "--direct-store", "--store-path", storePath, "--format", "json"],
+                timeoutSeconds: 180
+            )
+        }
         let object = try JSONSerialization.jsonObject(with: Data(output.stdout.utf8))
         let json = try #require(object as? [String: Any], "vector-health stdout was not a JSON object: \(output.stdout)")
         return (output.status, json, output.stderr)

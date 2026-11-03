@@ -18,10 +18,9 @@ func pollTimeoutRoundsSubMillisecondRemainderUp() {
 #if os(macOS)
 /// A launched broker that never answers must not outlive a cancelled start.
 ///
-/// The limit is generous on purpose. In the gate's single test process, the CLI
-/// suites block cooperative threads on subprocesses for about 90s, and every
-/// async step here waits for a free thread.
-@Test(.timeLimit(.minutes(10)))
+/// The time limit only catches a hang: the launch handshake has no deadline, and
+/// subprocess-driven tests wait on GCD threads, not cooperative ones.
+@Test(.timeLimit(.minutes(2)))
 func cancelledBrokerStartTerminatesTheLaunchedProcess() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-client-cancel-\(UUID().uuidString)", isDirectory: true)
