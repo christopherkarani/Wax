@@ -1594,8 +1594,8 @@ struct WaxCLIMemoryTests {
                 "--store-path", storeURL.path,
                 "--no-embedder",
             ],
-            environment: ["PATH": "/usr/bin:/bin"],
-            timeout: 60
+            environment: doctorEnvironment,
+            timeout: hangTimeoutSeconds
         )
 
         #expect(output.status == EXIT_SUCCESS, "wax-cli mcp doctor should pass against the daily tool surface without a host CLI")
@@ -1630,8 +1630,8 @@ struct WaxCLIMemoryTests {
                 "--store-path", storeURL.path,
                 "--no-embedder",
             ],
-            environment: ["PATH": "/usr/bin:/bin"],
-            timeout: 60
+            environment: doctorEnvironment,
+            timeout: hangTimeoutSeconds
         )
         try await holder.close()
 
@@ -1695,8 +1695,8 @@ struct WaxCLIMemoryTests {
                 "--store-path", storeURL.path,
                 "--no-embedder",
             ],
-            environment: ["PATH": "/usr/bin:/bin"],
-            timeout: 20
+            environment: doctorEnvironment,
+            timeout: hangTimeoutSeconds
         )
 
         #expect(output.status != EXIT_SUCCESS)
@@ -1747,7 +1747,7 @@ struct WaxCLIMemoryTests {
             ],
             currentDirectoryURL: workDir,
             expectedToolName: "remember",
-            timeout: 20
+            timeout: hangTimeoutSeconds
         )
 
         #expect(output.status == EXIT_SUCCESS, "PATH-launched wax-mcp should resolve its colocated wax-cli")
@@ -1782,6 +1782,33 @@ struct WaxCLIMemoryTests {
             atomically: true,
             encoding: String.Encoding.utf8
         )
+    }
+
+    /// Subprocess budgets in these tests only catch a hang. A loaded gate host can
+    /// take well over 20s to start `wax-mcp`, so a tight budget measures the host,
+    /// not the code.
+    private let hangTimeoutSeconds: TimeInterval = 180
+
+    /// Doctor runs with its smoke-check budget raised for the same reason; the 5s
+    /// production default is covered by `mcpSmokeCheckTimeoutHonorsOverride`.
+    private var doctorEnvironment: [String: String] {
+        [
+            "PATH": "/usr/bin:/bin",
+            ProcessRunner.mcpSmokeCheckTimeoutEnvKey: String(Int(hangTimeoutSeconds)),
+        ]
+    }
+
+    @Test func mcpSmokeCheckTimeoutHonorsOverride() {
+        let key = ProcessRunner.mcpSmokeCheckTimeoutEnvKey
+        let fallback = ProcessRunner.defaultMCPSmokeCheckTimeoutSeconds
+        #expect(fallback == 5)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [:]) == fallback)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: "120"]) == 120)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: " 2.5 "]) == 2.5)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: "0"]) == fallback)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: "-3"]) == fallback)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: "inf"]) == fallback)
+        #expect(ProcessRunner.mcpSmokeCheckTimeoutSeconds(environment: [key: "soon"]) == fallback)
     }
 
     private struct ProcessOutput {

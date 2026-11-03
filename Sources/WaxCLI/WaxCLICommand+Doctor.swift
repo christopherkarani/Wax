@@ -112,7 +112,10 @@ extension WaxCLI.MCP {
                         arguments: arguments,
                         environment: env,
                         input: request,
-                        expectedToolNames: MCPDoctorSurface.expectedToolNames()
+                        expectedToolNames: MCPDoctorSurface.expectedToolNames(),
+                        timeoutSeconds: ProcessRunner.mcpSmokeCheckTimeoutSeconds(
+                            environment: ProcessInfo.processInfo.environment
+                        )
                     )
                     if output.timedOut {
                         failures.append(
@@ -312,13 +315,30 @@ private func smokeCheckFailureContext(_ output: MCPSmokeCheckOutput) -> String {
 }
 
 extension ProcessRunner {
+    static let mcpSmokeCheckTimeoutEnvKey = "WAX_MCP_DOCTOR_SMOKE_TIMEOUT_SECS"
+    static let defaultMCPSmokeCheckTimeoutSeconds: TimeInterval = 5
+
+    /// The `mcp doctor` budget for the server's tools/list response. Operators keep the
+    /// 5s default. A loaded host, such as a parallel test run, can raise it through
+    /// `WAX_MCP_DOCTOR_SMOKE_TIMEOUT_SECS`. Values that are not positive and finite
+    /// fall back to the default.
+    static func mcpSmokeCheckTimeoutSeconds(environment: [String: String]) -> TimeInterval {
+        guard let raw = environment[mcpSmokeCheckTimeoutEnvKey],
+              let seconds = TimeInterval(raw.trimmingCharacters(in: .whitespaces)),
+              seconds.isFinite, seconds > 0
+        else {
+            return defaultMCPSmokeCheckTimeoutSeconds
+        }
+        return seconds
+    }
+
     fileprivate static func runMCPSmokeCheck(
         command: String,
         arguments: [String],
         environment: [String: String]? = nil,
         input: String,
         expectedToolNames: [String],
-        timeoutSeconds: TimeInterval = 5
+        timeoutSeconds: TimeInterval
     ) throws -> MCPSmokeCheckOutput {
         final class SmokeCheckState: @unchecked Sendable {
             private let lock = NSLock()
