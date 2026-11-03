@@ -875,6 +875,29 @@ test("vector-health sends WAX_MCP_HTTP_AUTH_TOKEN on every request", async () =>
   }
 });
 
+test("vector-health refuses a WAX_MCP_HTTP_AUTH_TOKEN with line breaks", async () => {
+  let requests = 0;
+  const server = http.createServer((request, response) => {
+    requests += 1;
+    response.statusCode = 401;
+    response.end();
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const result = await runAsync(["vector-health"], {
+      ...process.env,
+      WAX_MCP_HTTP_ENDPOINT: `http://127.0.0.1:${address.port}/mcp`,
+      WAX_MCP_HTTP_AUTH_TOKEN: "probe\nurl = \"http://example.invalid/\"",
+    });
+    assert.equal(result.status, 1, result.stderr + result.stdout);
+    assert.match(result.stderr, /WAX_MCP_HTTP_AUTH_TOKEN/);
+    assert.equal(requests, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("vector-health closes the MCP session when stats cannot be parsed", async () => {
   const sessionID = "test-mcp-unparsed-session";
   let deleted = false;

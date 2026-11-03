@@ -236,8 +236,9 @@ struct WaxMCPServerCommand: ParsableCommand {
             configuration: .default
         )
         if let connectionKey {
+            let rootsGate = MCPRootsFetchGate()
             MCPRootsProviderRegistry.shared.remember(key: connectionKey) {
-                await MCPRootsFetcher.fetchRoots(server: server)
+                await MCPRootsFetcher.fetchRoots(server: server, gate: rootsGate)
             }
         }
         let context = connectionKey.flatMap {

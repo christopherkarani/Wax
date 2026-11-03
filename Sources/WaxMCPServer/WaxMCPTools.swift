@@ -53,18 +53,17 @@ enum MCPRootsFetcher {
     /// background fetch on initialized/roots-changed notifications.
     static let timeoutSeconds: TimeInterval = 2
 
-    static func fetchRoots(server: Server) async -> [String] {
-        // Not a task group: `listRoots` ignores cancellation, so a group would
-        // wait forever on a client that never answers `roots/list`.
-        let fetch = Task { () -> [String] in
+    /// `gate` is the connection's: it keeps an unanswering client to one
+    /// parked `roots/list` and backs off after a failure.
+    static func fetchRoots(server: Server, gate: MCPRootsFetchGate) async -> [String] {
+        await gate.fetch {
             do {
                 let roots = try await server.listRoots()
                 return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
             } catch {
-                return []
+                return nil
             }
         }
-        return await MCPDeadline.value(of: fetch, within: .seconds(timeoutSeconds), orElse: [])
     }
 }
 

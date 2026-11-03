@@ -805,6 +805,12 @@ if (forwardedArgs[0] === "vector-health") {
   // A server started with a token requires it on every request. Pass it as
   // curl config on stdin so it never appears in the process list.
   const authToken = (process.env.WAX_MCP_HTTP_AUTH_TOKEN || "").trim();
+  // A line break would end the config line and start another curl option;
+  // no valid header value contains one.
+  if (/[\r\n]/.test(authToken)) {
+    console.error("WAX_MCP_HTTP_AUTH_TOKEN must not contain line breaks.");
+    process.exit(1);
+  }
   const authConfig = authToken
     ? `header = "Authorization: Bearer ${authToken.replace(/[\\"]/g, "\\$&")}"\n`
     : null;
