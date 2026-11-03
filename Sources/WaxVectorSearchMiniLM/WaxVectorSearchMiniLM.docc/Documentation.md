@@ -31,9 +31,9 @@ let vectors = try await embedder.embed(batch: [
 |----------|-------|
 | Dimensions | 384 |
 | Normalization | L2-normalized |
-| Max tokens | 512 (BERT limit) |
+| Max tokens | 256 (sentence-transformers `max_seq_length`) |
 | Compute | Neural Engine + CPU (default) |
-| Quantization | Float16 output, converted to Float32 |
+| Precision | Float32 weights and output; mean pooling over the attention mask in-graph |
 | Execution mode | On-device only (no network) |
 
 This module is conditionally compiled via the `MiniLMEmbeddings` package trait, which is enabled by default.

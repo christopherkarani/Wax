@@ -51,13 +51,18 @@ package class all_MiniLM_L6_v2Output : MLFeatureProvider {
 
     /// embeddings as multidimensional array of floats
     package var embeddings: MLMultiArray {
-        provider.featureValue(for: "embeddings")!.multiArrayValue!
+        get throws {
+            guard let array = provider.featureValue(for: "embeddings")?.multiArrayValue else {
+                throw MiniLMEmbeddings.OutputError.missingOutput(name: "embeddings")
+            }
+            return array
+        }
     }
 
     /// embeddings as multidimensional array of floats
     #if !(os(macOS) || targetEnvironment(macCatalyst))
     package var embeddingsShapedArray: MLShapedArray<Float> {
-        MLShapedArray<Float>(embeddings)
+        get throws { MLShapedArray<Float>(try embeddings) }
     }
     #endif
 

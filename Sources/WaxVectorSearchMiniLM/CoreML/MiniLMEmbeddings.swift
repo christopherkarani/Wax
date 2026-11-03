@@ -29,11 +29,14 @@ package final class MiniLMEmbeddings {
 
     /// The Core ML output did not have the expected sentence-embedding layout.
     package enum OutputError: LocalizedError, Sendable, Equatable {
+        case missingOutput(name: String)
         case unsupportedDataType(rawValue: Int)
         case unexpectedShape(shape: [Int], batchSize: Int, outputDimension: Int)
 
         package var errorDescription: String? {
             switch self {
+            case .missingOutput(let name):
+                return "MiniLM Core ML prediction has no multi-array output named '\(name)'."
             case .unsupportedDataType(let rawValue):
                 return "MiniLM Core ML output has unsupported data type \(rawValue); expected Float16 or Float32."
             case .unexpectedShape(let shape, let batchSize, let outputDimension):
@@ -72,9 +75,13 @@ package final class MiniLMEmbeddings {
 
     package let model: all_MiniLM_L6_v2
     package let tokenizer: BertTokenizer
-    package let inputDimension: Int = 512
+    /// sentence-transformers all-MiniLM-L6-v2 truncates at `max_seq_length = 256` tokens
+    /// (including [CLS]/[SEP]); matching it keeps vectors identical to the reference model.
+    /// Text search still indexes the full chunk.
+    package static let maxSequenceLength = 256
+    package let inputDimension: Int = MiniLMEmbeddings.maxSequenceLength
     package let outputDimension: Int = 384
-    private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
+    private static let sequenceLengthBuckets = [32, 64, 128, 256]
 
     /// Dedicated queue for CoreML prediction calls. CoreML's `model.prediction()` is synchronous
     /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
@@ -167,7 +174,7 @@ package final class MiniLMEmbeddings {
                         attention_mask: attentionMask
                     )
                     let decoded = try Self.decodeEmbeddings(
-                        output.embeddings,
+                        try output.embeddings,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )
@@ -185,6 +192,7 @@ package final class MiniLMEmbeddings {
     package func encode(sentence: String) async throws -> [Float]? {
         guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: [sentence],
+            maxSequenceLength: Self.maxSequenceLength,
             sequenceLengthBuckets: Self.sequenceLengthBuckets
         ), batchInputs.sequenceLength > 0 else { return nil }
 
@@ -205,6 +213,7 @@ package final class MiniLMEmbeddings {
 
         guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
             sentences: sentences,
+            maxSequenceLength: Self.maxSequenceLength,
             sequenceLengthBuckets: Self.sequenceLengthBuckets,
             reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
