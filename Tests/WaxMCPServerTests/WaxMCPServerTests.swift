@@ -4991,11 +4991,11 @@ func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown+Export.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?, project: String? = nil) async throws -> [String]"))
-    let end = try #require(source[start.upperBound...].range(of: "private func merge("))
+    let end = try #require(source[start.upperBound...].range(of: "func exportMarkdownProjection("))
     let body = source[start.lowerBound..<end.lowerBound]
 
     #expect(!body.contains("Task { try? await sessionMemory.close() }"))
