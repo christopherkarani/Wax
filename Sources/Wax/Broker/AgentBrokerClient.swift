@@ -115,9 +115,12 @@ package enum AgentBrokerClient {
         }
     }
 
+    /// - Parameter onBrokerLaunched: Called with the child's pid right after this call
+    ///   launches a broker process. Not called when a running broker is reused.
     package static func ensureAvailable(
         configuration: AgentBrokerConfiguration,
-        startTimeoutSecondsOverride: TimeInterval? = nil
+        startTimeoutSecondsOverride: TimeInterval? = nil,
+        onBrokerLaunched: (@Sendable (pid_t) -> Void)? = nil
     ) async throws -> Bool {
         let pingTimeout = min(5.0, responseTimeoutSeconds)
         if let response = try sendIfAvailable(
@@ -141,7 +144,8 @@ package enum AgentBrokerClient {
             if try await restartMuteOwnedBroker(configuration: configuration) {
                 return try await startBrokerIfNeeded(
                     configuration: configuration,
-                    timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+                    timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
+                    onBrokerLaunched: onBrokerLaunched
                 )
             }
             throw BrokerUnresponsiveError(
@@ -151,13 +155,15 @@ package enum AgentBrokerClient {
 
         return try await startBrokerIfNeeded(
             configuration: configuration,
-            timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+            timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
+            onBrokerLaunched: onBrokerLaunched
         )
     }
 
     private static func startBrokerIfNeeded(
         configuration: AgentBrokerConfiguration,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        onBrokerLaunched: (@Sendable (pid_t) -> Void)?
     ) async throws -> Bool {
         #if os(iOS) || os(tvOS) || os(watchOS)
         throw BrokerClientError("Starting a broker process is not supported on this platform.")
@@ -205,6 +211,7 @@ package enum AgentBrokerClient {
         } catch {
             throw BrokerClientError("Failed to start broker: \(error.localizedDescription)")
         }
+        onBrokerLaunched?(process.processIdentifier)
 
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var observedExitStatus: Int32?
@@ -286,6 +293,8 @@ package enum AgentBrokerClient {
         #endif
     }
 
+    /// Returns only after the launched broker has exited, so a cancelled or failed
+    /// start never hands control back while the child still holds the socket or store.
     private static func terminateLaunchedBroker(_ process: Process) async {
         guard process.isRunning else { return }
         process.terminate()
@@ -296,6 +305,14 @@ package enum AgentBrokerClient {
         }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
+        }
+        // SIGKILL cannot be ignored. Wait for the reap off the cooperative pool so
+        // a cancelled caller cannot skip it.
+        await withCheckedContinuation { (exited: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                process.waitUntilExit()
+                exited.resume()
+            }
         }
     }
 
