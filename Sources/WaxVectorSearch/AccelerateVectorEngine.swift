@@ -156,6 +156,10 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     }
 
     package func stageForCommit(into wax: Wax) async throws {
+        try await stageForCommit(into: wax, coverage: .latestPending)
+    }
+
+    package func stageForCommit(into wax: Wax, coverage: StagedVecIndexCoverage) async throws {
         guard dirty else { return }
         let blob = try VectorSerializer.serializeFlatVectors(
             vectors,
@@ -167,7 +171,8 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
             bytes: blob,
             vectorCount: UInt64(frameIds.count),
             dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity()
+            similarity: metric.toVecSimilarity(),
+            coverage: coverage
         )
         dirty = false
     }

@@ -656,7 +656,8 @@ package actor MetalVectorEngine {
             bytes: blob,
             vectorCount: vectorCount,
             dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity()
+            similarity: metric.toVecSimilarity(),
+            coverage: .latestPending
         )
         dirty = false
     }

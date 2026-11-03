@@ -39,7 +39,8 @@ import WaxVectorSearch
         bytes: blob,
         vectorCount: 2,
         dimension: 4,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
     let engine2 = try await AccelerateVectorEngine.load(from: wax2, metric: .cosine, dimensions: 4)
 
@@ -94,7 +95,8 @@ import WaxVectorSearch
         bytes: stagedVecBytes,
         vectorCount: 1,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
@@ -266,7 +268,8 @@ import WaxVectorSearch
         bytes: legacyBytes,
         vectorCount: 1,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     do {
@@ -300,7 +303,8 @@ import WaxVectorSearch
         bytes: legacyBytes,
         vectorCount: 1,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     do {
@@ -512,7 +516,7 @@ import WaxVectorSearch
     )
 
     do {
-        try await wax.stageVecIndexForNextCommit(bytes: mismatchedVecBytes, vectorCount: 0, dimension: 5, similarity: .cosine)
+        try await wax.stageVecIndexForNextCommit(bytes: mismatchedVecBytes, vectorCount: 0, dimension: 5, similarity: .cosine, coverage: .latestPending)
         Issue.record("Expected error for pending embedding dimension mismatch vs staged vec index")
     } catch {
         // Expected: pending embedding dimension mismatch
@@ -551,7 +555,8 @@ import WaxVectorSearch
             bytes: duplicateVecBytes,
             vectorCount: 2,
             dimension: 2,
-            similarity: .cosine
+            similarity: .cosine,
+            coverage: .latestPending
         )
     }
     try await wax.close()
@@ -578,7 +583,8 @@ import WaxVectorSearch
         bytes: stagedVecBytes,
         vectorCount: 1,
         dimension: 4,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     let frame1 = try await wax.put(Data("second".utf8))
@@ -588,22 +594,20 @@ import WaxVectorSearch
         try await wax.commit()
         Issue.record("Expected error for stale staged vector index")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexStale = error else {
+            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
             return
         }
-        #expect(message.contains("vector index is stale"))
     }
 
     do {
         try await wax.close()
         Issue.record("Expected close to propagate stale auto-commit failure")
     } catch let error as WaxError {
-        guard case .io(let message) = error else {
-            Issue.record("Expected WaxError.io, got \(error)")
+        guard case .vectorIndexStale = error else {
+            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
             return
         }
-        #expect(message.contains("vector index is stale"))
     }
 }
 
