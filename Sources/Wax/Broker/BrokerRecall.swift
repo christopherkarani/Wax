@@ -498,9 +498,10 @@ package enum BrokerRecall {
             case .notRequested: return 1
             case .vectorDisabled: return 2
             case .noEmbedder: return 3
-            case .failed: return 4
-            case .circuitOpen: return 5
-            case .timeout: return 6
+            case .vectorsRebuilding: return 4
+            case .failed: return 5
+            case .circuitOpen: return 6
+            case .timeout: return 7
             }
         }
         return rank(lhs) >= rank(rhs) ? lhs : rhs

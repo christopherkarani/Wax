@@ -1259,6 +1259,8 @@ extension AgentBrokerService {
                 reason = "embedder failed"
             case .vectorDisabled:
                 reason = "vector search disabled"
+            case .vectorsRebuilding:
+                reason = "vectors re-embedding for a new model"
             case .available:
                 reason = "vector search timed out"
             case .noEmbedder, .notRequested:

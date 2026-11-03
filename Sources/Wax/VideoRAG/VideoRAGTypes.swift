@@ -162,10 +162,13 @@ public struct VideoRAGContext: Sendable, Equatable {
     public struct Diagnostics: Sendable, Equatable {
         public var usedTextTokens: Int
         public var degradedVideoCount: Int
+        /// Returned videos indexed from keyframes only because the transcript provider failed.
+        public var transcriptUnavailableVideoCount: Int
 
-        public init(usedTextTokens: Int = 0, degradedVideoCount: Int = 0) {
+        public init(usedTextTokens: Int = 0, degradedVideoCount: Int = 0, transcriptUnavailableVideoCount: Int = 0) {
             self.usedTextTokens = max(0, usedTextTokens)
             self.degradedVideoCount = max(0, degradedVideoCount)
+            self.transcriptUnavailableVideoCount = max(0, transcriptUnavailableVideoCount)
         }
     }
 

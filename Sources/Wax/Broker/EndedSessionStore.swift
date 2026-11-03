@@ -288,6 +288,8 @@ package struct DiskEndedSessionStore: EndedSessionStore {
         }
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = false
+        // Brief open: a re-embed here would be cancelled by close() before it checkpoints.
+        config.automaticallyReembedSupersededVectors = false
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         let request = try HostEmbeddingReadiness.request(

@@ -40,7 +40,9 @@ public protocol VideoTranscriptProvider: Sendable {
     /// Generate timed transcript chunks for a video.
     ///
     /// Chunks should have `startMs` and `endMs` relative to the start of the video.
-    /// Wax maps chunks to segments using a 250ms overlap threshold.
+    /// Wax maps chunks to segments using a 250ms overlap threshold. Chunks may be unsorted
+    /// and may overlap. If this throws (other than `CancellationError`), the video is still
+    /// ingested from its keyframes alone, without transcript text.
     func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk]
 }
 

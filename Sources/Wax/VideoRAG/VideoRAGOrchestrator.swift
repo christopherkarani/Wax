@@ -42,6 +42,7 @@ package actor VideoRAGOrchestrator {
         static let durationMs = VideoMetadataKey.durationMs.rawValue
         static let isLocal = VideoMetadataKey.isLocal.rawValue
         static let pipelineVersion = VideoMetadataKey.pipelineVersion.rawValue
+        static let transcriptStatus = VideoMetadataKey.transcriptStatus.rawValue
 
         static let segmentIndex = VideoMetadataKey.segmentIndex.rawValue
         static let segmentCount = VideoMetadataKey.segmentCount.rawValue
@@ -77,6 +78,23 @@ package actor VideoRAGOrchestrator {
             maxSegments: maxSegments
         )
         return plans.map { VideoSegmentTimeRange(startMs: $0.startMs, endMs: $0.endMs) }
+    }
+
+    static func _mapTranscriptForTesting(
+        chunks: [VideoTranscriptChunk],
+        segments: [VideoSegmentTimeRange],
+        maxBytes: Int
+    ) -> [Int: String] {
+        let plans = segments.enumerated().map { index, range in
+            SegmentPlan(
+                startMs: range.startMs,
+                endMs: range.endMs,
+                midMs: (range.startMs + range.endMs) / 2,
+                index: index,
+                count: segments.count
+            )
+        }
+        return mapTranscript(chunks: chunks, segments: plans, maxBytes: maxBytes)
     }
 
     /// The underlying Wax store for frame storage and indexing.
@@ -493,7 +511,12 @@ package actor VideoRAGOrchestrator {
         )
 
         let degradedCount = itemsWithThumbs.filter { isDegraded(videoID: $0.videoID) }.count
-        let diagnostics = VideoRAGContext.Diagnostics(usedTextTokens: usedTokens, degradedVideoCount: degradedCount)
+        let transcriptUnavailableCount = itemsWithThumbs.filter { isTranscriptUnavailable(videoID: $0.videoID) }.count
+        let diagnostics = VideoRAGContext.Diagnostics(
+            usedTextTokens: usedTokens,
+            degradedVideoCount: degradedCount,
+            transcriptUnavailableVideoCount: transcriptUnavailableCount
+        )
         return VideoRAGContext(query: query, items: itemsWithThumbs, diagnostics: diagnostics)
     }
 
@@ -571,14 +594,14 @@ package actor VideoRAGOrchestrator {
             maxSegments: config.maxSegmentsPerVideo
         )
 
-        let transcriptChunks = try await loadTranscript(
+        let transcript = try await loadTranscript(
             videoID: videoID,
             localFileURL: file.url,
             durationMs: durationMs
         )
-        let transcriptByIndex = Self.mapTranscript(chunks: transcriptChunks, segments: segments, maxBytes: config.maxTranscriptBytesPerSegment)
+        let transcriptByIndex = Self.mapTranscript(chunks: transcript.chunks, segments: segments, maxBytes: config.maxTranscriptBytesPerSegment)
 
-        let rootMeta = baseMetadata(
+        var rootMeta = baseMetadata(
             videoID: videoID,
             captureMs: captureMs,
             durationMs: durationMs,
@@ -586,6 +609,9 @@ package actor VideoRAGOrchestrator {
             isLocal: true,
             fileURL: file.url
         )
+        if transcript.unavailable {
+            rootMeta.entries[MetaKey.transcriptStatus] = Self.transcriptUnavailable
+        }
         let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
 
@@ -618,6 +644,7 @@ package actor VideoRAGOrchestrator {
         let segments: [SegmentPlan]
         let keyframes: [CGImage]
         let transcriptByIndex: [Int: String]
+        let transcriptUnavailable: Bool
 
         if record.isLocal, let url = record.localFileURL {
             let extracted = try await buildKeyframes(url: url)
@@ -630,20 +657,22 @@ package actor VideoRAGOrchestrator {
             )
             keyframes = extracted.keyframes
 
-            let transcriptChunks = try await loadTranscript(
+            let transcript = try await loadTranscript(
                 videoID: videoID,
                 localFileURL: url,
                 durationMs: durationMs
             )
-            transcriptByIndex = Self.mapTranscript(chunks: transcriptChunks, segments: segments, maxBytes: config.maxTranscriptBytesPerSegment)
+            transcriptByIndex = Self.mapTranscript(chunks: transcript.chunks, segments: segments, maxBytes: config.maxTranscriptBytesPerSegment)
+            transcriptUnavailable = transcript.unavailable
         } else {
             durationMs = record.durationMs
             segments = []
             keyframes = []
             transcriptByIndex = [:]
+            transcriptUnavailable = false
         }
 
-        let rootMeta = baseMetadata(
+        var rootMeta = baseMetadata(
             videoID: videoID,
             captureMs: captureMs,
             durationMs: durationMs,
@@ -651,6 +680,9 @@ package actor VideoRAGOrchestrator {
             isLocal: record.isLocal,
             fileURL: record.localFileURL
         )
+        if transcriptUnavailable {
+            rootMeta.entries[MetaKey.transcriptStatus] = Self.transcriptUnavailable
+        }
         let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
 
@@ -776,10 +808,36 @@ package actor VideoRAGOrchestrator {
         try await session.indexText(frameId: rootId, text: joined)
     }
 
-    private func loadTranscript(videoID: VideoID, localFileURL: URL, durationMs: Int64) async throws -> [VideoTranscriptChunk] {
-        guard let provider = transcriptProvider else { return [] }
+    private static let transcriptUnavailable = "unavailable"
+
+    /// Loads host-supplied transcript chunks. A provider failure degrades this video to
+    /// frame-only indexing instead of failing the whole ingest: the root frame is tagged
+    /// `video.transcript.status = unavailable` and recall reports it in
+    /// `VideoRAGContext.Diagnostics.transcriptUnavailableVideoCount`. Cancellation propagates.
+    private func loadTranscript(
+        videoID: VideoID,
+        localFileURL: URL,
+        durationMs: Int64
+    ) async throws -> (chunks: [VideoTranscriptChunk], unavailable: Bool) {
+        guard let provider = transcriptProvider else { return ([], false) }
         let request = VideoTranscriptRequest(videoID: videoID, localFileURL: localFileURL, durationMs: durationMs)
-        return try await provider.transcript(for: request)
+        do {
+            return (try await provider.transcript(for: request), false)
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                throw CancellationError()
+            }
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "VideoRAG transcript provider",
+                fallback: "ingesting keyframes without transcript text"
+            )
+            return ([], true)
+        }
+    }
+
+    private func isTranscriptUnavailable(videoID: VideoID) -> Bool {
+        index.rootMetaByVideoID[videoID]?.metadata?.entries[MetaKey.transcriptStatus] == Self.transcriptUnavailable
     }
 
     // MARK: - Indexing
@@ -1233,15 +1291,24 @@ package actor VideoRAGOrchestrator {
             return overlap >= 250
         }
 
+        // Chunks are sorted by startMs, so endMs is not monotonic (a long chunk can end after
+        // later, shorter ones). The running maximum of endMs is monotonic and lets a binary
+        // search skip exactly the prefix of chunks that all end before a segment starts.
+        var maxEndMsThrough: [Int64] = []
+        maxEndMsThrough.reserveCapacity(normalized.count)
+        for chunk in normalized {
+            maxEndMsThrough.append(max(maxEndMsThrough.last ?? chunk.endMs, chunk.endMs))
+        }
+
         var out: [Int: String] = [:]
         out.reserveCapacity(segments.count)
 
         for seg in segments {
-            // Binary search for first chunk that could overlap (chunk.startMs < seg.endMs)
+            // Binary search for the first chunk whose prefix may still overlap the segment.
             var lo = 0, hi = normalized.count
             while lo < hi {
                 let mid = (lo + hi) / 2
-                if normalized[mid].endMs <= seg.startMs {
+                if maxEndMsThrough[mid] <= seg.startMs {
                     lo = mid + 1
                 } else {
                     hi = mid

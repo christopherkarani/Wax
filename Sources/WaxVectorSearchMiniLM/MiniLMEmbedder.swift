@@ -29,7 +29,9 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     package nonisolated let normalize: Bool = true
     package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
         provider: "Wax",
-        model: "MiniLMAll",
+        // "-mean": sentence-transformers mean pooling (#257). Stores bound to the old
+        // "MiniLMAll" pooler vectors are re-embedded on open, not reused.
+        model: "MiniLMAll-mean",
         dimensions: 384,
         normalized: true
     )

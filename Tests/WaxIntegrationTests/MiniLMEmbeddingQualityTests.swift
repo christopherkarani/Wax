@@ -1,6 +1,7 @@
 #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import Foundation
 import Testing
+import WaxCore
 import WaxVectorSearchMiniLM
 
 private struct BaselineEmbeddingFixture: Codable {
@@ -22,6 +23,7 @@ private struct TestingError: Error, CustomStringConvertible {
 private struct MiniLMModelMetadata: Decodable {
     let storagePrecision: String
     let computePrecision: String
+    let userDefinedMetadata: [String: String]
 }
 
 private enum BaselineFixtureLoader {
@@ -82,6 +84,22 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
     return denom == 0 ? 0 : (dot / denom)
 }
 
+/// The shipped model must be the one the committed conversion pipeline produced.
+@Test func minilmBundledModelMatchesCommittedSHA256() throws {
+    let hashesURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Resources/scripts/models/minilm-shipped-sha256.json")
+    let expected = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: hashesURL))
+    #expect(Set(expected.keys) == ["model.mil", "weights/weight.bin"])
+    for (relativePath, digest) in expected {
+        let bytes = try Data(contentsOf: MiniLMAssetLoader.modelDirectory().appendingPathComponent(relativePath))
+        let actual = SHA256Checksum.digest(bytes).map { String(format: "%02x", $0) }.joined()
+        #expect(actual == digest, "\(relativePath) hash changed; rerun convert_minilm.py --check-compiled")
+    }
+}
+
 @Test func minilmBundledModelDoesNotUseKnownBadW8A8Quantization() throws {
     let mil = try MiniLMAssetLoader.modelMIL()
     let metadata = try MiniLMAssetLoader.metadata()
@@ -98,6 +116,17 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
         !mil.contains("fp16(nan)"),
         "MiniLM model must not contain NaN quantization scales."
     )
+    #expect(
+        !mil.contains("pooler"),
+        "MiniLM must return mean-pooled token embeddings, not the BERT pooler output (#257)."
+    )
+    #expect(mil.contains("-> (embeddings)"), "MiniLM Core ML output must be named `embeddings`.")
+    #expect(metadata.userDefinedMetadata["wax.minilm.pooling"] == "mean")
+    #expect(metadata.userDefinedMetadata["wax.minilm.max_seq_length"] == "256")
+    #expect(
+        !mil.contains("-0x1.fffffep+127"),
+        "Attention mask fill must stay finite in Float16 (-FLT_MAX becomes -inf on the Neural Engine)."
+    )
 }
 
 @available(macOS 15.0, iOS 18.0, *)
@@ -110,6 +139,11 @@ func minilmEmbeddingsStayCloseToBaseline() async throws {
     #expect(fixture.dimensions == 384)
     #expect(!fixture.sentences.isEmpty)
     #expect(fixture.sentences.count == fixture.embeddings.count)
+
+    // At least one sentence must exceed the 256-token reference limit so truncation is covered.
+    let tokenizer = try BertTokenizer()
+    let longest = try fixture.sentences.map { try tokenizer.tokenizeToIds(text: $0).count }.max() ?? 0
+    #expect(longest > 256)
 
     let embedder = try MiniLMEmbedder()
     let freshEmbeddings = try await embedder.embed(batch: fixture.sentences)
@@ -126,51 +160,31 @@ func minilmEmbeddingsStayCloseToBaseline() async throws {
     let average = similarities.reduce(0, +) / Float(similarities.count)
     let minimum = similarities.min() ?? 0
 
-    // Tracked regression: observed average 0.668 / minimum 0.575 since the v0.1.32
-    // model swap. Swift Testing flags this wrapper once the drift is fixed.
-    // Hard floors outside the wrapper still catch further degradation (or NaN)
-    // while #257 is open.
-    #expect(average >= 0.6, "Average cosine similarity regressed further: \(average)")
-    #expect(minimum >= 0.5, "Minimum cosine similarity regressed further: \(minimum)")
-    withKnownIssue("https://github.com/christopherkarani/Wax/issues/257") {
-        #expect(average >= 0.98, "Average cosine similarity was \(average)")
-        #expect(minimum >= 0.95, "Minimum cosine similarity was \(minimum)")
-    }
+    // The fixture holds sentence-transformers all-MiniLM-L6-v2 reference vectors
+    // (masked mean pooling + L2 normalize, computed in PyTorch), so this checks the
+    // whole Swift pipeline (tokenizer, Core ML graph, decode) against the reference.
+    // A model that returns the BERT pooler (CLS -> dense -> tanh) scores ~0 here (#257).
+    #expect(average >= 0.99, "Average cosine similarity was \(average)")
+    #expect(minimum >= 0.98, "Minimum cosine similarity was \(minimum)")
 }
+
+// The fixture is generated from the PyTorch reference, never from Wax's own output:
+//   python Resources/scripts/models/generate_minilm_fixture.py \
+//     Tests/WaxIntegrationTests/Fixtures/minilm_baseline_embeddings.json
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test(.disabled(
-    if: ProcessInfo.processInfo.environment["WAX_GENERATE_MINILM_FIXTURES"] != "1",
-    "Set WAX_GENERATE_MINILM_FIXTURES=1 to regenerate MiniLM baseline fixtures"
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM inference quality tests"
 ))
-func generateMiniLMBaselineFixture() async throws {
-    let sentences = [
-        "Swift concurrency makes structured parallelism practical.",
-        "Vector search underpins modern retrieval-augmented generation.",
-        "Core ML optimizations should balance accuracy and throughput.",
-        "Batch embeddings improve ANE utilization on Apple silicon.",
-        "Memory systems need fast ingestion and recall latencies.",
-        "Structured logging helps debug RAG pipelines.",
-        "Compression techniques like quantization reduce bandwidth.",
-        "On-device inference keeps user data private."
-    ]
-
+func minilmMatchesPublishedSentenceTransformersAnchor() async throws {
+    // Published sentence-transformers/all-MiniLM-L6-v2 output for this sentence (first 8 dims).
+    let published: [Float] = [0.067657, 0.063496, 0.048713, 0.079305, 0.037448, 0.002653, 0.039375, -0.007098]
     let embedder = try MiniLMEmbedder()
-    let embeddings = try await embedder.embed(batch: sentences)
-
-    let fixture = BaselineEmbeddingFixture(
-        sentences: sentences,
-        embeddings: embeddings,
-        dimensions: 384
-    )
-
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(fixture)
-
-    let fileURL = URL(fileURLWithPath: #filePath)
-    let fixturesDir = fileURL.deletingLastPathComponent().appendingPathComponent("Fixtures")
-    try FileManager.default.createDirectory(at: fixturesDir, withIntermediateDirectories: true)
-    try data.write(to: fixturesDir.appendingPathComponent("minilm_baseline_embeddings.json"), options: .atomic)
+    let vector = try await embedder.embed("This is an example sentence")
+    #expect(vector.count == 384)
+    for (index, expected) in published.enumerated() {
+        #expect(abs(vector[index] - expected) < 1e-4, "dim \(index): \(vector[index]) vs \(expected)")
+    }
 }
 #endif

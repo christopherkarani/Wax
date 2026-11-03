@@ -15,7 +15,8 @@ struct VectorHealthCommand: AsyncParsableCommand {
         queryEmbeddingAvailable: Bool,
         embedderPresent: Bool,
         framesWithoutVectors: UInt64,
-        canaryPassed: Bool
+        canaryPassed: Bool,
+        vectorsNeedReembed: Bool = false
     ) -> Bool {
         MCPVectorHealthDiagnostics.evaluate(
             vectorSearchEnabled: vectorSearchEnabled,
@@ -24,6 +25,22 @@ struct VectorHealthCommand: AsyncParsableCommand {
             && embedderPresent
             && framesWithoutVectors == 0
             && canaryPassed
+            && !vectorsNeedReembed
+    }
+
+    /// Operator command that re-embeds a store whose vectors come from a superseded model.
+    static func reembedFixCommand(storePath: String) -> String {
+        let output = (storePath as NSString).deletingPathExtension + "-reembedded.wax"
+        return "wax-cli embed-backfill --direct-store --store-path \(shellQuoted(storePath)) --output \(shellQuoted(output))"
+    }
+
+    /// POSIX single-quoting for paths that contain anything outside a conservative safe set.
+    static func shellQuoted(_ value: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./+:@%,=")
+        guard value.isEmpty || value.unicodeScalars.contains(where: { !safe.contains($0) }) else {
+            return value
+        }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     func runAsync() async throws {
@@ -34,8 +51,10 @@ struct VectorHealthCommand: AsyncParsableCommand {
             queryEmbeddingAvailable: queryEmbeddingAvailable,
             embedderPresent: primary.embedderIdentity != nil,
             framesWithoutVectors: primary.framesWithoutVectors,
-            canaryPassed: primary.canary.passed
+            canaryPassed: primary.canary.passed,
+            vectorsNeedReembed: primary.vectorsNeedReembed
         )
+        let fix = primary.vectorsNeedReembed ? Self.reembedFixCommand(storePath: primary.path) : nil
 
         switch store.format {
         case .json:
@@ -58,6 +77,9 @@ struct VectorHealthCommand: AsyncParsableCommand {
                     "queryEmbeddingAvailable": queryEmbeddingAvailable,
                     "frameCount": primary.frameCount,
                     "framesWithoutVectors": primary.framesWithoutVectors,
+                    "vectorsNeedReembed": primary.vectorsNeedReembed,
+                    "embeddingStatusReason": primary.embeddingStatusReason ?? NSNull(),
+                    "fix": fix ?? NSNull(),
                     "embedder": embedder,
                 ],
                 "semanticProbe": [
@@ -78,6 +100,12 @@ struct VectorHealthCommand: AsyncParsableCommand {
             print("Vector search: \(primary.vectorSearchEnabled ? "enabled" : "disabled")")
             print("Query embeddings: \(queryEmbeddingAvailable ? "available" : "unavailable")")
             print("Frames without vectors: \(primary.framesWithoutVectors)")
+            if primary.vectorsNeedReembed {
+                print("Vectors: need re-embed (\(primary.embeddingStatusReason ?? "superseded model"))")
+                if let fix {
+                    print("Fix: \(fix)")
+                }
+            }
             if let identity = primary.embedderIdentity {
                 let provider = identity.provider ?? "unknown"
                 let model = identity.model ?? "unknown"
@@ -107,6 +135,8 @@ private extension VectorHealthCommand {
         let embedderIdentity: EmbeddingIdentity?
         let frameCount: UInt64
         let framesWithoutVectors: UInt64
+        let vectorsNeedReembed: Bool
+        let embeddingStatusReason: String?
         let canary: SemanticProbeResult
     }
 
@@ -132,6 +162,28 @@ private extension VectorHealthCommand {
             requireVector: true
         ) { memory in
             let stats = await memory.runtimeStats()
+            guard !stats.vectorsNeedReembed else {
+                // Vector-only search refuses superseded vectors; report instead of probing.
+                return PrimaryStoreCheck(
+                    path: stats.storeURL.path,
+                    vectorSearchEnabled: stats.vectorSearchEnabled,
+                    embedderIdentity: stats.embedderIdentity,
+                    frameCount: stats.frameCount,
+                    framesWithoutVectors: stats.framesWithoutVectors,
+                    vectorsNeedReembed: true,
+                    embeddingStatusReason: stats.embeddingStatus.wireReason,
+                    canary: SemanticProbeResult(
+                        passed: false,
+                        vectorSourceSeen: false,
+                        expectedDocMatched: nil,
+                        topPreview: "",
+                        topSources: [],
+                        queryEmbeddingState: .vectorsRebuilding,
+                        effectiveMode: .textOnly,
+                        frameId: nil
+                    )
+                )
+            }
             let canaryFrame = await memory.healthCanaryFrame()
             let canaryQuery = canaryFrame?.searchText ?? "wax vector health canary"
             let canaryFilter = canaryFrame.map { FrameFilter(frameIds: Set([$0.id])) }
@@ -157,6 +209,8 @@ private extension VectorHealthCommand {
                 embedderIdentity: stats.embedderIdentity,
                 frameCount: stats.frameCount,
                 framesWithoutVectors: stats.framesWithoutVectors,
+                vectorsNeedReembed: false,
+                embeddingStatusReason: stats.embeddingStatus.wireReason,
                 canary: SemanticProbeResult(
                     passed: canaryPassed,
                     vectorSourceSeen: vectorSourceSeen,
