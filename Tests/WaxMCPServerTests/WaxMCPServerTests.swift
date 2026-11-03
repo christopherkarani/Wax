@@ -4902,11 +4902,11 @@ func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Remember.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func completeRemember("))
-    let end = try #require(source[start.upperBound...].range(of: "func recall(_ command: BrokerCommand.Recall)"))
+    let end = try #require(source[start.upperBound...].range(of: "func flush() async throws"))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let appendEvent = try #require(body.range(of: "appendSessionEvent("))
@@ -4922,7 +4922,7 @@ func brokerHandoffRecordsEventBeforeCommittingHandoffFrame() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+HandoffExport.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func handoff(_ command: BrokerCommand.Handoff)"))
@@ -4943,7 +4943,7 @@ func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Support.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func recordHandoff(sessionID: UUID, content: String)"))
@@ -4963,11 +4963,11 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Knowledge.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func knowledgeCapture(_ command: BrokerCommand.KnowledgeCapture)"))
-    let end = try #require(source[start.upperBound...].range(of: "func stats(_ command: BrokerCommand.Stats"))
+    let end = try #require(source[start.upperBound...].range(of: "func entityUpsert(_ command: BrokerCommand.EntityUpsert)"))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let remember = try #require(body.range(of: "try await longTermMemory.remember(command.content, metadata: metadata)"))
