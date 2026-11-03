@@ -118,6 +118,7 @@ package actor AgentBrokerService {
                 sessionConfig.enableStructuredMemory = false
                 sessionConfig.enableAccessStatsScoring = capturedAccessStats
                 sessionConfig.defaultScopeContext = capturedScope
+                sessionConfig.catchUpTextIndexOnOpen = true
                 let memory = try await EmbeddingReadinessBinding.openOrchestrator(
                     at: url,
                     config: sessionConfig,
@@ -136,6 +137,8 @@ package actor AgentBrokerService {
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
+        // The broker owns this store for its lifetime.
+        config.catchUpTextIndexOnOpen = true
         do {
             self.longTermMemory = try await EmbeddingReadinessBinding.openOrchestrator(
                 at: longTermStoreURL,

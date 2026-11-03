@@ -1572,6 +1572,8 @@ struct WaxCLIMemoryTests {
     func directStoreCommandsNeverStartSupersededReembedOnTheirOwn() {
         #expect(!StoreSession.orchestratorConfig().automaticallyReembedSupersededVectors)
         #expect(OrchestratorConfig.default.automaticallyReembedSupersededVectors)
+        // Nor do they commit a text-index catch-up: only the store's owning writer does.
+        #expect(!StoreSession.orchestratorConfig().catchUpTextIndexOnOpen)
     }
 
     @Test(.disabled(if: !mcpServerTraitEnabled,

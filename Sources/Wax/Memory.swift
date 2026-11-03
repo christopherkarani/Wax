@@ -364,6 +364,7 @@ public actor Memory {
         resolved.ingestConcurrency = config.ingestConcurrency
         resolved.ingestBatchSize = config.ingestBatchSize
         resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
+        resolved.catchUpTextIndexOnOpen = true
         return resolved
     }
 }

@@ -24,6 +24,11 @@ package actor WaxSession {
         package var vectorEnginePreference: VectorEnginePreference
         package var vectorMetric: VectorMetric
         package var vectorDimensions: Int?
+        /// Index durable frames the text index does not cover yet (WAL replay, or a store
+        /// commit without a staged lex index) when a read-write session opens. The next commit
+        /// persists them, so only the store's owning writer turns this on: brief opens must
+        /// leave the file untouched, and read-only sessions never catch up.
+        package var catchUpTextIndexOnOpen: Bool
 
         package init(
             enableTextSearch: Bool = true,
@@ -31,7 +36,8 @@ package actor WaxSession {
             enableStructuredMemory: Bool = true,
             vectorEnginePreference: VectorEnginePreference = .auto,
             vectorMetric: VectorMetric = .cosine,
-            vectorDimensions: Int? = nil
+            vectorDimensions: Int? = nil,
+            catchUpTextIndexOnOpen: Bool = false
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -39,6 +45,7 @@ package actor WaxSession {
             self.vectorEnginePreference = vectorEnginePreference
             self.vectorMetric = vectorMetric
             self.vectorDimensions = vectorDimensions
+            self.catchUpTextIndexOnOpen = catchUpTextIndexOnOpen
         }
 
         package static let `default` = Config()
@@ -85,8 +92,10 @@ package actor WaxSession {
                 nil
             }
             // Frames can be durable (WAL replay, or a store commit without a staged lex index)
-            // before the text index that covers them; index what a crash left behind.
-            if config.enableTextSearch, let resolvedTextEngine {
+            // before the text index that covers them; the owning writer indexes what a crash
+            // left behind.
+            if case .readWrite = mode, config.catchUpTextIndexOnOpen, config.enableTextSearch,
+               let resolvedTextEngine {
                 try await resolvedTextEngine.catchUpUnindexedFrames(await wax.frameMetasIncludingPending())
             }
 

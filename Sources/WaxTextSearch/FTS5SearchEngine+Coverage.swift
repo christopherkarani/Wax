@@ -9,24 +9,22 @@ import WaxCore
 /// lowest frame id whose postings the blob does not vouch for, so an open can index exactly the
 /// frames a crash left behind.
 ///
-/// The table is added without a `user_version` bump: older readers ignore it, and blobs without
-/// it fall back to "everything above the highest indexed frame id".
+/// The table is added without a `user_version` bump: older readers ignore it. A blob without it
+/// vouches for nothing; the first catch-up scans every frame (indexed ones are skipped) and the
+/// next commit records the watermark.
 enum FTS5Coverage {
     private static let key = "covered_below_frame_id"
 
-    static func coveredBelowFrameId(in db: Database) throws -> UInt64 {
+    /// The stored watermark, or `nil` for a blob written before the watermark existed.
+    static func coveredBelowFrameId(in db: Database) throws -> UInt64? {
         let hasTable = try String.fetchOne(
             db,
             sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='wax_lex_coverage'"
         ) != nil
-        if hasTable,
-           let stored = try Int64.fetchOne(db, sql: "SELECT value FROM wax_lex_coverage WHERE key = ?", arguments: [key]),
-           stored >= 0 {
-            return UInt64(stored)
-        }
-        let highest = try Int64.fetchOne(db, sql: "SELECT MAX(frame_id) FROM frame_mapping")
-        guard let highest, highest >= 0 else { return 0 }
-        return UInt64(highest) + 1
+        guard hasTable,
+              let stored = try Int64.fetchOne(db, sql: "SELECT value FROM wax_lex_coverage WHERE key = ?", arguments: [key]),
+              stored >= 0 else { return nil }
+        return UInt64(stored)
     }
 
     static func write(coveredBelowFrameId: UInt64, in db: Database) throws {
@@ -64,6 +62,11 @@ extension FTS5SearchEngine {
     /// frames at or above the watermark are examined. Returns the number of frames indexed.
     @discardableResult
     package func catchUpUnindexedFrames(_ metas: [FrameMeta]) async throws -> Int {
+        // Without a recorded watermark, have the next commit record one even if nothing is
+        // missing, so the full scan below runs once.
+        if !coverageRecorded, !metas.isEmpty {
+            dirty = true
+        }
         let floor = coveredBelowFrameId
         var candidates: [(frameId: Int64, text: String)] = []
         for meta in metas where meta.id >= floor {
@@ -107,6 +110,7 @@ extension FTS5SearchEngine {
             }
         }
         coveredBelowFrameId = covered
+        coverageRecorded = true
     }
 
     private func indexedFrameIds(atOrAbove floor: UInt64) async throws -> Set<Int64> {

@@ -32,6 +32,9 @@ package actor FTS5SearchEngine {
     /// Every text-indexable frame below this id is indexed (or was when it was staged).
     /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
     var coveredBelowFrameId: UInt64
+    /// `false` until the blob stores a watermark. A blob written before the watermark existed
+    /// vouches for nothing, so catch-up scans every frame once and the next commit records it.
+    var coverageRecorded: Bool
 
     private init(
         dbQueue: DatabaseQueue,
@@ -39,14 +42,15 @@ package actor FTS5SearchEngine {
         backingStoreDirectory: URL?,
         docCount: UInt64,
         dirty: Bool,
-        coveredBelowFrameId: UInt64 = 0
+        coveredBelowFrameId: UInt64? = nil
     ) {
         self.dbQueue = dbQueue
         self.io = io
         self.backingStoreDirectory = backingStoreDirectory
         self.docCount = docCount
         self.dirty = dirty
-        self.coveredBelowFrameId = coveredBelowFrameId
+        self.coveredBelowFrameId = coveredBelowFrameId ?? 0
+        self.coverageRecorded = coveredBelowFrameId != nil
     }
 
     deinit {

@@ -246,7 +246,8 @@ package actor MemoryOrchestrator {
             enableStructuredMemory: resolvedConfig.enableStructuredMemory,
             vectorEnginePreference: preference,
             vectorMetric: .cosine,
-            vectorDimensions: embedder?.dimensions
+            vectorDimensions: embedder?.dimensions,
+            catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
 
