@@ -1557,7 +1557,7 @@ package actor Wax {
         vectorCount: UInt64,
         dimension: UInt32,
         similarity: VecSimilarity,
-        coverage: StagedVecIndexCoverage = .latestPending
+        coverage: StagedVecIndexCoverage
     ) async throws {
         try await withWriteLock {
             guard !bytes.isEmpty else {

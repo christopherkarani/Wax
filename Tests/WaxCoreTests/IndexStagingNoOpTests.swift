@@ -35,7 +35,8 @@ import Testing
         bytes: bytes,
         vectorCount: 2,
         dimension: 4,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
     try await wax.commit()
 
@@ -46,7 +47,8 @@ import Testing
         bytes: bytes,
         vectorCount: 2,
         dimension: 4,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
     let stagedStamp = await wax.stagedVecIndexStamp()
     #expect(stagedStamp == nil)
@@ -68,7 +70,8 @@ import Testing
             bytes: Data([0x01]),
             vectorCount: 0,
             dimension: 4,
-            similarity: .cosine
+            similarity: .cosine,
+            coverage: .latestPending
         )
     }
 

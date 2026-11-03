@@ -32,7 +32,8 @@ import Testing
         bytes: validFlatVecIndexSegment(vectors: [0.1, 0.2], frameIds: [0], dimension: 2, similarity: .cosine),
         vectorCount: 1,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
     try await wax.putEmbedding(frameId: 0, vector: [0.3, 0.4])
 
