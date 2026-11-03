@@ -9,7 +9,7 @@ func sessionOpenDoesNotDecodeRecallOrStringifyUUID() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Sessions.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func sessionOpen(_ command: BrokerCommand.SessionOpen)"))
