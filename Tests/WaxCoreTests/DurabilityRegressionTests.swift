@@ -125,7 +125,7 @@ private func validFlatVecIndexSegment(
     )
     let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
     let remainder = source[start.lowerBound...]
-    let end = try #require(remainder.range(of: "    // MARK: - Reads"))
+    let end = try #require(remainder.range(of: "    private struct CommitRollbackState {"))
     let body = String(remainder[..<end.lowerBound])
 
     let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))
