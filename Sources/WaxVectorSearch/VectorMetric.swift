@@ -18,13 +18,16 @@ package enum VectorMetric: Sendable, Equatable {
     }
 
     package func score(fromDistance d: Float) -> Float {
-        guard d.isFinite else { return 0 }
+        // A non-finite distance is never a meaningful match: rank it below every real score.
+        // (0 would outrank all L2 scores, which are <= 0, and negative dot products.)
+        guard d.isFinite else { return -.infinity }
         switch self {
         case .cosine:
             // Metal kernels return cosine distance; expose score where higher is better.
             return 1 - d
         case .dot, .l2:
-            // For ip and L2 distances, lower is better.
+            // Inner-product distance is -dot and L2 distance is squared Euclidean;
+            // negating both matches AccelerateVectorEngine (dot, -squared distance).
             return -d
         }
     }

@@ -722,6 +722,55 @@ struct UniqueRecallTests {
     }
 
     @Test
+    func mergeHitsDemotesButKeepsNumericOutOf100Memory() {
+        let testPass = uniqueHit(
+            frameID: 1,
+            score: 0.90,
+            text: "CI after the WAL fix: 99/100 tests pass; the flaky one is BrokerSoakTests.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue]
+        )
+        let other = uniqueHit(
+            frameID: 2,
+            score: 0.70,
+            text: "WAL fix landed behind the replay guard.",
+            horizon: .durable,
+            metadata: [MemoryMetadataKeys.type: MemoryType.fact.rawValue]
+        )
+        #expect(LayeredRecall.looksScorecard(testPass.text))
+        #expect(!LayeredRecall.looksSessionRubric(testPass.text))
+        let merged = LayeredRecall.mergeHits(
+            sessionHits: [],
+            durableHits: [testPass, other],
+            limit: 5,
+            nowMs: 0,
+            query: "WAL fix tests"
+        )
+        #expect(merged.map(\.frameID) == [2, 1])
+        let demoted = merged.first { $0.frameID == 1 }
+        #expect(abs((demoted?.score ?? 0) - (0.90 - LayeredRecall.scorecardRankPenalty)) < 0.0001)
+    }
+
+    @Test(arguments: [
+        ("session rating", true),
+        ("what was the score", true),
+        ("scores from the eval", true),
+        ("show the scorecard", true),
+        ("underscore naming in the parser", false),
+        ("scoreboard component layout", false),
+        ("operating plan", false),
+        ("", false),
+    ])
+    func queryAsksForRatingMatchesWholeWordsOnly(_ query: String, _ expected: Bool) {
+        let asks = LayeredRecall.queryAsksForRating(query)
+        if expected {
+            #expect(asks, "\(query)")
+        } else {
+            #expect(!asks, "\(query)")
+        }
+    }
+
+    @Test
     func rankingAdjustedScoreDemotesScorecardsUnlessQueryAsks() {
         let card = uniqueHit(
             frameID: 1,

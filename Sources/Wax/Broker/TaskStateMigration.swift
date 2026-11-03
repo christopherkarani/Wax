@@ -349,10 +349,8 @@ package extension AgentBrokerService {
                 }
             } catch {
                 try? fileManager.removeItem(at: destinationURL)
-                if let backupURL, fileManager.fileExists(atPath: backupURL.path) {
-                    try? fileManager.moveItem(at: backupURL, to: destinationURL)
-                }
-                throw error
+                guard let backupURL else { throw error }
+                throw Self.restoreTaskStateMigrationBackup(backupURL, to: destinationURL, after: error)
             }
 
             report.destinationHash = try Self.sha256File(at: destinationURL)
@@ -396,7 +394,7 @@ package extension AgentBrokerService {
         orphanPolicy: TaskStateOrphanPolicy
     ) throws -> TaskStateMigrationPlan {
         let taskStateDocuments = documents.filter {
-            MemorySemantics.parse(metadata: $0.metadata, nowMs: Self.nowMs()).type == .taskState
+            MemorySemantics.parse(metadata: $0.metadata, nowMs: BrokerClock.nowMs()).type == .taskState
         }
         var operations: [TaskStateMigrationOperation] = []
         operations.reserveCapacity(taskStateDocuments.count)
@@ -408,7 +406,7 @@ package extension AgentBrokerService {
 
         for document in taskStateDocuments {
             let contentHash = Self.sha256Text(document.text)
-            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
+            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs())
             let provenance = taskStateSessionID(in: document.metadata)
             let validSession = if let provenance {
                 validSessionProvenance(provenance)
@@ -517,9 +515,7 @@ package extension AgentBrokerService {
         _ frameIDs: [UInt64],
         from memory: MemoryOrchestrator
     ) async throws {
-        for frameID in frameIDs.sorted(by: >) {
-            try await memory.delete(frameId: frameID)
-        }
+        try await memory.delete(frameIds: frameIDs.sorted(by: >))
     }
 
     private func validSessionProvenance(_ sessionID: UUID) -> Bool {
@@ -692,7 +688,7 @@ private extension AgentBrokerService {
     ) -> Set<UInt64> {
         taskStateAffectedFrameIDs(
             roots: Set(documents.filter {
-                MemorySemantics.parse(metadata: $0.metadata, nowMs: Self.nowMs()).type == .taskState
+                MemorySemantics.parse(metadata: $0.metadata, nowMs: BrokerClock.nowMs()).type == .taskState
             }.map(\.frameId)),
             frameMetas: frameMetas
         )
@@ -830,7 +826,7 @@ private extension AgentBrokerService {
                         try await memory.close()
                         return false
                     }
-                    let info = MemorySemantics.parse(metadata: metadata, nowMs: Self.nowMs())
+                    let info = MemorySemantics.parse(metadata: metadata, nowMs: BrokerClock.nowMs())
                     switch entry.action {
                     case .rehome:
                         guard info.type == MemoryType.taskState,
@@ -857,7 +853,7 @@ private extension AgentBrokerService {
                 }
             }
             guard documents.allSatisfy({ document in
-                let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
+                let info = MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs())
                 return info.type != .taskState || (
                     info.durability == .working && UUID(uuidString: document.metadata["session_id"] ?? "") != nil
                 )
@@ -974,10 +970,7 @@ private extension AgentBrokerService {
                 try fileManager.moveItem(at: buildURL, to: destinationURL)
                 return backupURL
             } catch {
-                if fileManager.fileExists(atPath: backupURL.path), !fileManager.fileExists(atPath: destinationURL.path) {
-                    try? fileManager.moveItem(at: backupURL, to: destinationURL)
-                }
-                throw error
+                throw Self.restoreTaskStateMigrationBackup(backupURL, to: destinationURL, after: error)
             }
         }
         try fileManager.moveItem(at: buildURL, to: destinationURL)
@@ -1012,5 +1005,28 @@ private extension AgentBrokerService {
                     "\(report.droppedDocumentCount) dropped."
             ),
         ])
+    }
+}
+
+extension AgentBrokerService {
+    /// Moves the pre-migration destination back after a failed install and
+    /// returns the error to throw. When the restore fails too (or something
+    /// already occupies the destination), the error names `backupURL` so the
+    /// previous store can be recovered by hand instead of being silently orphaned.
+    package static func restoreTaskStateMigrationBackup(
+        _ backupURL: URL,
+        to destinationURL: URL,
+        after installError: any Error
+    ) -> any Error {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: backupURL.path) else { return installError }
+        do {
+            try fileManager.moveItem(at: backupURL, to: destinationURL)
+            return installError
+        } catch {
+            return BrokerValidationError.invalid(
+                "task_state migration failed (\(installError.localizedDescription)) and restoring the previous destination failed (\(error.localizedDescription)); the previous destination is preserved at \(backupURL.path)"
+            )
+        }
     }
 }

@@ -72,7 +72,7 @@ extension AgentBrokerService {
         kind: MarkdownProjectionKind,
         dateKey: String? = nil
     ) -> MarkdownProjectionMarker {
-        let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
+        let info = MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs())
         return MarkdownProjectionMarker(
             managed: document.metadata[MemoryMetadataKeys.sourceManaged] != "false",
             sourceKind: kind.rawValue,
@@ -263,7 +263,7 @@ extension AgentBrokerService {
             semantics: semantics,
             sessionID: nil,
             inferredScope: scopeContext,
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
         let approved = MemorySemantics.approvedPromotionMetadata(
             metadata: normalized,
@@ -279,7 +279,7 @@ extension AgentBrokerService {
             scope: "durable",
             activeSession: false,
             inferredScope: scopeContext,
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
     }
 
@@ -320,11 +320,11 @@ extension AgentBrokerService {
                 scope: sourceKind == .memory ? "durable" : nil,
                 activeSession: false,
                 inferredScope: scopeContext,
-                nowMs: Self.nowMs()
+                nowMs: BrokerClock.nowMs()
             )
 
             if let existing {
-                let existingInfo = MemorySemantics.parse(metadata: existing.metadata, nowMs: Self.nowMs())
+                let existingInfo = MemorySemantics.parse(metadata: existing.metadata, nowMs: BrokerClock.nowMs())
                 if existing.text == entry.text,
                    existing.metadata[MemoryMetadataKeys.sourceLine] == String(entry.lineNumber),
                    existingInfo.type == (semantics.type ?? existingInfo.type),
@@ -392,7 +392,7 @@ extension AgentBrokerService {
     }
 
     private func isLockedMemory(_ document: MemoryOrchestrator.CorpusSourceDocument) -> Bool {
-        MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs()).durability == .locked
+        MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs()).durability == .locked
     }
 
     private func trustedExistingDocument(
@@ -549,7 +549,7 @@ extension AgentBrokerService {
             scope: sourceKind == .memory ? "durable" : nil,
             activeSession: false,
             inferredScope: scopeContext,
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
     }
 
@@ -844,7 +844,7 @@ extension AgentBrokerService {
     func renderMemoryMarkdown(documents: [MemoryOrchestrator.CorpusSourceDocument]) -> String {
         var sections: [MemoryType: [String]] = [:]
         for document in documents {
-            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: Self.nowMs())
+            let info = MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs())
             guard info.durability == .durable || info.durability == .locked else { continue }
             let type = info.type
             let marker = marker(for: document, kind: .memory)

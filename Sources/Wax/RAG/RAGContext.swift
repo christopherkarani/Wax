@@ -76,6 +76,13 @@ public struct RAGContext: Sendable, Equatable {
 
         private let kind: Kind
 
+        /// Save-time window Wax inferred from the query text (for example "last week")
+        /// and applied as a filter. `nil` when nothing was inferred, inference was
+        /// disabled with ``Memory/SearchOptions/inferTimeRange``, or the caller passed
+        /// an explicit ``Memory/SearchOptions/timeRange``. Future-looking phrases
+        /// ("tomorrow", "next week") are never applied.
+        public package(set) var inferredTimeRange: Memory.TimeRange?
+
         /// The retrieval mode requested by the caller.
         public var requestedMode: SearchMode {
             switch kind {
@@ -137,6 +144,7 @@ public struct RAGContext: Sendable, Equatable {
 
         private init(kind: Kind) {
             self.kind = kind
+            self.inferredTimeRange = nil
         }
     }
 

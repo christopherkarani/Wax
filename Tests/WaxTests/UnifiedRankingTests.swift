@@ -237,6 +237,104 @@ struct UnifiedRankingTests {
         #expect(ranked[0].explanations.contains("exact identifier match"))
     }
 
+    // MARK: - Vocabulary-independent ranking (no fixture phrase boosts)
+
+    /// A location answer that happens to mention "health" must not be demoted
+    /// below an otherwise equivalent answer.
+    @Test
+    func intentAwareRerankDoesNotDemoteHealthWordOnLocationQuery() {
+        let mentionsHealth = textResult(
+            frameId: 1,
+            score: 0.60,
+            preview: "Ada moved to Lisbon in 2021 for health reasons."
+        )
+        let plain = textResult(
+            frameId: 2,
+            score: 0.50,
+            preview: "Ada moved to Porto in 2021 for family reasons."
+        )
+        let ranked = UnifiedRanking.intentAwareRerank(
+            results: [mentionsHealth, plain],
+            query: "Which city did Ada move to?",
+            maxWindow: 10
+        )
+        #expect(ranked.map(\.frameId) == [1, 2])
+    }
+
+    /// "checklist" / "weekly report" are ordinary words, not distractor markers.
+    @Test
+    func intentAwareRerankDoesNotDemoteChecklistWordOnDateQuery() {
+        let mentionsChecklist = textResult(
+            frameId: 1,
+            score: 0.60,
+            preview: "Orion review checklist: the review is on March 3, 2026."
+        )
+        let plain = textResult(
+            frameId: 2,
+            score: 0.50,
+            preview: "Orion review notes: the review is on March 4, 2026."
+        )
+        let ranked = UnifiedRanking.intentAwareRerank(
+            results: [mentionsChecklist, plain],
+            query: "When is the Orion review?",
+            maxWindow: 10
+        )
+        #expect(ranked.map(\.frameId) == [1, 2])
+    }
+
+    @Test
+    func answerOrderingDoesNotDemoteChecklistOrHealthWords() {
+        var config = FastRAGConfig()
+        config.deterministicNowMs = Self.nowMs
+        let checklist = textResult(
+            frameId: 1,
+            score: 0.60,
+            preview: "Orion weekly report checklist: the review is on March 3, 2026."
+        )
+        let plain = textResult(
+            frameId: 2,
+            score: 0.50,
+            preview: "Orion review notes: the review is on March 4, 2026."
+        )
+        let ordered = FastRAGContextBuilder.orderCandidatesForAnswer(
+            results: [checklist, plain],
+            query: "When is the Orion review?",
+            config: config
+        )
+        #expect(ordered.map(\.frameId) == [1, 2])
+    }
+
+    /// Fixture-specific phrases ("public launch is") must not outrank a
+    /// generic date statement for the same entity.
+    @Test
+    func intentAwareRerankTreatsDateStatementsByShapeNotFixturePhrase() {
+        let generic = textResult(
+            frameId: 1,
+            score: 0.60,
+            preview: "Atlas-10 ships to customers on August 13, 2026."
+        )
+        let fixturePhrase = textResult(
+            frameId: 2,
+            score: 0.50,
+            preview: "Atlas-10 public launch is August 14, 2026."
+        )
+        let ranked = UnifiedRanking.intentAwareRerank(
+            results: [generic, fixturePhrase],
+            query: "When does Atlas-10 ship?",
+            maxWindow: 10
+        )
+        #expect(ranked.first?.frameId == 1)
+    }
+
+    private func textResult(frameId: UInt64, score: Float, preview: String) -> SearchResponse.Result {
+        SearchResponse.Result(
+            frameId: frameId,
+            score: score,
+            previewText: preview,
+            sources: [.text]
+        )
+    }
+
     private func noteResult(frameId: UInt64, createdAtMs: Int64) -> SearchResponse.Result {
         SearchResponse.Result(
             frameId: frameId,

@@ -5,8 +5,8 @@ package actor AgentBrokerService {
     typealias SessionState = VirtualSessionStore.SessionState
 
     let longTermMemory: MemoryOrchestrator
-    let longTermStoreURL: URL
-    let sessionRootURL: URL
+    package let longTermStoreURL: URL
+    package let sessionRootURL: URL
     let corpusStoreURL: URL
     let noEmbedder: Bool
     let requireVector: Bool
@@ -15,6 +15,9 @@ package actor AgentBrokerService {
     let enableAccessStatsScoring: Bool
     let scopeContext: MemoryScopeContext
     let promotionSettings: BrokerPromotionSettings
+    /// Loaded once at init (`WAX_WORKING_QUARANTINE_SECS` and friends) and used
+    /// by maintain, health, and session sweeps so the knobs actually apply.
+    let retentionSettings: MemoryRetentionSettings
     let embeddingRequest: EmbeddingOpenRequest
     let readiness: EmbeddingReadiness
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
@@ -27,6 +30,8 @@ package actor AgentBrokerService {
     private let rememberMutex = AsyncMutex()
     private var cachedSessionDisk: (atMs: Int64, stats: SessionDiskStats)?
     private static let sessionDiskCacheTTLMs: Int64 = 15_000
+    /// Test seam: awaited between a persisted-session harvest and its manifest write.
+    private var persistedHarvestHookForTesting: (@Sendable (UUID) async -> Void)?
     var activeSessions: [UUID: SessionState] {
         virtualSessions.live
     }
@@ -43,7 +48,8 @@ package actor AgentBrokerService {
         readiness: EmbeddingReadiness = .shared,
         factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
         orchestratorConfig: OrchestratorConfig? = nil,
-        automaticEmbeddingBackfill: Bool = true
+        automaticEmbeddingBackfill: Bool = true,
+        retentionSettings: MemoryRetentionSettings = .fromEnvironment()
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -54,6 +60,7 @@ package actor AgentBrokerService {
         self.enableAccessStatsScoring = enableAccessStatsScoring
         self.scopeContext = MemorySemantics.inferScopeContext()
         self.promotionSettings = BrokerPromotionSettings.fromEnvironment()
+        self.retentionSettings = retentionSettings
 
         try FileManager.default.createDirectory(
             at: longTermStoreURL.deletingLastPathComponent(),
@@ -153,10 +160,18 @@ package actor AgentBrokerService {
         }
         // An expired broker lease does not end the agent's session. Idle daemon
         // restarts must leave active manifests available for the next request to rebind.
-        _ = try? await memoryMaintain(
-            BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false),
-            endExpiredSessions: false
-        )
+        do {
+            _ = try await memoryMaintain(
+                BrokerCommand.MemoryMaintain(apply: true, forceReclaim: false),
+                endExpiredSessions: false
+            )
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "broker startup memory_maintain",
+                fallback: "broker started without startup maintenance"
+            )
+        }
     }
 
     package func close() async throws {
@@ -178,8 +193,9 @@ package actor AgentBrokerService {
             )
         } catch {
             let message = error.localizedDescription
+            let payload = (error as? BrokerValidationError)?.brokerPayload
             return await commandMutex.withLock {
-                AgentBrokerResponse.failure(id: request.id, message: message)
+                AgentBrokerResponse.failure(id: request.id, payload: payload, message: message)
             }
         }
 
@@ -220,6 +236,9 @@ package actor AgentBrokerService {
     /// New `BrokerCommand` cases must pick true (teardown) or false.
     package static func requiresRememberDrain(_ command: BrokerCommand) -> Bool {
         switch command {
+        // memory_maintain stays on commandMutex: its harvests can be slow, and
+        // remember must not queue behind them. It takes rememberMutex only for
+        // the liveness re-check + mark-ended step (see harvestPersistedSession).
         case .taskStateMigrate, .sessionEnd, .sessionClose:
             return true
         case .remember, .recall, .search, .memorySearch, .sessionStart, .sessionResume,
@@ -344,6 +363,12 @@ package actor AgentBrokerService {
                 payload: error.brokerPayload(),
                 message: error.localizedDescription
             )
+        } catch let error as BrokerValidationError {
+            return AgentBrokerResponse.failure(
+                id: request.id,
+                payload: error.brokerPayload,
+                message: error.localizedDescription
+            )
         } catch {
             return AgentBrokerResponse.failure(
                 id: request.id,
@@ -383,7 +408,7 @@ extension AgentBrokerService {
             destination: command.destination,
             activeSession: stampSessionID != nil,
             inferredScope: inferredScope,
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
         let memory = try await memory(for: sessionID)
@@ -394,7 +419,10 @@ extension AgentBrokerService {
         let before = await memory.runtimeStats()
         if !noEmbedder, before.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() {
             do {
-                try await Self.awaitRememberReady(memory: memory, timeout: .seconds(30))
+                try await Self.awaitRememberReady(
+                    memory: memory,
+                    timeout: .seconds(BrokerLimits.embedderReadyWaitSeconds)
+                )
             } catch {
                 throw BrokerValidationError.invalid(
                     "Remember failed: embedding provider not ready (\(error.localizedDescription))"
@@ -468,7 +496,7 @@ extension AgentBrokerService {
             content: content,
             metadata: metadata,
             frameId: rememberResult.frameId,
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
         let after = await memory.runtimeStats()
         return RememberAssembly.payload(
@@ -497,7 +525,7 @@ extension AgentBrokerService {
         metadata: [String: String],
         sessionID: UUID?
     ) async {
-        let nowMs = Self.nowMs()
+        let nowMs = BrokerClock.nowMs()
         guard RememberAssembly.isAutoSupersedeEligible(
             sessionID: sessionID,
             metadata: metadata,
@@ -506,9 +534,21 @@ extension AgentBrokerService {
             return
         }
 
+        let info = MemorySemantics.parse(metadata: metadata, nowMs: nowMs)
+        guard let project = info.project else { return }
         let documents: [MemoryOrchestrator.CorpusSourceDocument]
         do {
-            documents = try await memory.corpusSourceDocuments()
+            // Narrow on metadata before reading payloads: only same-type,
+            // same-project durable rows can ever be superseded.
+            documents = try await memory.corpusSourceDocuments(matchingMetadata: { candidate in
+                RememberAssembly.isSupersedeCandidate(
+                    metadata: candidate,
+                    supersededBy: nil,
+                    type: info.type,
+                    project: project,
+                    nowMs: nowMs
+                )
+            })
         } catch {
             WaxDiagnostics.logSwallowed(
                 error,
@@ -596,7 +636,7 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { Self.nowMs() }
+                nowMs: { BrokerClock.nowMs() }
             )
         )
 
@@ -639,7 +679,7 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { Self.nowMs() }
+                nowMs: { BrokerClock.nowMs() }
             )
         )
         if let sessionID = parsedFilters.sessionId {
@@ -685,7 +725,7 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { Self.nowMs() }
+                nowMs: { BrokerClock.nowMs() }
             )
         )
 
@@ -807,7 +847,7 @@ extension AgentBrokerService {
             semantics: writeSemantics,
             sessionID: nil,
             inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
         if let resolvedPromotionSessionID {
             normalizedMetadata[MemoryMetadataKeys.promotedFromSession] = resolvedPromotionSessionID.uuidString
@@ -852,7 +892,7 @@ extension AgentBrokerService {
                 destination: destination,
                 activeSession: false,
                 inferredScope: writeScope(for: resolvedPromotionSessionID, clientCWD: command.cwd),
-                nowMs: Self.nowMs()
+                nowMs: BrokerClock.nowMs()
             )
             try validateDurableWriteContent(content: content, metadata: normalizedMetadata)
             try await longTermMemory.remember(content, metadata: normalizedMetadata)
@@ -889,7 +929,8 @@ extension AgentBrokerService {
         let report = BrokerMemoryInsights.healthReport(
             documents: documents,
             accessStats: accessStats,
-            facts: facts
+            facts: facts,
+            settings: retentionSettings
         )
         let sessionDisk = currentSessionDiskStats()
         return .object([
@@ -928,7 +969,7 @@ extension AgentBrokerService {
             destination: command.destination,
             activeSession: command.sessionID != nil,
             inferredScope: writeScope(for: command.sessionID, clientCWD: command.cwd),
-            nowMs: Self.nowMs()
+            nowMs: BrokerClock.nowMs()
         )
         try validateDurableWriteContent(content: command.content, metadata: metadata)
 
@@ -1016,17 +1057,35 @@ extension AgentBrokerService {
     }
 
     private func currentSessionDiskStats() -> SessionDiskStats {
-        let nowMs = Self.nowMs()
+        let nowMs = BrokerClock.nowMs()
         if let cached = cachedSessionDisk, nowMs - cached.atMs < Self.sessionDiskCacheTTLMs {
             return cached.stats
         }
-        let stats = SessionReclaim.diskStats(
+        let manifests: [BrokerSessionManifest]
+        let listError: String?
+        do {
+            manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
+            listError = nil
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "stats session manifest listing",
+                fallback: "session counts reported as unavailable"
+            )
+            manifests = []
+            listError = error.localizedDescription
+        }
+        var stats = SessionReclaim.diskStats(
             rootURL: sessionRootURL,
-            manifests: (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? [],
+            manifests: manifests,
             liveIDs: Set(activeSessions.keys),
             nowMs: nowMs
         )
-        cachedSessionDisk = (nowMs, stats)
+        stats.listError = listError
+        // A failed listing is not cached: the next stats call retries.
+        if listError == nil {
+            cachedSessionDisk = (nowMs, stats)
+        }
         return stats
     }
 
@@ -1164,7 +1223,10 @@ extension AgentBrokerService {
         guard stats.vectorSearchEnabled, await memory.shouldDeferRememberUntilEmbedderReady() else {
             return
         }
-        try? await Self.awaitRememberReady(memory: memory, timeout: .seconds(30))
+        try? await Self.awaitRememberReady(
+            memory: memory,
+            timeout: .seconds(BrokerLimits.embedderReadyWaitSeconds)
+        )
     }
 
     /// Compact JSON warning when hybrid was requested but some or all stores used text.
@@ -1302,7 +1364,7 @@ extension AgentBrokerService {
         if activeSessions[sessionID] == nil {
             if let status = try virtualSessions.persistedStatus(for: sessionID) {
                 if status == .ended {
-                    let harvest = await harvestPersistedSession(sessionID: sessionID)
+                    let harvest = await harvestPersistedSession(sessionID: sessionID, rememberDrained: true)
                     let payload = sessionClosePayload(
                         sessionID: sessionID,
                         ended: true,
@@ -1359,7 +1421,8 @@ extension AgentBrokerService {
         _ = await maintainSessionStores(
             apply: true,
             forceReclaim: false,
-            endExpiredSessions: false
+            endExpiredSessions: false,
+            rememberDrained: true
         )
     }
 
@@ -1531,7 +1594,7 @@ extension AgentBrokerService {
         SessionBootstrap.Environment(
             sessions: virtualSessions,
             longTermMemory: longTermMemory,
-            nowMs: { Self.nowMs() },
+            nowMs: { BrokerClock.nowMs() },
             recall: { command in try await self.recall(command) },
             awaitQueryEmbedder: { sessionID in
                 if await self.longTermMemory.isQueryEmbedderReady() {
@@ -1600,6 +1663,7 @@ extension AgentBrokerService {
     private func makeHarvestCallback() -> @Sendable (VirtualSessionStore.SessionState) async -> SessionHarvest.Report {
         let longTerm = longTermMemory
         let settings = promotionSettings
+        let retention = retentionSettings
         let scope = scopeContext
         return { state in
             let events = (try? BrokerSessionPersistence.loadEvents(from: state.eventLogURL)) ?? []
@@ -1611,7 +1675,8 @@ extension AgentBrokerService {
                 events: events,
                 scope: scope,
                 settings: settings,
-                nowMs: AgentBrokerService.nowMs()
+                retention: retention,
+                nowMs: BrokerClock.nowMs()
             )
         }
     }
@@ -1635,7 +1700,9 @@ extension AgentBrokerService {
         )
     }
 
-    private func harvestPersistedSession(sessionID: UUID) async -> SessionHarvest.Report {
+    /// - Parameter rememberDrained: the caller already holds `rememberMutex`
+    ///   (session teardown under `.rememberDrain`); otherwise it is taken here.
+    private func harvestPersistedSession(sessionID: UUID, rememberDrained: Bool) async -> SessionHarvest.Report {
         guard let manifest = try? BrokerSessionPersistence.loadManifest(
             rootURL: sessionRootURL,
             sessionID: sessionID
@@ -1655,7 +1722,8 @@ extension AgentBrokerService {
                 let longTerm = longTermMemory
                 let scope = scopeContext
                 let settings = promotionSettings
-                let now = Self.nowMs()
+                let retention = retentionSettings
+                let now = BrokerClock.nowMs()
                 report = try await endedSessions.withMemory(at: storeURL) { memory in
                     await SessionHarvest.run(
                         sessionMemory: memory,
@@ -1665,6 +1733,7 @@ extension AgentBrokerService {
                         events: events,
                         scope: scope,
                         settings: settings,
+                        retention: retention,
                         nowMs: now
                     )
                 }
@@ -1685,17 +1754,40 @@ extension AgentBrokerService {
                 promotedCount: 0,
                 leftoverDocumentCount: 0,
                 leftoverLockedCount: 0,
-                reclaimAfterMs: Self.nowMs(),
+                reclaimAfterMs: BrokerClock.nowMs(),
                 error: nil,
                 alreadyHarvested: false
             )
         }
+        if let hook = persistedHarvestHookForTesting {
+            await hook(sessionID)
+        }
+        if rememberDrained {
+            persistHarvestUnlessRebound(sessionID: sessionID, report: report)
+        } else {
+            // Lock order commandMutex -> rememberMutex, the same as `.rememberDrain`.
+            await rememberMutex.withLock { [self] in
+                await persistHarvestUnlessRebound(sessionID: sessionID, report: report)
+            }
+        }
+        return report
+    }
+
+    /// Marks the harvested session `.ended` unless it is live again. A remember
+    /// (rememberMutex only) can rebind an expired-lease session while the harvest
+    /// awaits; that session is back in use, so its manifest is left alone and its
+    /// own end will harvest it. Run with rememberMutex held so no rebind is in flight.
+    private func persistHarvestUnlessRebound(sessionID: UUID, report: SessionHarvest.Report) {
+        guard activeSessions[sessionID] == nil else { return }
         _ = try? virtualSessions.persistHarvestToDisk(
             sessionID: sessionID,
             report: report,
             markEnded: true
         )
-        return report
+    }
+
+    package func setPersistedHarvestHookForTesting(_ hook: (@Sendable (UUID) async -> Void)?) {
+        persistedHarvestHookForTesting = hook
     }
 
     @discardableResult
@@ -1706,7 +1798,7 @@ extension AgentBrokerService {
         ) else {
             return false
         }
-        let now = Self.nowMs()
+        let now = BrokerClock.nowMs()
         guard SessionReclaim.isReclaimable(manifest: manifest, nowMs: now, force: force) else {
             return false
         }
@@ -1732,10 +1824,11 @@ extension AgentBrokerService {
     private func maintainSessionStores(
         apply: Bool,
         forceReclaim: Bool,
-        endExpiredSessions: Bool
+        endExpiredSessions: Bool,
+        rememberDrained: Bool
     ) async -> SessionStoreMaintainCounts {
-        let now = Self.nowMs()
-        let recentlyClosedMs = MemoryRetentionSettings.fromEnvironment().recentlyClosedMs
+        let now = BrokerClock.nowMs()
+        let recentlyClosedMs = retentionSettings.recentlyClosedMs
         let manifests = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
         let liveIDs = Set(activeSessions.keys)
         var zombiesToEnd = 0
@@ -1759,7 +1852,7 @@ extension AgentBrokerService {
             zombieIDs.insert(manifest.sessionID)
             harvests += 1
             if apply {
-                _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+                _ = await harvestPersistedSession(sessionID: manifest.sessionID, rememberDrained: rememberDrained)
             }
         }
 
@@ -1770,7 +1863,7 @@ extension AgentBrokerService {
                manifest.harvestedAtMs == nil || manifest.harvestError != nil {
                 harvests += 1
                 if apply {
-                    _ = await harvestPersistedSession(sessionID: manifest.sessionID)
+                    _ = await harvestPersistedSession(sessionID: manifest.sessionID, rememberDrained: rememberDrained)
                 }
             }
             let current = (try? BrokerSessionPersistence.loadManifest(
@@ -1798,11 +1891,13 @@ extension AgentBrokerService {
     ) async throws -> AgentBrokerValue {
         let apply = command.apply
         let force = command.forceReclaim
-        let now = Self.nowMs()
+        let now = BrokerClock.nowMs()
+        // memory_maintain holds commandMutex only (startup holds nothing).
         let sessionCounts = await maintainSessionStores(
             apply: apply,
             forceReclaim: force,
-            endExpiredSessions: endExpiredSessions
+            endExpiredSessions: endExpiredSessions,
+            rememberDrained: false
         )
         let zombiesToEnd = sessionCounts.zombiesToEnd
         let harvests = sessionCounts.harvests
@@ -1815,13 +1910,26 @@ extension AgentBrokerService {
             MemoryRetention.isQuarantineCandidate(
                 metadata: document.metadata,
                 stats: accessStats[document.frameId],
-                nowMs: now
+                nowMs: now,
+                settings: retentionSettings
             ) ? document.frameId : nil
         }
         quarantineSoftDeletes = quarantineIDs.count
         if apply {
-            for frameId in quarantineIDs {
-                try await longTermMemory.delete(frameId: frameId)
+            do {
+                try await longTermMemory.delete(frameIds: quarantineIDs)
+            } catch let partial as MemoryOrchestrator.PartialDeleteError {
+                // Flush the committed part; the error states how many were deleted.
+                do {
+                    try await longTermMemory.flush()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "maintain quarantine flush after partial delete",
+                        fallback: "report the partial delete; the WAL applies it on reopen"
+                    )
+                }
+                throw partial
             }
             if !quarantineIDs.isEmpty {
                 try await longTermMemory.flush()
@@ -1932,7 +2040,7 @@ extension AgentBrokerService {
                 await session.memory.recordAccess(frameId: hit.frameID)
             }
         }
-        let nowMs = Self.nowMs()
+        let nowMs = BrokerClock.nowMs()
         return .object([
             "query": .string(query),
             "token_budget": .from(tokenBudget),
@@ -2378,7 +2486,7 @@ extension AgentBrokerService {
             ]
         )
         try virtualSessions.updateLive(sessionID) { state in
-            let nowMs = Self.nowMs()
+            let nowMs = BrokerClock.nowMs()
             state.manifest.lastHandoffAtMs = nowMs
             state.manifest.latestHandoff = summary
             state.manifest.updatedAtMs = nowMs
@@ -2387,7 +2495,7 @@ extension AgentBrokerService {
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
         try virtualSessions.updateLive(sessionID) { state in
-            let nowMs = Self.nowMs()
+            let nowMs = BrokerClock.nowMs()
             state.manifest.lastCheckpointAtMs = nowMs
             state.manifest.lastCompactionAtMs = nowMs
             state.manifest.checkpointCount += 1
@@ -2427,7 +2535,7 @@ extension AgentBrokerService {
             canonicalFrameID: { frameID, memory in
                 await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
             },
-            nowMs: { Self.nowMs() }
+            nowMs: { BrokerClock.nowMs() }
         )
     }
 
@@ -2614,7 +2722,7 @@ extension AgentBrokerService {
     }
 
     func validateDurableWriteContent(content: String, metadata: [String: String]) throws {
-        let semantics = MemorySemantics.parse(metadata: metadata, nowMs: Self.nowMs())
+        let semantics = MemorySemantics.parse(metadata: metadata, nowMs: BrokerClock.nowMs())
         guard semantics.durability == .durable || semantics.durability == .locked else { return }
         if let detected = SecretHeuristics.detectSecretLikeContent(content, metadata: metadata) {
             throw BrokerValidationError.invalid("Refusing to store durable memory containing secret-like content (\(detected))")
@@ -2841,10 +2949,6 @@ extension AgentBrokerService {
 
     static func makeMemoryReference(_ horizon: MemoryHorizon, sessionID: UUID, frameID: UInt64) -> String {
         LayeredRecall.makeMemoryReference(horizon, sessionID: sessionID, frameID: frameID)
-    }
-
-    static func nowMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000)
     }
 
     static func stableHash(_ text: String) -> String {

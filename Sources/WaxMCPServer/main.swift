@@ -23,7 +23,7 @@ import WaxVectorSearchArctic
 #endif
 
 enum WaxMCPServerMetadata {
-    static let version = "0.1.50"
+    static let version = WaxReleaseInfo.version
 }
 
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
@@ -64,7 +64,7 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
     var httpMaxBodyBytes = 1_048_576
 
-    @Option(name: .customLong("http-auth-token"), help: "Bearer token required for non-loopback HTTP binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    @Option(name: .customLong("http-auth-token"), help: "Bearer token every HTTP request must send once set, loopback included; required for non-loopback binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
     var httpAuthToken: String?
 
     mutating func run() throws {
@@ -144,7 +144,6 @@ struct WaxMCPServerCommand: ParsableCommand {
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
-        // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
         let serverVersion = WaxMCPServerMetadata.version
         writeStderr("wax-mcp v\(serverVersion) starting")
         switch normalizedTransport {
@@ -237,8 +236,9 @@ struct WaxMCPServerCommand: ParsableCommand {
             configuration: .default
         )
         if let connectionKey {
+            let rootsGate = MCPRootsFetchGate()
             MCPRootsProviderRegistry.shared.remember(key: connectionKey) {
-                await MCPRootsFetcher.fetchRoots(server: server)
+                await MCPRootsFetcher.fetchRoots(server: server, gate: rootsGate)
             }
         }
         let context = connectionKey.flatMap {
@@ -325,14 +325,40 @@ private func resolveExecutableOnPath(named executable: String) -> URL? {
     return nil
 }
 
+/// First SIGINT/SIGTERM shuts down gracefully; any later one forces exit so
+/// a wedged teardown never needs SIGKILL.
+final class MCPShutdownSignalLatch: @unchecked Sendable {
+    enum Action: Equatable {
+        case graceful
+        case forceExit
+    }
+
+    private let lock = NSLock()
+    private var received = 0
+
+    func record() -> Action {
+        lock.lock()
+        defer { lock.unlock() }
+        received += 1
+        return received == 1 ? .graceful : .forceExit
+    }
+}
+
 private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
     var sources: [DispatchSourceSignal] = []
+    let latch = MCPShutdownSignalLatch()
     for sig in [SIGINT, SIGTERM] {
         signal(sig, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
         source.setEventHandler {
-            writeStderr("Received signal \(sig), shutting down gracefully…")
-            Task { await stop() }
+            switch latch.record() {
+            case .graceful:
+                writeStderr("Received signal \(sig), shutting down gracefully… (send again to force exit)")
+                Task { await stop() }
+            case .forceExit:
+                writeStderr("Received signal \(sig) again, forcing exit")
+                exitProcess(128 + sig)
+            }
         }
         source.resume()
         sources.append(source)

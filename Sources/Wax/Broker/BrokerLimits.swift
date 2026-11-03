@@ -24,4 +24,14 @@ package enum BrokerLimits {
     package static let maxSessionOpenHandoffContentTokens = 256
     package static let maxSessionOpenPendingTasks = 3
     package static let maxSessionOpenPendingTaskBytes = 256
+
+    /// Longest a broker request waits for a loading embedder before remember
+    /// fails or recall degrades to text.
+    package static let embedderReadyWaitSeconds: Double = 30
+    /// Headroom the client keeps past the broker's embedder wait so it does not
+    /// give up at the same instant the broker commits.
+    package static let clientResponseHeadroomSeconds: Double = 15
+    /// Default client response timeout; strictly greater than the broker-side wait.
+    package static let defaultClientResponseTimeoutSeconds =
+        embedderReadyWaitSeconds + clientResponseHeadroomSeconds
 }

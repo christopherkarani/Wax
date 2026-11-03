@@ -11,9 +11,11 @@ package struct SessionDiskStats: Sendable, Equatable {
     package var actualBytes: UInt64
     package var reclaimableBytes: UInt64
     package var reclaimableSessionIDs: [UUID]
+    /// Set when the manifest listing failed; counts above are then not real zeros.
+    package var listError: String? = nil
 
     package func asBrokerValue() -> AgentBrokerValue {
-        .object([
+        var object: [String: AgentBrokerValue] = [
             "root_path": .string(rootPath),
             "active": .from(active),
             "ended": .from(ended),
@@ -23,7 +25,11 @@ package struct SessionDiskStats: Sendable, Equatable {
             "apparent_bytes": .from(apparentBytes),
             "actual_bytes": .from(actualBytes),
             "reclaimable_bytes": .from(reclaimableBytes),
-        ])
+        ]
+        if let listError {
+            object["list_error"] = .string(listError)
+        }
+        return .object(object)
     }
 }
 

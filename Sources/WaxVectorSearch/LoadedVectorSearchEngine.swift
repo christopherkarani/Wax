@@ -102,8 +102,7 @@ package enum LoadedVectorSearchEngine: Sendable {
         let selectedKind = try resolveKind(
             encoding: encoding,
             projectedVectorCount: projectedCount,
-            preference: preference,
-            allowEmptySelection: false
+            preference: preference
         )
 
         switch selectedKind {
@@ -143,8 +142,7 @@ package enum LoadedVectorSearchEngine: Sendable {
         return try resolveKind(
             encoding: encoding,
             projectedVectorCount: projectedCount,
-            preference: preference,
-            allowEmptySelection: false
+            preference: preference
         )
     }
 
@@ -202,8 +200,7 @@ package enum LoadedVectorSearchEngine: Sendable {
     private static func resolveKind(
         encoding: VectorSerializer.VecEncoding?,
         projectedVectorCount: Int,
-        preference: VectorEnginePreference,
-        allowEmptySelection: Bool
+        preference: VectorEnginePreference
     ) throws -> Kind {
         switch preference {
         case .cpuOnly:
@@ -220,7 +217,7 @@ package enum LoadedVectorSearchEngine: Sendable {
         case .auto, .metalPreferred:
             #if canImport(Metal) && canImport(MetalANNS)
             if MetalANNSVectorEngine.isAvailable,
-               (allowEmptySelection || projectedVectorCount >= MetalANNSVectorEngine.autoThreshold) {
+               projectedVectorCount >= MetalANNSVectorEngine.autoThreshold {
                 return .metalANNS
             }
             #endif

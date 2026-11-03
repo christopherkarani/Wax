@@ -141,9 +141,13 @@ framework integration.
 them in this order:
 
 1. `$WAX_MCP_BIN` or `$WAX_CLI_BIN`
-2. Bundled `dist/darwin-arm64/` binaries
-3. Same-named binary on `PATH`
-4. `./.build/debug/<binary>` in the current working directory
+2. The installed runtime under `$WAX_MCP_INSTALL_ROOT` (default `~/.local/share/waxmcp`)
+3. Bundled `dist/darwin-arm64/` binaries
+4. Same-named binary on `PATH`
+
+The launcher never runs `./.build/debug/<binary>` from the current directory.
+To use a source build, run `waxmcp install --build` from the Wax checkout or
+point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 
 | Command | Purpose |
 |---|---|
@@ -167,9 +171,25 @@ them in this order:
 | Text-only mode | `--no-embedder` |
 | Binary override | `WAX_MCP_BIN` / `WAX_CLI_BIN` environment variables |
 | Endpoint override | `WAX_MCP_HTTP_PORT` / `WAX_MCP_HTTP_ENDPOINT` (used by `vector-health`) |
+| HTTP auth token | `--http-auth-token <token>` or `WAX_MCP_HTTP_AUTH_TOKEN`. Once set, every HTTP request must send `Authorization: Bearer <token>`, loopback included; required for non-loopback binds. `vector-health` and the Hermes plugin read `WAX_MCP_HTTP_AUTH_TOKEN` |
 
 Vector search needs both binaries built with embedder traits; the bundled npm
 artifacts already are. Without an embedder, search runs text-only.
+
+### Filesystem paths
+
+The MCP tools that touch the filesystem take absolute paths and refuse
+anything outside an allowed root (`path_not_allowed`):
+
+- `markdown_export` / `markdown_sync`: the store directory, the session root,
+  roots the host advertises over MCP `roots/list`, and, for stdio servers
+  only, the server's working directory (hosts launch stdio servers inside the
+  workspace they serve). A shared HTTP server never trusts its own working
+  directory.
+- `task_state_migrate`: a `.wax` file inside the store directory. An
+  existing file is only replaced when it is already a Wax store.
+
+Use `wax-cli` for exports to other locations.
 
 ### Prove HTTP and Hermes
 
@@ -223,7 +243,7 @@ version, and the CLI version together, then rebuilds the Darwin binaries:
 ```bash
 cd /path/to/Wax
 ./Resources/scripts/release-waxmcp.sh 0.1.33
-git add Resources/npm/waxmcp/package.json Sources/WaxMCPServer/main.swift Sources/WaxCLI/WaxCLICommand.swift Resources/npm/waxmcp/dist
+git add Resources/npm/waxmcp/package.json Sources/Wax/WaxReleaseInfo.swift Resources/npm/waxmcp/dist
 git commit -m "release: bump waxmcp version"
 ```
 
@@ -232,6 +252,6 @@ Pushing tag `waxmcp-v<version>` triggers the publish workflow
 Homebrew formula `sha256` from the GitHub tag archive and commits it back to
 `main`. Set repository secret `HOMEBREW_TAP_TOKEN` (PAT with `contents: write`
 on `christopherkarani/homebrew-wax`) to sync the external tap automatically.
-`package.json` and `Sources/WaxMCPServer/main.swift` must stay in lockstep; CI
+`package.json` and `Sources/Wax/WaxReleaseInfo.swift` must stay in lockstep; CI
 checks that before publishing. Dist artifacts carry `sha256` checksums,
 verified at pack time by `scripts/verify-dist.mjs`.

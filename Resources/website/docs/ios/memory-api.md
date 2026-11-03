@@ -143,6 +143,29 @@ func diagnosticsExample(memory: Memory) async throws {
 }
 ```
 
+### Context budget, time phrases, and delete
+
+```swift
+import Foundation
+import Wax
+
+func budgetAndDeleteExample(memory: Memory) async throws {
+    let frameID = try await memory.save("Draft agenda for the Lisbon offsite")
+
+    // A large topK needs a larger token budget to return every hit.
+    let wide = try await memory.search("offsite") { options in
+        options.topK = 20
+        options.maxContextTokens = 8_000
+        options.inferTimeRange = false // search all time even for "last week" queries
+    }
+    print("items:", wide.items.count, "inferred:", String(describing: wide.diagnostics?.inferredTimeRange))
+
+    try await memory.delete(frameID: frameID)
+}
+```
+
+`maxContextTokens` defaults to the store budget (1,500 tokens) and is clamped to `Memory.SearchOptions.maxContextTokensRange`. Past-looking phrases such as "last week" filter by save time unless `inferTimeRange` is `false`; future phrases such as "tomorrow" never filter.
+
 ## Lifecycle
 
 ```swift

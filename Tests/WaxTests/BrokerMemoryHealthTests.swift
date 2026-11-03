@@ -120,6 +120,35 @@ struct BrokerMemoryHealthTests {
         #expect(report.staleFrameIds.contains(41))
     }
 
+    @Test
+    func customWorkingQuarantineSettingChangesQuarantineCandidates() {
+        let oneDayOld = document(
+            frameId: 50,
+            text: "Working scratch from yesterday.",
+            type: .note,
+            durability: .working,
+            project: "wax-health",
+            createdAtMs: nowMs - dayMs
+        )
+        let defaults = BrokerMemoryInsights.healthReport(
+            documents: [oneDayOld],
+            accessStats: [:],
+            facts: nil,
+            nowMs: nowMs
+        )
+        #expect(defaults.quarantineCandidateIds.isEmpty)
+
+        let settings = MemoryRetentionSettings.fromEnvironment(["WAX_WORKING_QUARANTINE_SECS": "3600"])
+        let tightened = BrokerMemoryInsights.healthReport(
+            documents: [oneDayOld],
+            accessStats: [:],
+            facts: nil,
+            nowMs: nowMs,
+            settings: settings
+        )
+        #expect(tightened.quarantineCandidateIds == [50])
+    }
+
     private func document(
         frameId: UInt64,
         text: String,

@@ -15,6 +15,7 @@
  *   WAX_CLI_BIN            Path to the wax-cli binary
  *   WAX_MCP_HTTP_PORT      HTTP port assumed by vector-health (default 3000)
  *   WAX_MCP_HTTP_ENDPOINT  Full endpoint URL assumed by vector-health
+ *   WAX_MCP_HTTP_AUTH_TOKEN Bearer token vector-health sends, if the server has one
  */
 
 const { spawnSync, spawn } = require("node:child_process");
@@ -98,7 +99,9 @@ function findBinary(name) {
     candidates.push(bundled);
   }
   candidates.push(name);
-  candidates.push(path.join(process.cwd(), ".build", "debug", name));
+  // Never fall back to ./.build in the caller's working directory: running
+  // `npx waxmcp` inside an untrusted checkout must not execute its binaries.
+  // Source builds go through `waxmcp install --build` or WAX_MCP_BIN.
   return candidates;
 }
 
@@ -111,7 +114,6 @@ function firstInstallSource(name, builtFromSource) {
   if (process.env[envKey]) candidates.push(process.env[envKey]);
   const bundled = resolveBundledBinary(name);
   if (bundled) candidates.push(bundled);
-  candidates.push(path.join(process.cwd(), ".build", "debug", name));
   return candidates.find(candidate => path.isAbsolute(candidate) && isExecutable(candidate)) || null;
 }
 
@@ -725,7 +727,6 @@ function runBinary(name, args) {
       : "  1. $WAX_MCP_BIN (not set)",
     `  2. Bundled binary at dist/darwin-${os.arch()}/${name}`,
     `  3. '${name}' in PATH`,
-    `  4. ${path.join(process.cwd(), ".build", "debug", name)}`,
   ];
   console.error(`
 ERROR: No valid ${name} binary found.
@@ -735,7 +736,7 @@ ${checkedLocations.join("\n")}
 
 Fix options:
   Install:  npm install -g waxmcp
-  Build:    swift build --product ${name} --traits MCPServer
+  Build:    waxmcp install --build (from a Wax source checkout)
   Override: export WAX_MCP_BIN=/path/to/${name}
 `);
   process.exit(1);
@@ -801,6 +802,24 @@ if (forwardedArgs[0] === "vector-health") {
 
   console.log(`Checking vector search health at ${endpoint}...`);
 
+  // A server started with a token requires it on every request. Pass it as
+  // curl config on stdin so it never appears in the process list.
+  const authToken = (process.env.WAX_MCP_HTTP_AUTH_TOKEN || "").trim();
+  // A line break would end the config line and start another curl option;
+  // no valid header value contains one.
+  if (/[\r\n]/.test(authToken)) {
+    console.error("WAX_MCP_HTTP_AUTH_TOKEN must not contain line breaks.");
+    process.exit(1);
+  }
+  const authConfig = authToken
+    ? `header = "Authorization: Bearer ${authToken.replace(/[\\"]/g, "\\$&")}"\n`
+    : null;
+
+  function curl(args) {
+    if (!authConfig) return spawnSync("curl", args, { encoding: "utf-8" });
+    return spawnSync("curl", ["-K", "-", ...args], { encoding: "utf-8", input: authConfig });
+  }
+
   function post(payload, sessionId = null, includeHeaders = false) {
     const args = [
       "-sS", "--max-time", "5", "-X", "POST", endpoint,
@@ -810,14 +829,14 @@ if (forwardedArgs[0] === "vector-health") {
     if (sessionId) args.push("-H", `MCP-Session-Id: ${sessionId}`);
     if (includeHeaders) args.push("-D", "-");
     args.push("-d", JSON.stringify(payload));
-    return spawnSync("curl", args, { encoding: "utf-8" });
+    return curl(args);
   }
 
   function closeSession(sessionId) {
-    return spawnSync("curl", [
+    return curl([
       "-sS", "--max-time", "5", "-X", "DELETE", endpoint,
       "-H", `MCP-Session-Id: ${sessionId}`,
-    ], { encoding: "utf-8" });
+    ]);
   }
 
   const initialized = post({

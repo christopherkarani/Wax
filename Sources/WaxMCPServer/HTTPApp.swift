@@ -22,6 +22,12 @@ actor MCPHTTPApplication {
         var retryInterval: Int?
         var maxRequestBodyBytes: Int
         var authToken: String?
+        /// Live session cap. Creating a session beyond it evicts the least
+        /// recently used one, preferring sessions without an open SSE stream;
+        /// clients recover under their old id on next use.
+        var maxSessions: Int
+        /// Upper bound on how long shutdown waits for session teardown.
+        var shutdownDeadline: Duration
 
         init(
             host: String = "127.0.0.1",
@@ -31,7 +37,9 @@ actor MCPHTTPApplication {
             sessionCleanupInterval: Duration = .seconds(60),
             retryInterval: Int? = nil,
             maxRequestBodyBytes: Int = 1_048_576,
-            authToken: String? = nil
+            authToken: String? = nil,
+            maxSessions: Int = 256,
+            shutdownDeadline: Duration = .seconds(5)
         ) {
             self.host = host
             self.port = port
@@ -41,6 +49,8 @@ actor MCPHTTPApplication {
             self.retryInterval = retryInterval
             self.maxRequestBodyBytes = max(1, maxRequestBodyBytes)
             self.authToken = HTTPAuthPolicy.normalizedToken(authToken)
+            self.maxSessions = max(1, maxSessions)
+            self.shutdownDeadline = shutdownDeadline
         }
     }
 
@@ -57,6 +67,10 @@ actor MCPHTTPApplication {
     /// tool calls wait for one recreate instead of racing.
     private var sessionRecoveryTasks: [String: Task<Bool, Never>] = [:]
     private var cleanupTask: Task<Void, Never>?
+    /// Creations between `reserveSessionSlot()` and registration.
+    private var pendingSessionCreations = 0
+    /// Open SSE responses per session; capacity eviction prefers sessions with none.
+    private var openStreams: [String: Int] = [:]
 
     nonisolated let logger: Logger
     nonisolated let maxRequestBodyBytes: Int
@@ -151,6 +165,10 @@ actor MCPHTTPApplication {
         cleanupTask != nil
     }
 
+    func liveSessionIDs() -> Set<String> {
+        Set(sessions.keys)
+    }
+
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
         if !HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
            !HTTPAuthPolicy.isSafeLoopbackRequest(
@@ -162,7 +180,7 @@ actor MCPHTTPApplication {
                 .invalidRequest("Forbidden: non-local Host or Origin on loopback endpoint")
             )
         }
-        if HTTPAuthPolicy.requiresAuthentication(host: configuration.host),
+        if HTTPAuthPolicy.requiresBearerToken(host: configuration.host, configuredToken: configuration.authToken),
            !HTTPAuthPolicy.isAuthorized(
                requestToken: request.header("authorization"),
                configuredToken: configuration.authToken
@@ -183,6 +201,9 @@ actor MCPHTTPApplication {
             let response = await session.transport.handleRequest(request)
             if request.method.uppercased() == "DELETE", response.statusCode == 200 {
                 await closeSession(sessionID, reason: .httpDelete)
+            }
+            if request.method.uppercased() == "GET" {
+                return trackingOpenStream(response, sessionID: sessionID)
             }
             return response
         }
@@ -215,8 +236,105 @@ actor MCPHTTPApplication {
         func generateSessionID() -> String { sessionID }
     }
 
+    /// Client-chosen ids are kept in memory and echoed in headers and logs.
+    static let maxClientSessionIDBytes = 128
+
     private func isValidClientSessionID(_ sessionID: String) -> Bool {
-        !sessionID.isEmpty && sessionID.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
+        !sessionID.isEmpty
+            && sessionID.utf8.count <= Self.maxClientSessionIDBytes
+            && sessionID.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
+    }
+
+    /// Makes room for one session before it is allocated: evicts while live
+    /// plus in-flight creations would reach the cap. Pair with
+    /// `registerSession` on success or `releaseSessionSlot()` on failure.
+    private func reserveSessionSlot() {
+        evictToFit(reserved: pendingSessionCreations)
+        pendingSessionCreations += 1
+    }
+
+    private func releaseSessionSlot() {
+        pendingSessionCreations = max(0, pendingSessionCreations - 1)
+    }
+
+    /// Releases the reservation and inserts the session, evicting again so
+    /// the cap holds even when concurrent creators reserved before any
+    /// victim was left to evict.
+    private func registerSession(_ sessionID: String, _ context: SessionContext) {
+        releaseSessionSlot()
+        evictToFit(reserved: 0)
+        sessions[sessionID] = context
+    }
+
+    /// Evicts least recently used sessions, preferring ones without an open
+    /// SSE stream. Victims leave the table synchronously, so concurrent
+    /// creators never pick the same one, and their broker teardown runs
+    /// detached instead of on the creator's request.
+    private func evictToFit(reserved: Int) {
+        while sessions.count + reserved >= configuration.maxSessions,
+              let victim = evictionCandidate() {
+            logger.warning(
+                "HTTP session cap reached; evicting least recently used session",
+                metadata: ["sessionID": "\(victim)", "maxSessions": "\(configuration.maxSessions)"]
+            )
+            evictSession(victim)
+        }
+    }
+
+    private func evictionCandidate() -> String? {
+        let byLeastRecentUse: ((key: String, value: SessionContext), (key: String, value: SessionContext)) -> Bool = {
+            $0.value.lastAccessedAt < $1.value.lastAccessedAt
+        }
+        let idle = sessions.filter { (openStreams[$0.key] ?? 0) == 0 }
+        return (idle.min(by: byLeastRecentUse) ?? sessions.min(by: byLeastRecentUse))?.key
+    }
+
+    private func evictSession(_ sessionID: String) {
+        guard let session = sessions.removeValue(forKey: sessionID) else { return }
+        openStreams[sessionID] = nil
+        sessionRecoveryTasks[sessionID]?.cancel()
+        sessionRecoveryTasks[sessionID] = nil
+        MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
+        MCPRootsProviderRegistry.shared.remove(key: sessionID)
+        MCPStickyAttributionRegistry.shared.remove(for: sessionID)
+        let teardown = onTransportTeardown
+        let logger = logger
+        Task {
+            if let teardown {
+                _ = await teardown(sessionID, .capacityEviction)
+            }
+            await session.transport.disconnect()
+            logger.info(
+                "Closed HTTP session",
+                metadata: ["sessionID": "\(sessionID)", "reason": "\(MCPTeardownReason.capacityEviction.rawValue)"]
+            )
+        }
+    }
+
+    /// Counts a session's standalone GET stream as open until it ends or the
+    /// client stops reading it. POST responses are short-lived and not tracked.
+    private func trackingOpenStream(_ response: HTTPResponse, sessionID: String) -> HTTPResponse {
+        guard case .stream(let upstream, let headers) = response else { return response }
+        openStreams[sessionID, default: 0] += 1
+        let (stream, continuation) = AsyncThrowingStream<Data, Swift.Error>.makeStream()
+        let pump = Task {
+            do {
+                for try await chunk in upstream {
+                    continuation.yield(chunk)
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+            await self.streamClosed(sessionID: sessionID)
+        }
+        continuation.onTermination = { _ in pump.cancel() }
+        return .stream(stream, headers: headers)
+    }
+
+    private func streamClosed(sessionID: String) {
+        guard let open = openStreams[sessionID] else { return }
+        openStreams[sessionID] = open > 1 ? open - 1 : nil
     }
 
     private func resolveSessionID(preferred: String?) -> String {
@@ -238,16 +356,17 @@ actor MCPHTTPApplication {
             logger: logger
         )
 
+        reserveSessionSlot()
         do {
             rememberInitializeContext(sessionID: sessionID, request: request, isRecovery: false)
             let server = try await serverFactory(sessionID, transport)
             try await server.start(transport: transport)
-            sessions[sessionID] = SessionContext(
+            registerSession(sessionID, SessionContext(
                 server: server,
                 transport: transport,
                 createdAt: Date(),
                 lastAccessedAt: Date()
-            )
+            ))
 
             let response = await transport.handleRequest(request)
             if case .error = response {
@@ -255,6 +374,7 @@ actor MCPHTTPApplication {
             }
             return response
         } catch {
+            releaseSessionSlot()
             MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
             MCPRootsProviderRegistry.shared.remove(key: sessionID)
             MCPStickyAttributionRegistry.shared.remove(for: sessionID)
@@ -322,6 +442,11 @@ actor MCPHTTPApplication {
             logger: logger
         )
 
+        reserveSessionSlot()
+        var registered = false
+        defer {
+            if !registered { releaseSessionSlot() }
+        }
         do {
             rememberInitializeContext(sessionID: sessionID, request: nil, isRecovery: true)
             let server = try await serverFactory(sessionID, transport)
@@ -362,12 +487,13 @@ actor MCPHTTPApplication {
             )
             _ = await transport.handleRequest(initializedNotification)
 
-            sessions[sessionID] = SessionContext(
+            registerSession(sessionID, SessionContext(
                 server: server,
                 transport: transport,
                 createdAt: Date(),
                 lastAccessedAt: Date()
-            )
+            ))
+            registered = true
             logger.info(
                 "Recovered HTTP session after map miss",
                 metadata: ["sessionID": "\(sessionID)"]
@@ -461,19 +587,44 @@ actor MCPHTTPApplication {
         MCPHTTPConnectionContextRegistry.shared.remove(sessionID: sessionID)
         MCPRootsProviderRegistry.shared.remove(key: sessionID)
         MCPStickyAttributionRegistry.shared.remove(for: sessionID)
+        openStreams[sessionID] = nil
         guard let session = sessions.removeValue(forKey: sessionID) else { return }
         await session.transport.disconnect()
         logger.info("Closed HTTP session", metadata: ["sessionID": "\(sessionID)", "reason": "\(reason.rawValue)"])
     }
 
+    /// Closes every session concurrently and stops waiting at
+    /// `shutdownDeadline`, so one wedged teardown cannot hold shutdown.
     private func closeAllSessions() async {
         for task in sessionRecoveryTasks.values {
             task.cancel()
         }
         sessionRecoveryTasks.removeAll()
-        for sessionID in sessions.keys {
-            await closeSession(sessionID)
+        let sessionIDs = Array(sessions.keys)
+        guard !sessionIDs.isEmpty else { return }
+        let closers = sessionIDs.map { sessionID in
+            Task { await self.closeSession(sessionID, reason: .shutdown) }
         }
+        let allClosed = Task {
+            for closer in closers { await closer.value }
+        }
+        let finished = await Self.awaitWithDeadline(allClosed, deadline: configuration.shutdownDeadline)
+        if !finished {
+            logger.warning(
+                "HTTP shutdown deadline reached before every session closed",
+                metadata: ["deadline": "\(configuration.shutdownDeadline)", "sessions": "\(sessionIDs.count)"]
+            )
+        }
+    }
+
+    /// True when `task` finished before `deadline`. Does not wait for the
+    /// task past the deadline (a task group would).
+    static func awaitWithDeadline(_ task: Task<Void, Never>, deadline: Duration) async -> Bool {
+        let finished = Task { () -> Bool in
+            await task.value
+            return true
+        }
+        return await MCPDeadline.value(of: finished, within: deadline, orElse: false)
     }
 
     private func sessionCleanupLoop() async {
@@ -610,6 +761,14 @@ enum HTTPAuthPolicy {
         }
     }
 
+    /// A configured token is required on every bind, loopback included:
+    /// other local users and processes can reach a loopback port. Without
+    /// a token only loopback binds start (see `start()`), and they stay open
+    /// to local clients that pass the Host/Origin check.
+    static func requiresBearerToken(host: String, configuredToken: String?) -> Bool {
+        normalizedToken(configuredToken) != nil || requiresAuthentication(host: host)
+    }
+
     static func normalizedToken(_ token: String?) -> String? {
         guard let token else { return nil }
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -624,7 +783,21 @@ enum HTTPAuthPolicy {
         let trimmed = requestToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "Bearer "
         guard trimmed.hasPrefix(prefix) else { return false }
-        return String(trimmed.dropFirst(prefix.count)) == configuredToken
+        return constantTimeEquals(String(trimmed.dropFirst(prefix.count)), configuredToken)
+    }
+
+    /// Compares every byte of the longer input so timing does not reveal
+    /// the length of the matching prefix.
+    static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf8)
+        let right = Array(rhs.utf8)
+        var difference = UInt(left.count ^ right.count)
+        for index in 0..<max(left.count, right.count) {
+            let a = index < left.count ? left[index] : 0
+            let b = index < right.count ? right[index] : 0
+            difference |= UInt(a ^ b)
+        }
+        return difference == 0
     }
 
     static func isSafeLoopbackRequest(hostHeader: String?, originHeader: String?) -> Bool {

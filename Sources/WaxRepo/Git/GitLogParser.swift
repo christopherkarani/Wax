@@ -1,4 +1,5 @@
 import Foundation
+import Wax
 
 /// Parses `git log` output into `GitCommit` values using a line-by-line state machine.
 enum GitLogParser {
@@ -35,8 +36,13 @@ enum GitLogParser {
             args.append(contentsOf: ["-n", "\(maxCount)"])
         }
         if let since {
+            guard isCommitHash(since) else {
+                throw GitLogError.invalidRevision(since)
+            }
             args.append("\(since)..HEAD")
         }
+        // Everything before `--` is a revision; nothing after it is an option.
+        args.append("--")
 
         let output = try await runGit(args)
         return parseOutput(output)
@@ -44,11 +50,25 @@ enum GitLogParser {
 
     /// Returns the full diff for a single commit hash.
     static func showCommit(hash: String, repoPath: String) async throws -> String {
+        guard isCommitHash(hash) else {
+            throw GitLogError.invalidRevision(hash)
+        }
         let args = [
             "git", "-C", repoPath,
-            "show", "--stat", "--patch", hash,
+            "show", "--stat", "--patch", hash, "--",
         ]
         return try await runGit(args)
+    }
+
+    /// Full or abbreviated hex object name. Anything else (`--output=...`,
+    /// `HEAD~1`, ranges) is refused so a stored checkpoint cannot become a
+    /// git option.
+    static func isCommitHash(_ value: String) -> Bool {
+        (4...64).contains(value.utf8.count) && value.utf8.allSatisfy { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+                || (UInt8(ascii: "A")...UInt8(ascii: "F")).contains(byte)
+        }
     }
 
     // MARK: - Shell execution
@@ -63,9 +83,10 @@ enum GitLogParser {
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                 process.arguments = arguments
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
 
                 do {
                     try process.run()
@@ -74,19 +95,19 @@ enum GitLogParser {
                     return
                 }
 
-                // Read ALL stdout before waitUntilExit to avoid pipe buffer deadlock.
-                // macOS pipes have a 64 KB buffer; large git log output fills it and
-                // blocks the writing process if we wait for exit first.
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                // Drain stdout and stderr together before waitUntilExit: either
+                // pipe fills at ~64 KB and blocks git if left unread.
+                let captured = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe).wait()
                 process.waitUntilExit()
 
                 guard process.terminationStatus == 0 else {
-                    let message = String(data: data, encoding: .utf8) ?? "git exited with \(process.terminationStatus)"
+                    let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
+                    let message = stderr.isEmpty ? "git exited with \(process.terminationStatus)" : stderr
                     continuation.resume(throwing: GitLogError.gitFailed(message))
                     return
                 }
 
-                let output = String(data: data, encoding: .utf8) ?? ""
+                let output = String(data: captured.stdout, encoding: .utf8) ?? ""
                 continuation.resume(returning: output)
             }
         }
@@ -189,6 +210,18 @@ enum GitLogParser {
 }
 
 /// Errors from git log parsing.
-enum GitLogError: Error, Sendable {
+enum GitLogError: LocalizedError, CustomStringConvertible, Sendable {
     case gitFailed(String)
+    case invalidRevision(String)
+
+    var description: String { errorDescription ?? "git failed" }
+
+    var errorDescription: String? {
+        switch self {
+        case .gitFailed(let message):
+            return message
+        case .invalidRevision(let value):
+            return "Refusing non-hex git revision '\(value)'. Re-run with --full to rebuild the index checkpoint."
+        }
+    }
 }

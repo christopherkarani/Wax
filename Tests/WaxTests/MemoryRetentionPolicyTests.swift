@@ -126,12 +126,13 @@ func legacyAccessStatsJSONMapsAccessCountOntoEngagement() throws {
 func retentionSettingsReadEnvSeconds() {
     let settings = MemoryRetentionSettings.fromEnvironment([
         "WAX_SESSION_RECENTLY_CLOSED_SECS": "60",
-        "WAX_WORKING_QUARANTINE_SECS": "120",
+        // Above the 1h quarantine floor (see workingQuarantineBelowMinimumIsClampedToOneHour).
+        "WAX_WORKING_QUARANTINE_SECS": "7200",
         "WAX_KEEP_COLD_THRESHOLD": "0.4",
         "WAX_COLD_MIN_AGE_SECS": "30",
     ])
     #expect(settings.recentlyClosedMs == 60_000)
-    #expect(settings.workingQuarantineMs == 120_000)
+    #expect(settings.workingQuarantineMs == 7_200_000)
     #expect(settings.keepColdThreshold == 0.4)
     #expect(settings.coldMinAgeMs == 30_000)
 }

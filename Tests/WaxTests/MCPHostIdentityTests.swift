@@ -201,6 +201,26 @@ func initializeRootsParserCapturesEmbeddedRoots() {
 }
 
 @Test
+func stickyAttributionRegistryEvictsLeastRecentlyUsedPastCapacity() {
+    let registry = MCPStickyAttributionRegistry(capacity: 2)
+    let attribution = MCPProjectAttribution(project: "Wax", repo: "Wax", cwdPath: "/tmp/wax", source: .advertisedCWD)
+    registry.remember(transportKey: "a", attribution: attribution)
+    registry.remember(transportKey: "b", attribution: attribution)
+    // Reading "a" makes "b" the least recently used.
+    #expect(registry.current(for: "a") == attribution)
+    registry.remember(transportKey: "c", attribution: attribution)
+    #expect(registry.count == 2)
+    #expect(registry.current(for: "a") == attribution)
+    #expect(registry.current(for: "b") == nil)
+    #expect(registry.current(for: "c") == attribution)
+
+    for index in 0..<10 {
+        registry.remember(transportKey: "flood-\(index)", attribution: attribution)
+    }
+    #expect(registry.count == 2)
+}
+
+@Test
 func stickyAttributionPersistsLastResolvedPerTransportKey() {
     // Key-scoped cleanup only: a global reset would wipe the sticky
     // attribution of MCP tests running in parallel in this process.
