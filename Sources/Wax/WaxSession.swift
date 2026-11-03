@@ -84,6 +84,11 @@ package actor WaxSession {
             } else {
                 nil
             }
+            // Frames can be durable (WAL replay, or a store commit without a staged lex index)
+            // before the text index that covers them; index what a crash left behind.
+            if config.enableTextSearch, let resolvedTextEngine {
+                try await resolvedTextEngine.catchUpUnindexedFrames(await wax.frameMetasIncludingPending())
+            }
 
             let resolvedConcreteVectorEngine: ConcreteVectorEngine?
             let resolvedLastPendingEmbeddingSequence: UInt64?
