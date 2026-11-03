@@ -1,7 +1,6 @@
 #if MCPServer
 import Foundation
 import Wax
-import WaxCore
 
 enum MCPTeardownReason: String, Sendable, Equatable {
     case httpDelete
@@ -154,14 +153,11 @@ enum MCPTransportTeardown {
         timeoutSeconds: TimeInterval = defaultTimeoutSeconds
     ) -> @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse {
         { request in
-            // The probe is a blocking socket round trip; keep it off the cooperative pool.
-            guard let response = try await BlockingWork.run({
-                try AgentBrokerClient.probe(
-                    request: request,
-                    configuration: configuration,
-                    timeoutSeconds: timeoutSeconds
-                )
-            }) else {
+            guard let response = try await AgentBrokerClient.probeOffPool(
+                request: request,
+                configuration: configuration,
+                timeoutSeconds: timeoutSeconds
+            ) else {
                 throw MCPTeardownPerformError.brokerUnavailable
             }
             return response

@@ -90,6 +90,21 @@ package enum AgentBrokerClient {
         )
     }
 
+    /// ``probe(request:configuration:timeoutSeconds:)`` for async callers: the
+    /// round trip runs off the cooperative pool.
+    package static func probeOffPool(
+        request: AgentBrokerRequest,
+        configuration: AgentBrokerConfiguration,
+        timeoutSeconds: TimeInterval = 1.5
+    ) async throws -> AgentBrokerResponse? {
+        try await sendOffPool(
+            request,
+            socketPath: configuration.socketPath,
+            timeoutSeconds: timeoutSeconds,
+            treatTimeoutAsUnavailable: true
+        )
+    }
+
     package static func ping(configuration: AgentBrokerConfiguration) async throws -> AgentBrokerResponse {
         let _ = try await ensureAvailable(configuration: configuration)
         guard let response = try await sendOffPool(
@@ -485,7 +500,13 @@ package enum AgentBrokerClient {
         timeoutSeconds: Double? = nil,
         treatTimeoutAsUnavailable: Bool = false
     ) async throws -> AgentBrokerResponse? {
-        try await BlockingWork.run {
+        // No socket file means no broker, which `sendIfAvailable` reports
+        // without blocking. Skip the hop: on a busy pool, resuming after it
+        // can take seconds.
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return nil
+        }
+        return try await BlockingWork.run {
             try sendIfAvailable(
                 request,
                 socketPath: socketPath,

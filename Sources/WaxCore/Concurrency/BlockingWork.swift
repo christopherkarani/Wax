@@ -11,10 +11,13 @@ import Foundation
 /// The work runs to completion exactly as it would inline: cancelling the
 /// awaiting task does not interrupt it, so timeouts, output caps and
 /// kill-on-timeout behave as they did before.
+///
+/// The queue sets no QoS, so each work item keeps the QoS of the task that
+/// submits it. A demoted item waits behind the caller's peers for a core,
+/// which on a loaded host adds seconds to a call the caller is blocked on.
 package enum BlockingWork {
     private static let queue = DispatchQueue(
         label: "com.wax.blocking-work",
-        qos: .utility,
         attributes: .concurrent
     )
 
