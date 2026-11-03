@@ -100,9 +100,11 @@ final class WALCompactionBenchmarks: XCTestCase {
 
         // A run has only about a dozen auto-commit puts, so its auto-commit p95 is in effect its
         // slowest auto-commit, and one stalled fsync on a shared runner decides the comparison.
-        // Run both modes over several rounds, alternating which goes first so host-load drift
-        // hits both, and compare the median of the per-round percentiles: one stalled round can
-        // no longer fail the guardrail, but a slowdown in every proactive run still does.
+        // Host load also drifts between runs: the disabled p95 alone moves 27–54 ms from round
+        // to round. So each round runs both modes back to back (alternating which goes first),
+        // and the guardrails compare the median over rounds of the paired difference
+        // `enabled - disabled`: drift shared by a round cancels, up to two outlying rounds are
+        // outvoted, and a slowdown in every proactive run still shows in full.
         var disabledRuns: [WALCompactionWorkloadResult] = []
         var enabledRuns: [WALCompactionWorkloadResult] = []
         for round in 0..<Self.proactiveGuardrailRounds {
@@ -126,36 +128,35 @@ final class WALCompactionBenchmarks: XCTestCase {
         }
 
         let disabledPutP95 = Self.median(disabledRuns.map(\.putLatencyMs.p95Ms))
-        let enabledPutP95 = Self.median(enabledRuns.map(\.putLatencyMs.p95Ms))
         let disabledAutoCommitP95 = Self.median(disabledRuns.map(\.autoCommitPutLatencyMs.p95Ms))
-        let enabledAutoCommitP95 = Self.median(enabledRuns.map(\.autoCommitPutLatencyMs.p95Ms))
+        let putP95Increase = Self.medianPairedIncrease(disabledRuns, enabledRuns, \.putLatencyMs.p95Ms)
+        let autoCommitP95Increase = Self.medianPairedIncrease(
+            disabledRuns,
+            enabledRuns,
+            \.autoCommitPutLatencyMs.p95Ms
+        )
+        let putP95Budget = disabledPutP95 * 0.20 + 2.0
+        let autoCommitP95Budget = max(10.0, disabledAutoCommitP95 * 0.15)
         let roundAutoCommitP95s = zip(disabledRuns, enabledRuns).map { disabled, enabled in
             "\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs)/\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs)"
         }
 
         print(
-            "🧪 WAL proactive guardrail (median of \(Self.proactiveGuardrailRounds) rounds): "
-                + "disabled put p95=\(disabledPutP95.formatMs) "
-                + "enabled put p95=\(enabledPutP95.formatMs) "
-                + "disabled auto-commit put p95=\(disabledAutoCommitP95.formatMs) "
-                + "enabled auto-commit put p95=\(enabledAutoCommitP95.formatMs) "
+            "🧪 WAL proactive guardrail (\(Self.proactiveGuardrailRounds) paired rounds): "
+                + "put p95 increase=\(putP95Increase.formatMs) (budget \(putP95Budget.formatMs)) "
+                + "auto-commit put p95 increase=\(autoCommitP95Increase.formatMs) "
+                + "(budget \(autoCommitP95Budget.formatMs)) "
                 + "per-round auto-commit p95 disabled/enabled=\(roundAutoCommitP95s) "
                 + "disabled pending p95=\(disabledRuns.map(\.pressure.pendingBytesP95)) "
                 + "enabled pending p95=\(enabledRuns.map(\.pressure.pendingBytesP95))"
         )
 
         // Percentile guardrails: avoid large tail regressions while pressure improves.
-        XCTAssertLessThanOrEqual(
-            enabledPutP95,
-            disabledPutP95 * 1.20 + 2.0
-        )
+        XCTAssertLessThanOrEqual(putP95Increase, putP95Budget)
         // This workload has no explicit commit schedule, so commitLatencyMs only
         // measures the single final commit and is not a proactive-compaction metric.
         // Explicit commit latency is covered by testWALCompactionWorkloadMatrix().
-        XCTAssertLessThanOrEqual(
-            enabledAutoCommitP95,
-            disabledAutoCommitP95 * 1.15 + 10.0
-        )
+        XCTAssertLessThanOrEqual(autoCommitP95Increase, autoCommitP95Budget)
 
         // Pending bytes do not depend on timing, so every round must show the improvement.
         for (disabled, enabled) in zip(disabledRuns, enabledRuns) {
@@ -166,12 +167,25 @@ final class WALCompactionBenchmarks: XCTestCase {
         }
     }
 
-    /// Odd, so the median is one round's value.
-    private static let proactiveGuardrailRounds = 3
+    /// Odd, so the median is one round's value. Five, because a single round pair on a quiet
+    /// host can still differ by ~17 ms: with three rounds one stall plus one noisy pair would
+    /// outvote the median, while five tolerate two outlying rounds.
+    private static let proactiveGuardrailRounds = 5
 
     private static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted()
         return sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+    }
+
+    /// The median over rounds of `enabled - disabled` for one latency, pairing each round's runs.
+    private static func medianPairedIncrease(
+        _ disabledRuns: [WALCompactionWorkloadResult],
+        _ enabledRuns: [WALCompactionWorkloadResult],
+        _ latency: KeyPath<WALCompactionWorkloadResult, Double>
+    ) -> Double {
+        median(zip(disabledRuns, enabledRuns).map { disabled, enabled in
+            enabled[keyPath: latency] - disabled[keyPath: latency]
+        })
     }
 
     func testReplayStateSnapshotGuardrails() async throws {
