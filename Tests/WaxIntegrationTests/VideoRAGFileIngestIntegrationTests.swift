@@ -389,6 +389,62 @@ func videoRAGTranscriptFailureFallsBackToFrameOnlyIngest() async throws {
         #expect(!segments.isEmpty)
         let hasTranscriptText = segments.contains { !($0.transcriptSnippet ?? "").isEmpty }
         #expect(!hasTranscriptText)
+        #expect(ctx.diagnostics.transcriptUnavailableVideoCount == 1)
+    }
+}
+
+/// Simulates a provider whose own work is cancelled (e.g. a network call) and that reports
+/// it with its own error type instead of `CancellationError`.
+private struct CancellationObservingTranscriptProvider: VideoTranscriptProvider {
+    struct ProviderCancelled: Error {}
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+    let started: AsyncStream<Void>.Continuation
+
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        started.yield()
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        throw ProviderCancelled()
+    }
+}
+
+@Test
+func videoRAGTranscriptCancellationPropagatesInsteadOfFallingBack() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 60
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 1
+
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream()
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: TestVideoEmbedder(),
+            transcriptProvider: CancellationObservingTranscriptProvider(started: startedContinuation)
+        )
+
+        let videoID = VideoID(source: .file, id: "cancelled")
+        let ingest = Task {
+            try await rag.ingest(files: [VideoFile(id: videoID, url: mp4Url, captureDate: nil)])
+        }
+        var iterator = started.makeAsyncIterator()
+        _ = await iterator.next()
+        ingest.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await ingest.value
+        }
+        try await rag.flush()
     }
 }
 

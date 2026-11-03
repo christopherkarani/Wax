@@ -123,7 +123,7 @@ try await photos.delete(photoID: PhotoID(source: .file, id: "receipt-1"))
 try await photos.close()
 ```
 
-Video does not transcribe and does not store media bytes. The host supplies transcripts.
+Video does not transcribe and does not store media bytes. The host supplies transcripts. If a `VideoTranscriptProvider` throws (anything but cancellation), that video is still indexed from keyframes; `VideoRAGContext.Diagnostics.transcriptUnavailableVideoCount` counts such videos among the recalled items.
 
 ## Migration
 
