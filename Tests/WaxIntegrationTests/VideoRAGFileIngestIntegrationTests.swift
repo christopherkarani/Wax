@@ -80,10 +80,14 @@ func videoRAGTypesAndOrchestratorTakeVideoIDNotRawString() throws {
     #expect(types.contains("case assetIDs([VideoID])"))
     #expect(!types.contains("case assetIDs([String])"))
 
-    let orchestrator = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator+Ingest.swift"),
-        encoding: .utf8
-    )
+    let orchestratorDir = repoRoot.appendingPathComponent("Sources/Wax/VideoRAG")
+    let orchestratorFiles = try FileManager.default.contentsOfDirectory(atPath: orchestratorDir.path)
+        .filter { $0.hasPrefix("VideoRAGOrchestrator") && $0.hasSuffix(".swift") }
+        .sorted()
+    try #require(orchestratorFiles.contains("VideoRAGOrchestrator.swift"))
+    let orchestrator = try orchestratorFiles
+        .map { try String(contentsOf: orchestratorDir.appendingPathComponent($0), encoding: .utf8) }
+        .joined(separator: "\n")
     #expect(!orchestrator.contains("VideoID(source: .file, id: file.id)"))
 }
 
