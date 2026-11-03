@@ -413,6 +413,10 @@ func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Retrieval.swift"),
+        encoding: .utf8
+    )
+    let serviceSource = try String(
         contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
         encoding: .utf8
     )
@@ -425,7 +429,7 @@ func recallAndSearchDoNotRepeatEmbedderWaitInsideSerializedHandler() throws {
     #expect(!searchBody.contains("awaitQueryEmbedderIfNeeded(memory: longTermMemory)"))
     #expect(recallBody.contains("awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))"))
     #expect(searchBody.contains("awaitQueryEmbedderIfNeeded(memory: sessionMemory)"))
-    #expect(source.contains("case .embedderThenCommand:"))
+    #expect(serviceSource.contains("case .embedderThenCommand:"))
 }
 
 @Test
@@ -547,11 +551,11 @@ func prewarmEmbedderSourceBackfillsAfterSearchWhenEmbedderConfigured() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Retrieval.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "package func prewarmEmbedder() async {"))
-    let end = try #require(source[start.upperBound...].range(of: "func flush() async throws"))
+    let end = try #require(source[start.upperBound...].range(of: "func awaitQueryEmbedderIfNeeded(memory: MemoryOrchestrator)"))
     let body = source[start.lowerBound..<end.lowerBound]
     #expect(body.contains("guard !noEmbedder"))
     #expect(body.contains("backfillUnembedded()"))
