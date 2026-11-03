@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 
 @Test func waxCLIExposesBrokerParityCommands() throws {
     let source = try WaxCLISource.load("WaxCLICommand.swift")
@@ -50,7 +51,7 @@ import Testing
     #expect(source.contains("EmbedBackfillCommand.self"))
 }
 
-@Test func waxCLIParitySessionLifecycleUsesPersistentBroker() throws {
+@Test func waxCLIParitySessionLifecycleUsesPersistentBroker() async throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("wax-cli-parity-\(UUID().uuidString)")
@@ -67,21 +68,21 @@ import Testing
         "WAX_LOCK_TIMEOUT_SECS": "10",
     ]
 
-    let start = try WaxCLIProcess.run(
+    let start = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
         environment: brokerEnv
     )
     #expect(start.status == 0, "session-start failed: \(start.stderr)")
 
-    let append = try WaxCLIProcess.run(
+    let append = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["memory-append"] + baseArgs + ["--arg", "session_id=\(sessionID)", "session lifecycle smoke"],
         environment: brokerEnv
     )
     #expect(append.status == 0, "memory-append failed: \(append.stderr)")
 
-    let search = try WaxCLIProcess.run(
+    let search = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["memory-search"] + baseArgs + ["--arg", "session_id=\(sessionID)", "smoke"],
         environment: brokerEnv
@@ -89,7 +90,7 @@ import Testing
     #expect(search.status == 0, "memory-search failed: \(search.stderr)")
     #expect(search.stdout.contains("session lifecycle"))
 
-    let end = try WaxCLIProcess.run(
+    let end = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["session-end"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
         environment: brokerEnv
@@ -97,9 +98,9 @@ import Testing
     #expect(end.status == 0, "session-end failed: \(end.stderr)")
 }
 
-@Test func waxCLIParityCommandsRejectDirectStore() throws {
+@Test func waxCLIParityCommandsRejectDirectStore() async throws {
     let executable = try WaxCLIProcess.builtProductURL()
-    let output = try WaxCLIProcess.run(
+    let output = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["memory-health", "--direct-store"]
     )
@@ -145,11 +146,29 @@ private enum WaxCLIProcess {
         throw WaxCLITestError("Build wax-cli before running this test")
     }
 
+    /// Waits for the child on a GCD thread, so a slow wax-cli run never holds a
+    /// cooperative thread that the rest of the parallel test run needs.
     static func run(
         executableURL: URL,
         arguments: [String],
         environment: [String: String] = [:],
         timeout: TimeInterval = 15
+    ) async throws -> Output {
+        try await BlockingWork.run {
+            try runBlocking(
+                executableURL: executableURL,
+                arguments: arguments,
+                environment: environment,
+                timeout: timeout
+            )
+        }
+    }
+
+    private static func runBlocking(
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String],
+        timeout: TimeInterval
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL

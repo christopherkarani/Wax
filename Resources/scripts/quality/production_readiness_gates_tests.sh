@@ -70,6 +70,18 @@ assert_accepts_summary \
   "swift-testing-only-filter" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 28 tests passed after 9.859 seconds.'
 
+assert_accepts_summary \
+  "swift-testing-only-filter-with-suite-count" \
+  $'Test Suite \'Selected tests\' passed at 2026-11-03 11:33:22.900.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 9 tests in 1 suite passed after 108.290 seconds.'
+
+assert_accepts_summary \
+  "swift-testing-only-filter-single-test" \
+  $'Test Suite \'Selected tests\' passed at 2026-11-03 11:33:22.900.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 1 test in 0 suites passed after 0.005 seconds.'
+
+assert_rejects_summary \
+  "swift-testing-zero-tests-with-suite-count" \
+  $'Test Suite \'Selected tests\' passed at 2026-11-03 11:33:22.900.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 0 tests in 0 suites passed after 0.007 seconds.'
+
 assert_rejects_summary \
   "swift-testing-zero-tests-passed" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 0 tests passed after 0.007 seconds.'
@@ -261,7 +273,7 @@ if ! grep -F 'swift test --parallel --traits MCPServer --filter WaxCLIMemoryTest
   echo "FAIL: MCPServer gate must run WaxCLIMemoryTests doctor smokes under --traits MCPServer" >&2
   exit 1
 fi
-if ! grep -E 'Test run with \[1-9\]\[0-9\]\* tests passed' "$SCRIPT" >/dev/null; then
+if ! grep -F 'Test run with [1-9][0-9]* tests? (in [0-9]+ suites? )?passed' "$SCRIPT" >/dev/null; then
   echo "FAIL: pass-rate helper must require a positive Swift Testing test count" >&2
   exit 1
 fi

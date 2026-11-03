@@ -289,8 +289,8 @@ func corruptedTocVersionFailsFastWithExplicitInvalidTocError() async throws {
 
 @Test
 func migrationFixturesNMinus1AndNMinus2Load() async throws {
-    let fixtureNMinus1 = try copyMigrationFixture(named: "migration-n-1")
-    let fixtureNMinus2 = try copyMigrationFixture(named: "migration-n-2")
+    let fixtureNMinus1 = try await copyMigrationFixture(named: "migration-n-1")
+    let fixtureNMinus2 = try await copyMigrationFixture(named: "migration-n-2")
     defer {
         try? FileManager.default.removeItem(at: fixtureNMinus1)
         try? FileManager.default.removeItem(at: fixtureNMinus2)
@@ -315,7 +315,12 @@ func migrationFixturesNMinus1AndNMinus2Load() async throws {
     }
 }
 
-private func copyMigrationFixture(named name: String) throws -> URL {
+/// Expands the fixture with gzip on a GCD thread, off the cooperative pool.
+private func copyMigrationFixture(named name: String) async throws -> URL {
+    try await BlockingWork.run { try copyMigrationFixtureBlocking(named: name) }
+}
+
+private func copyMigrationFixtureBlocking(named name: String) throws -> URL {
     guard let bundled = Bundle.module.url(forResource: "\(name).wax", withExtension: "gz") else {
         throw WaxError.io("missing migration fixture \(name).wax.gz")
     }

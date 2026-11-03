@@ -13,22 +13,22 @@ import Testing
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoSearchQueryRunsOneShotAndExits() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
-    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-search")
-    try WaxRepoFixture.addCommit(
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-search")
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "README.md",
         contents: "needle search fixture\n",
         message: "Add needle fixture"
     )
 
-    let index = try WaxRepoProcess.run(
+    let index = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only"],
         timeout: 15
     )
     #expect(index.status == 0, "index failed: \(index.stderr)")
 
-    let search = try WaxRepoProcess.run(
+    let search = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["search", "needle", "--repo-path", repo.path, "--text-only", "--top-k", "3"],
         timeout: 5
@@ -41,22 +41,22 @@ func waxRepoSearchQueryRunsOneShotAndExits() async throws {
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoSearchUsesStoredMetadataWhenPreviewOmitsHeader() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
-    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-metadata")
-    try WaxRepoFixture.addCommit(
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-metadata")
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "feature.txt",
         contents: "alpha beta gamma metadata-needle\n",
         message: "Preserve metadata subject"
     )
 
-    let index = try WaxRepoProcess.run(
+    let index = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only"],
         timeout: 15
     )
     #expect(index.status == 0, "index failed: \(index.stderr)")
 
-    let search = try WaxRepoProcess.run(
+    let search = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["search", "metadata-needle", "--repo-path", repo.path, "--text-only", "--top-k", "3"],
         timeout: 5

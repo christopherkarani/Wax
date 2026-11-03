@@ -153,7 +153,7 @@ func httpDeleteInvokesTeardownWithoutChangingStatus() async throws {
     #expect(reasons.snapshot() == [.httpDelete])
 }
 
-@Test
+@Test(.timeLimit(.minutes(2)))
 func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-teardown-probe-\(UUID().uuidString)", isDirectory: true)
@@ -180,10 +180,14 @@ func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
         embedderTuning: .fromEnvironment()
     )
 
+    // A dead socket must fail at once, not wait out the probe budget. The
+    // budget is large so that a regression waiting on it misses the bound
+    // below by a wide margin, however slow the host is.
+    let probeBudgetSeconds: TimeInterval = 60
     let started = Date()
     let perform = MCPTransportTeardown.boundedPerform(
         configuration: configuration,
-        timeoutSeconds: 0.5
+        timeoutSeconds: probeBudgetSeconds
     )
     do {
         _ = try await perform(
@@ -196,11 +200,9 @@ func boundedPerformNeverStartsABrokerAndFailsFast() async throws {
     } catch {
         #expect(error is MCPTeardownPerformError)
     }
-    // Hang backstop, not a lock timeout: perform is budgeted at 0.5s. 5s is
-    // well clear of that under `swift test --parallel` (the old 2s bound
-    // flaked) and still well below the 10s default broker start, so a
-    // regression that starts or waits for a broker still fails.
-    #expect(Date().timeIntervalSince(started) < 5)
+    // No broker was launched (the canary never ran) and the call did not
+    // wait out its budget.
+    #expect(Date().timeIntervalSince(started) < probeBudgetSeconds / 2)
     #expect(!FileManager.default.fileExists(atPath: startedFlag.path))
     #expect(!FileManager.default.fileExists(atPath: configuration.socketPath))
 }
