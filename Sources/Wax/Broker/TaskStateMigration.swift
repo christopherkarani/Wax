@@ -784,6 +784,7 @@ private extension AgentBrokerService {
         config.enableStructuredMemory = true
         config.enableAccessStatsScoring = false
         config.liveSetRewriteSchedule = .disabled
+        config.automaticallyReembedSupersededVectors = false
         return config
     }
 

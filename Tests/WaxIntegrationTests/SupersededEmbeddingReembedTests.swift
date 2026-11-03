@@ -381,3 +381,44 @@ private enum Fixture {
         #expect(try await Fixture.boundModel(at: url) == "MiniLMAll")
     }
 }
+
+@Test func briefEndedSessionOpenOnStaleStoreStartsNoReembed() async throws {
+    try await TempFiles.withTempFile { url in
+        try await Fixture.writeLegacyStore(at: url)
+        let embedder = Fixture.current()
+        let store = DiskEndedSessionStore(
+            sessionRootURL: url.deletingLastPathComponent(),
+            noEmbedder: false,
+            enableAccessStatsScoring: false,
+            readiness: EmbeddingReadiness(),
+            factoryOverride: { embedder }
+        )
+
+        let stillStale = try await store.withMemory(at: url) { memory in
+            _ = try await memory.searchExecution(query: "apple", mode: .hybrid(), topK: 3)
+            try await Task.sleep(for: .milliseconds(200))
+            return await memory.runtimeStats().vectorsNeedReembed
+        }
+
+        #expect(stillStale)
+        #expect(try await Fixture.boundModel(at: url) == "MiniLMAll")
+        #expect(try await Fixture.activeProgressMarkers(at: url) == 0)
+    }
+}
+
+@Test func briefCorpusOpenOnStaleStoreStartsNoReembed() async throws {
+    try await TempFiles.withTempFile { url in
+        try await Fixture.writeLegacyStore(at: url)
+        let config = BrokerCorpusStoreBuilder.memoryConfig(structuredMemoryEnabled: false)
+        #expect(!config.automaticallyReembedSupersededVectors)
+
+        let memory = try await MemoryOrchestrator(at: url, config: config, embedder: Fixture.current())
+        _ = try await memory.searchExecution(query: "apple", mode: .hybrid(), topK: 3)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await memory.runtimeStats().vectorsNeedReembed)
+        try await memory.close()
+
+        #expect(try await Fixture.boundModel(at: url) == "MiniLMAll")
+        #expect(try await Fixture.activeProgressMarkers(at: url) == 0)
+    }
+}

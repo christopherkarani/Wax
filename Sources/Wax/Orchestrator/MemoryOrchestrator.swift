@@ -1630,7 +1630,7 @@ package actor MemoryOrchestrator {
                 )
             )
             if let previousMarkerFrameId {
-                try await wax.supersede(supersededId: previousMarkerFrameId, supersedingId: markerFrameId)
+                try await wax.delete(frameId: previousMarkerFrameId)
             }
             try await flushAllowingConcurrentEmbeddingWrites()
             return markerFrameId
