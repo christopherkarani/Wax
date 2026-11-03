@@ -99,7 +99,9 @@ struct VectorLaneDiagnosticsTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
+    // Generous for the same reason as the broker cancellation test: the gate's
+    // CLI suites can hold every cooperative thread for about 90s.
+    @Test(.timeLimit(.minutes(10)), arguments: [true, false])
     func distinguishesVectorTimeoutFromSuccessfulEmptyLane(hang: Bool) async throws {
         try await TempFiles.withTempFile { url in
             let wax = try await Wax.create(at: url)
