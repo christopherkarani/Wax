@@ -32,6 +32,12 @@ struct DaemonCommand: AsyncParsableCommand {
     var idleTimeoutSeconds = 300.0
 
     func runAsync() async throws {
+        // Before the store opens: SIGTERM's default action would kill the
+        // broker mid-write, which is what the client's SIGTERM grace exists to avoid.
+        let shutdown = DaemonShutdown()
+        let signalSources = installShutdownSignalHandlers(shutdown)
+        defer { signalSources.forEach { $0.cancel() } }
+
         let service = try await AgentBrokerService(
             storePath: store.storePath,
             sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(
@@ -59,13 +65,15 @@ struct DaemonCommand: AsyncParsableCommand {
                 try await runSocketServer(
                     service: service,
                     at: socketPath,
-                    idleTimeoutSeconds: idleTimeoutSeconds
+                    idleTimeoutSeconds: idleTimeoutSeconds,
+                    shutdown: shutdown
                 )
             } else {
                 try await runLoop(
                     service: service,
                     input: FileHandle.standardInput,
-                    output: FileHandle.standardOutput
+                    output: FileHandle.standardOutput,
+                    shutdown: shutdown
                 )
             }
             try await service.close()
@@ -89,15 +97,26 @@ private extension DaemonCommand {
     var socketClientReadTimeoutMS: Int32 { 1_000 }
     var maxSocketRequestBytes: Int { 1_048_576 }
     var socketInflightDrainSeconds: TimeInterval { AgentBrokerClient.responseTimeoutSeconds }
+    /// How often the accept and stdin loops check for a shutdown request.
+    var shutdownPollSliceMS: Int32 { 200 }
 
     func runLoop(
         service: AgentBrokerService,
         input: FileHandle,
-        output: FileHandle
+        output: FileHandle,
+        shutdown: DaemonShutdown
     ) async throws {
         var buffered = Data()
+        let daemon = self
+        let inputDescriptor = input.fileDescriptor
         while true {
-            let chunk = try input.read(upToCount: 4096) ?? Data()
+            // Waiting on stdin blocks for as long as the client is quiet, so it
+            // must not hold a cooperative thread. Nil means shutdown was requested.
+            guard let chunk = try await BlockingWork.run({
+                try daemon.readStdioChunk(fd: inputDescriptor, shutdown: shutdown)
+            }) else {
+                return
+            }
             if chunk.isEmpty {
                 if !buffered.isEmpty {
                     do {
@@ -130,10 +149,34 @@ private extension DaemonCommand {
         }
     }
 
+    /// Reads the next chunk of stdin, polling in slices so a shutdown request is
+    /// seen. Returns empty data at EOF and nil once shutdown is requested. Blocks
+    /// its thread, so callers run it off the pool.
+    func readStdioChunk(fd: Int32, shutdown: DaemonShutdown) throws -> Data? {
+        while !shutdown.isRequested {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
+            if pollResult == 0 { continue }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker stdin poll failed: \(String(cString: strerror(errno)))")
+            }
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = read(fd, &chunk, chunk.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker stdin read failed: \(String(cString: strerror(errno)))")
+            }
+            return Data(chunk.prefix(count))
+        }
+        return nil
+    }
+
     func runSocketServer(
         service: AgentBrokerService,
         at rawSocketPath: String,
-        idleTimeoutSeconds: Double
+        idleTimeoutSeconds: Double,
+        shutdown: DaemonShutdown
     ) async throws {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
@@ -198,7 +241,8 @@ private extension DaemonCommand {
                     listener: listener,
                     service: service,
                     inflight: inflight,
-                    idleTimeoutSeconds: idleTimeoutSeconds
+                    idleTimeoutSeconds: idleTimeoutSeconds,
+                    shutdown: shutdown
                 )
             }
         } catch {
@@ -211,19 +255,19 @@ private extension DaemonCommand {
         }
     }
 
-    /// Accepts clients until a client requests shutdown or the broker is idle for
-    /// `idleTimeoutSeconds`. Blocks its thread, so callers run it off the pool.
+    /// Accepts clients until a client or a signal requests shutdown, or the broker
+    /// is idle for `idleTimeoutSeconds`. Blocks its thread, so callers run it off the pool.
     func acceptClients(
         listener: Int32,
         service: AgentBrokerService,
         inflight: SocketInflight,
-        idleTimeoutSeconds: Double
+        idleTimeoutSeconds: Double,
+        shutdown: DaemonShutdown
     ) throws {
-        let pollSliceMS: Int32 = 200
         var lastActivity = Date()
-        while !inflight.shouldStop {
+        while !inflight.shouldStop, !shutdown.isRequested {
             var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, pollSliceMS)
+            let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
             if pollResult == 0 {
                 if idleTimeoutSeconds > 0,
                    Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
@@ -320,12 +364,12 @@ private extension DaemonCommand {
             let response = AgentBrokerResponse.failure(
                 message: "Invalid request: \(error.localizedDescription)"
             )
-            try writeJSONLine(response, to: output)
+            try await writeJSONLineOffPool(response, to: output)
             return
         }
 
         let response = await service.handle(request)
-        try writeJSONLine(response, to: output)
+        try await writeJSONLineOffPool(response, to: output)
         if response.shouldExit {
             throw ExitRequested()
         }
@@ -385,6 +429,12 @@ private extension DaemonCommand {
         }
     }
 
+    /// A write blocks while the reader is slow, so it must not hold a cooperative thread.
+    func writeJSONLineOffPool(_ response: AgentBrokerResponse, to output: FileHandle) async throws {
+        let daemon = self
+        try await BlockingWork.run { try daemon.writeJSONLine(response, to: output) }
+    }
+
     func writeJSONLine(_ response: AgentBrokerResponse, to output: FileHandle) throws {
         let data = try JSONEncoder().encode(response)
         output.write(data)
@@ -393,6 +443,44 @@ private extension DaemonCommand {
 }
 
 private struct ExitRequested: Error {}
+
+/// Set by SIGTERM or SIGINT. The accept and stdin loops stop taking work once it
+/// is set; the daemon then drains in-flight requests, closes the store and exits 0.
+private final class DaemonShutdown: @unchecked Sendable {
+    private let lock = NSLock()
+    private var signalsReceived = 0
+
+    /// Records a signal. Returns true for the first one.
+    func recordSignal() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        signalsReceived += 1
+        return signalsReceived == 1
+    }
+
+    var isRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return signalsReceived > 0
+    }
+}
+
+/// The first SIGTERM or SIGINT shuts the daemon down gracefully; a second one
+/// exits at once, so a wedged shutdown never needs SIGKILL. Dispatch sources run
+/// the handler on a queue, not in async-signal context.
+private func installShutdownSignalHandlers(_ shutdown: DaemonShutdown) -> [DispatchSourceSignal] {
+    [SIGTERM, SIGINT].map { signalNumber in
+        signal(signalNumber, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
+        source.setEventHandler {
+            if !shutdown.recordSignal() {
+                exit(128 + signalNumber)
+            }
+        }
+        source.resume()
+        return source
+    }
+}
 private struct BrokerStoreBusyDuringShutdown: Error {}
 
 private final class SocketInflight: @unchecked Sendable {
