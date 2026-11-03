@@ -7,96 +7,6 @@ import WaxCore
 /// `@unchecked Sendable` plus `NSLock` because async open hops off the owning
 /// `AgentBrokerService` actor. Every `live` read/write goes through the lock.
 package final class VirtualSessionStore: @unchecked Sendable {
-    package struct SessionState: Sendable {
-        package let id: UUID
-        package var manifest: BrokerSessionManifest
-        package let manifestURL: URL
-        package let eventLogURL: URL
-        package let storeURL: URL
-        package let memory: MemoryOrchestrator
-    }
-
-    package enum LifecycleResult: Sendable {
-        case started(SessionState)
-        case resumed(SessionState, recoveredLease: Bool)
-
-        package var state: SessionState {
-            switch self {
-            case .started(let state), .resumed(let state, _):
-                return state
-            }
-        }
-
-        package var resumed: Bool {
-            switch self {
-            case .started:
-                return false
-            case .resumed:
-                return true
-            }
-        }
-
-        package var recoveredLease: Bool {
-            switch self {
-            case .started:
-                return false
-            case .resumed(_, let recoveredLease):
-                return recoveredLease
-            }
-        }
-    }
-
-    package enum EndResult: Sendable {
-        case idle
-        case ended(sessionID: UUID, remainingActive: Int, harvest: SessionHarvest.Report)
-
-        package var sessionID: UUID? {
-            switch self {
-            case .idle:
-                return nil
-            case .ended(let sessionID, _, _):
-                return sessionID
-            }
-        }
-
-        package var ended: Bool {
-            switch self {
-            case .idle:
-                return false
-            case .ended:
-                return true
-            }
-        }
-
-        package var remainingActive: Bool {
-            activeCount > 0
-        }
-
-        package var activeCount: Int {
-            switch self {
-            case .idle:
-                return 0
-            case .ended(_, let remainingActive, _):
-                return remainingActive
-            }
-        }
-
-        package var harvest: SessionHarvest.Report {
-            switch self {
-            case .idle:
-                return .skipped
-            case .ended(_, _, let harvest):
-                return harvest
-            }
-        }
-    }
-
-    package enum Lookup: Sendable {
-        /// No virtual session. Caller uses long-term Memory.
-        case none
-        case live(MemoryOrchestrator)
-    }
-
     private enum EndTarget {
         case idle
         case session(id: UUID, state: SessionState)
@@ -114,7 +24,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
     package let sessionRootURL: URL
     package let brokerInstanceID: String
     private let leaseSeconds: Int
-    private let nowMs: @Sendable () -> Int64
+    let nowMs: @Sendable () -> Int64
     private let waxOptions: WaxOptions
     private let openExisting: @Sendable (URL) async throws -> MemoryOrchestrator
     private let endMutex = AsyncMutex()
@@ -518,18 +428,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
         _ = try await ensureLive(sessionID)
     }
 
-    /// Returns the on-disk manifest status for `sessionID`, or `nil` if no manifest exists.
-    package func persistedStatus(for sessionID: UUID) throws -> BrokerSessionManifest.Status? {
-        do {
-            return try BrokerSessionPersistence.loadManifest(
-                rootURL: sessionRootURL,
-                sessionID: sessionID
-            ).status
-        } catch BrokerSessionPersistenceError.manifestNotFound {
-            return nil
-        }
-    }
-
     package func findActive(agentID: String, runID: String) throws -> BrokerSessionManifest? {
         if let liveMatch = locked({ liveMatchLocked(agentID: agentID, runID: runID) }) {
             return liveMatch.manifest
@@ -593,31 +491,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
             throw Self.notActiveError(for: sessionID)
         }
         return .resumed(updated, recoveredLease: result.recoveredLease)
-    }
-
-    package func resolveManifest(
-        explicitSessionID: UUID?,
-        agentID: String?,
-        runID: String?
-    ) throws -> BrokerSessionManifest {
-        if let explicitSessionID {
-            return try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: explicitSessionID)
-        }
-
-        let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-        let filtered = manifests.filter { manifest in
-            guard manifest.status == .active else { return false }
-            if let agentID, manifest.agentID != agentID { return false }
-            if let runID, manifest.runID != runID { return false }
-            return true
-        }
-        guard filtered.count <= 1 else {
-            throw BrokerValidationError.invalid("multiple active sessions matched the requested selectors")
-        }
-        guard let match = filtered.first else {
-            throw BrokerValidationError.invalid("No resumable session manifest matched the requested selectors")
-        }
-        return match
     }
 
     package func refreshManifest(_ sessionID: UUID) throws {
@@ -863,52 +736,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
             endingSessions.contains(entry.key)
                 && entry.value.manifest.agentID == agentID
                 && entry.value.manifest.runID == runID
-        }
-    }
-
-    package func persistHarvestToDisk(
-        sessionID: UUID,
-        report: SessionHarvest.Report,
-        markEnded: Bool,
-        nowMs: Int64? = nil
-    ) throws -> BrokerSessionManifest {
-        let timestamp = nowMs ?? self.nowMs()
-        var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
-        if markEnded, manifest.status != .ended {
-            manifest.status = .ended
-            manifest.endedAtMs = timestamp
-            manifest.brokerLeaseOwnerID = nil
-            manifest.leaseExpiresAtMs = nil
-        }
-        manifest.updatedAtMs = timestamp
-        Self.applyHarvest(report, to: &manifest, nowMs: timestamp)
-        try BrokerSessionPersistence.saveManifest(
-            manifest,
-            to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
-        )
-        return manifest
-    }
-
-    package static func applyHarvest(
-        _ report: SessionHarvest.Report,
-        to manifest: inout BrokerSessionManifest,
-        nowMs: Int64
-    ) {
-        if report.harvested {
-            manifest.harvestError = (report.error?.isEmpty == false) ? report.error : nil
-            if manifest.harvestedAtMs == nil {
-                manifest.harvestedAtMs = nowMs
-            }
-            manifest.promotedCount = report.promotedCount
-            if report.immediateReclaimEligible {
-                manifest.reclaimAfterMs = manifest.harvestedAtMs
-            } else if let reclaimAfterMs = report.reclaimAfterMs {
-                manifest.reclaimAfterMs = reclaimAfterMs
-            }
-            return
-        }
-        if let error = report.error, !error.isEmpty {
-            manifest.harvestError = error
         }
     }
 
