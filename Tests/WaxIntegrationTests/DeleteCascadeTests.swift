@@ -161,11 +161,12 @@ private final class DeleteStepFailer: @unchecked Sendable {
     }
 }
 
-/// Forgets three one-frame memories with the second call of `step` failing.
+/// Forgets three one-frame memories with the `failOn`-th call of `step` failing.
 /// Returns the reported result, how many of the three are deleted after
 /// reopen, and how many are still found by search.
 private func forgetWithFailure(
     at step: MemoryOrchestrator.DeleteStep,
+    failOn: Int = 2,
     url: URL
 ) async throws -> (result: WaxMemoryToolResult, deletedAfterReopen: Int, searchableAfterReopen: Int) {
     let orchestrator = try await textOnlyOrchestrator(at: url)
@@ -175,7 +176,7 @@ private func forgetWithFailure(
     }
     try await orchestrator.flush()
 
-    let failer = DeleteStepFailer(step: step, failOn: 2)
+    let failer = DeleteStepFailer(step: step, failOn: failOn)
     await orchestrator.setDeleteStepHookForTesting { try failer.check($0, $1) }
     let result = await WaxMemoryToolExecutor.execute(
         memory: Memory(orchestrator: orchestrator),
@@ -215,6 +216,19 @@ func forgetReportsTrueCountWhenIndexRemovalFails() async throws {
         #expect(outcome.result.status == .error)
         #expect(outcome.deletedAfterReopen == 3)
         #expect(outcome.result.itemCount == 3)
+        #expect(outcome.searchableAfterReopen == 0)
+    }
+}
+
+@Test
+func forgetReportsAllDeletedWhenFinalCommitFails() async throws {
+    try await TempFiles.withTempFile { url in
+        // Every soft-delete is already in the WAL when the commit fails.
+        let outcome = try await forgetWithFailure(at: .commit, failOn: 1, url: url)
+        #expect(outcome.result.status == .error)
+        #expect(outcome.result.itemCount == 3)
+        #expect(outcome.result.message.contains("deleted 3 memory frames"))
+        #expect(outcome.deletedAfterReopen == 3)
         #expect(outcome.searchableAfterReopen == 0)
     }
 }

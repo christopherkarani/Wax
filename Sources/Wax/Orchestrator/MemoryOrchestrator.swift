@@ -2080,6 +2080,8 @@ package actor MemoryOrchestrator {
     package enum DeleteStep: Sendable, Equatable {
         case indexRemoval
         case softDelete
+        /// The final commit after every step succeeded (frame id is 0).
+        case commit
     }
 
     /// Thrown by ``delete(frameIds:)`` when it fails after writing
@@ -2110,9 +2112,12 @@ package actor MemoryOrchestrator {
     /// then soft-deleted, each requested frame's descendants before the frame
     /// itself, and only frames that are deleted are removed from the indexes.
     /// That order never leaves a live frame unindexed (search already hides
-    /// deleted frames). If a soft-delete or index removal fails, what was
-    /// written is committed and ``PartialDeleteError`` names the requested ids
-    /// that are fully deleted.
+    /// deleted frames). If a soft-delete, an index removal or the final commit
+    /// fails, ``PartialDeleteError`` names the requested ids that are fully
+    /// deleted. Those soft-deletes are durable in the WAL: they are committed
+    /// here when possible and otherwise applied on the next commit or reopen.
+    /// A soft-delete that fails mid-tree leaves that requested id uncounted
+    /// and live, while its already-deleted descendants stay hidden.
     package func delete(frameIds: [UInt64]) async throws {
         guard !frameIds.isEmpty else { return }
         lastWriteActivityAt = .now
@@ -2126,8 +2131,9 @@ package actor MemoryOrchestrator {
         let softDeletes = await softDeleteTrees(roots, children: Self.childrenByParent(metas), statusById: statusById)
 
         var failure = softDeletes.failure
-        do {
-            for id in softDeletes.removedFromIndex {
+        // Keep going past a failed removal so fewer stale index entries remain.
+        for id in softDeletes.removedFromIndex {
+            do {
                 try deleteStepHookForTesting?(.indexRemoval, id)
                 if config.enableTextSearch {
                     try await session.removeText(frameId: id)
@@ -2135,12 +2141,21 @@ package actor MemoryOrchestrator {
                 if config.enableVectorSearch {
                     try await session.removeVector(frameId: id)
                 }
+            } catch {
+                failure = failure ?? error
             }
-        } catch {
-            failure = failure ?? error
         }
         guard let failure else {
-            try await session.commit()
+            do {
+                try deleteStepHookForTesting?(.commit, 0)
+                try await session.commit()
+            } catch {
+                throw PartialDeleteError(
+                    deletedFrameIds: softDeletes.deletedRoots,
+                    requestedCount: roots.count,
+                    underlying: error
+                )
+            }
             return
         }
         await commitAfterPartialDelete()

@@ -1913,7 +1913,15 @@ extension AgentBrokerService {
                 try await longTermMemory.delete(frameIds: quarantineIDs)
             } catch let partial as MemoryOrchestrator.PartialDeleteError {
                 // Flush the committed part; the error states how many were deleted.
-                try await longTermMemory.flush()
+                do {
+                    try await longTermMemory.flush()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "maintain quarantine flush after partial delete",
+                        fallback: "report the partial delete; the WAL applies it on reopen"
+                    )
+                }
                 throw partial
             }
             if !quarantineIDs.isEmpty {
