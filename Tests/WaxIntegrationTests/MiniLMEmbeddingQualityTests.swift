@@ -1,6 +1,7 @@
 #if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
 import Foundation
 import Testing
+import WaxCore
 import WaxVectorSearchMiniLM
 
 private struct BaselineEmbeddingFixture: Codable {
@@ -81,6 +82,22 @@ private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
 
     let denom = (sqrt(lhsNorm) * sqrt(rhsNorm))
     return denom == 0 ? 0 : (dot / denom)
+}
+
+/// The shipped model must be the one the committed conversion pipeline produced.
+@Test func minilmBundledModelMatchesCommittedSHA256() throws {
+    let hashesURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Resources/scripts/models/minilm-shipped-sha256.json")
+    let expected = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: hashesURL))
+    #expect(Set(expected.keys) == ["model.mil", "weights/weight.bin"])
+    for (relativePath, digest) in expected {
+        let bytes = try Data(contentsOf: MiniLMAssetLoader.modelDirectory().appendingPathComponent(relativePath))
+        let actual = SHA256Checksum.digest(bytes).map { String(format: "%02x", $0) }.joined()
+        #expect(actual == digest, "\(relativePath) hash changed; rerun convert_minilm.py --check-compiled")
+    }
 }
 
 @Test func minilmBundledModelDoesNotUseKnownBadW8A8Quantization() throws {

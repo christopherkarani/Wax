@@ -3,6 +3,12 @@
 Usage:
     python Resources/scripts/models/convert_minilm.py OUT.mlpackage [--weights-dir DIR]
     xcrun coremlcompiler compile OUT.mlpackage Sources/WaxVectorSearchMiniLM/Resources/
+    python Resources/scripts/models/convert_minilm.py --check-compiled \
+        Sources/WaxVectorSearchMiniLM/Resources/all-MiniLM-L6-v2.mlmodelc
+
+`--check-compiled` prints the SHA-256 of the compiled model.mil and weight.bin and compares
+them with minilm-shipped-sha256.json (also asserted by the Swift test suite). Update that file
+in the same commit as an intended model change.
 
 The graph returns `embeddings` [batch, 384]: the masked mean of last_hidden_state
 (sentence-transformers Pooling mode_mean_tokens). L2 normalization stays in Swift.
@@ -18,6 +24,10 @@ sentence-transformers anchor values.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
 
 import coremltools as ct
 import numpy as np
@@ -28,6 +38,7 @@ import minilm_reference as ref
 BATCH_SIZES = (1, 8, 16, 32, 64)
 SEQUENCE_LENGTHS = (32, 64, 128, 256)  # ref.MAX_SEQ_LENGTH caps the input
 MASK_FILL = -1.0e4
+SHIPPED_SHA256 = Path(__file__).with_name("minilm-shipped-sha256.json")
 
 
 class MeanPooledMiniLM(torch.nn.Module):
@@ -125,12 +136,30 @@ def verify(path: str, backbone, tokenizer) -> None:
     print("verified: finite on CPU_ONLY and CPU_AND_NE; CPU cosine >= 0.9999 vs reference")
 
 
+def check_compiled(mlmodelc: str) -> bool:
+    """Print and compare the compiled model's hashes with the committed ones."""
+    expected = json.loads(SHIPPED_SHA256.read_text())
+    matches = True
+    for relative, digest in sorted(expected.items()):
+        actual = hashlib.sha256((Path(mlmodelc) / relative).read_bytes()).hexdigest()
+        status = "ok" if actual == digest else f"MISMATCH (committed {digest})"
+        print(f"{relative}: {actual} {status}")
+        matches = matches and actual == digest
+    return matches
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("output", help="Destination .mlpackage")
+    parser.add_argument("output", nargs="?", help="Destination .mlpackage")
     parser.add_argument("--weights-dir", help="Local directory with model.safetensors + tokenizer.json")
     parser.add_argument("--verify-only", action="store_true", help="Only re-run checks on an existing output")
+    parser.add_argument("--check-compiled", metavar="MLMODELC", help="Compare a compiled model with minilm-shipped-sha256.json")
     args = parser.parse_args()
+
+    if args.check_compiled:
+        sys.exit(0 if check_compiled(args.check_compiled) else 1)
+    if not args.output:
+        parser.error("output is required unless --check-compiled is given")
 
     directory = ref.resolve_weights(args.weights_dir)
     backbone = ref.load_backbone(directory)
