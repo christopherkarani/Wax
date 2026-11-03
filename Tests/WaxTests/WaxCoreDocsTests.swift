@@ -46,8 +46,8 @@ func waxCoreDocCTopicsDoNotLinkPackageOnlySymbols() throws {
     let packageOnlySymbols = [
         "Wax": "Sources/WaxCore/Wax.swift",
         "WaxOptions": "Sources/WaxCore/WaxOptions.swift",
-        "WaxStats": "Sources/WaxCore/Wax.swift",
-        "WaxWALStats": "Sources/WaxCore/Wax.swift",
+        "WaxStats": "Sources/WaxCore/Wax+Introspection.swift",
+        "WaxWALStats": "Sources/WaxCore/Wax+Introspection.swift",
         "WaxHeaderPage": "Sources/WaxCore/FileFormat/WaxHeaderPage.swift",
         "WaxFooter": "Sources/WaxCore/FileFormat/WaxFooter.swift",
         "WaxTOC": "Sources/WaxCore/FileFormat/WaxTOC.swift",
@@ -77,7 +77,7 @@ func waxCoreDocCTopicsDoNotLinkPackageOnlySymbols() throws {
         "DeleteFrame": "Sources/WaxCore/WAL/PendingMutation.swift",
         "SupersedeFrame": "Sources/WaxCore/WAL/PendingMutation.swift",
         "PutEmbedding": "Sources/WaxCore/WAL/PendingMutation.swift",
-        "PendingEmbeddingSnapshot": "Sources/WaxCore/Wax.swift",
+        "PendingEmbeddingSnapshot": "Sources/WaxCore/Wax+Writes.swift",
         "AsyncReadWriteLock": "Sources/WaxCore/Concurrency/ReadWriteLock.swift",
         "AsyncMutex": "Sources/WaxCore/Concurrency/AsyncMutex.swift",
         "FileLock": "Sources/WaxCore/IO/FileLock.swift",
@@ -171,10 +171,15 @@ func docsDoNotAdvertiseNonexistentFramePayloadMethods() throws {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
-    let waxSource = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCore/Wax.swift"),
-        encoding: .utf8
-    )
+    // `Wax` is split across Wax.swift and its Wax+*.swift extensions; scan all of them.
+    let coreDirectory = repoRoot.appendingPathComponent("Sources/WaxCore")
+    let waxSourceNames = try FileManager.default.contentsOfDirectory(atPath: coreDirectory.path)
+        .filter { $0 == "Wax.swift" || ($0.hasPrefix("Wax+") && $0.hasSuffix(".swift")) }
+        .sorted()
+    try #require(waxSourceNames.contains("Wax.swift"))
+    let waxSource = try waxSourceNames.map {
+        try String(contentsOf: coreDirectory.appendingPathComponent($0), encoding: .utf8)
+    }.joined(separator: "\n")
     #expect(!waxSource.contains("func putFrame("))
     #expect(!waxSource.contains("func frame("))
     #expect(!waxSource.contains("func readPayload("))

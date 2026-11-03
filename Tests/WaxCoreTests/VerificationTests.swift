@@ -53,7 +53,7 @@ import Testing
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCore/Wax.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxCore/Wax+Lifecycle.swift"),
         encoding: .utf8
     )
     let repairBlock = try #require(source.range(of: "if repair, fileSize > requiredEnd {"))
