@@ -45,6 +45,10 @@ package enum AgentBrokerClient {
     /// means no broker will ever serve this socket.
     private static let peerExitGraceSeconds: TimeInterval = 1.0
 
+    /// How long a cancelled or failed start lets the launched broker exit on SIGTERM
+    /// before it is SIGKILLed, so a broker mid-write can close its store cleanly.
+    private static let terminateGraceSeconds: TimeInterval = 2.0
+
     /// Upper bound on waiting for a SIGKILLed broker to be reaped. A child stuck in
     /// uninterruptible I/O cannot die until that I/O ends, so the wait must not be open-ended.
     private static let reapTimeoutSeconds: TimeInterval = 5.0
@@ -151,7 +155,7 @@ package enum AgentBrokerClient {
             return false
         }
 
-        if isSocketLive(socketPath: configuration.socketPath) {
+        if await isSocketLiveOffPool(socketPath: configuration.socketPath) {
             if let response = try await sendOffPool(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath,
@@ -314,25 +318,19 @@ package enum AgentBrokerClient {
 
     /// Returns only after the launched broker has exited, so a cancelled or failed
     /// start never hands control back while the child still holds the socket or store.
+    ///
+    /// SIGTERM first, then SIGKILL after ``terminateGraceSeconds``. The waits run off
+    /// the cooperative pool, where a cancelled caller cannot cut the grace short or
+    /// skip the reap, and the reap is bounded so a child in uninterruptible I/O
+    /// cannot hang the caller.
     private static func terminateLaunchedBroker(_ process: Process) async {
         guard process.isRunning else { return }
-        process.terminate()
-        let stopBy = Date().addingTimeInterval(0.5)
-        while process.isRunning, Date() < stopBy, !Task.isCancelled {
-            // Cleanup must finish even when the caller was cancelled.
-            try? await Task.sleep(for: pollInterval)
-        }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-        // Wait for the reap off the cooperative pool so a cancelled caller cannot
-        // skip it, and bound it so a child in uninterruptible I/O cannot hang the caller.
         let stillRunning = await BlockingWork.run {
-            let reapBy = Date().addingTimeInterval(reapTimeoutSeconds)
-            while process.isRunning, Date() < reapBy {
-                usleep(10_000)
+            process.terminate()
+            if !waitForExit(process, seconds: terminateGraceSeconds) {
+                kill(process.processIdentifier, SIGKILL)
             }
-            return process.isRunning
+            return !waitForExit(process, seconds: reapTimeoutSeconds)
         }
         if stillRunning {
             WaxDiagnostics.logSwallowed(
@@ -343,6 +341,15 @@ package enum AgentBrokerClient {
                 fallback: "return without reaping the launched broker"
             )
         }
+    }
+
+    /// Blocks until `process` exits or `seconds` pass. Returns whether it exited.
+    private static func waitForExit(_ process: Process, seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while process.isRunning, Date() < deadline {
+            usleep(10_000)
+        }
+        return !process.isRunning
     }
 
     /// Sends `shutdown` when the socket exists. Returns false when there is no socket.
@@ -361,7 +368,7 @@ package enum AgentBrokerClient {
         guard try await BlockingWork.run({ try requestShutdown(configuration: configuration) }) else { return }
         let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
         while Date() < deadline {
-            if try brokerShutdownCompleted(
+            if try await brokerShutdownCompletedOffPool(
                 socketPath: configuration.socketPath,
                 storePath: configuration.storePath
             ) {
@@ -399,6 +406,32 @@ package enum AgentBrokerClient {
         }
     }
 
+    /// ``brokerShutdownCompleted(socketPath:storePath:)`` for async callers: the store
+    /// lock probe waits up to 50ms, so it runs off the cooperative pool.
+    package static func brokerShutdownCompletedOffPool(
+        socketPath: String,
+        storePath: String
+    ) async throws -> Bool {
+        // A socket file means not done, decided without blocking. Skip the hop:
+        // on a busy pool, resuming after it can take seconds.
+        guard !FileManager.default.fileExists(atPath: socketPath) else {
+            return false
+        }
+        return try await BlockingWork.run {
+            try brokerShutdownCompleted(socketPath: socketPath, storePath: storePath)
+        }
+    }
+
+    /// ``isSocketLive(socketPath:)`` for async callers: the connect runs off the
+    /// cooperative pool.
+    package static func isSocketLiveOffPool(socketPath: String) async -> Bool {
+        // No socket file means no listener, decided without blocking.
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return false
+        }
+        return await BlockingWork.run { isSocketLive(socketPath: socketPath) }
+    }
+
     /// Returns whether a Unix-domain listener is accepting connections at `socketPath`.
     /// Never creates, replaces, or unlinks the path.
     package static func isSocketLive(socketPath: String) -> Bool {
@@ -432,13 +465,14 @@ package enum AgentBrokerClient {
     /// Foreign listeners (tests, other apps) are left alone.
     private static func restartMuteOwnedBroker(configuration: AgentBrokerConfiguration) async throws -> Bool {
         #if canImport(Darwin)
-        guard let pid = peerPID(socketPath: configuration.socketPath) else { return false }
-        guard isWaxCLIProcess(pid: pid) else { return false }
+        guard let pid = await ownedBrokerPeerPIDOffPool(socketPath: configuration.socketPath) else {
+            return false
+        }
         kill(pid, SIGTERM)
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline, !Task.isCancelled {
             let stillRunning = kill(pid, 0) == 0
-            if !stillRunning, !isSocketLive(socketPath: configuration.socketPath) {
+            if !stillRunning, await !isSocketLiveOffPool(socketPath: configuration.socketPath) {
                 return true
             }
             try? await Task.sleep(for: pollInterval)
@@ -447,13 +481,24 @@ package enum AgentBrokerClient {
         kill(pid, SIGKILL)
         try? await Task.sleep(for: .milliseconds(150))
         try Task.checkCancellation()
-        return !isSocketLive(socketPath: configuration.socketPath)
+        return await !isSocketLiveOffPool(socketPath: configuration.socketPath)
         #else
         return false
         #endif
     }
 
     #if canImport(Darwin)
+    /// The pid of the `wax-cli` process listening at `socketPath`, or nil for no
+    /// listener or a foreign one. The connect runs off the cooperative pool.
+    package static func ownedBrokerPeerPIDOffPool(socketPath: String) async -> pid_t? {
+        await BlockingWork.run {
+            guard let pid = peerPID(socketPath: socketPath), isWaxCLIProcess(pid: pid) else {
+                return nil
+            }
+            return pid
+        }
+    }
+
     private static func peerPID(socketPath: String) -> pid_t? {
         let fd = socket(AF_UNIX, unixStreamSocketType, 0)
         guard fd >= 0 else { return nil }
@@ -682,12 +727,17 @@ package enum AgentBrokerClient {
         return line.isEmpty ? nil : line
     }
 
-    private static func configuredSeconds(envKey: String, defaultValue: Double) -> Double {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    /// A positive, finite number of seconds from `envKey`, else `defaultValue`.
+    /// `inf` and `nan` parse as doubles but are not usable timeouts.
+    package static func configuredSeconds(
+        envKey: String,
+        defaultValue: Double,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Double {
+        guard let raw = environment[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty,
               let seconds = Double(raw),
-              seconds > 0 else {
+              seconds.isFinite, seconds > 0 else {
             return defaultValue
         }
         return seconds
