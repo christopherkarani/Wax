@@ -29,12 +29,15 @@ package final class ArcticEmbeddings {
 
     /// The Core ML output was not a finite sentence-embedding tensor of the expected layout.
     package enum OutputError: LocalizedError, Sendable, Equatable {
+        case missingOutput(name: String)
         case unsupportedDataType(rawValue: Int)
         case unexpectedShape(shape: [Int], batchSize: Int, outputDimension: Int)
         case nonFiniteValue
 
         package var errorDescription: String? {
             switch self {
+            case .missingOutput(let name):
+                return "Arctic Core ML prediction has no multi-array output named '\(name)'."
             case .unsupportedDataType(let rawValue):
                 return "Arctic Core ML output has unsupported data type \(rawValue); expected Float16 or Float32."
             case .unexpectedShape(let shape, let batchSize, let outputDimension):
@@ -109,7 +112,9 @@ package final class ArcticEmbeddings {
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
-            defaultConfig.computeUnits = .cpuAndNeuralEngine
+            // CPU by default: the Neural Engine path intermittently returns non-finite
+            // embeddings for this model. ANE stays available as an explicit opt-in.
+            defaultConfig.computeUnits = .cpuOnly
             defaultConfig.allowLowPrecisionAccumulationOnGPU = true
             return defaultConfig
         }()
@@ -163,7 +168,7 @@ package final class ArcticEmbeddings {
                         attention_mask: attentionMask
                     )
                     let decoded = try Self.decodeEmbeddings(
-                        output.embeddings,
+                        try output.embeddings,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )

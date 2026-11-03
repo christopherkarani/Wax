@@ -2,7 +2,18 @@
 import CoreML
 import Foundation
 import Testing
+import WaxCore
 @_spi(Testing) @testable import WaxVectorSearchArctic
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test func arcticDefaultsToCPUComputeUnitsUnlessConfigured() {
+    let defaults = ArcticEmbedder.resolveComputeUnitsOrder(explicit: [], tuning: CommandLineEmbedderRuntimeTuning())
+    #expect(defaults == [.cpuOnly, .cpuAndGPU])
+
+    let customized = CommandLineEmbedderRuntimeTuning(computeUnitsOrder: [.cpuAndNeuralEngine])
+    #expect(ArcticEmbedder.resolveComputeUnitsOrder(explicit: [], tuning: customized) == [.cpuAndNeuralEngine])
+    #expect(ArcticEmbedder.resolveComputeUnitsOrder(explicit: [.all], tuning: customized) == [.all])
+}
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test func arcticDecodingRejectsNonFiniteValues() throws {

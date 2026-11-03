@@ -51,13 +51,18 @@ package class snowflake_arctic_embed_sOutput : MLFeatureProvider {
 
     /// embeddings as multidimensional array of 16-bit floats
     package var embeddings: MLMultiArray {
-        provider.featureValue(for: "embeddings")!.multiArrayValue!
+        get throws {
+            guard let array = provider.featureValue(for: "embeddings")?.multiArrayValue else {
+                throw ArcticEmbeddings.OutputError.missingOutput(name: "embeddings")
+            }
+            return array
+        }
     }
 
     /// embeddings as multidimensional array of 16-bit floats
     #if !(os(macOS) || targetEnvironment(macCatalyst))
     package var embeddingsShapedArray: MLShapedArray<Float16> {
-        MLShapedArray<Float16>(embeddings)
+        get throws { MLShapedArray<Float16>(try embeddings) }
     }
     #endif
 

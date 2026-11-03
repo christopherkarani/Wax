@@ -209,9 +209,7 @@ extension ArcticEmbedder {
         tuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws -> ArcticEmbedder {
         var failures: [String] = []
-        let resolvedUnits = computeUnitsOrder.isEmpty
-            ? tuning.computeUnitsOrder.map(\.coreMLValue)
-            : computeUnitsOrder
+        let resolvedUnits = resolveComputeUnitsOrder(explicit: computeUnitsOrder, tuning: tuning)
         for units in resolvedUnits {
             let matchingUnit = tuning.computeUnitsOrder.first(where: { $0.coreMLValue == units }) ?? .cpuOnly
             let modelConfiguration = tuning.modelConfiguration(for: matchingUnit)
@@ -234,6 +232,23 @@ extension ArcticEmbedder {
         throw WaxError.io(
             "Arctic init failed for all compute units (\(failures.joined(separator: " | ")))."
         )
+    }
+
+    /// Arctic's fallback order when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
+    /// chose one. The Neural Engine path intermittently emits non-finite embeddings for
+    /// this model, and a single startup probe cannot catch that, so ANE is opt-in only.
+    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly, .cpuAndGPU]
+
+    /// Explicit order wins, then a customized tuning order, then `defaultComputeUnitsOrder`.
+    package static func resolveComputeUnitsOrder(
+        explicit: [MLComputeUnits],
+        tuning: CommandLineEmbedderRuntimeTuning
+    ) -> [MLComputeUnits] {
+        if !explicit.isEmpty { return explicit }
+        if tuning.computeUnitsOrder != CommandLineEmbedderRuntimeTuning.defaultComputeUnitsOrder {
+            return tuning.computeUnitsOrder.map(\.coreMLValue)
+        }
+        return defaultComputeUnitsOrder
     }
 
     /// Test helper for deterministic batch planning verification.
