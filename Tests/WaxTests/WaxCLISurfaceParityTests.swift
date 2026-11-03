@@ -51,7 +51,23 @@ import WaxCore
     #expect(source.contains("EmbedBackfillCommand.self"))
 }
 
-@Test func waxCLIParitySessionLifecycleUsesPersistentBroker() async throws {
+/// The time limit only catches a hang.
+@Test(.timeLimit(.minutes(2)))
+func waxCLIParitySessionLifecycleUsesPersistentBroker() async throws {
+    try await runParitySessionLifecycle()
+}
+
+/// The broker daemon must answer when its cooperative pool is narrow, as on a
+/// small or starved runner. Its socket accept loop once blocked in `poll` on a
+/// cooperative thread, so on a one-thread pool no client was ever served and
+/// `session-start` timed out. The strict pool is a Darwin libdispatch setting;
+/// the wax-cli client and the daemon it launches both inherit it.
+@Test(.timeLimit(.minutes(2)))
+func waxCLIParitySessionLifecycleAnswersOnAStrictCooperativePool() async throws {
+    try await runParitySessionLifecycle(extraEnvironment: ["LIBDISPATCH_COOPERATIVE_POOL_STRICT": "1"])
+}
+
+private func runParitySessionLifecycle(extraEnvironment: [String: String] = [:]) async throws {
     let executable = try WaxCLIProcess.builtProductURL()
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("wax-cli-parity-\(UUID().uuidString)")
@@ -66,7 +82,7 @@ import WaxCore
     let brokerEnv = [
         "WAX_BROKER_DIR": brokerDir.path,
         "WAX_LOCK_TIMEOUT_SECS": "10",
-    ]
+    ].merging(extraEnvironment) { _, extra in extra }
 
     let start = try await WaxCLIProcess.run(
         executableURL: executable,

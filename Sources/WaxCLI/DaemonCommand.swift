@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Wax
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -187,46 +188,18 @@ private extension DaemonCommand {
         }
 
         let inflight = SocketInflight()
-        let pollSliceMS: Int32 = 200
-        var lastActivity = Date()
         var loopError: Error?
+        let daemon = self
         do {
-            while !inflight.shouldStop {
-                var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-                let pollResult = poll(&descriptor, 1, pollSliceMS)
-                if pollResult == 0 {
-                    if idleTimeoutSeconds > 0,
-                       Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
-                       !inflight.isBusy {
-                        break
-                    }
-                    continue
-                }
-                if pollResult < 0 {
-                    if errno == EINTR { continue }
-                    throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
-                }
-
-                let client = accept(listener, nil, nil)
-                if client < 0 {
-                    if errno == EINTR { continue }
-                    throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
-                }
-
-                lastActivity = Date()
-                inflight.enter()
-                Task {
-                    defer { inflight.leave() }
-                    do {
-                        let shouldExit = try await handleSocketClient(service: service, fd: client)
-                        if shouldExit {
-                            inflight.requestStop()
-                        }
-                    } catch {
-                        // FileHandle owns the accepted fd. A dead peer must not
-                        // double-close it or skip inflight.leave().
-                    }
-                }
+            // The accept loop blocks in poll for the daemon's whole life. On a
+            // cooperative thread it would starve the client tasks it spawns.
+            try await BlockingWork.run {
+                try daemon.acceptClients(
+                    listener: listener,
+                    service: service,
+                    inflight: inflight,
+                    idleTimeoutSeconds: idleTimeoutSeconds
+                )
             }
         } catch {
             loopError = error
@@ -235,6 +208,55 @@ private extension DaemonCommand {
         try await drainSocketInflight(inflight)
         if let loopError {
             throw loopError
+        }
+    }
+
+    /// Accepts clients until a client requests shutdown or the broker is idle for
+    /// `idleTimeoutSeconds`. Blocks its thread, so callers run it off the pool.
+    func acceptClients(
+        listener: Int32,
+        service: AgentBrokerService,
+        inflight: SocketInflight,
+        idleTimeoutSeconds: Double
+    ) throws {
+        let pollSliceMS: Int32 = 200
+        var lastActivity = Date()
+        while !inflight.shouldStop {
+            var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, pollSliceMS)
+            if pollResult == 0 {
+                if idleTimeoutSeconds > 0,
+                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                   !inflight.isBusy {
+                    return
+                }
+                continue
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            let client = accept(listener, nil, nil)
+            if client < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
+            }
+
+            lastActivity = Date()
+            inflight.enter()
+            Task {
+                defer { inflight.leave() }
+                do {
+                    let shouldExit = try await handleSocketClient(service: service, fd: client)
+                    if shouldExit {
+                        inflight.requestStop()
+                    }
+                } catch {
+                    // FileHandle owns the accepted fd. A dead peer must not
+                    // double-close it or skip inflight.leave().
+                }
+            }
         }
     }
 
@@ -259,8 +281,11 @@ private extension DaemonCommand {
     func handleSocketClient(service: AgentBrokerService, fd: Int32) async throws -> Bool {
         let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         let response: AgentBrokerResponse
+        let daemon = self
 
-        if let line = try readSocketRequestLine(fd: fd) {
+        // The read polls for up to a second and the write blocks on a slow
+        // reader; neither may hold a cooperative thread.
+        if let line = try await BlockingWork.run({ try daemon.readSocketRequestLine(fd: fd) }) {
             do {
                 let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
                 response = await service.handle(request)
@@ -273,8 +298,10 @@ private extension DaemonCommand {
             response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
         }
 
-        try writeJSONLine(response, to: fileHandle)
-        try? fileHandle.close()
+        try await BlockingWork.run {
+            try daemon.writeJSONLine(response, to: fileHandle)
+            try? fileHandle.close()
+        }
         return response.shouldExit
     }
 
