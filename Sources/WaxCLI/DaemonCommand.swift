@@ -75,14 +75,21 @@ struct DaemonCommand: AsyncParsableCommand {
                 await service.prewarmEmbedder()
             }
         }
+        #if DEBUG
+        if let hooks = DaemonTestHooks.current, hooks.holdsInService {
+            await service.setCommandHold { await hooks.holdIfMatching($0) }
+        }
+        #endif
 
+        let inflight = SocketInflight()
         do {
             if let socketPath {
                 try await runSocketServer(
                     service: service,
                     at: socketPath,
                     idleTimeoutSeconds: idleTimeoutSeconds,
-                    shutdown: shutdown
+                    shutdown: shutdown,
+                    inflight: inflight
                 )
             } else {
                 try await runLoop(
@@ -92,7 +99,14 @@ struct DaemonCommand: AsyncParsableCommand {
                     shutdown: shutdown
                 )
             }
+            DaemonTestHooks.current?.markClosing()
+            // close() takes the store's locks, so a command still running past
+            // the drain bound finishes first. That extends graceful shutdown;
+            // a second signal forces the exit.
             try await service.close()
+            // Such a command's response is written only once it releases the
+            // locks, so give it a moment to go out before the process exits.
+            await waitWhileHandling(inflight, seconds: socketResponseFlushSeconds)
         } catch {
             try? await service.close()
             throw error
@@ -114,6 +128,9 @@ private extension DaemonCommand {
     /// under the client's 2s SIGTERM grace; `service.close()` then queues behind
     /// any command still holding the store's locks.
     var socketShutdownDrainSeconds: TimeInterval { 1 }
+    /// After the store closes, how long a response still being written may delay
+    /// the exit.
+    var socketResponseFlushSeconds: TimeInterval { 0.25 }
     /// How often the accept and stdin loops check for a shutdown request.
     var shutdownPollSliceMS: Int32 { 200 }
 
@@ -193,7 +210,8 @@ private extension DaemonCommand {
         service: AgentBrokerService,
         at rawSocketPath: String,
         idleTimeoutSeconds: Double,
-        shutdown: DaemonShutdown
+        shutdown: DaemonShutdown,
+        inflight: SocketInflight
     ) async throws {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
@@ -248,8 +266,8 @@ private extension DaemonCommand {
         guard listen(listener, 16) == 0 else {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
+        DaemonTestHooks.current?.markListening()
 
-        let inflight = SocketInflight()
         var loopError: Error?
         let daemon = self
         do {
@@ -339,8 +357,12 @@ private extension DaemonCommand {
     func drainHandledRequests(_ inflight: SocketInflight) async {
         inflight.startDraining()
         DaemonTestHooks.current?.markDraining()
-        let drainDeadline = Date().addingTimeInterval(socketShutdownDrainSeconds)
-        while inflight.isHandling, Date() < drainDeadline {
+        await waitWhileHandling(inflight, seconds: socketShutdownDrainSeconds)
+    }
+
+    func waitWhileHandling(_ inflight: SocketInflight, seconds: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(seconds)
+        while inflight.isHandling, Date() < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -470,7 +492,9 @@ private extension DaemonCommand {
         } catch {
             return (AgentBrokerResponse.failure(message: "Invalid request: \(error.localizedDescription)"), nil)
         }
-        await DaemonTestHooks.current?.holdIfMatching(request.command)
+        if let hooks = DaemonTestHooks.current, !hooks.holdsInService {
+            await hooks.holdIfMatching(request.command)
+        }
         return (await service.handle(request), request.command)
     }
 
@@ -577,6 +601,9 @@ private enum SocketRequestRead: Sendable {
 /// Set by SIGTERM or SIGINT. The accept and stdin loops stop taking work once it
 /// is set; the daemon then drains only the requests already in the service, so a
 /// client still sending one cannot hold it, closes the store and exits 0.
+/// Closing waits for a command that is still running, such as a long remember or
+/// a migration, so that command extends graceful shutdown until it completes. A
+/// second signal forces the exit.
 private final class DaemonShutdown: @unchecked Sendable {
     private let lock = NSLock()
     private var signalsReceived = 0

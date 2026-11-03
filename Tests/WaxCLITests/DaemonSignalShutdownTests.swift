@@ -230,6 +230,80 @@ import Testing
         try fixture.expectStoreReleasedAndCommitted()
     }
 
+    /// A command already running inside the service holds the store's locks.
+    /// The 1s drain does not bound it: closing waits for it, its response is
+    /// still delivered, and only then does the daemon exit 0.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonShutdownWaitsForARunningCommandAndDeliversItsResponse() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "stats", inService: true)
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let remembered = try await SocketClient.roundTrip(
+            #"{"command":"remember","arguments":{"content":"\#(fixture.token) before SIGTERM"}}"#,
+            path: fixture.socketPath
+        )
+        #expect(remembered.contains(#""ok":true"#), "remember failed: \(remembered)")
+
+        let running = try SocketClient(path: fixture.socketPath)
+        defer { running.close() }
+        try running.send(#"{"command":"stats","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+
+        kill(daemon.pid, SIGTERM)
+        // Past the drain bound: the store is closing, behind the running command.
+        try await fixture.waitForMarker("closing", daemon: daemon)
+        #expect(daemon.process.isRunning, "the daemon exited under a running command")
+
+        try fixture.releaseHeldCommand()
+        let fd = running.fd
+        let answered = try await BlockingWork.run { try readLine(fd: fd) }
+        #expect(answered.contains(#""ok":true"#), "the running command was not answered: \(answered)")
+
+        let exit = try await daemon.waitForExit(since: Date())
+        #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
+        #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
+        try fixture.expectStoreReleasedAndCommitted()
+    }
+
+    /// While a running command holds graceful shutdown, a second signal exits
+    /// at once instead of waiting for it.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonSecondSignalForcesExitWhileACommandHoldsShutdown() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "stats", inService: true)
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let running = try SocketClient(path: fixture.socketPath)
+        defer { running.close() }
+        try running.send(#"{"command":"stats","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+        kill(daemon.pid, SIGTERM)
+        try await fixture.waitForMarker("closing", daemon: daemon)
+
+        let secondSignalAt = Date()
+        kill(daemon.pid, SIGTERM)
+        let exit = try await daemon.waitForExit(since: secondSignalAt)
+        #expect(
+            exit.reason == .exit && exit.status == 128 + SIGTERM,
+            "a second SIGTERM did not force the exit: \(exit)"
+        )
+        #expect(
+            exit.elapsed < Self.clientTerminateGraceSeconds,
+            "daemon took \(exit.elapsed)s to exit after the second SIGTERM"
+        )
+    }
+
     /// The stdio loop waits on stdin off the cooperative pool and sees the
     /// shutdown request while the client is quiet, even on a strict pool.
     @Test(.timeLimit(.minutes(2)))
@@ -271,6 +345,7 @@ private struct DaemonFixture {
         root = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxsg-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hooksDirectory, withIntermediateDirectories: true)
     }
 
     var storeURL: URL { root.appendingPathComponent("daemon.wax") }
@@ -294,7 +369,10 @@ private struct DaemonFixture {
             "--no-embedder",
             "--idle-timeout-secs", "300",
         ] + arguments
-        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        let hooks = ["WAX_BROKER_TEST_HOOKS_DIR": hooksDirectory.path]
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(hooks) { _, new in new }
+            .merging(environment) { _, new in new }
         let stdin = Pipe()
         let stdout = Pipe()
         process.standardInput = stdio ? stdin : FileHandle.nullDevice
@@ -303,23 +381,21 @@ private struct DaemonFixture {
         return try DaemonProcess(process: process, stdin: stdin, stdout: stdout)
     }
 
+    /// Waits until the daemon accepts connections. The socket file appears at
+    /// bind, before listen, and a probe connection would take a client slot, so
+    /// this waits for the daemon's `listening` marker.
     func waitForSocket(_ daemon: DaemonProcess) async throws {
-        let deadline = Date().addingTimeInterval(60)
-        while !FileManager.default.fileExists(atPath: socketPath) {
-            guard daemon.process.isRunning else { throw DaemonTestError("daemon exited before listening") }
-            guard Date() < deadline else { throw DaemonTestError("daemon never created \(socketPath)") }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await waitForMarker("listening", daemon: daemon)
     }
 
     var hooksDirectory: URL { root.appendingPathComponent("hooks", isDirectory: true) }
 
-    /// Environment for `DaemonTestHooks`: holds `command` until released.
-    func holdEnvironment(command: String) throws -> [String: String] {
-        try FileManager.default.createDirectory(at: hooksDirectory, withIntermediateDirectories: true)
-        return [
+    /// Environment for `DaemonTestHooks`: holds `command` until released, once
+    /// admitted or, with `inService`, inside the service's locks.
+    func holdEnvironment(command: String, inService: Bool = false) -> [String: String] {
+        [
             "WAX_BROKER_TEST_HOLD_COMMAND": command,
-            "WAX_BROKER_TEST_HOLD_DIR": hooksDirectory.path,
+            "WAX_BROKER_TEST_HOLD_POINT": inService ? "service" : "admitted",
         ]
     }
 
@@ -447,8 +523,9 @@ private final class SocketClient: @unchecked Sendable {
             }
         }
         guard connected == 0 else {
+            let reason = String(cString: strerror(errno))
             Darwin.close(fd)
-            throw DaemonTestError("connect to \(path) failed")
+            throw DaemonTestError("connect to \(path) failed: \(reason)")
         }
     }
 

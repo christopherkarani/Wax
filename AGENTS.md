@@ -83,3 +83,4 @@ Edit one path.
 - Photos iCloud-only assets are metadata-only / degraded.
 - Broker start timeout default is `WAX_BROKER_START_TIMEOUT_SECS=10`; do not drop it back to 5s (parallel process tests).
 - A cancelled or timed-out broker start sends SIGTERM and waits up to 2s before SIGKILL, then up to 5s to reap: up to 7s more on that path. The daemon must exit within the 2s grace (`daemon_sigterm_smoke.sh`).
+- Daemon graceful shutdown drains admitted requests for at most 1s, but closing the store waits for a command already running under the store's locks, such as a long remember or a migration. That command extends shutdown until it completes; a second SIGTERM/SIGINT forces the exit (`_exit(128 + signal)`).

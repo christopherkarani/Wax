@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SIGTERM must shut wax-cli's broker daemon down gracefully: exit 0 within the
-# client's 2s SIGTERM grace and remove its socket. wax-mcp, given its path,
+# client's 2s SIGTERM grace, remove its socket, and leave a store that reopens
+# with the data written before the signal. Needs python3. wax-mcp, given its path,
 # must also exit 0 on SIGTERM (its graceful path) rather than die of the signal.
 # Dispatch signal delivery differs by platform (kqueue on Darwin, signalfd on
 # Linux), so CI runs this on Linux as well as macOS.
@@ -81,8 +82,36 @@ SOCKET="$WORK_DIR/d.sock"
 DAEMON_PID=$!
 PIDS+=("$DAEMON_PID")
 wait_for_path "$SOCKET" "$DAEMON_PID" "wax-cli daemon"
+
+# Write through the daemon, so a clean close is proven by reading it back.
+TOKEN="sigterm-smoke-$$-$RANDOM"
+python3 -I - "$SOCKET" "$TOKEN" <<'PY' || fail "remember through the daemon failed"
+import json, socket, sys
+path, token = sys.argv[1], sys.argv[2]
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(30)
+client.connect(path)
+request = {"command": "remember", "arguments": {"content": token + " written before SIGTERM"}}
+client.sendall((json.dumps(request) + "\n").encode())
+client.shutdown(socket.SHUT_WR)
+data = b""
+while not data.endswith(b"\n"):
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    data += chunk
+if not json.loads(data or b"{}").get("ok"):
+    sys.exit("remember response: " + data.decode(errors="replace"))
+PY
+
 terminate_and_expect_clean_exit "$DAEMON_PID" "$GRACE_SECONDS" "wax-cli daemon"
 [ ! -e "$SOCKET" ] || fail "wax-cli daemon left its socket at $SOCKET"
+RECALLED="$("$WAX_CLI" recall --direct-store --store-path "$WORK_DIR/daemon.wax" \
+  --no-embedder --format json "$TOKEN" 2>&1)" || fail "reopening the store failed: $RECALLED"
+case "$RECALLED" in
+  *"$TOKEN"*) ;;
+  *) fail "memory written before SIGTERM is missing after shutdown: $RECALLED" ;;
+esac
 echo "daemon_sigterm_smoke: wax-cli daemon ok"
 
 if [ -n "$WAX_MCP" ]; then
