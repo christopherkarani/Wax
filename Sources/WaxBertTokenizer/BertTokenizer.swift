@@ -65,6 +65,14 @@ public final class BertTokenizer: @unchecked Sendable {
         self.wordpieceTokenizer = WordpieceTokenizer(vocab: sharedVocab.vocab)
     }
 
+    /// Vocabulary lookups WordPiece makes for `word`, and the per-word bound
+    /// `word.count * longestVocabularyPiece` they must stay under.
+    package func _wordpieceProbesForTesting(word: String) -> (probes: Int, bound: Int) {
+        var probes = 0
+        _ = wordpieceTokenizer.tokenize(word: word, probes: &probes)
+        return (probes, word.count * wordpieceTokenizer.maxPieceLength)
+    }
+
     public func buildModelTokens(sentence: String) throws -> [Int] {
         var tokens = try tokenizeToIds(text: sentence)
 
@@ -539,7 +547,7 @@ final class WordpieceTokenizer: @unchecked Sendable {
     private let vocab: [String: Int]
     /// Longest vocabulary piece in characters (ignoring the `##` prefix). Greedy matching
     /// never needs to try a longer candidate, which bounds each start offset's work.
-    private let maxPieceLength: Int
+    let maxPieceLength: Int
 
     init(vocab: [String: Int]) {
         self.vocab = vocab
@@ -556,6 +564,12 @@ final class WordpieceTokenizer: @unchecked Sendable {
     /// `[UNK]`, and candidates are capped at `maxPieceLength`, so the work per word is
     /// O(n * maxPieceLength) dictionary probes instead of O(n^2) probes of O(n) substrings.
     func tokenize(word: String) -> [String] {
+        var probes = 0
+        return tokenize(word: word, probes: &probes)
+    }
+
+    /// Same as `tokenize(word:)`, counting vocabulary lookups in `probes`.
+    func tokenize(word: String, probes: inout Int) -> [String] {
         let characters = Array(word)
         if characters.count > maxInputCharsPerWord {
             return [unkToken]
@@ -569,6 +583,7 @@ final class WordpieceTokenizer: @unchecked Sendable {
             while start < end {
                 let piece = String(characters[start..<end])
                 let candidate = start > 0 ? "##" + piece : piece
+                probes += 1
                 if vocab[candidate] != nil {
                     match = candidate
                     break

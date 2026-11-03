@@ -27,21 +27,16 @@ func bertTokenizerMapsOverlongWordToUnknown() throws {
     #expect(tokenizer.tokenize(text: String(repeating: "a", count: 100)) != ["[UNK]"])
 }
 
-@Test("WordPiece stays fast on many pathological 100-character words")
-func bertTokenizerHandlesPathologicalWordsQuickly() throws {
+@Test("WordPiece work per word is bounded by the longest vocabulary piece")
+func bertTokenizerBoundsWordpieceWorkOnPathologicalWords() throws {
     let tokenizer = try BertTokenizer()
-    // Greedy longest-match fails at every length except one character, so a naive
-    // implementation rebuilds O(n) substrings O(n) times per start offset: O(n^3) per word.
+    // Greedy longest-match fails at every length except one character. Unbounded matching
+    // tries every end offset for every start: n(n+1)/2 = 5050 lookups of O(n) substrings.
     let word = String(repeating: "qz", count: 50)
-    let text = Array(repeating: word, count: 400).joined(separator: " ")
+    let (probes, bound) = tokenizer._wordpieceProbesForTesting(word: word)
+    #expect(probes <= bound, "\(probes) lookups exceeds bound \(bound)")
+    #expect(bound < word.count * (word.count + 1) / 2)
 
-    let clock = ContinuousClock()
-    let elapsed = clock.measure {
-        _ = tokenizer.tokenize(text: text)
-    }
-    // Generous bound: the cubic implementation takes tens of seconds here in debug builds;
-    // the bounded implementation takes well under a second.
-    #expect(elapsed < .seconds(5), "Tokenizing 400 pathological words took \(elapsed)")
     let expected = word.enumerated().map { index, character in
         index == 0 ? String(character) : "##\(character)"
     }
