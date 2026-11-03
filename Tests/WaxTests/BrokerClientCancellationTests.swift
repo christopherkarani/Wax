@@ -17,7 +17,7 @@ func pollTimeoutRoundsSubMillisecondRemainderUp() {
 
 #if os(macOS)
 /// A launched broker that never answers must not outlive a cancelled start.
-@Test
+@Test(.timeLimit(.minutes(1)))
 func cancelledBrokerStartTerminatesTheLaunchedProcess() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-client-cancel-\(UUID().uuidString)", isDirectory: true)
@@ -27,7 +27,7 @@ func cancelledBrokerStartTerminatesTheLaunchedProcess() async throws {
     let mute = root.appendingPathComponent("mute-broker")
     try """
     #!/bin/sh
-    exec sleep 30
+    exec sleep 600
     """.write(to: mute, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mute.path)
 

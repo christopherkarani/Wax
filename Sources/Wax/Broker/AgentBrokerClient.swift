@@ -45,6 +45,10 @@ package enum AgentBrokerClient {
     /// means no broker will ever serve this socket.
     private static let peerExitGraceSeconds: TimeInterval = 1.0
 
+    /// Upper bound on waiting for a SIGKILLed broker to be reaped. A child stuck in
+    /// uninterruptible I/O cannot die until that I/O ends, so the wait must not be open-ended.
+    private static let reapTimeoutSeconds: TimeInterval = 5.0
+
     private static func isLockContention(_ stderr: String) -> Bool {
         let lowered = stderr.lowercased()
         return lowered.contains("lock unavailable") || lowered.contains("exclusive lock")
@@ -306,13 +310,25 @@ package enum AgentBrokerClient {
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
-        // SIGKILL cannot be ignored. Wait for the reap off the cooperative pool so
-        // a cancelled caller cannot skip it.
-        await withCheckedContinuation { (exited: CheckedContinuation<Void, Never>) in
+        // Wait for the reap off the cooperative pool so a cancelled caller cannot
+        // skip it, and bound it so a child in uninterruptible I/O cannot hang the caller.
+        let stillRunning = await withCheckedContinuation { (reaped: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global(qos: .utility).async {
-                process.waitUntilExit()
-                exited.resume()
+                let reapBy = Date().addingTimeInterval(reapTimeoutSeconds)
+                while process.isRunning, Date() < reapBy {
+                    usleep(10_000)
+                }
+                reaped.resume(returning: process.isRunning)
             }
+        }
+        if stillRunning {
+            WaxDiagnostics.logSwallowed(
+                BrokerClientError(
+                    "Launched broker \(process.processIdentifier) was still running \(reapTimeoutSeconds)s after SIGKILL."
+                ),
+                context: "broker start cleanup",
+                fallback: "return without reaping the launched broker"
+            )
         }
     }
 

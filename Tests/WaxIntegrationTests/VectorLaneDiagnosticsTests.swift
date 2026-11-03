@@ -99,7 +99,7 @@ struct VectorLaneDiagnosticsTests {
         }
     }
 
-    @Test(arguments: [true, false])
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
     func distinguishesVectorTimeoutFromSuccessfulEmptyLane(hang: Bool) async throws {
         try await TempFiles.withTempFile { url in
             let wax = try await Wax.create(at: url)
