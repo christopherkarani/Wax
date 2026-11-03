@@ -117,6 +117,119 @@ import Testing
         #expect(served.contains(#""ok":true"#), "freed slots did not serve again: \(served)")
     }
 
+    /// A client that closes before its response must not kill the daemon:
+    /// the write fails with EPIPE, and the next client is served.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonSocketModeSurvivesAClientThatLeavesBeforeItsResponse() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "stats")
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let leaver = try SocketClient(path: fixture.socketPath)
+        try leaver.send(#"{"command":"stats","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+        leaver.close()
+        try fixture.releaseHeldCommand()
+        try await fixture.waitForMarker("responded", daemon: daemon)
+
+        #expect(daemon.process.isRunning, "the daemon died writing to a client that had left")
+        let stats = try await SocketClient.roundTrip(
+            #"{"command":"stats","arguments":{}}"#,
+            path: fixture.socketPath
+        )
+        #expect(stats.contains(#""ok":true"#), "the next client was not served: \(stats)")
+    }
+
+    /// SIGTERM while a command is in the service: that command finishes and is
+    /// answered, a request arriving during the drain is refused, and the daemon
+    /// then closes the store and exits 0.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonDrainAnswersTheInFlightCommandAndRefusesNewOnes() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "stats")
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let inFlight = try SocketClient(path: fixture.socketPath)
+        defer { inFlight.close() }
+        try inFlight.send(#"{"command":"stats","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+
+        // Accepted before SIGTERM (connections are accepted in order, and the
+        // remember after it is answered), but it sends only once draining.
+        let late = try SocketClient(path: fixture.socketPath)
+        defer { late.close() }
+        let remembered = try await SocketClient.roundTrip(
+            #"{"command":"remember","arguments":{"content":"\#(fixture.token) before SIGTERM"}}"#,
+            path: fixture.socketPath
+        )
+        #expect(remembered.contains(#""ok":true"#), "remember failed: \(remembered)")
+
+        kill(daemon.pid, SIGTERM)
+        try await fixture.waitForMarker("draining", daemon: daemon)
+        let refused = try await late.finish(
+            #"{"command":"remember","arguments":{"content":"sent during the drain"}}"#
+        )
+        #expect(refused.isEmpty, "a request sent during the drain was served: \(refused)")
+
+        try fixture.releaseHeldCommand()
+        let fd = inFlight.fd
+        let answered = try await BlockingWork.run { try readLine(fd: fd) }
+        #expect(answered.contains(#""ok":true"#), "the in-flight command was not answered: \(answered)")
+
+        let exit = try await daemon.waitForExit(since: Date())
+        #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
+        #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
+        try fixture.expectStoreReleasedAndCommitted()
+    }
+
+    /// A command still running when the drain bound passes must not keep the
+    /// store open: the daemon closes it and exits within the grace anyway.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonClosesTheStoreWhenACommandOutlastsTheDrainBound() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "stats")
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let remembered = try await SocketClient.roundTrip(
+            #"{"command":"remember","arguments":{"content":"\#(fixture.token) before SIGTERM"}}"#,
+            path: fixture.socketPath
+        )
+        #expect(remembered.contains(#""ok":true"#), "remember failed: \(remembered)")
+
+        // Held for good: the test never releases it.
+        let stuck = try SocketClient(path: fixture.socketPath)
+        defer { stuck.close() }
+        try stuck.send(#"{"command":"stats","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+
+        let killedAt = Date()
+        kill(daemon.pid, SIGTERM)
+        let exit = try await daemon.waitForExit(since: killedAt)
+
+        #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
+        #expect(
+            exit.elapsed < Self.clientTerminateGraceSeconds,
+            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
+        )
+        #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
+        try fixture.expectStoreReleasedAndCommitted()
+    }
+
     /// The stdio loop waits on stdin off the cooperative pool and sees the
     /// shutdown request while the client is quiet, even on a strict pool.
     @Test(.timeLimit(.minutes(2)))
@@ -195,6 +308,38 @@ private struct DaemonFixture {
         while !FileManager.default.fileExists(atPath: socketPath) {
             guard daemon.process.isRunning else { throw DaemonTestError("daemon exited before listening") }
             guard Date() < deadline else { throw DaemonTestError("daemon never created \(socketPath)") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    var hooksDirectory: URL { root.appendingPathComponent("hooks", isDirectory: true) }
+
+    /// Environment for `DaemonTestHooks`: holds `command` until released.
+    func holdEnvironment(command: String) throws -> [String: String] {
+        try FileManager.default.createDirectory(at: hooksDirectory, withIntermediateDirectories: true)
+        return [
+            "WAX_BROKER_TEST_HOLD_COMMAND": command,
+            "WAX_BROKER_TEST_HOLD_DIR": hooksDirectory.path,
+        ]
+    }
+
+    func releaseHeldCommand() throws {
+        let release = hooksDirectory.appendingPathComponent("release").path
+        guard FileManager.default.createFile(atPath: release, contents: nil) else {
+            throw DaemonTestError("could not create \(release)")
+        }
+    }
+
+    /// Waits for a hook marker. Fails at once if the daemon exits first; the
+    /// 60s bound only catches a hang.
+    func waitForMarker(_ name: String, daemon: DaemonProcess) async throws {
+        let marker = hooksDirectory.appendingPathComponent(name).path
+        let deadline = Date().addingTimeInterval(60)
+        while !FileManager.default.fileExists(atPath: marker) {
+            guard daemon.process.isRunning else {
+                throw DaemonTestError("daemon exited (\(daemon.process.terminationStatus)) before \(name)")
+            }
+            guard Date() < deadline else { throw DaemonTestError("daemon never wrote \(name)") }
             try await Task.sleep(for: .milliseconds(20))
         }
     }

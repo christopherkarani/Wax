@@ -362,7 +362,9 @@ private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -
 
 func writeStderr(_ message: String) {
     guard let data = (message + "\n").data(using: .utf8) else { return }
-    FileHandle.standardError.write(data)
+    // The throwing write: with SIGPIPE ignored, the legacy one raises an
+    // uncatchable exception once the host closes the stderr pipe.
+    try? FileHandle.standardError.write(contentsOf: data)
 }
 
 private func exitProcess(_ status: Int32) -> Never {

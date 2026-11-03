@@ -7,6 +7,9 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(os)
+import os
+#endif
 
 struct DaemonCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -41,6 +44,10 @@ struct DaemonCommand: AsyncParsableCommand {
     }
 
     func runAsync() async throws {
+        // A client or the launching process can vanish before its response.
+        // Writes then fail with EPIPE instead of killing the daemon. SIGPIPE has
+        // no dispatch source, so SIG_IGN is right on every platform.
+        signal(SIGPIPE, SIG_IGN)
         // Before the store opens: SIGTERM's default action would kill the
         // broker mid-write, which is what the client's SIGTERM grace exists to avoid.
         let shutdown = DaemonShutdown()
@@ -300,6 +307,7 @@ private extension DaemonCommand {
             }
 
             lastActivity = Date()
+            disableSIGPIPE(on: client)
             guard inflight.admitClient(limit: maxClients) else {
                 rejectBusyClient(client)
                 continue
@@ -330,6 +338,7 @@ private extension DaemonCommand {
     /// waited for: the process exits under them once the store is closed.
     func drainHandledRequests(_ inflight: SocketInflight) async {
         inflight.startDraining()
+        DaemonTestHooks.current?.markDraining()
         let drainDeadline = Date().addingTimeInterval(socketShutdownDrainSeconds)
         while inflight.isHandling, Date() < drainDeadline {
             try? await Task.sleep(for: .milliseconds(20))
@@ -343,18 +352,16 @@ private extension DaemonCommand {
         let response = AgentBrokerResponse.failure(
             message: "Broker is serving its limit of \(maxClients) clients; retry shortly"
         )
-        guard let encoded = try? JSONEncoder().encode(response) else { return }
-        let line = encoded + Data([0x0A])
+        try? writeJSONLine(response, to: fd)
+    }
+
+    /// Darwin raises SIGPIPE per socket unless told not to; Linux relies on
+    /// the process-wide SIG_IGN set in `runAsync`.
+    func disableSIGPIPE(on fd: Int32) {
         #if canImport(Darwin)
         var noSIGPIPE: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
-        let flags: Int32 = 0
-        #else
-        let flags = Int32(MSG_NOSIGNAL)
         #endif
-        _ = line.withUnsafeBytes { buffer in
-            send(fd, buffer.baseAddress, buffer.count, flags)
-        }
     }
 
     func bindUnixSocket(_ listener: Int32, address: inout sockaddr_un) -> Int32 {
@@ -371,8 +378,15 @@ private extension DaemonCommand {
         readDeadline: Date,
         inflight: SocketInflight
     ) async throws -> Bool {
-        let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { close(fd) }
         let response: AgentBrokerResponse
+        var command: String?
+        // An admitted request counts as in flight until its response is
+        // written, so the shutdown drain never exits under the write.
+        var admitted = false
+        defer {
+            if admitted { inflight.endHandling() }
+        }
         let daemon = self
 
         // The read polls until its deadline and the write blocks on a slow
@@ -388,16 +402,21 @@ private extension DaemonCommand {
         case .empty:
             response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
         case .line(let line):
-            guard let handled = await handleRequest(line, service: service, inflight: inflight) else {
-                try? fileHandle.close()
-                return false
-            }
-            response = handled
+            // Once shutdown is draining, nothing new reaches the service.
+            guard inflight.beginHandling() else { return false }
+            admitted = true
+            let handled = await handleRequest(line, service: service)
+            response = handled.0
+            command = handled.1
         }
 
-        try await BlockingWork.run {
-            try daemon.writeJSONLine(response, to: fileHandle)
-            try? fileHandle.close()
+        do {
+            try await BlockingWork.run { try daemon.writeJSONLine(response, to: fd) }
+        } catch is BrokerClientGone {
+            logDaemonDebug("socket client left before its response")
+        }
+        if let command {
+            DaemonTestHooks.current?.markResponded(command)
         }
         return response.shouldExit
     }
@@ -417,34 +436,42 @@ private extension DaemonCommand {
             let response = AgentBrokerResponse.failure(
                 message: "Invalid request: \(error.localizedDescription)"
             )
-            try await writeJSONLineOffPool(response, to: output)
+            try await writeStdioResponse(response, to: output)
             return
         }
 
         let response = await service.handle(request)
-        try await writeJSONLineOffPool(response, to: output)
+        try await writeStdioResponse(response, to: output)
         if response.shouldExit {
             throw ExitRequested()
         }
     }
 
-    /// Decodes and runs one request. Nil when shutdown has begun draining, so
-    /// nothing reaches the service once the store may be closing.
+    /// With nobody left reading stdout there is no one to serve, so the loop
+    /// ends and the store closes.
+    func writeStdioResponse(_ response: AgentBrokerResponse, to output: FileHandle) async throws {
+        do {
+            try await writeJSONLineOffPool(response, to: output.fileDescriptor)
+        } catch is BrokerClientGone {
+            logDaemonDebug("stdio reader left before its response")
+            throw ExitRequested()
+        }
+    }
+
+    /// Decodes and runs one admitted request. Returns the command name for the
+    /// test hooks, nil when the line does not decode.
     func handleRequest(
         _ line: String,
-        service: AgentBrokerService,
-        inflight: SocketInflight
-    ) async -> AgentBrokerResponse? {
+        service: AgentBrokerService
+    ) async -> (AgentBrokerResponse, String?) {
         let request: AgentBrokerRequest
         do {
             request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
         } catch {
-            return AgentBrokerResponse.failure(message: "Invalid request: \(error.localizedDescription)")
+            return (AgentBrokerResponse.failure(message: "Invalid request: \(error.localizedDescription)"), nil)
         }
-        guard inflight.beginHandling() else { return nil }
-        let response = await service.handle(request)
-        inflight.endHandling()
-        return response
+        await DaemonTestHooks.current?.holdIfMatching(request.command)
+        return (await service.handle(request), request.command)
     }
 
     /// Reads one request line, giving up at `deadline`. Blocks its thread, so
@@ -498,19 +525,43 @@ private extension DaemonCommand {
     }
 
     /// A write blocks while the reader is slow, so it must not hold a cooperative thread.
-    func writeJSONLineOffPool(_ response: AgentBrokerResponse, to output: FileHandle) async throws {
+    func writeJSONLineOffPool(_ response: AgentBrokerResponse, to fd: Int32) async throws {
         let daemon = self
-        try await BlockingWork.run { try daemon.writeJSONLine(response, to: output) }
+        try await BlockingWork.run { try daemon.writeJSONLine(response, to: fd) }
     }
 
-    func writeJSONLine(_ response: AgentBrokerResponse, to output: FileHandle) throws {
-        let data = try JSONEncoder().encode(response)
-        output.write(data)
-        output.write(Data([0x0A]))
+    /// Writes with `write(2)`, not `FileHandle.write`, which raises an
+    /// Objective-C exception on EPIPE that Swift cannot catch. Throws
+    /// `BrokerClientGone` when the reader has gone away.
+    func writeJSONLine(_ response: AgentBrokerResponse, to fd: Int32) throws {
+        var line = try JSONEncoder().encode(response)
+        line.append(0x0A)
+        try line.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var sent = 0
+            while sent < buffer.count {
+                let count = write(fd, base + sent, buffer.count - sent)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EPIPE || errno == ECONNRESET { throw BrokerClientGone() }
+                    throw CLIError("Broker response write failed: \(String(cString: strerror(errno)))")
+                }
+                sent += count
+            }
+        }
     }
 }
 
 private struct ExitRequested: Error {}
+
+/// The reader of a response closed its end before the response was written.
+private struct BrokerClientGone: Error {}
+
+private func logDaemonDebug(_ message: String) {
+    #if canImport(os)
+    Logger(subsystem: "com.wax.framework", category: "broker-daemon").debug("\(message, privacy: .public)")
+    #endif
+}
 
 private enum SocketRequestRead: Sendable {
     case line(String)
