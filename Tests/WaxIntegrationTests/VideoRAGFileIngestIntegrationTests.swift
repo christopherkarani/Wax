@@ -81,7 +81,7 @@ func videoRAGTypesAndOrchestratorTakeVideoIDNotRawString() throws {
     #expect(!types.contains("case assetIDs([String])"))
 
     let orchestrator = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator+Ingest.swift"),
         encoding: .utf8
     )
     #expect(!orchestrator.contains("VideoID(source: .file, id: file.id)"))

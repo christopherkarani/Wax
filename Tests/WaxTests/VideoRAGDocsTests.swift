@@ -37,7 +37,7 @@ func videoRAGPhotosIngestPersistsLocalFileURLForThumbnails() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator+Ingest.swift"),
         encoding: .utf8
     )
     let photosIngestStart = try #require(source.range(of: "private func ingestOnePhoto(assetID: String)"))
