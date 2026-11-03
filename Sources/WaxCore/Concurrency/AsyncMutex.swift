@@ -3,7 +3,8 @@ import Foundation
 package actor AsyncMutex {
     private var isLocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    private var waiterObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var waiterObservers: [UInt64: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
+    private var nextObserverID: UInt64 = 0
 
     package init() {}
 
@@ -22,21 +23,36 @@ package actor AsyncMutex {
         }
     }
 
-    /// Suspends until at least `count` tasks are parked in `lock()`. Lets a test
-    /// order "B is queued behind A" without polling `waiterCount`.
+    /// Suspends until at least `count` tasks are parked in `lock()`, or the caller
+    /// is cancelled. Lets a test order "B is queued behind A" without polling
+    /// `waiterCount`; check `waiterCount` afterwards if cancellation matters.
     package func waitUntilWaiting(atLeast count: Int) async {
         if waiters.count >= count { return }
-        await withCheckedContinuation { continuation in
-            waiterObservers.append((count, continuation))
+        let id = nextObserverID
+        nextObserverID &+= 1
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                waiterObservers[id] = (count, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelWaiterObserver(id) }
         }
+    }
+
+    private func cancelWaiterObserver(_ id: UInt64) {
+        waiterObservers.removeValue(forKey: id)?.continuation.resume()
     }
 
     private func resumeSatisfiedWaiterObservers() {
         guard !waiterObservers.isEmpty else { return }
         let parked = waiters.count
-        let satisfied = waiterObservers.filter { $0.count <= parked }
-        waiterObservers.removeAll { $0.count <= parked }
-        for observer in satisfied { observer.continuation.resume() }
+        let satisfied = waiterObservers.filter { $0.value.count <= parked }
+        for id in satisfied.keys { waiterObservers.removeValue(forKey: id) }
+        for observer in satisfied.values { observer.continuation.resume() }
     }
 
     package func unlock() {

@@ -36,6 +36,25 @@ func asyncMutexWaitUntilWaitingResumesOnceATaskIsParked() async {
     await mutex.waitUntilWaiting(atLeast: 0)
 }
 
+/// A cancelled observer must return instead of hanging, so a `.timeLimit` can
+/// end a test whose expected waiter never parks.
+@Test(.timeLimit(.minutes(1)))
+func asyncMutexWaitUntilWaitingReturnsWhenCancelled() async {
+    let mutex = AsyncMutex()
+    let observer = Task {
+        await mutex.waitUntilWaiting(atLeast: 1)
+    }
+    observer.cancel()
+    await observer.value
+
+    // The cancelled observer is gone; a later parked waiter still resolves a new one.
+    await mutex.lock()
+    let contender = Task { await mutex.withLock { 1 } }
+    await mutex.waitUntilWaiting(atLeast: 1)
+    await mutex.unlock()
+    #expect(await contender.value == 1)
+}
+
 @Test func asyncMutexWithLockThrowingBody() async {
     let mutex = AsyncMutex()
     do {
