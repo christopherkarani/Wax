@@ -159,4 +159,10 @@ package enum BrokerValidationError: LocalizedError, Sendable, Equatable {
             return message
         }
     }
+
+    /// Failure payload carrying a machine-readable code, so callers never
+    /// classify errors by matching message text.
+    package var brokerPayload: AgentBrokerValue {
+        .object(["code": .string("invalid_arguments")])
+    }
 }

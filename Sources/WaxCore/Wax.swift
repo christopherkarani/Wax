@@ -507,7 +507,14 @@ package actor Wax {
             let file: FDFile
             do {
                 file = try FDFile.open(at: url)
-                try file.truncate(to: 0)
+                // Create-new semantics: callers check for the file first, but another
+                // process can create it in between. Never clobber a store with bytes;
+                // only an empty file (e.g. left by a crash before the first write) is reused.
+                let existingSize = try file.size()
+                guard existingSize == 0 else {
+                    try? file.close()
+                    throw WaxError.io("refusing to create \(url.path): file already exists (\(existingSize) bytes)")
+                }
             } catch {
                 try? lock.release()
                 throw error
@@ -558,6 +565,9 @@ package actor Wax {
             let pageBBytes = try headerB.encodeWithChecksum()
             try file.writeAll(pageBBytes, at: Constants.headerPageSize)
             try file.fsync()
+            // Throws only for real I/O errors; filesystems that cannot sync a directory
+            // (EINVAL/ENOTSUP on some network/FUSE mounts) are skipped inside.
+            try FDFile.fsyncParentDirectory(of: url)
 
             let wal = WALRingWriter(
                 file: file,
@@ -1149,29 +1159,17 @@ package actor Wax {
             currentOffset += UInt64(frame.storedBytes.count)
         }
 
-        // Single mapped write for payloads
-        let payloadLength = totalPayloadSize
-        if payloadLength > 0 {
+        // Checked pwrites of each payload at its contiguous offset, in one I/O hop.
+        // Writing through an mmap of the file would turn ENOSPC or a concurrent
+        // truncation into SIGBUS instead of an error; concatenating first would double
+        // peak memory for large batches. These writes complete before `appendBatch`
+        // below, so when the WAL needs a durable anchor its first fsync covers them.
+        if totalPayloadSize > 0 {
             try await io.run {
-                try file.ensureSize(atLeast: startOffset + UInt64(payloadLength))
-                let region = try file.mapWritable(length: payloadLength, at: startOffset)
-                defer { region.close() }
-
-                var cursor = 0
-                guard let base = region.buffer.baseAddress else {
-                    throw WaxError.io("mapped region baseAddress is nil")
-                }
+                var offset = startOffset
                 for storedBytes in storedBytesArray {
-                    storedBytes.withUnsafeBytes { src in
-                        guard let srcBase = src.baseAddress else { return }
-                        base.advanced(by: cursor).copyMemory(from: srcBase, byteCount: storedBytes.count)
-                    }
-                    cursor += storedBytes.count
-                }
-                // The WAL's durable anchor fsyncs before writing its first record. Write the
-                // mapped pages back first so that fsync is sure to cover these payloads.
-                if wal.needsDurableAnchor {
-                    try region.sync()
+                    try file.writeAll(storedBytes, at: offset)
+                    offset += UInt64(storedBytes.count)
                 }
             }
         }
@@ -2626,13 +2624,16 @@ package actor Wax {
         guard canonicalLength <= UInt64(Int.max) else {
             throw WaxError.io("canonical payload too large: \(canonicalLength)")
         }
-        let canonical = try PayloadCompressor.decompress(
+        // Decompress also bounds canonical_length by the codec's maximum expansion of
+        // the stored bytes before allocating, and tries each candidate decoding until
+        // one matches the canonical checksum.
+        let expectedChecksum = frame.checksum
+        guard let canonical = try PayloadCompressor.decompress(
             stored,
             algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-            uncompressedLength: Int(canonicalLength)
-        )
-        let canonicalChecksum = SHA256Checksum.digest(canonical)
-        guard canonicalChecksum == frame.checksum else {
+            uncompressedLength: Int(canonicalLength),
+            verifiedBy: { SHA256Checksum.digest($0) == expectedChecksum }
+        ) else {
             throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
         }
         return canonical
@@ -2967,6 +2968,19 @@ package actor Wax {
         }
     }
 
+    /// Injects `pread`/`pwrite` faults into the store file. Tests only.
+    func installFileFaultPlanForTesting(_ plan: FDFileFaultPlan?) {
+        if let plan {
+            file.installFaultPlan(plan)
+        } else {
+            file.clearFaultPlan()
+        }
+    }
+
+    func recordedFileOperationsForTesting() -> [FDFileOperation] {
+        file.recordedOperations()
+    }
+
     // MARK: - Introspection
 
     package func stats() async -> WaxStats {
@@ -3126,13 +3140,14 @@ package actor Wax {
                     let storedBytes = try await io.run {
                         try file.readExactly(length: Int(frame.payloadLength), at: frame.payloadOffset)
                     }
+                    let expectedChecksum = frame.checksum
                     let canonicalBytes = try PayloadCompressor.decompress(
                         storedBytes,
                         algorithm: CompressionKind(canonicalEncoding: frame.canonicalEncoding),
-                        uncompressedLength: Int(canonicalLength)
+                        uncompressedLength: Int(canonicalLength),
+                        verifiedBy: { SHA256Checksum.digest($0) == expectedChecksum }
                     )
-                    let canonicalChecksum = SHA256Checksum.digest(canonicalBytes)
-                    guard canonicalChecksum == frame.checksum else {
+                    guard canonicalBytes != nil else {
                         throw WaxError.checksumMismatch("frame \(frame.id) checksum mismatch")
                     }
                 }

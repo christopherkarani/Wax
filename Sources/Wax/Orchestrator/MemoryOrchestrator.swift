@@ -228,7 +228,10 @@ package actor MemoryOrchestrator {
 
     let session: WaxSession
     private var embedderLifecycle: EmbedderLifecycle
+    /// Bumped by `transitionEmbedderLifecycle(to:)`.
+    private var embedderLifecycleGeneration: UInt64 = 0
     private var embeddingCache: EmbeddingMemoizer?
+    private var committedVectorCoverage: CommittedVectorCoverage?
     private var isClosed = false
     private var readinessFollowTask: Task<Void, Never>?
     private var automaticEmbeddingBackfillEnabled = false
@@ -241,6 +244,28 @@ package actor MemoryOrchestrator {
         searchSnapshotHoldForTesting = duration
     }
     package var accessStatsPersistenceHoldForTesting: Duration? = nil
+    /// Test seam: awaited by `attachEmbedder` after its coverage scan so a test
+    /// can interleave another actor call (e.g. a text-only remember) there.
+    private var coverageScanHookForTesting: (@Sendable () async -> Void)? = nil
+
+    package func setCoverageScanHookForTesting(_ hook: (@Sendable () async -> Void)?) {
+        coverageScanHookForTesting = hook
+    }
+
+    /// Test seam: makes every vector-coverage read throw this error.
+    private var coverageReadFailureForTesting: (any Error)? = nil
+
+    package func setCoverageReadFailureForTesting(_ error: (any Error)?) {
+        coverageReadFailureForTesting = error
+    }
+
+    /// Test seam: called before each index removal and each soft-delete in
+    /// ``delete(frameIds:)``; throwing there simulates that step failing.
+    private var deleteStepHookForTesting: (@Sendable (DeleteStep, UInt64) throws -> Void)? = nil
+
+    package func setDeleteStepHookForTesting(_ hook: (@Sendable (DeleteStep, UInt64) throws -> Void)?) {
+        deleteStepHookForTesting = hook
+    }
 
     package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
         accessStatsPersistenceHoldForTesting = duration
@@ -410,13 +435,11 @@ package actor MemoryOrchestrator {
         } else {
             lifecycle = .disabled
         }
-        if embedder != nil, await Self.storeHasUnembeddedChunks(wax) {
+        if embedder != nil,
+           let degradedReason = await Self.vectorCoverageDegradedReason(in: wax) {
             switch lifecycle {
             case .ready(let attached, _):
-                lifecycle = .ready(
-                    attached: attached,
-                    degradedReason: "some saved frames have no vectors"
-                )
+                lifecycle = .ready(attached: attached, degradedReason: degradedReason)
             case .disabled, .loading, .unavailable:
                 break
             }
@@ -927,30 +950,22 @@ package actor MemoryOrchestrator {
     }
 
     private func documentHasEmbedding(frameId: UInt64) async -> Bool {
-        let pending = await wax.pendingEmbeddingMutations()
-        if pending.contains(where: { $0.frameId == frameId }) {
-            return true
+        do {
+            return try await embeddedFrameIds().contains(frameId)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "single-document vector coverage check",
+                fallback: "re-embed this document"
+            )
+            return false
         }
-        if let staged = await wax.readStagedVecIndexBytes(),
-           Self.vecSegmentContains(frameId: frameId, bytes: staged.bytes) {
-            return true
-        }
-        if let bytes = try? await wax.readCommittedVecIndexBytes(),
-           Self.vecSegmentContains(frameId: frameId, bytes: bytes) {
-            return true
-        }
-        return false
     }
 
-    private static func vecSegmentContains(frameId: UInt64, bytes: Data) -> Bool {
-        vecSegmentFrameIds(bytes: bytes).contains(frameId)
-    }
-
-    private static func vecSegmentFrameIds(bytes: Data) -> Set<UInt64> {
-        guard let payload = try? VectorSerializer.decodeVecSegment(from: bytes) else {
-            return []
-        }
-        switch payload {
+    /// Throws on a corrupt segment instead of returning an empty set, so a
+    /// decode failure is never mistaken for "no frame has a vector".
+    static func vecSegmentFrameIds(bytes: Data) throws -> Set<UInt64> {
+        switch try VectorSerializer.decodeVecSegment(from: bytes) {
         case .metal(_, _, let frameIds):
             return Set(frameIds)
         }
@@ -1165,7 +1180,9 @@ package actor MemoryOrchestrator {
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         topK: Int? = nil,
-        scopeContext: MemoryScopeContext? = nil
+        scopeContext: MemoryScopeContext? = nil,
+        maxContextTokens: Int? = nil,
+        inferTimeRange: Bool = true
     ) async throws -> RecallExecution {
         try await executeRecall(
             query: query,
@@ -1173,7 +1190,9 @@ package actor MemoryOrchestrator {
             timeRange: timeRange,
             topK: topK,
             requestedMode: mode,
-            scopeContext: scopeContext
+            scopeContext: scopeContext,
+            maxContextTokens: maxContextTokens,
+            inferTimeRange: inferTimeRange
         )
     }
 
@@ -1187,7 +1206,9 @@ package actor MemoryOrchestrator {
         timeRange: SearchTimeRange? = nil,
         searchTopK: Int? = nil,
         searchMode: SearchMode? = nil,
-        scopeContext: MemoryScopeContext? = nil
+        scopeContext: MemoryScopeContext? = nil,
+        maxContextTokens: Int? = nil,
+        inferTimeRange: Bool = true
     ) async throws -> RAGContext {
         let preference = config.vectorEnginePreference
         var recallConfig = ragConfigForRecall()
@@ -1197,10 +1218,21 @@ package actor MemoryOrchestrator {
         if let searchMode {
             recallConfig.searchMode = searchMode
         }
-        let resolvedTimeRange = timeRange ?? extractTemporalTimeRange(from: query, anchorMs: recallConfig.deterministicNowMs)
+        if let maxContextTokens {
+            // A caller-sized budget should be able to hold every requested hit.
+            recallConfig.maxContextTokens = maxContextTokens
+            recallConfig.maxSnippets = max(recallConfig.maxSnippets, recallConfig.searchTopK)
+        }
+        // An inferred range filters on save time, so only past-looking phrases
+        // apply (see `pastIngestTimeRange`). An explicit range always wins.
+        let inferredTimeRange: SearchTimeRange? = if timeRange == nil, inferTimeRange {
+            Self.pastIngestTimeRange(inferredFrom: query, anchorMs: recallConfig.deterministicNowMs)
+        } else {
+            nil
+        }
         // Access reasons are attached once during pack. Do not re-fetch stats
         // or re-append the same strings here.
-        return try await ragBuilder.build(
+        var context = try await ragBuilder.build(
             query: query,
             embedding: embedding,
             vectorEnginePreference: preference,
@@ -1208,11 +1240,18 @@ package actor MemoryOrchestrator {
             wax: wax,
             session: session,
             frameFilter: frameFilter,
-            timeRange: resolvedTimeRange,
+            timeRange: timeRange ?? inferredTimeRange,
             scopeContext: scopeContext ?? config.defaultScopeContext,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
             config: recallConfig
         )
+        if let inferredTimeRange {
+            context.diagnostics?.inferredTimeRange = Memory.TimeRange(
+                afterMs: inferredTimeRange.after,
+                beforeMs: inferredTimeRange.before
+            )
+        }
+        return context
     }
 
     /// Performs direct search without context assembly.
@@ -1352,6 +1391,8 @@ package actor MemoryOrchestrator {
         let stats = await wax.stats()
         let walStats = await wax.walStats()
         let storeURL = await wax.fileURL()
+        // Before reading `embeddingStatus`: an unreadable coverage scan marks it degraded.
+        let framesWithoutVectors = await framesWithoutVectorsCount()
 
         return RuntimeStats(
             frameCount: stats.frameCount,
@@ -1367,7 +1408,7 @@ package actor MemoryOrchestrator {
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embeddingStatus.identity,
             embeddingStatus: embeddingStatus,
-            framesWithoutVectors: await Self.framesWithoutVectorsCount(wax),
+            framesWithoutVectors: framesWithoutVectors,
             vectorsNeedReembed: supersededVectorsReason != nil
         )
     }
@@ -1419,7 +1460,7 @@ package actor MemoryOrchestrator {
         let missing = try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
             guard !(await isClosed) else { throw CancellationError() }
-            let missing = await unembeddedLiveSources()
+            let missing = try await unembeddedLiveSources()
             if missing.isEmpty {
                 await refreshEmbeddingCoverage()
             } else {
@@ -1482,7 +1523,7 @@ package actor MemoryOrchestrator {
                 nextFrameId: marker?.nextFrameId ?? 0,
                 endFrameId: await wax.stats().frameCount,
                 markerFrameId: marker?.frameId,
-                embeddedFrameIds: await Self.embeddedFrameIds(in: wax)
+                embeddedFrameIds: try await embeddedFrameIds()
             )
         }
 
@@ -1649,7 +1690,10 @@ package actor MemoryOrchestrator {
         let unbound = binding?.isEmpty ?? true
         var storeHasVectors = false
         if unbound, MemoryBindingCompatibility.treatsUnboundVectorsAsSuperseded(for: identity) {
-            storeHasVectors = !(await embeddedFrameIds(in: wax)).isEmpty
+            // Presence only: the manifest count avoids decoding the vector index at open.
+            let committedVectors = await wax.committedVecIndexManifest()?.vectorCount ?? 0
+            let pendingVectors = await wax.pendingEmbeddingMutations()
+            storeHasVectors = committedVectors > 0 || !pendingVectors.isEmpty
         }
         return MemoryBindingCompatibility.verdict(
             binding: binding,
@@ -1882,7 +1926,15 @@ package actor MemoryOrchestrator {
         return recallConfig
     }
 
-    private func extractTemporalTimeRange(from query: String, anchorMs: Int64?) -> SearchTimeRange? {
+    /// Save-time filter inferred from a temporal phrase in the query.
+    ///
+    /// Frames carry their save (ingest) timestamp, never their event date. A
+    /// phrase whose window starts at or after `anchorMs` ("tomorrow", "next
+    /// week") describes event time, so filtering on save time would always be
+    /// empty; those phrases are skipped. Past and present windows apply.
+    /// A skipped future phrase does not end the scan: a later past phrase in
+    /// the same query ("tomorrow's agenda from last week") still applies.
+    static func pastIngestTimeRange(inferredFrom query: String, anchorMs: Int64?) -> SearchTimeRange? {
         guard let anchorMs else { return nil }
         let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000.0)
         let normalizer = TemporalNormalizer(anchor: anchor)
@@ -1899,6 +1951,7 @@ package actor MemoryOrchestrator {
                 let candidate = words[i..<(i + window)].joined(separator: " ")
                 guard let resolution = try? normalizer.resolve(candidate) else { continue }
                 let range = resolution.asTimeRange
+                guard range.afterMs < anchorMs else { continue }
                 return SearchTimeRange(after: range.afterMs, before: range.beforeMs)
             }
         }
@@ -2086,7 +2139,9 @@ package actor MemoryOrchestrator {
         timeRange: SearchTimeRange?,
         topK: Int?,
         requestedMode: SearchMode?,
-        scopeContext: MemoryScopeContext? = nil
+        scopeContext: MemoryScopeContext? = nil,
+        maxContextTokens: Int? = nil,
+        inferTimeRange: Bool = true
     ) async throws -> RecallExecution {
         let recallConfig = ragConfigForRecall()
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2129,17 +2184,18 @@ package actor MemoryOrchestrator {
             timeRange: timeRange,
             searchTopK: topK,
             searchMode: effectiveSearchMode,
-            scopeContext: scopeContext
+            scopeContext: scopeContext,
+            maxContextTokens: maxContextTokens,
+            inferTimeRange: inferTimeRange
         )
 
-        return RecallExecution(
-            context: context,
-            diagnostics: Self.retrievalDiagnostics(
-                requested: resolvedRequestedMode,
-                effective: context.diagnostics?.effectiveMode ?? effectiveSearchMode,
-                embedding: queryEmbedding.state
-            )
+        var diagnostics = Self.retrievalDiagnostics(
+            requested: resolvedRequestedMode,
+            effective: context.diagnostics?.effectiveMode ?? effectiveSearchMode,
+            embedding: queryEmbedding.state
         )
+        diagnostics.inferredTimeRange = context.diagnostics?.inferredTimeRange
+        return RecallExecution(context: context, diagnostics: diagnostics)
     }
 
     private struct QueryEmbeddingResult {
@@ -2251,18 +2307,177 @@ package actor MemoryOrchestrator {
     /// Soft-delete is pending until a single commit after index removes, so the committed vector
     /// (and text) indexes exclude the deleted frame without a second commit or close-time flush.
     /// If index remove throws, the soft-delete is not committed in this call.
+    ///
+    /// Deleting a document frame also deletes its chunk frames (`parentId ==
+    /// frameId`). Long texts are indexed as chunks, so deleting only the
+    /// document would leave its text searchable.
     package func delete(frameId: UInt64) async throws {
+        try await delete(frameIds: [frameId])
+    }
+
+    /// The two phases of ``delete(frameIds:)``, named for its test seam.
+    package enum DeleteStep: Sendable, Equatable {
+        case indexRemoval
+        case softDelete
+        /// The final commit after every step succeeded (frame id is 0).
+        case commit
+    }
+
+    /// Thrown by ``delete(frameIds:)`` when it fails after writing
+    /// soft-deletes. What was written is committed before this is thrown.
+    package struct PartialDeleteError: Error, CustomStringConvertible, LocalizedError {
+        /// Requested ids whose frame and descendants are all deleted.
+        package var deletedFrameIds: [UInt64]
+        package var requestedCount: Int
+        package var underlying: any Error
+
+        package var description: String {
+            "deleted \(deletedFrameIds.count) of \(requestedCount) frames, then failed: \(underlying)"
+        }
+
+        package var errorDescription: String? { description }
+    }
+
+    /// Deletes several frames and all their descendants with one metadata scan
+    /// and one commit.
+    ///
+    /// Descendants are found through `parentId` at any depth (document ->
+    /// chunk -> enrichment). A requested frame that is already deleted still
+    /// cascades to its live descendants, which repairs stores written before
+    /// delete cascaded.
+    ///
+    /// Every id is checked first; an unknown id throws
+    /// ``WaxError/frameNotFound(frameId:)`` and nothing is written. Frames are
+    /// then soft-deleted, each requested frame's descendants before the frame
+    /// itself, and only frames that are deleted are removed from the indexes.
+    /// That order never leaves a live frame unindexed (search already hides
+    /// deleted frames). If a soft-delete, an index removal or the final commit
+    /// fails, ``PartialDeleteError`` names the requested ids that are fully
+    /// deleted. Those soft-deletes are durable in the WAL: they are committed
+    /// here when possible and otherwise applied on the next commit or reopen.
+    /// A soft-delete that fails mid-tree leaves that requested id uncounted
+    /// and live, while its already-deleted descendants stay hidden.
+    package func delete(frameIds: [UInt64]) async throws {
+        guard !frameIds.isEmpty else { return }
         lastWriteActivityAt = .now
 
-        try await wax.delete(frameId: frameId)
+        let metas = await wax.frameMetasIncludingPending()
+        let statusById = Dictionary(metas.map { ($0.id, $0.status) }, uniquingKeysWith: { _, last in last })
+        if let unknown = frameIds.first(where: { statusById[$0] == nil }) {
+            throw WaxError.frameNotFound(frameId: unknown)
+        }
+        let roots = Self.uniqued(frameIds)
+        let softDeletes = await softDeleteTrees(roots, children: Self.childrenByParent(metas), statusById: statusById)
 
-        if config.enableTextSearch {
-            try await session.removeText(frameId: frameId)
+        var failure = softDeletes.failure
+        // Keep going past a failed removal so fewer stale index entries remain.
+        for id in softDeletes.removedFromIndex {
+            do {
+                try deleteStepHookForTesting?(.indexRemoval, id)
+                if config.enableTextSearch {
+                    try await session.removeText(frameId: id)
+                }
+                if config.enableVectorSearch {
+                    try await session.removeVector(frameId: id)
+                }
+            } catch {
+                failure = failure ?? error
+            }
         }
-        if config.enableVectorSearch {
-            try await session.removeVector(frameId: frameId)
+        guard let failure else {
+            do {
+                try deleteStepHookForTesting?(.commit, 0)
+                try await session.commit()
+            } catch {
+                throw PartialDeleteError(
+                    deletedFrameIds: softDeletes.deletedRoots,
+                    requestedCount: roots.count,
+                    underlying: error
+                )
+            }
+            return
         }
-        try await session.commit()
+        await commitAfterPartialDelete()
+        throw PartialDeleteError(
+            deletedFrameIds: softDeletes.deletedRoots,
+            requestedCount: roots.count,
+            underlying: failure
+        )
+    }
+
+    /// Soft-deletes each root's tree, leaves first, stopping at the first
+    /// failure. `removedFromIndex` is every visited frame that is now deleted
+    /// (written here or deleted before).
+    private func softDeleteTrees(
+        _ roots: [UInt64],
+        children: [UInt64: [UInt64]],
+        statusById: [UInt64: FrameStatus]
+    ) async -> (deletedRoots: [UInt64], removedFromIndex: [UInt64], failure: (any Error)?) {
+        var handled: Set<UInt64> = []
+        var deletedRoots: [UInt64] = []
+        var removedFromIndex: [UInt64] = []
+        for root in roots {
+            let tree = Self.frameIdsWithDescendants([root], children: children).filter { !handled.contains($0) }
+            for id in tree.reversed() {
+                if statusById[id] == .active {
+                    do {
+                        try deleteStepHookForTesting?(.softDelete, id)
+                        try await wax.delete(frameId: id)
+                    } catch {
+                        return (deletedRoots, removedFromIndex, error)
+                    }
+                }
+                handled.insert(id)
+                removedFromIndex.append(id)
+            }
+            deletedRoots.append(root)
+        }
+        return (deletedRoots, removedFromIndex, nil)
+    }
+
+    private func commitAfterPartialDelete() async {
+        do {
+            try await session.commit()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "commit after partial delete",
+                fallback: "written soft-deletes stay in the WAL and apply on the next commit or reopen"
+            )
+        }
+    }
+
+    private static func childrenByParent(_ metas: [FrameMeta]) -> [UInt64: [UInt64]] {
+        var children: [UInt64: [UInt64]] = [:]
+        for meta in metas {
+            if let parent = meta.parentId {
+                children[parent, default: []].append(meta.id)
+            }
+        }
+        return children
+    }
+
+    private static func uniqued(_ ids: [UInt64]) -> [UInt64] {
+        var seen: Set<UInt64> = []
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    /// The requested ids plus every frame reachable from them through `parentId`,
+    /// in visit order. Already-deleted descendants are still walked so their own
+    /// live children are found.
+    private static func frameIdsWithDescendants(_ roots: [UInt64], children: [UInt64: [UInt64]]) -> [UInt64] {
+        var visited: Set<UInt64> = []
+        var ordered: [UInt64] = []
+        var queue = roots
+        var head = 0
+        while head < queue.count {
+            let id = queue[head]
+            head += 1
+            guard visited.insert(id).inserted else { continue }
+            ordered.append(id)
+            queue.append(contentsOf: children[id] ?? [])
+        }
+        return ordered
     }
 
     // MARK: - Persistence lifecycle
@@ -2656,73 +2871,192 @@ package actor MemoryOrchestrator {
                 enabled: true
             )
         }
-        let lacksVectors: Bool
+        let generation = embedderLifecycleGeneration
+        var degradedReason: String?
         if case .loading(true) = embedderLifecycle {
-            lacksVectors = true
+            degradedReason = Self.missingVectorsReason
         } else {
-            lacksVectors = await Self.storeHasUnembeddedChunks(wax)
+            degradedReason = await vectorCoverageDegradedReason()
         }
         guard !isClosed else { return }
-        embedderLifecycle = .ready(
-            attached: provider,
-            degradedReason: supersededVectorsReason ?? (lacksVectors ? "some saved frames have no vectors" : nil)
+        // Actor reentrancy: the scan suspended. A markUnavailable or a newer
+        // attach that landed meanwhile wins; do not overwrite it.
+        guard embedderLifecycleGeneration == generation else { return }
+        // A text-only remember may also have run; re-read its flag.
+        if case .loading(true) = embedderLifecycle {
+            degradedReason = Self.missingVectorsReason
+        }
+        transitionEmbedderLifecycle(
+            to: .ready(attached: provider, degradedReason: supersededVectorsReason ?? degradedReason)
         )
         finishReadinessWaiters()
         scheduleAutomaticEmbeddingBackfillIfReady()
     }
 
     package func markUnavailable(_ reason: String) {
-        embedderLifecycle = .unavailable(reason: reason)
+        transitionEmbedderLifecycle(to: .unavailable(reason: reason))
         finishReadinessWaiters()
     }
 
     package func markUnavailableIfStillLoading(_ reason: String) {
         guard case .loading = embedderLifecycle else { return }
-        embedderLifecycle = .unavailable(reason: reason)
+        transitionEmbedderLifecycle(to: .unavailable(reason: reason))
         finishReadinessWaiters()
     }
 
-    private static func storeHasUnembeddedChunks(_ wax: Wax) async -> Bool {
-        await framesWithoutVectorsCount(wax) > 0
+    /// Provider transitions (attach, unavailable) bump the generation so a
+    /// suspended attach or coverage refresh can tell it was superseded.
+    /// Reason-only updates and the text-only flag do not.
+    private func transitionEmbedderLifecycle(to lifecycle: EmbedderLifecycle) {
+        embedderLifecycle = lifecycle
+        embedderLifecycleGeneration &+= 1
     }
 
-    private static func framesWithoutVectorsCount(_ wax: Wax) async -> UInt64 {
-        UInt64((await unembeddedLiveSources(in: wax)).count)
+    private static let missingVectorsReason = "some saved frames have no vectors"
+
+    private static let coverageUnknownReasonPrefix = "vector coverage unknown"
+
+    private static func coverageUnknownReason(_ error: any Error) -> String {
+        "\(coverageUnknownReasonPrefix): \(error)"
     }
 
-    private func unembeddedLiveSources() async -> [SurrogateSourceFrame] {
-        await Self.unembeddedLiveSources(in: wax)
+    /// Frame IDs in the committed vector index, keyed by its manifest so
+    /// `stats()` does not decode an unchanged index on every call.
+    struct CommittedVectorCoverage: Sendable {
+        let manifest: VecIndexManifest
+        let frameIds: Set<UInt64>
     }
 
-    private static func unembeddedLiveSources(in wax: Wax) async -> [SurrogateSourceFrame] {
+    /// `nil` when every live source has a vector. A coverage read/decode failure
+    /// is reported as degraded, never as "no vectors" or "fully embedded".
+    private func vectorCoverageDegradedReason() async -> String? {
+        let reason: String?
+        do {
+            reason = try await unembeddedLiveSources().isEmpty ? nil : Self.missingVectorsReason
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "vector coverage scan",
+                fallback: "report embedding status degraded"
+            )
+            reason = Self.coverageUnknownReason(error)
+        }
+        if let hook = coverageScanHookForTesting {
+            await hook()
+        }
+        return reason
+    }
+
+    /// Store-open variant (no actor state yet).
+    private static func vectorCoverageDegradedReason(in wax: Wax) async -> String? {
+        do {
+            return try await unembeddedLiveSources(in: wax, cached: nil).sources.isEmpty
+                ? nil
+                : missingVectorsReason
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "vector coverage scan at open",
+                fallback: "report embedding status degraded"
+            )
+            return coverageUnknownReason(error)
+        }
+    }
+
+    /// 0 when coverage cannot be read; the embedder is then reported degraded.
+    /// A later successful read replaces a "coverage unknown" reason (and only
+    /// that reason) with the coverage it found.
+    private func framesWithoutVectorsCount() async -> UInt64 {
+        do {
+            let count = UInt64(try await unembeddedLiveSources().count)
+            if case .ready(let attached, let reason?) = embedderLifecycle,
+               reason.hasPrefix(Self.coverageUnknownReasonPrefix) {
+                embedderLifecycle = .ready(
+                    attached: attached,
+                    degradedReason: count == 0 ? nil : Self.missingVectorsReason
+                )
+            }
+            return count
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "vector coverage for stats",
+                fallback: "report 0 frames without vectors and embedding status degraded"
+            )
+            if case .ready(let attached, _) = embedderLifecycle {
+                embedderLifecycle = .ready(attached: attached, degradedReason: Self.coverageUnknownReason(error))
+            }
+            return 0
+        }
+    }
+
+    /// Throws when a vector index cannot be read or decoded. Callers must not
+    /// treat that as "nothing is embedded" (backfill would re-embed the store).
+    private func unembeddedLiveSources() async throws -> [SurrogateSourceFrame] {
+        if let error = coverageReadFailureForTesting { throw error }
+        let result = try await Self.unembeddedLiveSources(in: wax, cached: committedVectorCoverage)
+        if let committed = result.committed { committedVectorCoverage = committed }
+        return result.sources
+    }
+
+    private func embeddedFrameIds() async throws -> Set<UInt64> {
+        if let error = coverageReadFailureForTesting { throw error }
+        let result = try await Self.embeddedFrameIds(in: wax, cached: committedVectorCoverage)
+        if let committed = result.committed { committedVectorCoverage = committed }
+        return result.ids
+    }
+
+    private static func unembeddedLiveSources(
+        in wax: Wax,
+        cached: CommittedVectorCoverage?
+    ) async throws -> (sources: [SurrogateSourceFrame], committed: CommittedVectorCoverage?) {
         let sources = await wax.activeSurrogateSourceFrames()
-        let embedded = await embeddedFrameIds(in: wax)
-        return sources.filter { !embedded.contains($0.id) }
+        let embedded = try await embeddedFrameIds(in: wax, cached: cached)
+        return (sources.filter { !embedded.ids.contains($0.id) }, embedded.committed)
     }
 
-    private static func embeddedFrameIds(in wax: Wax) async -> Set<UInt64> {
+    private static func embeddedFrameIds(
+        in wax: Wax,
+        cached: CommittedVectorCoverage?
+    ) async throws -> (ids: Set<UInt64>, committed: CommittedVectorCoverage?) {
         var ids = Set<UInt64>()
         for pending in await wax.pendingEmbeddingMutations() {
             ids.insert(pending.frameId)
         }
         if let staged = await wax.readStagedVecIndexBytes() {
-            ids.formUnion(Self.vecSegmentFrameIds(bytes: staged.bytes))
+            ids.formUnion(try vecSegmentFrameIds(bytes: staged.bytes))
         }
-        if let bytes = try? await wax.readCommittedVecIndexBytes() {
-            ids.formUnion(Self.vecSegmentFrameIds(bytes: bytes))
+        guard let manifest = await wax.committedVecIndexManifest() else {
+            return (ids, nil)
         }
-        return ids
+        if let cached, cached.manifest == manifest {
+            ids.formUnion(cached.frameIds)
+            return (ids, cached)
+        }
+        guard let bytes = try await wax.readCommittedVecIndexBytes() else {
+            return (ids, nil)
+        }
+        let committedIds = try vecSegmentFrameIds(bytes: bytes)
+        ids.formUnion(committedIds)
+        // Cache only if no commit replaced the index while we were reading it.
+        let unchanged = await wax.committedVecIndexManifest() == manifest
+        return (ids, unchanged ? CommittedVectorCoverage(manifest: manifest, frameIds: committedIds) : nil)
     }
 
     private func refreshEmbeddingCoverage() async {
-        guard case .ready(let attached, _) = embedderLifecycle else {
+        guard case .ready = embedderLifecycle else {
             return
         }
-        let lacksVectors = await Self.storeHasUnembeddedChunks(wax)
-        embedderLifecycle = .ready(
-            attached: attached,
-            degradedReason: supersededVectorsReason ?? (lacksVectors ? "some saved frames have no vectors" : nil)
-        )
+        let generation = embedderLifecycleGeneration
+        let degradedReason = await vectorCoverageDegradedReason()
+        // Actor reentrancy: the lifecycle may have changed during the scan
+        // (unavailable, or a different provider attached). Never resurrect or
+        // swap the provider, and drop a reason computed for a superseded one.
+        guard embedderLifecycleGeneration == generation,
+              case .ready(let attached, _) = embedderLifecycle else {
+            return
+        }
+        embedderLifecycle = .ready(attached: attached, degradedReason: supersededVectorsReason ?? degradedReason)
     }
 
     private func queryEmbeddingResult(

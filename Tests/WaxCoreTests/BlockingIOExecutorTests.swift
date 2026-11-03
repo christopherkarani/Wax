@@ -2,22 +2,22 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-@Test func blockingIOExecutorRunWriteReturnsValue() async throws {
-    let executor = BlockingIOExecutor(label: "test.write")
-    let result = await executor.runWrite { 42 }
+@Test func blockingIOExecutorRunReturnsValue() async throws {
+    let executor = BlockingIOExecutor(label: "test.run")
+    let result = try await executor.run { () throws -> Int in 42 }
     #expect(result == 42)
 }
 
-@Test func blockingIOExecutorRunWriteNonThrowingReturnsValue() async {
-    let executor = BlockingIOExecutor(label: "test.write-nothrow")
-    let result = await executor.runWrite { "hello" }
+@Test func blockingIOExecutorRunNonThrowingReturnsValue() async {
+    let executor = BlockingIOExecutor(label: "test.run-nothrow")
+    let result = await executor.run { "hello" }
     #expect(result == "hello")
 }
 
-@Test func blockingIOExecutorRunWriteThrowingPropagatesError() async {
-    let executor = BlockingIOExecutor(label: "test.write-throw")
+@Test func blockingIOExecutorRunThrowingPropagatesError() async {
+    let executor = BlockingIOExecutor(label: "test.run-throw")
     do {
-        _ = try await executor.runWrite { () -> Int in
+        _ = try await executor.run { () throws -> Int in
             throw WaxError.io("test write error")
         }
         Issue.record("Expected error")
@@ -30,16 +30,4 @@ import Testing
     } catch {
         Issue.record("Unexpected error type: \(error)")
     }
-}
-
-@Test func blockingIOExecutorWriteThenReadSequential() async throws {
-    let executor = BlockingIOExecutor(label: "test.barrier")
-
-    // Write produces a value
-    let writeResult: Int = await executor.runWrite { 42 }
-    #expect(writeResult == 42)
-
-    // Subsequent read works
-    let readResult = await executor.run { 99 }
-    #expect(readResult == 99)
 }

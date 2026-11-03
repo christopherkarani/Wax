@@ -5,8 +5,8 @@ package actor AgentBrokerService {
     typealias SessionState = VirtualSessionStore.SessionState
 
     let longTermMemory: MemoryOrchestrator
-    let longTermStoreURL: URL
-    let sessionRootURL: URL
+    package let longTermStoreURL: URL
+    package let sessionRootURL: URL
     let corpusStoreURL: URL
     let noEmbedder: Bool
     let requireVector: Bool
@@ -193,8 +193,9 @@ package actor AgentBrokerService {
             )
         } catch {
             let message = error.localizedDescription
+            let payload = (error as? BrokerValidationError)?.brokerPayload
             return await commandMutex.withLock {
-                AgentBrokerResponse.failure(id: request.id, message: message)
+                AgentBrokerResponse.failure(id: request.id, payload: payload, message: message)
             }
         }
 
@@ -360,6 +361,12 @@ package actor AgentBrokerService {
             return AgentBrokerResponse.failure(
                 id: request.id,
                 payload: error.brokerPayload(),
+                message: error.localizedDescription
+            )
+        } catch let error as BrokerValidationError {
+            return AgentBrokerResponse.failure(
+                id: request.id,
+                payload: error.brokerPayload,
                 message: error.localizedDescription
             )
         } catch {
@@ -1911,8 +1918,20 @@ extension AgentBrokerService {
         }
         quarantineSoftDeletes = quarantineIDs.count
         if apply {
-            for frameId in quarantineIDs {
-                try await longTermMemory.delete(frameId: frameId)
+            do {
+                try await longTermMemory.delete(frameIds: quarantineIDs)
+            } catch let partial as MemoryOrchestrator.PartialDeleteError {
+                // Flush the committed part; the error states how many were deleted.
+                do {
+                    try await longTermMemory.flush()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "maintain quarantine flush after partial delete",
+                        fallback: "report the partial delete; the WAL applies it on reopen"
+                    )
+                }
+                throw partial
             }
             if !quarantineIDs.isEmpty {
                 try await longTermMemory.flush()

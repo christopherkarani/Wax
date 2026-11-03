@@ -179,6 +179,9 @@ package struct WaxTOC: Equatable, Sendable {
         guard frameCount <= Constants.maxArrayCount else {
             throw WaxError.invalidToc(reason: "frame count \(frameCount) exceeds limit \(Constants.maxArrayCount)")
         }
+        guard decoder.canFit(count: frameCount, minimumElementBytes: FrameMeta.minimumEncodedSize) else {
+            throw WaxError.invalidToc(reason: "frame count \(frameCount) exceeds remaining bytes (\(decoder.remainingByteCount))")
+        }
         var frames: [FrameMeta] = []
         frames.reserveCapacity(frameCount)
         for _ in 0..<frameCount {

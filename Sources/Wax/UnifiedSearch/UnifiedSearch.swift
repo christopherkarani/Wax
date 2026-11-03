@@ -3,6 +3,14 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
+/// Fused (or single-lane) hit before metadata filtering and preview loading.
+struct UnifiedSearchBaseResult {
+    let frameId: UInt64
+    let score: Float
+    let sources: [SearchResponse.Source]
+    let rankingDiagnostics: SearchResponse.RankingDiagnostics?
+}
+
 package struct UnifiedSearchEngineOverrides {
     var textEngine: FTS5SearchEngine? = nil
     /// Test injection. Production search uses `loadedVectorEngine` or the cache enum.
@@ -254,42 +262,17 @@ extension Wax {
         let diagnosticsEnabled = request.enableRankingDiagnostics
         let diagnosticsTopK = max(1, request.rankingDiagnosticsTopK)
 
-        struct BaseResult {
-            let frameId: UInt64
-            let score: Float
-            let sources: [SearchResponse.Source]
-            let rankingDiagnostics: SearchResponse.RankingDiagnostics?
-        }
-
-        var baseResults: [BaseResult]
+        var baseResults: [UnifiedSearchBaseResult]
         switch request.lane {
         case .textOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
-                baseResults = textResults.enumerated().map { index, result in
-                    let diagnostics: SearchResponse.RankingDiagnostics?
-                    if diagnosticsEnabled, index < diagnosticsTopK {
-                        diagnostics = .init(
-                            bestLaneRank: index + 1,
-                            laneContributions: [
-                                .init(
-                                    source: .text,
-                                    weight: 1,
-                                    rank: index + 1,
-                                    rrfScore: Float(result.score)
-                                ),
-                            ],
-                            tieBreakReason: index == 0 ? .topResult : .fusedScore
-                        )
-                    } else {
-                        diagnostics = nil
-                    }
-                    return BaseResult(
-                        frameId: result.frameId,
-                        score: Float(result.score),
-                        sources: [.text],
-                        rankingDiagnostics: diagnostics
-                    )
-                }
+                baseResults = Self.singleLaneBaseResults(
+                    textResults.map { (frameId: $0.frameId, score: Float($0.score)) },
+                    source: .text,
+                    weight: 1,
+                    diagnosticsEnabled: diagnosticsEnabled,
+                    diagnosticsTopK: diagnosticsTopK
+                )
             } else {
                 let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
                 let fused = HybridSearch.rrfFusionResults(
@@ -306,7 +289,7 @@ extension Wax {
                     let sources = entry.sources.isEmpty
                         ? (textSet.contains(entry.frameId) ? [.text] : [.structured])
                         : entry.sources
-                    return BaseResult(
+                    return UnifiedSearchBaseResult(
                         frameId: entry.frameId,
                         score: entry.score,
                         sources: sources,
@@ -316,31 +299,13 @@ extension Wax {
             }
         case .vectorOnly:
             if structuredIds.isEmpty || structuredWeight <= 0 {
-                baseResults = vectorResults.enumerated().map { index, result in
-                    let diagnostics: SearchResponse.RankingDiagnostics?
-                    if diagnosticsEnabled, index < diagnosticsTopK {
-                        diagnostics = .init(
-                            bestLaneRank: index + 1,
-                            laneContributions: [
-                                .init(
-                                    source: .vector,
-                                    weight: 1,
-                                    rank: index + 1,
-                                    rrfScore: result.score
-                                ),
-                            ],
-                            tieBreakReason: index == 0 ? .topResult : .fusedScore
-                        )
-                    } else {
-                        diagnostics = nil
-                    }
-                    return BaseResult(
-                        frameId: result.frameId,
-                        score: result.score,
-                        sources: [.vector],
-                        rankingDiagnostics: diagnostics
-                    )
-                }
+                baseResults = Self.singleLaneBaseResults(
+                    vectorResults,
+                    source: .vector,
+                    weight: 1,
+                    diagnosticsEnabled: diagnosticsEnabled,
+                    diagnosticsTopK: diagnosticsTopK
+                )
             } else {
                 let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
                 let fused = HybridSearch.rrfFusionResults(
@@ -357,7 +322,7 @@ extension Wax {
                     let sources = entry.sources.isEmpty
                         ? (vectorSet.contains(entry.frameId) ? [.vector] : [.structured])
                         : entry.sources
-                    return BaseResult(
+                    return UnifiedSearchBaseResult(
                         frameId: entry.frameId,
                         score: entry.score,
                         sources: sources,
@@ -383,31 +348,13 @@ extension Wax {
             if lists.count == 1, lists[0].source == .vector {
                 // Hybrid with only the vector lane must keep engine similarity.
                 // Rank-only RRF collapses 0.95 and 0.20 to the same published 1.0.
-                baseResults = vectorResults.enumerated().map { index, result in
-                    let diagnostics: SearchResponse.RankingDiagnostics?
-                    if diagnosticsEnabled, index < diagnosticsTopK {
-                        diagnostics = .init(
-                            bestLaneRank: index + 1,
-                            laneContributions: [
-                                .init(
-                                    source: .vector,
-                                    weight: vectorWeight,
-                                    rank: index + 1,
-                                    rrfScore: result.score
-                                ),
-                            ],
-                            tieBreakReason: index == 0 ? .topResult : .fusedScore
-                        )
-                    } else {
-                        diagnostics = nil
-                    }
-                    return BaseResult(
-                        frameId: result.frameId,
-                        score: result.score,
-                        sources: [.vector],
-                        rankingDiagnostics: diagnostics
-                    )
-                }
+                baseResults = Self.singleLaneBaseResults(
+                    vectorResults,
+                    source: .vector,
+                    weight: vectorWeight,
+                    diagnosticsEnabled: diagnosticsEnabled,
+                    diagnosticsTopK: diagnosticsTopK
+                )
                 break
             }
 
@@ -453,7 +400,7 @@ extension Wax {
                     if timelineSet.contains(entry.frameId) { sources.append(.timeline) }
                     if structuredSet.contains(entry.frameId) { sources.append(.structured) }
                 }
-                return BaseResult(
+                return UnifiedSearchBaseResult(
                     frameId: entry.frameId,
                     score: entry.score,
                     sources: sources,
@@ -473,7 +420,7 @@ extension Wax {
             let seen = Set(baseResults.map(\.frameId))
             for frameId in allowlist.sorted() where !seen.contains(frameId) {
                 baseResults.append(
-                    BaseResult(
+                    UnifiedSearchBaseResult(
                         frameId: frameId,
                         score: 0,
                         sources: [],
@@ -515,6 +462,9 @@ extension Wax {
                         request: request,
                         filter: filter
                     ) else { continue }
+                    // Expired memories are dropped by semantic rerank; skip them
+                    // here so they do not consume topK slots.
+                    guard !Self.isExpiredMemory(meta: meta, nowMs: semanticNowMs) else { continue }
 
                     pendingResults.append(
                         PendingResult(
@@ -552,6 +502,9 @@ extension Wax {
                         request: request,
                         filter: filter
                     ) else { continue }
+                    // Expired memories are dropped by semantic rerank; skip them
+                    // here so they do not consume topK slots.
+                    guard !Self.isExpiredMemory(meta: meta, nowMs: semanticNowMs) else { continue }
 
                     pendingResults.append(
                         PendingResult(
@@ -715,6 +668,37 @@ extension Wax {
         }
 
         return results
+    }
+
+    /// One lane ran alone: keep the engine score and attach single-lane
+    /// diagnostics for the head of the list.
+    private static func singleLaneBaseResults(
+        _ hits: [(frameId: UInt64, score: Float)],
+        source: SearchResponse.Source,
+        weight: Float,
+        diagnosticsEnabled: Bool,
+        diagnosticsTopK: Int
+    ) -> [UnifiedSearchBaseResult] {
+        hits.enumerated().map { index, hit in
+            let diagnostics: SearchResponse.RankingDiagnostics? =
+                if diagnosticsEnabled, index < diagnosticsTopK {
+                    .init(
+                        bestLaneRank: index + 1,
+                        laneContributions: [
+                            .init(source: source, weight: weight, rank: index + 1, rrfScore: hit.score),
+                        ],
+                        tieBreakReason: index == 0 ? .topResult : .fusedScore
+                    )
+                } else {
+                    nil
+                }
+            return UnifiedSearchBaseResult(
+                frameId: hit.frameId,
+                score: hit.score,
+                sources: [source],
+                rankingDiagnostics: diagnostics
+            )
+        }
     }
 
     private static func baseExplanations(
@@ -882,6 +866,13 @@ extension Wax {
         }
 
         return true
+    }
+
+    private static func isExpiredMemory(meta: FrameMeta, nowMs: Int64) -> Bool {
+        guard let entries = meta.metadata?.entries,
+              entries[MemoryMetadataKeys.expiresAtMs] != nil
+        else { return false }
+        return MemorySemantics.parse(metadata: entries, nowMs: nowMs).isExpired
     }
 
     private static func passesFrameFilter(

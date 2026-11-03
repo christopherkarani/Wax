@@ -22,61 +22,86 @@ package enum AsyncTimeout {
 
     /// Execute `operation` and throw `TimeoutError` if it does not finish within `timeout`.
     ///
+    /// Cancelling the calling task cancels `operation` and throws `CancellationError`
+    /// right away, without waiting for `operation` to observe the cancellation.
+    ///
     /// - Important: The underlying operation may continue running after the timeout fires.
     ///   The deadline is a GCD timer so a blocked cooperative thread (Core ML load,
-    ///   `Thread.sleep`) cannot starve the timeout.
+    ///   `Thread.sleep`) cannot starve the timeout. Durations too large to represent in
+    ///   nanoseconds never fire.
     package static func run<T: Sendable>(
         timeout: Duration,
         operation name: StaticString,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            let once = OnceThrowingContinuation<T>(continuation)
-            let cancels = CancelBox()
-            let operationTask = Task { try await operation() }
-            let deadline = DeadlineBox()
-            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
-            deadline.timer = timer
-            timer.schedule(deadline: .now() + dispatchInterval(timeout))
-            timer.setEventHandler {
-                // Resume BEFORE cancelling: cancelling first lets a cooperatively
-                // cancellable operation complete with CancellationError, and the
-                // watcher task (running on another executor thread) can then win the
-                // once-only resume race — misclassifying a timeout as a cancellation.
-                _ = once.resume(throwing: TimeoutError(operation: String(describing: name), timeout: timeout))
-                operationTask.cancel()
-                cancels.cancelWatcher()
-                deadline.cancel()
-            }
-            timer.resume()
+        let once = OnceThrowingContinuation<T>()
+        let cancels = CancelBox()
+        let deadline = DeadlineBox()
+        let operationTask = Task { try await operation() }
+        // Resume BEFORE cancelling: cancelling first lets a cooperatively cancellable
+        // operation complete with CancellationError, and the watcher task (running on
+        // another executor thread) can then win the once-only resume race —
+        // misclassifying a timeout as a cancellation.
+        let finish: @Sendable (Result<T, any Error>) -> Void = { result in
+            guard once.resume(with: result) else { return }
+            operationTask.cancel()
+            cancels.cancelWatcher()
+            deadline.cancel()
+        }
 
-            let watcherTask = Task {
-                let result = await operationTask.result
-                switch result {
-                case .success(let value):
-                    if once.resume(returning: value) { deadline.cancel() }
-                case .failure(let error):
-                    if once.resume(throwing: error) { deadline.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                once.install(continuation)
+                let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+                timer.schedule(deadline: dispatchDeadline(after: timeout))
+                timer.setEventHandler {
+                    finish(.failure(TimeoutError(operation: String(describing: name), timeout: timeout)))
                 }
+                deadline.install(timer)
+                timer.resume()
+
+                cancels.setWatcher(Task {
+                    finish(await operationTask.result)
+                })
             }
-            cancels.setWatcher(watcherTask)
+        } onCancel: {
+            finish(.failure(CancellationError()))
         }
     }
 
-    private static func dispatchInterval(_ duration: Duration) -> DispatchTimeInterval {
+    /// Converts `duration` to a dispatch deadline without overflowing: negative durations
+    /// fire immediately and durations past `Int64` nanoseconds never fire.
+    static func dispatchDeadline(after duration: Duration) -> DispatchTime {
         let components = duration.components
-        let nanoseconds = components.seconds * 1_000_000_000
-            + components.attoseconds / 1_000_000_000
-        return .nanoseconds(Int(clamping: nanoseconds))
+        guard components.seconds >= 0 else { return .now() }
+        let scaled = components.seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        guard !scaled.overflow else { return .distantFuture }
+        let total = scaled.partialValue.addingReportingOverflow(components.attoseconds / 1_000_000_000)
+        guard !total.overflow else { return .distantFuture }
+        return .now() + .nanoseconds(Int(clamping: total.partialValue))
     }
 }
 
 private final class DeadlineBox: @unchecked Sendable {
     private let lock = NSLock()
-    var timer: DispatchSourceTimer?
+    private var timer: DispatchSourceTimer?
+    private var isCancelled = false
+
+    /// Holds `source` for a later `cancel()`; cancels it at once if that already ran.
+    func install(_ source: DispatchSourceTimer) {
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            source.cancel()
+            return
+        }
+        timer = source
+        lock.unlock()
+    }
 
     func cancel() {
         lock.lock()
+        isCancelled = true
         let source = timer
         timer = nil
         lock.unlock()
@@ -104,31 +129,44 @@ private final class CancelBox: @unchecked Sendable {
     }
 }
 
+/// Resumes a continuation exactly once. A result that arrives before the continuation
+/// is installed (for example cancellation of an already-cancelled caller) is held and
+/// delivered on `install`.
 private final class OnceThrowingContinuation<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
+    private var pendingResult: Result<T, any Error>?
+    private var isResolved = false
 
-    init(_ continuation: CheckedContinuation<T, Error>) {
+    func install(_ continuation: CheckedContinuation<T, Error>) {
+        lock.lock()
+        if let pendingResult {
+            self.pendingResult = nil
+            lock.unlock()
+            continuation.resume(with: pendingResult)
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
+    /// Returns `false` when a result was already delivered.
     @discardableResult
-    func resume(returning value: T) -> Bool {
+    func resume(with result: Result<T, any Error>) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard let cont = continuation else { return false }
-        continuation = nil
-        cont.resume(returning: value)
-        return true
-    }
-
-    @discardableResult
-    func resume(throwing error: any Error) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let cont = continuation else { return false }
-        continuation = nil
-        cont.resume(throwing: error)
+        guard !isResolved else {
+            lock.unlock()
+            return false
+        }
+        isResolved = true
+        guard let continuation else {
+            pendingResult = result
+            lock.unlock()
+            return true
+        }
+        self.continuation = nil
+        lock.unlock()
+        continuation.resume(with: result)
         return true
     }
 }

@@ -38,7 +38,11 @@ private func makeDataset(count: Int, dimensions: Int, seed: UInt64) -> (frameIds
         vectors.append((0..<dimensions).map { _ in rng.nextUnitFloat() })
     }
     // Non-monotonic ids so ordering can't accidentally fall out of insertion order.
-    let frameIds = (0..<count).map { UInt64(($0 * 7 + 3) % (count * 7 + 11)) + 100 }
+    // Explicit types: the inferred form exceeds the Linux type-checker budget.
+    let modulus = count * 7 + 11
+    let frameIds: [UInt64] = (0..<count).map { (index: Int) -> UInt64 in
+        UInt64((index * 7 + 3) % modulus) + 100
+    }
     return (frameIds, vectors)
 }
 
