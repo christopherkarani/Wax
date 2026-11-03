@@ -12,21 +12,22 @@ actor UnifiedSearchEngineCache {
         case staged(stamp: UInt64)
     }
 
+    /// The index a cached vector engine was loaded from. Pending embeddings are
+    /// not part of the key: they are applied to the cached engine incrementally
+    /// (see `CachedVector.syncedThrough`), so a write does not force a reload.
     enum VectorSourceKey: Hashable, Sendable {
-        case pendingOnly(dimensions: Int, engine: LoadedVectorSearchEngine.Kind, pendingSequence: UInt64?)
+        case pendingOnly(dimensions: Int, engine: LoadedVectorSearchEngine.Kind)
         case committed(
             checksum: Data,
             similarity: VecSimilarity,
             dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind,
-            pendingSequence: UInt64?
+            engine: LoadedVectorSearchEngine.Kind
         )
         case staged(
             stamp: UInt64,
             similarity: VecSimilarity,
             dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind,
-            pendingSequence: UInt64?
+            engine: LoadedVectorSearchEngine.Kind
         )
     }
 
@@ -43,6 +44,8 @@ actor UnifiedSearchEngineCache {
     private struct CachedVector {
         var key: VectorSourceKey
         var engine: LoadedVectorSearchEngine
+        /// Latest pending-embedding sequence applied to `engine`.
+        var syncedThrough: UInt64?
     }
 
     private var textByWax: [ObjectIdentifier: CachedText] = [:]
@@ -122,8 +125,27 @@ actor UnifiedSearchEngineCache {
         }
 
         let waxId = ObjectIdentifier(wax)
+        let latestPending = pendingSnapshot.latestSequence
         if let cached = vectorByWax[waxId], cached.key == descriptor.key {
-            return cached.engine
+            if cached.syncedThrough == latestPending {
+                return cached.engine
+            }
+            if let latestPending, cached.syncedThrough.map({ $0 < latestPending }) ?? true {
+                // Only new writes since the last search: apply them instead of
+                // rebuilding the engine from the whole index. A load applies every
+                // pending embedding the same way, so the result is identical.
+                let delta = await wax.pendingEmbeddingMutations(since: cached.syncedThrough)
+                if !delta.embeddings.isEmpty {
+                    try await cached.engine.addBatch(
+                        frameIds: delta.embeddings.map(\.frameId),
+                        vectors: delta.embeddings.map(\.vector)
+                    )
+                }
+                recordVectorSync(waxId: waxId, key: descriptor.key, through: delta.latestSequence)
+                return cached.engine
+            }
+            // Pending embeddings were dropped without an index change; the cached
+            // engine may hold vectors that are gone. Reload.
         }
 
         let loaded = try await LoadedVectorSearchEngine.load(
@@ -133,8 +155,19 @@ actor UnifiedSearchEngineCache {
             preference: preference
         )
         incrementVectorDeserializations(for: waxId)
-        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded)
+        // `load` applies every pending embedding present when it read them, which
+        // is at least `latestPending`; a later write is re-applied idempotently.
+        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded, syncedThrough: latestPending)
         return loaded
+    }
+
+    /// Searches can interleave across the `addBatch` await. Adds are idempotent
+    /// overwrites, so only move the watermark forward and only for the same index.
+    private func recordVectorSync(waxId: ObjectIdentifier, key: VectorSourceKey, through sequence: UInt64?) {
+        guard var cached = vectorByWax[waxId], cached.key == key, let sequence else { return }
+        if let synced = cached.syncedThrough, synced >= sequence { return }
+        cached.syncedThrough = sequence
+        vectorByWax[waxId] = cached
     }
 
     private func incrementTextDeserializations(for waxId: ObjectIdentifier) {
@@ -174,8 +207,7 @@ actor UnifiedSearchEngineCache {
                     stamp: stamp,
                     similarity: staged.similarity,
                     dimensions: Int(staged.dimension),
-                    engine: kind,
-                    pendingSequence: pendingSnapshot.latestSequence
+                    engine: kind
                 ),
                 metric,
                 Int(staged.dimension)
@@ -189,8 +221,7 @@ actor UnifiedSearchEngineCache {
                     checksum: manifest.checksum,
                     similarity: manifest.similarity,
                     dimensions: Int(manifest.dimension),
-                    engine: kind,
-                    pendingSequence: pendingSnapshot.latestSequence
+                    engine: kind
                 ),
                 metric,
                 Int(manifest.dimension)
@@ -203,8 +234,7 @@ actor UnifiedSearchEngineCache {
         return (
             .pendingOnly(
                 dimensions: queryEmbeddingDimensions,
-                engine: kind,
-                pendingSequence: pendingSnapshot.latestSequence
+                engine: kind
             ),
             .cosine,
             queryEmbeddingDimensions
