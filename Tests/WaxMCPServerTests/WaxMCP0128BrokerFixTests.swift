@@ -1122,6 +1122,7 @@ func rememberOversizeIsRejectedWithTypedContentLimit() async throws {
 @Test
 func waxMCPServerCommandAdvertisesVersionAndHTTPBodyCap() throws {
     #expect(WaxMCPServerCommand.configuration.version == WaxMCPServerMetadata.version)
+    #expect(WaxMCPServerMetadata.version == WaxReleaseInfo.version)
     let command = try WaxMCPServerCommand.parse([])
     #expect(command.httpMaxBodyBytes == 1_048_576)
 }

@@ -15,7 +15,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Configuration ───────────────────────────────────────────────────────────
 NPM_PKG="$ROOT/Resources/npm/waxmcp"
-SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+SERVER_SWIFT="$ROOT/Sources/Wax/WaxReleaseInfo.swift"
 CLI_SWIFT="$ROOT/Sources/WaxCLI/WaxCLICommand.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
@@ -46,7 +46,8 @@ read_swift_version() {
 
 # Read version from wax-cli ArgumentParser configuration
 read_cli_version() {
-  perl -0ne 'if (/CommandConfiguration\(\s*commandName:\s*"wax-cli".*?version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s) { print "$1\n" }' "$CLI_SWIFT" || echo "NOT_FOUND"
+  # wax-cli --version derives from WaxReleaseInfo.version; a literal here is drift.
+  if grep -Fq 'version: WaxReleaseInfo.version' "$CLI_SWIFT"; then read_swift_version; else echo "NOT_FOUND"; fi
 }
 
 # Read waxmcp dependency from OpenClaw plugin

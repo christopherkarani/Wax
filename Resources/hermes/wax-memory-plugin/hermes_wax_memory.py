@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import ipaddress
 import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -205,6 +205,21 @@ def resolve_endpoint(config: Optional[Dict[str, Any]] = None) -> str:
     return DEFAULT_ENDPOINT
 
 
+def resolve_auth_token(config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Bearer token for the Wax MCP HTTP server, if one is configured."""
+    env = os.environ.get("WAX_MCP_HTTP_AUTH_TOKEN", "").strip()
+    if env:
+        return env
+    if config and isinstance(config.get("auth_token"), str) and config["auth_token"].strip():
+        return config["auth_token"].strip()
+    return None
+
+
+# Hosts wax-mcp itself treats as loopback (HTTPAuthPolicy). Any other address,
+# including the rest of 127.0.0.0/8, makes the server demand an auth token.
+_SERVER_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 def _jsonrpc_error_message(data: Dict[str, Any]) -> str:
     error = data.get("error")
     if isinstance(error, dict):
@@ -219,8 +234,9 @@ class WaxMCPError(Exception):
 class _WaxHTTPClient:
     """Stateful HTTP client for Wax MCP streamable HTTP / SSE transport."""
 
-    def __init__(self, endpoint: str) -> None:
+    def __init__(self, endpoint: str, auth_token: Optional[str] = None) -> None:
         self.endpoint = endpoint
+        self.auth_token = auth_token
         self._session_id: Optional[str] = None
         self._initialized = False
         self._ids = count(1)
@@ -234,6 +250,8 @@ class _WaxHTTPClient:
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
         if include_session and self._session_id:
             headers["MCP-Session-Id"] = self._session_id
         return headers
@@ -318,11 +336,10 @@ class _WaxHTTPClient:
         with self._lock:
             if self._session_id and _HAS_HTTP:
                 try:
-                    requests.delete(
-                        self.endpoint,
-                        headers={"MCP-Session-Id": self._session_id},
-                        timeout=10.0,
-                    )
+                    headers = {"MCP-Session-Id": self._session_id}
+                    if self.auth_token:
+                        headers["Authorization"] = f"Bearer {self.auth_token}"
+                    requests.delete(self.endpoint, headers=headers, timeout=10.0)
                 except Exception as exc:
                     logger.debug("Wax HTTP session close failed: %s", exc)
             self._session_id = None
@@ -330,15 +347,16 @@ class _WaxHTTPClient:
 
 
 class _WaxMCPManager:
-    def __init__(self, endpoint: str) -> None:
+    def __init__(self, endpoint: str, auth_token: Optional[str] = None) -> None:
         self.endpoint = endpoint
+        self.auth_token = auth_token
         self._auto_started = False
         self._process: Optional[subprocess.Popen] = None
 
     def probe(self) -> Dict[str, Any]:
         client: Optional[_WaxHTTPClient] = None
         try:
-            client = _WaxHTTPClient(self.endpoint)
+            client = _WaxHTTPClient(self.endpoint, self.auth_token)
             result = client.call_tool("stats", {})
             if result["ok"] and result["text"]:
                 stats = json.loads(result["text"])
@@ -372,20 +390,14 @@ class _WaxMCPManager:
             )
             return False
         parsed = urlparse(self.endpoint)
-        host = parsed.hostname
-        try:
-            is_loopback = bool(
-                host
-                and (
-                    host.lower() == "localhost"
-                    or ipaddress.ip_address(host).is_loopback
-                )
-            )
-        except ValueError:
-            is_loopback = False
-        if parsed.scheme != "http" or not is_loopback:
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "http" or host not in _SERVER_LOOPBACK_HOSTS:
             logger.error("Refusing to auto-start Wax MCP for unsupported endpoint: %s", self.endpoint)
             return False
+        # Bind IPv4 loopback for "localhost" so the server listens where the
+        # default endpoint and other clients (127.0.0.1) connect.
+        if host == "localhost":
+            host = "127.0.0.1"
         port = str(parsed.port or 3000)
         endpoint_path = parsed.path or "/mcp"
         cmd = [
@@ -468,13 +480,16 @@ class _WaxMCPManager:
             os.path.expanduser("~/.local/bin/wax-mcp"),
             "/usr/local/bin/wax-mcp",
             "/opt/homebrew/bin/wax-mcp",
-            "wax-mcp",
+            # PATH lookup, never a bare relative name: that would resolve
+            # against the working directory.
+            shutil.which("wax-mcp"),
         ]
+        # Source-tree debug build: a developer fallback, never ahead of
+        # WAX_MCP_BIN or the installed runtime.
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        wax_repo = os.path.normpath(
+        candidates.append(os.path.normpath(
             os.path.join(plugin_dir, "..", "..", "..", "..", "..", "..", ".build", "debug", "wax-mcp")
-        )
-        candidates.insert(0, wax_repo)
+        ))
         for candidate in candidates:
             if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
@@ -508,8 +523,9 @@ class WaxMemoryProvider(MemoryProvider):
         self._injected_client = client is not None
         self._config = dict(config or {})
         self.endpoint = resolve_endpoint(self._config)
-        self._client = client or _WaxHTTPClient(self.endpoint)
-        self._manager = _WaxMCPManager(self.endpoint)
+        auth_token = resolve_auth_token(self._config)
+        self._client = client or _WaxHTTPClient(self.endpoint, auth_token)
+        self._manager = _WaxMCPManager(self.endpoint, auth_token)
         self._lifecycle = WaxProviderLifecycle(
             client=lambda: self._client,
             reset_transport=self._reset_transport_after_failed_open,
@@ -620,6 +636,10 @@ class WaxMemoryProvider(MemoryProvider):
             self._repo = repo
             if self._hermes_home:
                 self._config.update(load_plugin_config(self._hermes_home))
+                if not self._injected_client:
+                    auth_token = resolve_auth_token(self._config)
+                    self._client.auth_token = auth_token
+                    self._manager.auth_token = auth_token
                 endpoint = resolve_endpoint(self._config)
                 if endpoint != self.endpoint and not self._injected_client:
                     self._replace_endpoint(endpoint)
@@ -664,8 +684,9 @@ class WaxMemoryProvider(MemoryProvider):
             logger.error("Wax endpoint-change process cleanup failed: %s", exc)
         self._session_id = None
         self.endpoint = endpoint
-        self._client = _WaxHTTPClient(endpoint)
-        self._manager = _WaxMCPManager(endpoint)
+        auth_token = resolve_auth_token(self._config)
+        self._client = _WaxHTTPClient(endpoint, auth_token)
+        self._manager = _WaxMCPManager(endpoint, auth_token)
 
     def _open_session(self, host_session_id: str) -> None:
         self._lifecycle.configure(
@@ -683,7 +704,7 @@ class WaxMemoryProvider(MemoryProvider):
             self._client.close()
         except Exception as exc:
             logger.debug("Wax failed transport close after session_open error: %s", exc)
-        self._client = _WaxHTTPClient(self.endpoint)
+        self._client = _WaxHTTPClient(self.endpoint, resolve_auth_token(self._config))
 
     def _ensure_session(self) -> Optional[str]:
         return self._lifecycle.ensure_session()
@@ -1046,6 +1067,13 @@ class WaxMemoryProvider(MemoryProvider):
                 "type": "boolean",
                 "choices": [True, False],
                 "env_var": "WAX_MCP_AUTO_START",
+            },
+            {
+                "key": "auth_token",
+                "description": "Bearer token for a Wax MCP HTTP server started with --http-auth-token",
+                "required": False,
+                "secret": True,
+                "env_var": "WAX_MCP_HTTP_AUTH_TOKEN",
             },
         ]
 

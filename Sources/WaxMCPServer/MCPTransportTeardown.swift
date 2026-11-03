@@ -8,6 +8,7 @@ enum MCPTeardownReason: String, Sendable, Equatable {
     case shutdown
     case recoveryReplacement
     case stdioEOF
+    case capacityEviction
 }
 
 enum MCPTeardownPerformError: Error, Sendable {
@@ -62,6 +63,7 @@ enum MCPTransportTeardown {
     ) async -> MCPTeardownOutcome {
         enum Race: Sendable {
             case response(AgentBrokerResponse)
+            case failed(String)
             case timeout
         }
 
@@ -83,7 +85,7 @@ enum MCPTransportTeardown {
                     )
                     return .response(response)
                 } catch {
-                    return .timeout
+                    return .failed(String(describing: error))
                 }
             }
             group.addTask {
@@ -101,6 +103,13 @@ enum MCPTransportTeardown {
             return MCPTeardownOutcome(
                 status: "timeout",
                 reason: reason.rawValue,
+                alreadyEnded: false,
+                sessionID: sessionID
+            )
+        case .failed(let message):
+            return MCPTeardownOutcome(
+                status: "failed",
+                reason: message,
                 alreadyEnded: false,
                 sessionID: sessionID
             )

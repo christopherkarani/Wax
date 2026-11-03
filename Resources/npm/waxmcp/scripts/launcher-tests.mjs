@@ -813,6 +813,91 @@ test("vector-health performs the MCP initialize and session handshake", async ()
   }
 });
 
+test("vector-health sends WAX_MCP_HTTP_AUTH_TOKEN on every request", async () => {
+  const token = "probe-secret";
+  const authorizations = [];
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      authorizations.push(request.headers.authorization);
+      if (request.headers.authorization !== `Bearer ${token}`) {
+        response.statusCode = 401;
+        response.end();
+        return;
+      }
+      if (request.method === "DELETE") {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const message = JSON.parse(body);
+      response.setHeader("MCP-Session-Id", "auth-session");
+      if (message.method === "notifications/initialized") {
+        response.statusCode = 202;
+        response.end();
+        return;
+      }
+      response.setHeader("Content-Type", "application/json");
+      if (message.method === "initialize") {
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } }));
+        return;
+      }
+      response.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              vectorSearchEnabled: true,
+              queryEmbeddingAvailable: true,
+              embedder: { model: "minilm" },
+            }),
+          }],
+        },
+      }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const result = await runAsync(["vector-health"], {
+      ...process.env,
+      WAX_MCP_HTTP_ENDPOINT: `http://127.0.0.1:${address.port}/mcp`,
+      WAX_MCP_HTTP_AUTH_TOKEN: token,
+    });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.equal(authorizations.length, 4);
+    assert.ok(authorizations.every(value => value === `Bearer ${token}`), JSON.stringify(authorizations));
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("vector-health refuses a WAX_MCP_HTTP_AUTH_TOKEN with line breaks", async () => {
+  let requests = 0;
+  const server = http.createServer((request, response) => {
+    requests += 1;
+    response.statusCode = 401;
+    response.end();
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const result = await runAsync(["vector-health"], {
+      ...process.env,
+      WAX_MCP_HTTP_ENDPOINT: `http://127.0.0.1:${address.port}/mcp`,
+      WAX_MCP_HTTP_AUTH_TOKEN: "probe\nurl = \"http://example.invalid/\"",
+    });
+    assert.equal(result.status, 1, result.stderr + result.stdout);
+    assert.match(result.stderr, /WAX_MCP_HTTP_AUTH_TOKEN/);
+    assert.equal(requests, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("vector-health closes the MCP session when stats cannot be parsed", async () => {
   const sessionID = "test-mcp-unparsed-session";
   let deleted = false;
@@ -1034,6 +1119,61 @@ test("install --dry-run without --wire-hooks is rejected before staging", () => 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /--dry-run only applies to --wire-hooks/);
     assert.equal(fs.existsSync(installRoot), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function envWithoutWaxBinaries(extra) {
+  const env = { ...process.env, PATH: "/usr/bin:/bin", ...extra };
+  delete env.WAX_MCP_BIN;
+  delete env.WAX_CLI_BIN;
+  return env;
+}
+
+test("launcher never runs ./.build/debug binaries from the working directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-cwd-build-"));
+  try {
+    const marker = path.join(root, "executed");
+    const checkout = path.join(root, "checkout");
+    const debugDir = path.join(checkout, ".build", "debug");
+    fs.mkdirSync(debugDir, { recursive: true });
+    makeExecutable(path.join(debugDir, "wax-mcp"), `#!/bin/sh\necho ran > '${marker}'\n`);
+
+    const result = spawnSync(process.execPath, [launcher, "--transport", "stdio"], {
+      cwd: checkout,
+      env: envWithoutWaxBinaries({ WAX_MCP_INSTALL_ROOT: path.join(root, "installed") }),
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.existsSync(marker), false, "cwd .build binary must not run");
+    assert.doesNotMatch(result.stderr, /\.build\/debug/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("install without --build ignores ./.build/debug in the working directory", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-install-cwd-build-"));
+  try {
+    const checkout = path.join(root, "checkout");
+    fs.mkdirSync(path.join(checkout, ".build"), { recursive: true });
+    makeRuntimeSource(
+      path.join(checkout, ".build", "debug"),
+      "#!/bin/sh\necho untrusted\n",
+      "#!/bin/sh\necho untrusted\n"
+    );
+    const installRoot = path.join(root, "installed");
+
+    const result = spawnSync(process.execPath, [launcher, "install"], {
+      cwd: checkout,
+      env: envWithoutWaxBinaries({ WAX_MCP_INSTALL_ROOT: installRoot }),
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /both wax-mcp and wax-cli are required/);
+    const platformKey = `${os.platform()}-${os.arch()}`;
+    assert.equal(fs.existsSync(path.join(installRoot, "runtime", platformKey, "wax-mcp")), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

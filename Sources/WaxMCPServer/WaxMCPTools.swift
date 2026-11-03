@@ -53,23 +53,16 @@ enum MCPRootsFetcher {
     /// background fetch on initialized/roots-changed notifications.
     static let timeoutSeconds: TimeInterval = 2
 
-    static func fetchRoots(server: Server) async -> [String] {
-        await withTaskGroup(of: [String]?.self) { group in
-            group.addTask {
-                do {
-                    let roots = try await server.listRoots()
-                    return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
-                } catch {
-                    return []
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeoutSeconds))
+    /// `gate` is the connection's: it keeps an unanswering client to one
+    /// parked `roots/list` and backs off after a failure.
+    static func fetchRoots(server: Server, gate: MCPRootsFetchGate) async -> [String] {
+        await gate.fetch {
+            do {
+                let roots = try await server.listRoots()
+                return MCPRootsMapper.paths(fromURIs: roots.map(\.uri))
+            } catch {
                 return nil
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? []
         }
     }
 }
@@ -117,6 +110,10 @@ enum WaxMCPTools {
         connectionContext: MCPConnectionContext? = nil
     ) async {
         let sessionHint = MCPClientSessionHint(connectionKey: connectionKey, context: connectionContext)
+        let pathConfinement = MCPPathConfinement(
+            configuration: brokerConfiguration,
+            includeProcessDirectory: connectionKey == "stdio"
+        )
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(
                 tools: ToolSchemas.tools(structuredMemoryEnabled: structuredMemoryEnabled),
@@ -129,7 +126,8 @@ enum WaxMCPTools {
                 params: params,
                 brokerConfiguration: brokerConfiguration,
                 structuredMemoryEnabled: structuredMemoryEnabled,
-                sessionHint: sessionHint
+                sessionHint: sessionHint,
+                pathConfinement: pathConfinement
             )
         }
 
@@ -152,12 +150,17 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool = true,
-        sessionHint: MCPClientSessionHint? = nil
+        sessionHint: MCPClientSessionHint? = nil,
+        pathConfinement: MCPPathConfinement? = nil
     ) async -> CallTool.Result {
         await executeCall(
             params: params,
             structuredMemoryEnabled: structuredMemoryEnabled,
-            sessionHint: sessionHint
+            sessionHint: sessionHint,
+            pathConfinement: pathConfinement ?? MCPPathConfinement(
+                configuration: brokerConfiguration,
+                includeProcessDirectory: false
+            )
         ) { request in
             try await AgentBrokerClient.perform(
                 request: request,
@@ -172,21 +175,34 @@ enum WaxMCPTools {
         params: CallTool.Parameters,
         broker: AgentBrokerService,
         structuredMemoryEnabled: Bool = true,
-        sessionHint: MCPClientSessionHint? = nil
+        sessionHint: MCPClientSessionHint? = nil,
+        pathConfinement: MCPPathConfinement? = nil
     ) async -> CallTool.Result {
-        await executeCall(
+        // Fail closed: without an explicit policy, paths are held to this
+        // broker's own store layout.
+        var confinement = pathConfinement
+        if confinement == nil {
+            confinement = MCPPathConfinement(
+                storeURL: await broker.longTermStoreURL,
+                sessionRootURL: await broker.sessionRootURL,
+                includeProcessDirectory: false
+            )
+        }
+        return await executeCall(
             params: params,
             structuredMemoryEnabled: structuredMemoryEnabled,
-            sessionHint: sessionHint
+            sessionHint: sessionHint,
+            pathConfinement: confinement ?? .denyAll
         ) { request in
             await broker.handle(request)
         }
     }
 
-    private static func executeCall(
+    static func executeCall(
         params: CallTool.Parameters,
         structuredMemoryEnabled: Bool,
         sessionHint: MCPClientSessionHint?,
+        pathConfinement: MCPPathConfinement,
         perform: @escaping @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse
     ) async -> CallTool.Result {
         do {
@@ -222,6 +238,16 @@ enum WaxMCPTools {
             injectClientCWDIfNeeded(name: params.name, arguments: &forwarded, sessionHint: sessionHint)
             migrateLegacyFilterKeysIfNeeded(name: params.name, arguments: &forwarded)
             try validateArgumentSurface(name: params.name, arguments: forwarded)
+            do {
+                try await confinePaths(
+                    command: params.name,
+                    arguments: &forwarded,
+                    confinement: pathConfinement,
+                    sessionHint: sessionHint
+                )
+            } catch {
+                return errorResult(message: error.message, code: "path_not_allowed")
+            }
             let verbosity = try responseVerbosity(from: forwarded) ?? .compact
 
             var response = try await perform(
@@ -266,7 +292,7 @@ enum WaxMCPTools {
                         fields: fields
                     )
                 }
-                return errorResult(message: message, code: errorCode(for: message))
+                return errorResult(message: message, code: "execution_failed")
             case .success:
                 guard let payload = response.payload else {
                     return errorResult(message: "Broker returned an empty payload", code: "execution_failed")
@@ -276,23 +302,45 @@ enum WaxMCPTools {
             }
         } catch let error as ToolValidationError {
             return errorResult(message: error.localizedDescription, code: "invalid_arguments")
+        } catch let error as BrokerUnresponsiveError {
+            return structuredErrorResult(
+                message: error.message,
+                code: "broker_unresponsive",
+                fields: [
+                    "committed": .bool(false),
+                    "socket_live": .bool(true),
+                    "answered": .bool(false),
+                    "next_action": .string(
+                        "Restart wax-mcp or launchctl kickstart the HTTP service, then session_open with conversation_id. The write did not land; do not spawn children."
+                    ),
+                ]
+            )
         } catch {
-            let message = error.localizedDescription
-            if message.contains("did not answer") || message.contains("socket_live=true") {
-                return structuredErrorResult(
-                    message: message,
-                    code: "broker_unresponsive",
-                    fields: [
-                        "committed": .bool(false),
-                        "socket_live": .bool(true),
-                        "answered": .bool(false),
-                        "next_action": .string(
-                            "Restart wax-mcp or launchctl kickstart the HTTP service, then session_open with conversation_id. The write did not land; do not spawn children."
-                        ),
-                    ]
-                )
-            }
-            return errorResult(message: message, code: "execution_failed")
+            return errorResult(message: error.localizedDescription, code: "execution_failed")
+        }
+    }
+
+    /// Confines the command's path argument. `roots/list` is captured in the
+    /// background after initialize, so a path outside the cached roots
+    /// fetches host roots once before it is refused. Accepted paths never wait.
+    private static func confinePaths(
+        command: String,
+        arguments: inout [String: Value],
+        confinement: MCPPathConfinement,
+        sessionHint: MCPClientSessionHint?
+    ) async throws(MCPPathConfinementError) {
+        let cachedRoots = sessionHint?.connectionContext()?.mcpRoots ?? []
+        do {
+            try confinement.apply(command: command, arguments: &arguments, projectRoots: cachedRoots)
+        } catch {
+            guard case .outsideAllowedRoots = error,
+                  MCPPathConfinement.usesProjectRoots(command: command),
+                  let sessionHint
+            else { throw error }
+            await sessionHint.refreshRootsIfNeeded()
+            let refreshedRoots = sessionHint.connectionContext()?.mcpRoots ?? []
+            guard refreshedRoots != cachedRoots else { throw error }
+            try confinement.apply(command: command, arguments: &arguments, projectRoots: refreshedRoots)
         }
     }
 }
@@ -793,13 +841,6 @@ private extension WaxMCPTools {
         case "wax_entity_resolve": return "entity_resolve"
         default: return nil
         }
-    }
-
-    static func errorCode(for message: String) -> String {
-        if message.hasPrefix("Missing required argument") || message.contains("must") || message.contains("unsupported argument") {
-            return "invalid_arguments"
-        }
-        return "execution_failed"
     }
 
 }
