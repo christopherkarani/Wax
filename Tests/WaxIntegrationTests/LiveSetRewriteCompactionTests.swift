@@ -285,6 +285,9 @@ func rewriteLiveSetChoosesWalSizeFromPayloadNotSourceRing() async throws {
             #expect(sourceWal.walSize == Constants.defaultWalSize)
             try await wax.close()
         }
+        // Raw puts leave the lex index behind; the first orchestrator open indexes them and
+        // commits that on close. Do it before measuring, so only the rewrite is under test.
+        try await MemoryOrchestrator(at: sourceURL, config: config).close()
 
         let sourceSizesBefore = try fileSizes(at: sourceURL)
         #expect(sourceSizesBefore.logical >= Constants.defaultWalSize)
