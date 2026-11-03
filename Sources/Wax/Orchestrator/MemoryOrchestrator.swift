@@ -4,33 +4,9 @@ import WaxVectorSearch
 
 /// High-level orchestrator for text memory RAG, managing ingest, recall, and lifecycle on a Wax store.
 package actor MemoryOrchestrator {
-    /// Total lifecycle of the embedding provider. Replaces the former
-    /// `(embedder?, embeddingStatus, text-only-write flag)` triple so illegal
-    /// combinations are unrepresentable.
-    /// Internal only because of the file split.
-    enum EmbedderLifecycle: Sendable {
-        case disabled
-        /// Provider still compiling. `wroteTextOnly` records that saves persisted
-        /// without vectors while waiting, forcing the first attach to report degraded.
-        case loading(wroteTextOnly: Bool)
-        case ready(
-            attached: any EmbeddingProvider,
-            degradedReason: String?
-        )
-        case unavailable(reason: String)
-    }
-
-    /// Internal only because of the file split.
-    struct SessionRuntimeStatsCacheEntry: Sendable, Equatable {
-        var generation: UInt64
-        var frameIds: [UInt64]
-        var tokenEstimate: Int
-    }
-
     /// Internal only because of the file split.
     static let accessStatsFrameKind = "wax.internal.access_stats"
-    /// Internal only because of the file split.
-    static let accessStatsLabel = "wax.internal"
+    private static let accessStatsLabel = "wax.internal"
     /// Internal only because of the file split.
     static let accessStatsMarkerKey = "wax.internal.kind"
     /// Internal only because of the file split.
@@ -73,40 +49,20 @@ package actor MemoryOrchestrator {
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var readinessFollowInFlight = false
     package var searchSnapshotHoldForTesting: Duration? = nil
-
-    package func setSearchSnapshotHoldForTesting(_ duration: Duration?) {
-        searchSnapshotHoldForTesting = duration
-    }
     package var accessStatsPersistenceHoldForTesting: Duration? = nil
     /// Test seam: awaited by `attachEmbedder` after its coverage scan so a test
     /// can interleave another actor call (e.g. a text-only remember) there.
     /// Internal only because of the file split; set it through `setCoverageScanHookForTesting(_:)`.
     var coverageScanHookForTesting: (@Sendable () async -> Void)? = nil
 
-    package func setCoverageScanHookForTesting(_ hook: (@Sendable () async -> Void)?) {
-        coverageScanHookForTesting = hook
-    }
-
     /// Test seam: makes every vector-coverage read throw this error.
     /// Internal only because of the file split; set it through `setCoverageReadFailureForTesting(_:)`.
     var coverageReadFailureForTesting: (any Error)? = nil
-
-    package func setCoverageReadFailureForTesting(_ error: (any Error)?) {
-        coverageReadFailureForTesting = error
-    }
 
     /// Test seam: called before each index removal and each soft-delete in
     /// ``delete(frameIds:)``; throwing there simulates that step failing.
     /// Internal only because of the file split; set it through `setDeleteStepHookForTesting(_:)`.
     var deleteStepHookForTesting: (@Sendable (DeleteStep, UInt64) throws -> Void)? = nil
-
-    package func setDeleteStepHookForTesting(_ hook: (@Sendable (DeleteStep, UInt64) throws -> Void)?) {
-        deleteStepHookForTesting = hook
-    }
-
-    package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
-        accessStatsPersistenceHoldForTesting = duration
-    }
     /// Internal only because of the file split; immutable after init.
     let enrichmentPipeline: EnrichmentPipeline?
     /// Internal only because of the file split; immutable after init.
@@ -129,65 +85,6 @@ package actor MemoryOrchestrator {
     let nowProvider: @Sendable () -> Int64
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var queryEmbeddingCircuitOpenedAtMs: Int64?
-
-    /// Externally visible status, derived from ``embedderLifecycle`` so wire
-    /// values stay identical to the pre-lifecycle behavior.
-    /// Internal only because of the file split.
-    var embeddingStatus: EmbeddingStatus {
-        switch embedderLifecycle {
-        case .disabled:
-            .disabled
-        case .loading:
-            .loading
-        case .ready(let attached, let degradedReason):
-            if let degradedReason {
-                .degraded(attached.identity, reason: degradedReason)
-            } else {
-                .active(attached.identity)
-            }
-        case .unavailable(let reason):
-            .unavailable(reason: reason)
-        }
-    }
-
-    /// Atomic snapshot of the ready provider so a concurrent attach cannot
-    /// pair one generation's provider with another's.
-    /// Ingest uses ``EmbeddingProvider/embed(batch:)``; query uses
-    /// ``EmbeddingProvider/embedQuery`` so Arctic prefixes survive erasure.
-    /// Internal only because of the file split.
-    var readyEmbedderSnapshot: (any EmbeddingProvider)? {
-        if case .ready(let attached, _) = embedderLifecycle {
-            return attached
-        }
-        return nil
-    }
-
-    /// Stays open for `config.queryEmbeddingCircuitCooldown` after a query-embedding
-    /// timeout, then allows one half-open probe; probe success closes the circuit,
-    /// another timeout re-opens it for a fresh cooldown window.
-    /// Internal only because of the file split.
-    var queryEmbeddingCircuitOpen: Bool {
-        guard let openedAtMs = queryEmbeddingCircuitOpenedAtMs else { return false }
-        return max(0, nowProvider() - openedAtMs) < Self.circuitCooldownMs(config.queryEmbeddingCircuitCooldown)
-    }
-
-    /// Circuit uses wall-clock epoch ms with the same open/half-open thresholds;
-    /// sub-ms `Duration` components truncate. A backward system-clock step can
-    /// extend an open window until wall time catches up (self-heals on next probe).
-    private static func circuitCooldownMs(_ duration: Duration) -> Int64 {
-        duration.components.seconds * 1000
-            + duration.components.attoseconds / 1_000_000_000_000_000
-    }
-
-    /// Internal only because of the file split.
-    var requiresEmbedderForSave: Bool {
-        switch embeddingStatus {
-        case .active, .degraded, .unavailable:
-            true
-        case .disabled, .loading:
-            false
-        }
-    }
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var sessionRuntimeStatsCache: [UUID: SessionRuntimeStatsCacheEntry] = [:]
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
@@ -699,6 +596,69 @@ package actor MemoryOrchestrator {
         }
     }
 
+    private func rememberHandoffSerialized(
+        content: String,
+        project: String?,
+        pendingTasks: [String],
+        sessionId: UUID?,
+        commit: Bool
+    ) async throws -> UInt64 {
+        let pending = pendingTasks
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let normalizedProject = project?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveSessionId = sessionId ?? currentSessionId
+        let previous: FrameMeta? = if let normalizedProject,
+                                      !normalizedProject.isEmpty,
+                                      let effectiveSessionId {
+            await wax.latestActiveHandoffMeta(
+                project: normalizedProject,
+                matchingSessionId: effectiveSessionId.uuidString
+            )
+        } else {
+            nil
+        }
+        let searchText = ([content] + pending).joined(separator: "\n")
+
+        var metadata = Metadata()
+        metadata.entries["kind"] = "handoff"
+        metadata.entries[MemoryMetadataKeys.type] = MemoryType.handoff.rawValue
+        metadata.entries[MemoryMetadataKeys.durability] = MemoryDurability.ephemeral.rawValue
+        metadata.entries[MemoryMetadataKeys.createdAtMs] = String(nowProvider())
+        if let normalizedProject, !normalizedProject.isEmpty {
+            metadata.entries["project"] = normalizedProject
+            metadata.entries[MemoryMetadataKeys.project] = normalizedProject
+        }
+        if !pending.isEmpty {
+            metadata.entries["pending_tasks"] = pending.joined(separator: "\n")
+        }
+        if let effectiveSessionId {
+            metadata.entries["session_id"] = effectiveSessionId.uuidString
+        }
+
+        let frameId = try await session.put(
+            Data(content.utf8),
+            options: FrameMetaSubset(
+                kind: FrameKind.handoff.storageValue,
+                labels: ["handoff"],
+                role: .document,
+                searchText: searchText,
+                metadata: metadata
+            )
+        )
+        if config.enableTextSearch {
+            try await session.indexText(frameId: frameId, text: searchText)
+        }
+        if let previous, previous.id != frameId {
+            try await wax.supersede(supersededId: previous.id, supersedingId: frameId)
+        }
+        // Ensure latestHandoff() can observe this frame immediately when commit=true.
+        if commit {
+            try await session.commit()
+        }
+        return frameId
+    }
+
     // MARK: - Persistence lifecycle
 
     package func flush() async throws {
@@ -726,6 +686,53 @@ package actor MemoryOrchestrator {
         try await session.commit()
         flushCount &+= 1
         enqueueScheduledLiveSetMaintenance()
+    }
+
+    private func persistAccessStatsIfNeeded() async throws {
+        guard let snapshot = await accessStatsManager.exportStatsSnapshotIfDirty() else {
+            return
+        }
+        if let hold = accessStatsPersistenceHoldForTesting {
+            try await Task.sleep(for: hold)
+        }
+        let exported = snapshot.stats
+        guard !exported.isEmpty else {
+            _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
+            return
+        }
+        let payload = try JSONEncoder().encode(exported)
+
+        var metadata = Metadata()
+        metadata.entries[Self.accessStatsMarkerKey] = Self.accessStatsMarkerValue
+        let frameId = try await session.put(
+            payload,
+            options: FrameMetaSubset(
+                kind: Self.accessStatsFrameKind,
+                labels: [Self.accessStatsLabel],
+                role: .system,
+                metadata: metadata
+            )
+        )
+        let previousFrameId = accessStatsFrameId
+        // Update the tracked frame ID before superseding so that if supersede throws,
+        // the next flush will still attempt to supersede this frame rather than
+        // the pre-supersede frame, preventing orphaned stats frames from accumulating.
+        accessStatsFrameId = frameId
+        if let previous = previousFrameId, previous != frameId {
+            do {
+                try await wax.supersede(supersededId: previous, supersedingId: frameId)
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "access stats supersede",
+                    fallback: "previous stats frame may remain active until next flush"
+                )
+            }
+        }
+        // A get/promote may have recorded newer accesses while the WAL writes
+        // above awaited. Only acknowledge the revision we actually persisted;
+        // a newer revision remains dirty for the next flush.
+        _ = await accessStatsManager.markPersisted(ifRevision: snapshot.revision)
     }
 
     package func close() async throws {

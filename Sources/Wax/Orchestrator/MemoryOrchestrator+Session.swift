@@ -3,6 +3,13 @@ import WaxCore
 import WaxVectorSearch
 
 extension MemoryOrchestrator {
+    /// Internal only because of the file split.
+    struct SessionRuntimeStatsCacheEntry: Sendable, Equatable {
+        var generation: UInt64
+        var frameIds: [UInt64]
+        var tokenEstimate: Int
+    }
+
     // MARK: - Session tagging (v1)
 
     package func startSession() -> UUID {
