@@ -47,10 +47,14 @@ package struct RememberDedupEmbeddingIdentity: Equatable, Sendable {
 package struct RememberDedupProbe: Equatable, Sendable {
     package var documentId: UInt64
     package var isComplete: Bool
+    /// The indexed text of a document stored as a single chunk (no chunk frames), whatever the
+    /// current chunking would cut the content into.
+    package var singleChunkText: String?
 
-    package init(documentId: UInt64, isComplete: Bool) {
+    package init(documentId: UInt64, isComplete: Bool, singleChunkText: String? = nil) {
         self.documentId = documentId
         self.isComplete = isComplete
+        self.singleChunkText = singleChunkText
     }
 }
 
@@ -62,36 +66,27 @@ extension Wax {
         embeddingIdentity: RememberDedupEmbeddingIdentity?
     ) async -> RememberDedupProbe? {
         await withReadLock {
+            /// A document is complete by its own record: every chunk agrees on one chunk count and
+            /// all of them are present. The current chunking may cut the content differently
+            /// (MiniLM's smaller target), which must not turn a stored document into a duplicate.
             struct ChunkCoverage {
                 var count = 0
                 var indices: Set<Int> = []
+                var recordedChunkCounts: Set<Int> = []
                 var indicesAreValid = true
-                var chunkCountsMatch = true
                 var embeddingIdentityMatches = true
 
                 mutating func record(
                     _ chunk: FrameMeta,
-                    expectedChunkCount: Int,
                     embeddingIdentity: RememberDedupEmbeddingIdentity?
                 ) {
                     count += 1
-                    guard expectedChunkCount > 0 else { return }
-
-                    guard let chunkCount = chunk.chunkCount, Int(chunkCount) == expectedChunkCount else {
-                        chunkCountsMatch = false
-                        return
-                    }
-                    guard let chunkIndex = chunk.chunkIndex else {
+                    guard let chunkCount = chunk.chunkCount, let chunkIndex = chunk.chunkIndex else {
                         indicesAreValid = false
                         return
                     }
-
-                    let index = Int(chunkIndex)
-                    guard (0..<expectedChunkCount).contains(index) else {
-                        indicesAreValid = false
-                        return
-                    }
-                    guard indices.insert(index).inserted else {
+                    recordedChunkCounts.insert(Int(chunkCount))
+                    guard indices.insert(Int(chunkIndex)).inserted else {
                         indicesAreValid = false
                         return
                     }
@@ -104,9 +99,10 @@ extension Wax {
 
                 func isComplete(expectedChunkCount: Int) -> Bool {
                     guard expectedChunkCount > 0 else { return true }
-                    guard count == expectedChunkCount else { return false }
-                    guard indices.count == expectedChunkCount else { return false }
-                    return indicesAreValid && chunkCountsMatch && embeddingIdentityMatches
+                    guard indicesAreValid, embeddingIdentityMatches,
+                          recordedChunkCounts.count == 1,
+                          let recorded = recordedChunkCounts.first, recorded > 0 else { return false }
+                    return count == recorded && indices == Set(0..<recorded)
                 }
             }
 
@@ -161,11 +157,7 @@ extension Wax {
 
                 if meta.role == .chunk, let parentId = meta.parentId {
                     var coverage = chunkCoverageByDocument[parentId] ?? ChunkCoverage()
-                    coverage.record(
-                        meta,
-                        expectedChunkCount: expectedChunkCount,
-                        embeddingIdentity: embeddingIdentity
-                    )
+                    coverage.record(meta, embeddingIdentity: embeddingIdentity)
                     chunkCoverageByDocument[parentId] = coverage
                     return nil
                 }
@@ -180,9 +172,12 @@ extension Wax {
                 guard storedIdentity == requestedIdentity else { return nil }
 
                 let coverage = chunkCoverageByDocument[meta.id] ?? ChunkCoverage()
+                // Only single-chunk remembers put searchText on the document itself.
+                let ownText = meta.searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return RememberDedupProbe(
                     documentId: meta.id,
-                    isComplete: coverage.isComplete(expectedChunkCount: expectedChunkCount)
+                    isComplete: coverage.isComplete(expectedChunkCount: expectedChunkCount),
+                    singleChunkText: coverage.count == 0 && !ownText.isEmpty ? meta.searchText : nil
                 )
             }
 

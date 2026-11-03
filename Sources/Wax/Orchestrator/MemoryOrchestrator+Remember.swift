@@ -48,11 +48,12 @@ extension MemoryOrchestrator {
                 )
             }
             // Single-chunk remember writes only the document. A matching
-            // document is not complete unless it is actually searchable.
-            if chunks.count == 1 {
+            // document is not complete unless it is actually searchable. A document stored as
+            // one chunk under other chunk sizing keeps its own text.
+            if let text = chunks.count == 1 ? chunks[0] : existingProbe.singleChunkText {
                 try await ensureSingleChunkDocumentSearchable(
                     documentId: existingProbe.documentId,
-                    text: chunks[0]
+                    text: text
                 )
                 return RememberResult(
                     frameId: existingProbe.documentId,
