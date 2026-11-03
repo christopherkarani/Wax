@@ -80,13 +80,16 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
-    package func stageForCommit(into wax: Wax) async throws {
+    /// `syncedThrough` is the pending-embedding sequence the engine was last synced to;
+    /// an embedding written after that sync leaves the staged index stale, not silently short.
+    package func stageForCommit(into wax: Wax, syncedThrough: UInt64?) async throws {
+        let coverage = StagedVecIndexCoverage.syncedThrough(syncedThrough)
         switch self {
         case .accelerate(let engine):
-            try await engine.stageForCommit(into: wax)
+            try await engine.stageForCommit(into: wax, coverage: coverage)
         #if canImport(Metal) && canImport(MetalANNS)
         case .metalANNS(let engine):
-            try await engine.stageForCommit(into: wax)
+            try await engine.stageForCommit(into: wax, coverage: coverage)
         #endif
         }
     }

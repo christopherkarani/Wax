@@ -88,6 +88,17 @@ package struct WaxWALStats: Equatable, Sendable {
     }
 }
 
+/// The pending embeddings a staged vector index covers. Commit refuses the index as
+/// stale (`WaxError.vectorIndexStale`) once a later embedding is pending.
+package enum StagedVecIndexCoverage: Equatable, Sendable {
+    /// The latest pending embedding when staged. Correct only when no embedding can be
+    /// written between the engine's sync and the stage (see `Wax.withEmbeddingWritesPaused`).
+    case latestPending
+    /// Embeddings through this WAL sequence, the `latestSequence` the engine synced
+    /// (`nil` when none were pending).
+    case syncedThrough(UInt64?)
+}
+
 package struct PendingEmbeddingSnapshot: Equatable, Sendable {
     package let embeddings: [PutEmbedding]
     package let latestSequence: UInt64?
@@ -1545,7 +1556,8 @@ package actor Wax {
         bytes: Data,
         vectorCount: UInt64,
         dimension: UInt32,
-        similarity: VecSimilarity
+        similarity: VecSimilarity,
+        coverage: StagedVecIndexCoverage = .latestPending
     ) async throws {
         try await withWriteLock {
             guard !bytes.isEmpty else {
@@ -1587,7 +1599,13 @@ package actor Wax {
                 }
             }
 
-            let pendingEmbeddingMaxSequence = pendingMutationSummary.latestPendingEmbeddingSequence
+            let pendingEmbeddingMaxSequence: UInt64?
+            switch coverage {
+            case .latestPending:
+                pendingEmbeddingMaxSequence = pendingMutationSummary.latestPendingEmbeddingSequence
+            case .syncedThrough(let sequence):
+                pendingEmbeddingMaxSequence = sequence
+            }
             if pendingMutationSummary.hasPendingEmbedding {
                 let matchesDimension = !pendingMutationSummary.pendingEmbeddingHasMixedDimensions
                     && pendingMutationSummary.pendingEmbeddingDimension == dimension
@@ -1620,7 +1638,7 @@ package actor Wax {
                 }
             }
 
-            if pendingEmbeddingMaxSequence == nil,
+            if !pendingMutationSummary.hasPendingEmbedding,
                let committed = toc.indexes.vec,
                committed.vectorCount == vectorCount,
                committed.dimension == dimension,

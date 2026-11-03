@@ -541,7 +541,7 @@ package actor WaxSession {
             removedFrameIds: pendingRemovedFrameIds
         )
         await reachCommitCheckpoint(.afterVectorSync)
-        try await engine.stageForCommit(into: wax)
+        try await engine.stageForCommit(into: wax, syncedThrough: lastPendingEmbeddingSequence)
         pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
 

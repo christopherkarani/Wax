@@ -721,7 +721,7 @@ func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [3, 1])
 
-    try await engine.stageForCommit(into: wax)
+    try await metalANNS.stageForCommit(into: wax)
     let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
     guard case .metal(let info, _, _) = try VectorSerializer.decodeVecSegment(from: restaged) else {
         Issue.record("unexpected payload")

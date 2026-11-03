@@ -202,7 +202,7 @@ package actor WaxVectorSearchSession {
     }
 
     private func stageEngineForCommit() async throws {
-        try await concreteEngine.stageForCommit(into: wax)
+        try await concreteEngine.stageForCommit(into: wax, syncedThrough: lastPendingEmbeddingSequence)
     }
 }
 
