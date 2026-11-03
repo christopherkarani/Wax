@@ -213,3 +213,130 @@ private let framePayloadMethodDocPaths = [
     "Sources/WaxCore/WaxCore.docc/Articles/GettingStarted.md",
     "Resources/website/docs/core/getting-started.md",
 ]
+
+// MARK: - Wax guarded state stays inside the Wax sources
+
+/// `Wax`'s commit-path state and helpers are `internal` only because `Wax` is split across
+/// `Wax.swift` and its `Wax+*.swift` extensions; they must only be used under `opLock`
+/// from those files. Any other WaxCore file that reaches them bypasses the lock.
+@Test
+func waxGuardedStateIsReferencedOnlyFromWaxSources() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let coreDirectory = repoRoot.appendingPathComponent("Sources/WaxCore")
+    let relativePaths = try #require(FileManager.default.subpaths(atPath: coreDirectory.path))
+    let scannedPaths = relativePaths
+        .filter { $0.hasSuffix(".swift") && !isWaxActorSource($0) }
+        .sorted()
+    try #require(!scannedPaths.isEmpty)
+    // Proves the scan recursed into subdirectories rather than only the top level.
+    try #require(scannedPaths.contains("WAL/WALRingReader.swift"))
+
+    var violations: [String] = []
+    for relativePath in scannedPaths {
+        let source = try String(
+            contentsOf: coreDirectory.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
+        violations += try waxGuardedStateReferences(in: source, relativePath: relativePath)
+    }
+    #expect(violations.isEmpty, "Wax guarded state referenced outside Wax.swift/Wax+*.swift: \(violations)")
+}
+
+@Test
+func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
+    let flagged = [
+        "let toc = await wax.toc",
+        "let header = await self.store?.header",
+        "let pending = await wax.pendingMutations",
+        "let count = await wax.toc.frames.count",
+        "await wax.clearPendingMutations()",
+        "_ = try await wax.applyPendingMutationsIntoTOC(&copy)",
+        "extension Wax {\n    func peek() -> Int { toc.frames.count }\n}",
+    ]
+    for source in flagged {
+        #expect(try !waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
+    }
+    // The same receiver is allowed only in the file whose own type owns that property.
+    #expect(try !waxGuardedStateReferences(
+        in: "let n = scan.pendingMutations.count",
+        relativePath: "Search/New.swift"
+    ).isEmpty)
+
+    let allowed = [
+        "let header = try WALRecordHeader.decode(from: data, offset: 0)",
+        "self.pendingMutations = pendingMutations",
+        "// wax.toc is guarded by opLock",
+        "throw WaxError.invalidToc(reason: \"wax.toc must be at least 32 bytes\")",
+        "extension WaxTOC {\n    var toc: Int { 0 }\n}",
+    ]
+    for source in allowed {
+        #expect(try waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
+    }
+    #expect(try waxGuardedStateReferences(
+        in: "let n = scan.pendingMutations.count",
+        relativePath: "WAL/PendingReplayPolicy.swift"
+    ).isEmpty)
+}
+
+/// `Wax.swift` and the `Wax+*.swift` extensions at the top of `Sources/WaxCore`.
+private func isWaxActorSource(_ relativePath: String) -> Bool {
+    !relativePath.contains("/")
+        && (relativePath == "Wax.swift" || (relativePath.hasPrefix("Wax+") && relativePath.hasSuffix(".swift")))
+}
+
+/// Wax members reachable only because of the file split, and which must stay under `opLock`.
+private let waxGuardedMembers = ["toc", "header", "pendingMutations", "clearPendingMutations", "applyPendingMutationsIntoTOC"]
+
+/// Member accesses that name a guarded member but belong to another type, keyed by file:
+/// `WALPendingScanResult.pendingMutations` is read through these receivers.
+private let nonWaxGuardedNameReceivers: [String: Set<String>] = [
+    "WAL/WALRingReader.swift": [")"],
+    "WAL/PendingReplayPolicy.swift": ["scan"],
+]
+
+/// Returns a description of every line in `source` that reaches a guarded `Wax` member:
+/// any use of a guarded helper name, any member access `x.toc`/`x.header`/`x.pendingMutations`
+/// whose receiver is not `self` or an allow-listed non-Wax value, and any bare use of a
+/// guarded name inside a file that extends `Wax`. Comments and string literals are ignored.
+private func waxGuardedStateReferences(in source: String, relativePath: String) throws -> [String] {
+    let names = waxGuardedMembers.joined(separator: "|")
+    // Simple (ASCII) word boundaries: the default Unicode boundaries treat `a.b` as one
+    // word, so `\b` would not match inside member chains such as `toc.frames`.
+    let helperUse = try Regex(#"\b(?:clearPendingMutations|applyPendingMutationsIntoTOC)\b"#)
+        .wordBoundaryKind(.simple)
+    let memberAccess = try Regex(#"([A-Za-z_][A-Za-z0-9_]*|\))\s*\??\s*\.\s*(?:"# + names + #")\b"#)
+        .wordBoundaryKind(.simple)
+    let bareUse = try Regex(#"\b(?:"# + names + #")\b"#).wordBoundaryKind(.simple)
+    let extendsWax = try Regex(#"\bextension\s+Wax\b"#).wordBoundaryKind(.simple)
+    let stringLiteral = try Regex(#""(?:[^"\\]|\\.)*""#)
+
+    let lines = source.components(separatedBy: "\n").map { line -> String in
+        var code = line.replacing(stringLiteral, with: "\"\"")
+        if let comment = code.range(of: "//") {
+            code = String(code[..<comment.lowerBound])
+        }
+        return code
+    }
+    let fileExtendsWax = lines.contains { $0.contains(extendsWax) }
+    let allowedReceivers = nonWaxGuardedNameReceivers[relativePath, default: []].union(["self"])
+
+    var violations: [String] = []
+    for (index, code) in lines.enumerated() {
+        let location = "\(relativePath):\(index + 1): \(code.trimmingCharacters(in: .whitespaces))"
+        if code.contains(helperUse) || (fileExtendsWax && code.contains(bareUse)) {
+            violations.append(location)
+            continue
+        }
+        for match in code.matches(of: memberAccess) {
+            let receiver = match.output[1].substring.map(String.init) ?? ""
+            if !allowedReceivers.contains(receiver) {
+                violations.append(location)
+                break
+            }
+        }
+    }
+    return violations
+}
