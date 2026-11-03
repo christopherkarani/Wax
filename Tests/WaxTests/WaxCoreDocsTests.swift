@@ -271,6 +271,14 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "extension Wax {\n    func size() -> UInt64 { wal.writePos }\n}",
         "extension Wax {\n    func flush() async throws { try await commitLocked() }\n}",
         "extension Wax {\n    func dims() -> Int? { stagedVecIndex?.dimension }\n}",
+        // Code inside string interpolation, after a raw string, and key paths.
+        "log(\"n \\(await wax.pendingMutations.count)\")",
+        "let p = #\"\\\"#; let t = wax.toc; print(\"x\")",
+        "let tocs = stores.map(\\.toc)",
+        "let s = #\"\\#(wax.toc)\"#",
+        "let s = \"\"\"\n    \\(wax.toc)\n    \"\"\"",
+        "log(\"\\(label(\")\")) \\(wax.toc)\")",
+        "/* a /* b */ c */ let t = wax.toc",
     ]
     for source in flagged {
         #expect(try !waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
@@ -278,6 +286,11 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
     // A multi-line chain is reported on the line that names the member.
     #expect(try waxGuardedStateReferences(in: "let toc = wax\n    .toc", relativePath: "Search/New.swift")
         == ["Search/New.swift:2: .toc"])
+    // Comments and multi-line strings keep their newlines, so later line numbers do not move.
+    #expect(try waxGuardedStateReferences(
+        in: "/* a\n b */ let s = \"\"\"\n    text\n    \"\"\"\nlet toc = wax.toc",
+        relativePath: "Search/New.swift"
+    ) == ["Search/New.swift:5: let toc = wax.toc"])
     // The file-scoped allow-list names the call whose result is read, not any `)` receiver.
     #expect(try !waxGuardedStateReferences(
         in: "let toc = (await wax).toc",
@@ -302,6 +315,11 @@ func waxGuardedStateScanFlagsReferencesOutsideWaxSources() throws {
         "let size = options.walSize",
         "private var isLocked = false",
         "if !self.isLocked { isLocked = true }",
+        "let held = await mutex.isLocked",
+        "let s = \"\"\"\n    wax.toc\n    \"\"\"",
+        "let s = #\"wax.toc \\(wax.toc)\"#",
+        "/* outer /* inner */ wax.toc */",
+        "let url = \"https://example.com\"; let n = 1",
     ]
     for source in allowed {
         #expect(try waxGuardedStateReferences(in: source, relativePath: "Search/New.swift").isEmpty, "\(source)")
@@ -328,9 +346,11 @@ private func isWaxActorSource(_ relativePath: String) -> Bool {
 
 /// Wax members reachable only because of the file split, and which must stay under `opLock`:
 /// the named state and helpers, plus every `*Locked` / `*Unlocked` helper (they assume the
-/// caller already holds `opLock`).
-private let waxGuardedMemberPattern = #"(?:toc|header|wal|pendingMutations|stagedVecIndex|"#
-    + #"clearPendingMutations|applyPendingMutationsIntoTOC|[A-Za-z_][A-Za-z0-9_]*(?:Locked|Unlocked))"#
+/// caller already holds `opLock`). `is…` names such as `AsyncMutex.isLocked` are state queries,
+/// not helpers, so they are excluded.
+private let waxGuardedMemberPattern: String = #"(?:toc|header|wal|pendingMutations|stagedVecIndex|"#
+    + #"clearPendingMutations|applyPendingMutationsIntoTOC|"#
+    + #"(?!is[A-Z])[A-Za-z_][A-Za-z0-9_]*(?:Locked|Unlocked))"#
 
 /// Member accesses that name a guarded member but belong to another type, keyed by file.
 /// `WALPendingScanResult.pendingMutations` is read through these receivers. A call result is
@@ -344,29 +364,23 @@ private let nonWaxGuardedNameReceivers: [String: Set<String>] = [
 /// any use of a guarded helper name, any member access `x.toc` / `x.wal` / `x.commitLocked()`
 /// (also when split across lines) whose receiver is not `self` or an allow-listed non-Wax
 /// value, and any bare use of a guarded name inside a file that extends `Wax`. Comments and
-/// string literals are ignored.
+/// string literal text are ignored; code inside string interpolation is scanned.
 private func waxGuardedStateReferences(in source: String, relativePath: String) throws -> [String] {
     // Simple (ASCII) word boundaries: the default Unicode boundaries treat `a.b` as one
     // word, so `\b` would not match inside member chains such as `toc.frames`.
     let helperUse = try Regex(#"\b(?:clearPendingMutations|applyPendingMutationsIntoTOC)\b"#)
         .wordBoundaryKind(.simple)
-    // The receiver is an identifier, `$0`, or the closing `)` / `]` of a call, parenthesized
-    // expression or subscript. `\s` also matches newlines, so `wax\n    .toc` is one access.
+    // The receiver is an identifier, `$0`, the closing `)` / `]` of a call, parenthesized
+    // expression or subscript, or the `\` of a key path. `\s` also matches newlines, so
+    // `wax\n    .toc` is one access.
     let memberAccess = try Regex(
-        #"([A-Za-z_][A-Za-z0-9_]*|\$[0-9]+|[)\]])\s*[?!]?\s*\.\s*"# + waxGuardedMemberPattern + #"\b"#
+        #"([A-Za-z_][A-Za-z0-9_]*|\$[0-9]+|[)\]]|\\)\s*[?!]?\s*\.\s*"# + waxGuardedMemberPattern + #"\b"#
     ).wordBoundaryKind(.simple)
     let bareUse = try Regex(#"\b"# + waxGuardedMemberPattern + #"\b"#).wordBoundaryKind(.simple)
     let extendsWax = try Regex(#"\bextension\s+Wax\b"#).wordBoundaryKind(.simple)
-    let stringLiteral = try Regex(#""(?:[^"\\]|\\.)*""#)
 
-    let lines = source.components(separatedBy: "\n").map { line -> String in
-        var code = line.replacing(stringLiteral, with: "\"\"")
-        if let comment = code.range(of: "//") {
-            code = String(code[..<comment.lowerBound])
-        }
-        return code
-    }
-    let code = lines.joined(separator: "\n")
+    let code = swiftCodeOnly(source)
+    let lines = code.components(separatedBy: "\n")
     let fileExtendsWax = code.contains(extendsWax)
     let allowedReceivers = nonWaxGuardedNameReceivers[relativePath, default: []].union(["self"])
 
@@ -413,4 +427,115 @@ private func receiverName(in code: String, endingAt range: Range<String.Index>) 
         start = previous
     }
     return "\(code[start..<index])\(open)\(close)"
+}
+
+/// `source` with comments and the text of string literals removed. Every newline is kept, so
+/// line numbers do not move, and the code inside `\(…)` interpolations is kept so it is
+/// scanned too. Handles `//` and nested `/* */` comments, `"…"` and `"""…"""` strings, and raw
+/// strings with any number of `#` (whose interpolation is spelled `\#(…)`).
+private func swiftCodeOnly(_ source: String) -> String {
+    var lexer = SwiftCodeLexer(source: Array(source))
+    lexer.copyCode(insideInterpolation: false)
+    return lexer.output
+}
+
+private struct SwiftCodeLexer {
+    let source: [Character]
+    var index = 0
+    var output = ""
+
+    init(source: [Character]) {
+        self.source = source
+    }
+
+    private func hasPrefix(_ text: String) -> Bool {
+        var position = index
+        for character in text {
+            guard position < source.count, source[position] == character else { return false }
+            position += 1
+        }
+        return true
+    }
+
+    /// Copies code to `output`. Inside an interpolation it stops after the `)` that closes it.
+    mutating func copyCode(insideInterpolation: Bool) {
+        var depth = 0
+        while index < source.count {
+            if hasPrefix("//") {
+                while index < source.count, source[index] != "\n" { index += 1 }
+            } else if hasPrefix("/*") {
+                skipBlockComment()
+            } else if let hashes = stringOpeningHashes() {
+                skipString(hashes: hashes)
+            } else {
+                let character = source[index]
+                index += 1
+                if insideInterpolation, character == "(" {
+                    depth += 1
+                } else if insideInterpolation, character == ")" {
+                    if depth == 0 { return }
+                    depth -= 1
+                }
+                output.append(character)
+            }
+        }
+    }
+
+    /// The number of `#` before a `"` that opens a string at `index`, or nil when none opens here.
+    private func stringOpeningHashes() -> Int? {
+        var position = index
+        while position < source.count, source[position] == "#" { position += 1 }
+        guard position < source.count, source[position] == "\"" else { return nil }
+        return position - index
+    }
+
+    private mutating func skipBlockComment() {
+        var depth = 0
+        while index < source.count {
+            if hasPrefix("/*") {
+                depth += 1
+                index += 2
+            } else if hasPrefix("*/") {
+                depth -= 1
+                index += 2
+                if depth == 0 { return }
+            } else {
+                if source[index] == "\n" { output.append("\n") }
+                index += 1
+            }
+        }
+    }
+
+    /// Skips a string opened at `index` by `hashes` `#` and `"` or `"""`, writing `""` for it
+    /// plus its newlines and the code of each interpolation.
+    private mutating func skipString(hashes: Int) {
+        let delimiter = String(repeating: "#", count: hashes)
+        index += hashes
+        let quote = hasPrefix("\"\"\"") ? "\"\"\"" : "\""
+        index += quote.count
+        let terminator = quote + delimiter
+        let escape = "\\" + delimiter
+        output.append("\"")
+        while index < source.count {
+            if hasPrefix(terminator) {
+                index += terminator.count
+                break
+            }
+            if hasPrefix(escape) {
+                index += escape.count
+                if index < source.count, source[index] == "(" {
+                    index += 1
+                    output.append("(")
+                    copyCode(insideInterpolation: true)
+                    output.append(")")
+                    continue
+                }
+            }
+            if index < source.count {
+                if source[index] == "\n" { output.append("\n") }
+                index += 1
+            }
+        }
+        output.append("\"")
+    }
 }
