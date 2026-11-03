@@ -281,26 +281,6 @@ extension PhotoRAGOrchestrator {
         }
     }
 
-    private func embedQueryText(_ text: String) async throws -> [Float] {
-        let key = EmbeddingKey.make(
-            text: text,
-            identity: embedder.identity,
-            dimensions: embedder.dimensions,
-            normalized: embedder.normalize
-        )
-        if let cached = await queryEmbeddingCache?.get(key) {
-            return cached
-        }
-
-        var vec = try await embedder.embed(text: text)
-        if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-        guard vec.count == embedder.dimensions else {
-            throw WaxError.invalidEmbedding(reason: "embedder produced \(vec.count) dims for query text, expected \(embedder.dimensions)")
-        }
-        await queryEmbeddingCache?.set(key, value: vec)
-        return vec
-    }
-
     func indexStateRootId(for photoID: PhotoID) -> UInt64? {
         index.rootByPhotoID[photoID]
     }

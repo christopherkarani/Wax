@@ -106,7 +106,7 @@ package actor VideoRAGOrchestrator {
 
     let embedder: any MultimodalEmbeddingProvider
     let transcriptProvider: (any VideoTranscriptProvider)?
-    let queryEmbeddingCache: EmbeddingMemoizer?
+    private let queryEmbeddingCache: EmbeddingMemoizer?
 
     var index = IndexState()
 
@@ -289,6 +289,28 @@ package actor VideoRAGOrchestrator {
                 )
             }
         }
+    }
+
+    // MARK: - Query embedding
+
+    func buildQueryEmbedding(text: String?) async throws -> [Float]? {
+        guard let text, !text.isEmpty else { return nil }
+        let key = EmbeddingKey.make(
+            text: text,
+            identity: embedder.identity,
+            dimensions: embedder.dimensions,
+            normalized: embedder.normalize
+        )
+        if let cached = await queryEmbeddingCache?.get(key) {
+            return cached
+        }
+        var vec = try await embedder.embed(text: text)
+        if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
+        guard vec.count == embedder.dimensions else {
+            throw VideoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: vec.count)
+        }
+        await queryEmbeddingCache?.set(key, value: vec)
+        return vec
     }
 }
 

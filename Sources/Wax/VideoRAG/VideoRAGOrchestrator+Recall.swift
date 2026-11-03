@@ -334,28 +334,6 @@ extension VideoRAGOrchestrator {
         return entries[MetaKey.isLocal] != "true"
     }
 
-    // MARK: - Query embedding
-
-    private func buildQueryEmbedding(text: String?) async throws -> [Float]? {
-        guard let text, !text.isEmpty else { return nil }
-        let key = EmbeddingKey.make(
-            text: text,
-            identity: embedder.identity,
-            dimensions: embedder.dimensions,
-            normalized: embedder.normalize
-        )
-        if let cached = await queryEmbeddingCache?.get(key) {
-            return cached
-        }
-        var vec = try await embedder.embed(text: text)
-        if embedder.normalize, !vec.isEmpty { vec = VectorMath.normalizeL2(vec) }
-        guard vec.count == embedder.dimensions else {
-            throw VideoIngestError.embedderDimensionMismatch(expected: embedder.dimensions, got: vec.count)
-        }
-        await queryEmbeddingCache?.set(key, value: vec)
-        return vec
-    }
-
     private static func toWaxTimeRange(_ range: ClosedRange<Date>?) -> SearchTimeRange? {
         guard let range else { return nil }
         let after = Int64(range.lowerBound.timeIntervalSince1970 * 1000)
