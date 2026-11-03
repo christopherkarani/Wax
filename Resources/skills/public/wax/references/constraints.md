@@ -29,4 +29,4 @@
 
 ## Persistence Lifecycle
 - `Memory.save(...)` writes to the WAL; `Memory.flush()` commits pending writes to durable storage; `Memory.close()` flushes and closes. Source: `Sources/Wax/Memory.swift`.
-- `Memory.delete(frameID:)` soft-deletes the frame and removes it from the text and vector indexes, committed immediately. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
+- `Memory.delete(frameID:)` soft-deletes the frame and removes it from the text and vector indexes, committed immediately. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator+Delete.swift`.
