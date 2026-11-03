@@ -6,49 +6,115 @@ import Testing
 @testable import WaxCore
 @testable import wax_cli
 
-/// SIGTERM must shut the broker daemon down gracefully: finish the request in
-/// flight, close the store, release its lock and remove the socket, then exit 0.
-/// The client's SIGTERM grace before SIGKILL is 2s, so shutdown must beat it.
+/// SIGTERM must shut the broker daemon down gracefully: drop clients still
+/// sending a request, close the store, release its lock and remove the socket,
+/// then exit 0. The client's SIGTERM grace before SIGKILL is 2s, so shutdown
+/// must beat it, measured from the kill.
 @Suite struct DaemonSignalShutdownTests {
     private static let clientTerminateGraceSeconds: TimeInterval = 2
 
+    /// A client trickling one byte every 0.5s never finishes its request. It
+    /// must not hold shutdown past the grace or keep the store open.
     @Test(.timeLimit(.minutes(2)))
-    func daemonSocketModeFinishesInFlightWorkAndExitsCleanlyOnSIGTERM() async throws {
+    func daemonSocketModeDropsASlowClientAndExitsCleanlyOnSIGTERM() async throws {
         let fixture = try DaemonFixture()
         defer { fixture.remove() }
         let daemon = try fixture.launch(arguments: ["--socket-path", fixture.socketPath])
         defer { daemon.forceStop() }
-        try await fixture.waitForSocket()
+        try await fixture.waitForSocket(daemon)
 
-        // A client that has connected but not finished its request. It trickles
-        // whitespace so the daemon's per-read timeout never ends the request.
-        let inFlight = try SocketClient(path: fixture.socketPath)
-        defer { inFlight.close() }
-        let trickle = inFlight.startTrickle()
+        let remembered = try await SocketClient.roundTrip(
+            #"{"command":"remember","arguments":{"content":"\#(fixture.token) before SIGTERM"}}"#,
+            path: fixture.socketPath
+        )
+        #expect(remembered.contains(#""ok":true"#), "remember failed: \(remembered)")
+
+        let slow = try SocketClient(path: fixture.socketPath)
+        defer { slow.close() }
+        let trickle = slow.startTrickle(everyMicroseconds: 500_000)
 
         // The accept loop takes connections in order, so once a later client is
-        // answered, the trickling one has been accepted and is in flight.
+        // answered, the slow one has been accepted.
         let stats = try await SocketClient.roundTrip(
             #"{"command":"stats","arguments":{}}"#,
             path: fixture.socketPath
         )
         #expect(stats.contains(#""ok":true"#), "stats failed: \(stats)")
 
+        let killedAt = Date()
         kill(daemon.pid, SIGTERM)
+        let exit = try await daemon.waitForExit(since: killedAt)
         await trickle.stop()
-        let remembered = try await inFlight.finish(
-            #"{"command":"remember","arguments":{"content":"\#(fixture.token) in flight at SIGTERM"}}"#
-        )
-        #expect(remembered.contains(#""ok":true"#), "in-flight remember failed: \(remembered)")
 
-        let exit = try await daemon.waitForExit()
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s to shut down, past the client's SIGTERM grace"
+            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
         )
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
+        let fd = slow.fd
+        let slowResponse = try await BlockingWork.run { try readLine(fd: fd) }
+        #expect(slowResponse.isEmpty, "the slow client was answered instead of dropped: \(slowResponse)")
         try fixture.expectStoreReleasedAndCommitted()
+    }
+
+    /// One read deadline from accept: trickled bytes must not keep a request
+    /// open, and the daemon goes on serving other clients.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonSocketModeEndsARequestAtItsReadDeadline() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(arguments: ["--socket-path", fixture.socketPath])
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let slow = try SocketClient(path: fixture.socketPath)
+        defer { slow.close() }
+        let trickle = slow.startTrickle(everyMicroseconds: 500_000)
+        let fd = slow.fd
+        let response = try await BlockingWork.run { try readLine(fd: fd) }
+        await trickle.stop()
+        #expect(response.contains(#""ok":false"#), "slow request was not failed: \(response)")
+        #expect(response.contains("not received within"), "unexpected response: \(response)")
+
+        let stats = try await SocketClient.roundTrip(
+            #"{"command":"stats","arguments":{}}"#,
+            path: fixture.socketPath
+        )
+        #expect(stats.contains(#""ok":true"#), "stats failed after the deadline: \(stats)")
+    }
+
+    /// Each client holds a thread, so clients past the cap get a busy failure
+    /// at once instead of a thread, and a freed slot serves again.
+    @Test(.timeLimit(.minutes(2)))
+    func daemonSocketModeRefusesClientsPastItsCap() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(arguments: ["--socket-path", fixture.socketPath, "--max-clients", "2"])
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        // Two clients that send nothing hold both slots until their deadline.
+        let holders = try [SocketClient(path: fixture.socketPath), SocketClient(path: fixture.socketPath)]
+        defer { holders.forEach { $0.close() } }
+
+        // Accepted after both holders, so it finds the cap full.
+        let refused = try await SocketClient.roundTrip(
+            #"{"command":"stats","arguments":{}}"#,
+            path: fixture.socketPath
+        )
+        #expect(refused.contains(#""ok":false"#), "a client past the cap was served: \(refused)")
+        #expect(refused.contains("limit of 2 clients"), "unexpected refusal: \(refused)")
+
+        for holder in holders {
+            let fd = holder.fd
+            _ = try await BlockingWork.run { try readLine(fd: fd) }
+        }
+        let served = try await SocketClient.roundTrip(
+            #"{"command":"stats","arguments":{}}"#,
+            path: fixture.socketPath
+        )
+        #expect(served.contains(#""ok":true"#), "freed slots did not serve again: \(served)")
     }
 
     /// The stdio loop waits on stdin off the cooperative pool and sees the
@@ -70,13 +136,14 @@ import Testing
         #expect(remembered.contains(#""ok":true"#), "stdio remember failed: \(remembered)")
 
         // stdin stays open: the daemon is idle, waiting for the next request.
+        let killedAt = Date()
         kill(daemon.pid, SIGTERM)
 
-        let exit = try await daemon.waitForExit()
+        let exit = try await daemon.waitForExit(since: killedAt)
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s to shut down, past the client's SIGTERM grace"
+            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
         )
         try fixture.expectStoreReleasedAndCommitted()
     }
@@ -123,9 +190,10 @@ private struct DaemonFixture {
         return try DaemonProcess(process: process, stdin: stdin, stdout: stdout)
     }
 
-    func waitForSocket() async throws {
+    func waitForSocket(_ daemon: DaemonProcess) async throws {
         let deadline = Date().addingTimeInterval(60)
         while !FileManager.default.fileExists(atPath: socketPath) {
+            guard daemon.process.isRunning else { throw DaemonTestError("daemon exited before listening") }
             guard Date() < deadline else { throw DaemonTestError("daemon never created \(socketPath)") }
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -157,7 +225,7 @@ private struct DaemonFixture {
 private struct DaemonExit: CustomStringConvertible {
     let reason: Process.TerminationReason
     let status: Int32
-    /// Seconds from the waitForExit call to the exit.
+    /// Seconds from the signal to the exit.
     let elapsed: TimeInterval
 
     var description: String {
@@ -182,9 +250,10 @@ private final class DaemonProcess: @unchecked Sendable {
 
     var pid: pid_t { process.processIdentifier }
 
-    /// Waits off the cooperative pool. The 60s bound only catches a hang.
-    func waitForExit() async throws -> DaemonExit {
-        let start = Date()
+    /// Waits off the cooperative pool. `start` is when the signal was sent, so
+    /// the elapsed time covers everything the daemon did after it. The 60s
+    /// bound only catches a hang.
+    func waitForExit(since start: Date) async throws -> DaemonExit {
         let exited = exited
         let didExit = await BlockingWork.run { exited.wait(timeout: .now() + 60) == .success }
         guard didExit else { throw DaemonTestError("daemon \(pid) did not exit after SIGTERM") }
@@ -249,21 +318,21 @@ private final class SocketClient: @unchecked Sendable {
         }
     }
 
-    /// Writes a space every 100ms on a GCD thread until stopped.
-    func startTrickle() -> Trickle {
+    /// Writes a space on a GCD thread at the given interval until stopped.
+    func startTrickle(everyMicroseconds interval: useconds_t) -> Trickle {
         let trickle = Trickle()
         let fd = fd
         DispatchQueue.global().async {
             while !trickle.isStopped {
                 _ = write(fd, " ", 1)
-                usleep(100_000)
+                usleep(interval)
             }
             trickle.markDone()
         }
         return trickle
     }
 
-    /// Sends the rest of the request and reads the response line.
+    /// Sends the request and reads the response line.
     func finish(_ line: String) async throws -> String {
         try send(line + "\n")
         shutdown(fd, SHUT_WR)

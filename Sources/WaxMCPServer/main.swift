@@ -345,25 +345,19 @@ final class MCPShutdownSignalLatch: @unchecked Sendable {
 }
 
 private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
-    var sources: [DispatchSourceSignal] = []
     let latch = MCPShutdownSignalLatch()
-    for sig in [SIGINT, SIGTERM] {
-        signal(sig, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-        source.setEventHandler {
-            switch latch.record() {
-            case .graceful:
-                writeStderr("Received signal \(sig), shutting down gracefully… (send again to force exit)")
-                Task { await stop() }
-            case .forceExit:
-                writeStderr("Received signal \(sig) again, forcing exit")
-                exitProcess(128 + sig)
-            }
+    // ShutdownSignals sets SIG_IGN on Darwin only; Linux delivery is libdispatch's.
+    return ShutdownSignals.observe(queue: .main) { sig in
+        switch latch.record() {
+        case .graceful:
+            writeStderr("Received signal \(sig), shutting down gracefully… (send again to force exit)")
+            Task { await stop() }
+        case .forceExit:
+            writeStderr("Received signal \(sig) again, forcing exit")
+            // _exit: atexit handlers and stdio flushing may be what is wedged.
+            _exit(128 + sig)
         }
-        source.resume()
-        sources.append(source)
     }
-    return sources
 }
 
 func writeStderr(_ message: String) {
