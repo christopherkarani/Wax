@@ -77,9 +77,12 @@ package final class ProcessPipeDrain: @unchecked Sendable {
         group.enter()
         // Strong `self`: the drain must run to EOF or cancellation even if the
         // caller drops it; dispatch releases the handler once cancelled.
-        source.setEventHandler { [self, weak source] in
+        // Cancel through `sources` (both entries exist before any handler runs
+        // on this serial queue) rather than capturing the source: `weak` needs a
+        // class-bound type, and `DispatchSourceRead` is not one on Linux.
+        source.setEventHandler { [self] in
             if readAvailable(stream: stream, descriptor: descriptor) {
-                source?.cancel()
+                sources[stream].cancel()
             }
         }
         // The handle owns the descriptor; keep it open until reading stops.
