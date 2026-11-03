@@ -43,5 +43,12 @@ jobs:
       - name: Build wax-mcp product
         run: swift build --product wax-mcp --traits default,MCPServer
 
+      # libdispatch delivers signal sources through signalfd on Linux, not
+      # kqueue as on Darwin, so graceful SIGTERM shutdown is checked here too.
+      - name: Smoke-test SIGTERM shutdown
+        run: |
+          BIN_DIR="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)"
+          bash Resources/scripts/quality/daemon_sigterm_smoke.sh "$BIN_DIR/wax-cli" "$BIN_DIR/wax-mcp"
+
       - name: Run WaxCore tests
         run: swift test --filter WaxCoreTests

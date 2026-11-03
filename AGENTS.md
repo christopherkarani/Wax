@@ -82,3 +82,4 @@ Edit one path.
 - Video RAG does not transcribe and does not store media bytes; the host supplies transcripts.
 - Photos iCloud-only assets are metadata-only / degraded.
 - Broker start timeout default is `WAX_BROKER_START_TIMEOUT_SECS=10`; do not drop it back to 5s (parallel process tests).
+- A cancelled or timed-out broker start sends SIGTERM and waits up to 2s before SIGKILL, then up to 5s to reap: up to 7s more on that path. The daemon must exit within the 2s grace (`daemon_sigterm_smoke.sh`).
