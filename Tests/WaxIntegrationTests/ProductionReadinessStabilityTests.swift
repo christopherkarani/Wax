@@ -51,13 +51,6 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         }
     }
 
-    private struct LatencySummary: Codable, Sendable {
-        let samples: Int
-        let meanMs: Double
-        let p50Ms: Double
-        let p95Ms: Double
-    }
-
     private struct StabilityReport: Codable, Sendable {
         let profile: String
         let searchMode: StabilitySearchMode
@@ -68,8 +61,8 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         let startRSSBytes: UInt64
         let endRSSBytes: UInt64
         let rssGrowthBytes: UInt64
-        let firstWindow: LatencySummary
-        let lastWindow: LatencySummary
+        let firstWindow: StabilityLatencyDrift.Summary
+        let lastWindow: StabilityLatencyDrift.Summary
         let p50DriftPercent: Double
         let p95DriftPercent: Double
     }
@@ -177,14 +170,9 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         if searchMode.usesVector {
             XCTAssertGreaterThan(vectorSourceHits, 0, "Stability profile must exercise vector-sourced search results in \(searchMode.rawValue) mode")
         }
-        let windowSize = max(10, recallLatenciesMs.count / 5)
-        let firstWindowSamples = Array(recallLatenciesMs.prefix(windowSize))
-        let lastWindowSamples = Array(recallLatenciesMs.suffix(windowSize))
-        let firstSummary = Self.summary(firstWindowSamples)
-        let lastSummary = Self.summary(lastWindowSamples)
-
-        let p50DriftPercent = Self.percentDrift(from: firstSummary.p50Ms, to: lastSummary.p50Ms)
-        let p95DriftPercent = Self.percentDrift(from: firstSummary.p95Ms, to: lastSummary.p95Ms)
+        let drift = StabilityLatencyDrift(samplesMs: recallLatenciesMs)
+        let p50DriftPercent = drift.p50DriftPercent
+        let p95DriftPercent = drift.p95DriftPercent
         let rssGrowthBytes = endRSS >= startRSS ? (endRSS - startRSS) : 0
 
         let maxRSSGrowthMB = env["WAX_STABILITY_MAX_RSS_GROWTH_MB"].flatMap(UInt64.init)
@@ -220,8 +208,8 @@ final class ProductionReadinessStabilityTests: XCTestCase {
             startRSSBytes: startRSS,
             endRSSBytes: endRSS,
             rssGrowthBytes: rssGrowthBytes,
-            firstWindow: firstSummary,
-            lastWindow: lastSummary,
+            firstWindow: drift.firstWindow,
+            lastWindow: drift.lastWindow,
             p50DriftPercent: p50DriftPercent,
             p95DriftPercent: p95DriftPercent
         )
@@ -261,37 +249,6 @@ final class ProductionReadinessStabilityTests: XCTestCase {
         "latency",
         "checksum",
     ]
-
-    private static func summary(_ samples: [Double]) -> LatencySummary {
-        guard !samples.isEmpty else {
-            return LatencySummary(samples: 0, meanMs: 0, p50Ms: 0, p95Ms: 0)
-        }
-
-        let sorted = samples.sorted()
-        let mean = samples.reduce(0, +) / Double(samples.count)
-        return LatencySummary(
-            samples: samples.count,
-            meanMs: mean,
-            p50Ms: percentile(sorted: sorted, p: 0.50),
-            p95Ms: percentile(sorted: sorted, p: 0.95)
-        )
-    }
-
-    private static func percentile(sorted: [Double], p: Double) -> Double {
-        guard !sorted.isEmpty else { return 0 }
-        if sorted.count == 1 { return sorted[0] }
-        let rank = min(1, max(0, p)) * Double(sorted.count - 1)
-        let lo = Int(rank.rounded(.down))
-        let hi = Int(rank.rounded(.up))
-        if lo == hi { return sorted[lo] }
-        let weight = rank - Double(lo)
-        return sorted[lo] + (sorted[hi] - sorted[lo]) * weight
-    }
-
-    private static func percentDrift(from baseline: Double, to current: Double) -> Double {
-        guard baseline > 0 else { return current > 0 ? 100 : 0 }
-        return ((current - baseline) / baseline) * 100
-    }
 
     private static func durationMs(_ duration: Duration) -> Double {
         let components = duration.components

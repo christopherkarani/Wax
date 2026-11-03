@@ -267,4 +267,56 @@ struct WaxSessionCacheIsolationTests {
             }
         }
     }
+
+    /// A write between two raw `Wax.search` calls must not rebuild the cached
+    /// vector engine from the whole store: that made every search after a write
+    /// cost O(store size). The cache applies only the new pending embeddings.
+    @Test func rawSearchAppliesNewPendingEmbeddingsWithoutReloadingVectorEngine() async throws {
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            let vectors = try await wax.enableVectorSearch(dimensions: 2, preference: .cpuOnly)
+            let committedID = try await vectors.putWithEmbedding(
+                Data("committed".utf8),
+                embedding: [1.0, 0.0],
+                options: FrameMetaSubset(searchText: "committed")
+            )
+            try await vectors.stageForCommit()
+            try await wax.commit()
+
+            await UnifiedSearchEngineCache.shared.resetStats(for: wax)
+            func topHit(_ embedding: [Float]) async throws -> UInt64? {
+                try await wax.search(
+                    SearchRequest(
+                        lane: .vectorOnly(embedding: embedding),
+                        vectorEnginePreference: .cpuOnly,
+                        topK: 1
+                    )
+                ).results.first?.frameId
+            }
+            #expect(try await topHit([1.0, 0.0]) == committedID)
+
+            let angles: [Float] = [0.4, 0.8, 1.2, 1.6]
+            for angle in angles {
+                let embedding = VectorMath.normalizeL2([cos(angle), sin(angle)])
+                let frameID = try await vectors.putWithEmbedding(
+                    Data("pending \(angle)".utf8),
+                    embedding: embedding,
+                    options: FrameMetaSubset(searchText: "pending")
+                )
+                #expect(try await topHit(embedding) == frameID, "search missed the pending write at \(angle)")
+            }
+
+            let stats = await UnifiedSearchEngineCache.shared.snapshotStats(for: wax)
+            #expect(stats.vectorDeserializations == 1)
+
+            // A commit changes the committed index, so the next search reloads it once.
+            try await vectors.stageForCommit()
+            try await wax.commit()
+            #expect(try await topHit([1.0, 0.0]) == committedID)
+            let afterCommit = await UnifiedSearchEngineCache.shared.snapshotStats(for: wax)
+            #expect(afterCommit.vectorDeserializations == 2)
+
+            try await wax.close()
+        }
+    }
 }
