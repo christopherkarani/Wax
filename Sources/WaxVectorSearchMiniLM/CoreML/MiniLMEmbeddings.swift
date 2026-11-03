@@ -5,6 +5,9 @@ import Accelerate
 import WaxCore
 
 /// On-device all-MiniLM-L6-v2 sentence embedding model via CoreML, producing 384-dimensional vectors.
+///
+/// The bundled graph returns sentence-transformers embeddings: token states mean-pooled over
+/// `attention_mask` (output `embeddings`, `[batch, 384]`). `MiniLMEmbedder` L2-normalizes them.
 @available(macOS 15.0, iOS 18.0, *)
 package final class MiniLMEmbeddings {
     package enum InitError: LocalizedError, Sendable {
@@ -20,6 +23,24 @@ package final class MiniLMEmbeddings {
                 return "Failed to load the Core ML model: \(details)"
             case .tokenizerLoadFailed(let details):
                 return "Failed to initialize tokenizer: \(details)"
+            }
+        }
+    }
+
+    /// The Core ML output did not have the expected sentence-embedding layout.
+    package enum OutputError: LocalizedError, Sendable, Equatable {
+        case missingOutput(name: String)
+        case unsupportedDataType(rawValue: Int)
+        case unexpectedShape(shape: [Int], batchSize: Int, outputDimension: Int)
+
+        package var errorDescription: String? {
+            switch self {
+            case .missingOutput(let name):
+                return "MiniLM Core ML prediction has no multi-array output named '\(name)'."
+            case .unsupportedDataType(let rawValue):
+                return "MiniLM Core ML output has unsupported data type \(rawValue); expected Float16 or Float32."
+            case .unexpectedShape(let shape, let batchSize, let outputDimension):
+                return "MiniLM Core ML output shape \(shape) does not match \(batchSize) x \(outputDimension) sentence embeddings."
             }
         }
     }
@@ -54,9 +75,13 @@ package final class MiniLMEmbeddings {
 
     package let model: all_MiniLM_L6_v2
     package let tokenizer: BertTokenizer
-    package let inputDimension: Int = 512
+    /// sentence-transformers all-MiniLM-L6-v2 truncates at `max_seq_length = 256` tokens
+    /// (including [CLS]/[SEP]); matching it keeps vectors identical to the reference model.
+    /// Text search still indexes the full chunk.
+    package static let maxSequenceLength = 256
+    package let inputDimension: Int = MiniLMEmbeddings.maxSequenceLength
     package let outputDimension: Int = 384
-    private static let sequenceLengthBuckets = [32, 64, 128, 256, 384, 512]
+    private static let sequenceLengthBuckets = [32, 64, 128, 256]
 
     /// Dedicated queue for CoreML prediction calls. CoreML's `model.prediction()` is synchronous
     /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
@@ -138,7 +163,7 @@ package final class MiniLMEmbeddings {
         inputIds: MLMultiArray,
         attentionMask: MLMultiArray,
         batchSize: Int
-    ) async throws -> [[Float]]? {
+    ) async throws -> [[Float]] {
         let localModel = model
         let outputDimension = self.outputDimension
         return try await withCheckedThrowingContinuation { continuation in
@@ -148,8 +173,8 @@ package final class MiniLMEmbeddings {
                         input_ids: inputIds,
                         attention_mask: attentionMask
                     )
-                    let decoded = Self.decodeEmbeddings(
-                        output.var_554,
+                    let decoded = try Self.decodeEmbeddings(
+                        try output.embeddings,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )
@@ -167,26 +192,19 @@ package final class MiniLMEmbeddings {
     package func encode(sentence: String) async throws -> [Float]? {
         guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: [sentence],
+            maxSequenceLength: Self.maxSequenceLength,
             sequenceLengthBuckets: Self.sequenceLengthBuckets
         ), batchInputs.sequenceLength > 0 else { return nil }
 
-        guard let embeddings = try await batchPredictionOffPool(
+        let embeddings = try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
             attentionMask: batchInputs.attentionMask,
             batchSize: 1
-        ) else {
-            return nil
-        }
-
+        )
         return embeddings.first
     }
 
-    /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    package func encode(batch sentences: [String]) async throws -> [[Float]]? {
-        var reuse: BatchInputBuffers?
-        return try await encode(batch: sentences, reuseBuffers: &reuse)
-    }
-
+    /// Encode a batch of sentences to embedding vectors, reusing input buffers across calls.
     package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
@@ -195,6 +213,7 @@ package final class MiniLMEmbeddings {
 
         guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
             sentences: sentences,
+            maxSequenceLength: Self.maxSequenceLength,
             sequenceLengthBuckets: Self.sequenceLengthBuckets,
             reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
@@ -205,23 +224,6 @@ package final class MiniLMEmbeddings {
             batchSize: sentences.count
         )
     }
-
-    /// Generate embeddings from pre-tokenized input IDs and attention mask (for advanced use cases).
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async throws -> [[Float]]? {
-        guard let batchSize = Self.preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask) else {
-            return nil
-        }
-        guard let embeddings = try await batchPredictionOffPool(
-            inputIds: inputIds,
-            attentionMask: attentionMask,
-            batchSize: batchSize
-        ) else {
-            return nil
-        }
-
-        return embeddings
-    }
-
 }
 
 // MARK: - Sendable Conformances for CoreML Types
@@ -359,158 +361,72 @@ private extension MiniLMEmbeddings {
         try ModelCache.shared.model(configuration: configuration)
     }
 
+    /// Decodes the model's `embeddings` output into one vector per input row.
+    ///
+    /// Only unambiguous sentence-embedding layouts are accepted: `[batch, dim]`, `[dim]` for a
+    /// single row, or `[batch, 1, dim]` / `[batch, dim, 1]`. Anything else (for example
+    /// `[batch, sequence, hidden]` token embeddings, or a different hidden size) throws instead of
+    /// being reinterpreted, so a wrong model output cannot become a plausible-looking vector.
     static func decodeEmbeddings(
         _ embeddings: MLMultiArray,
         batchSize: Int,
         outputDimension: Int
-    ) -> [[Float]]? {
+    ) throws -> [[Float]] {
         guard batchSize > 0 else { return [] }
-        let elementCount = embeddings.count
-        let shape = embeddings.shape.map { $0.intValue }
-        let strides = embeddings.strides.map { $0.intValue }
         let dataType = embeddings.dataType
         guard dataType == .float16 || dataType == .float32 else {
-            return nil
+            throw OutputError.unsupportedDataType(rawValue: dataType.rawValue)
+        }
+        let shape = embeddings.shape.map(\.intValue)
+        guard let layout = RowLayout(shape: shape, strides: embeddings.strides.map(\.intValue)),
+              layout.rows == batchSize,
+              layout.dimension == outputDimension
+        else {
+            throw OutputError.unexpectedShape(shape: shape, batchSize: batchSize, outputDimension: outputDimension)
         }
 
-        if shape.count == 2 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-            
-            let isContiguous = strides[1] == 1 && strides[0] == dim
-            
-            if isContiguous && dataType == .float32 {
-                let floatPtr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
+        let capacity = (layout.rows - 1) * layout.rowStride + (layout.dimension - 1) * layout.columnStride + 1
+        if dataType == .float32 {
+            let pointer = embeddings.dataPointer.bindMemory(to: Float.self, capacity: capacity)
+            return (0..<layout.rows).map { row in
+                let start = row * layout.rowStride
+                if layout.columnStride == 1 {
+                    return Array(UnsafeBufferPointer(start: pointer.advanced(by: start), count: layout.dimension))
                 }
-            }
-            
-            if isContiguous && dataType == .float16 {
-                let float16BitsPtr = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return (0..<dim).map { col in
-                        floatFromFloat16Bits(float16BitsPtr[start + col])
-                    }
-                }
+                return (0..<layout.dimension).map { pointer[start + $0 * layout.columnStride] }
             }
         }
 
-        let float16BitsPtr: UnsafeMutablePointer<UInt16>? = dataType == .float16
-            ? embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
-            : nil
-        let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
-            ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
-            : nil
-
-        func readValue(at index: Int) -> Float {
-            if let floatPtr {
-                return floatPtr[index]
-            }
-            if let float16BitsPtr {
-                return floatFromFloat16Bits(float16BitsPtr[index])
-            }
-            return 0
+        let bits = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: capacity)
+        return (0..<layout.rows).map { row in
+            let start = row * layout.rowStride
+            return (0..<layout.dimension).map { floatFromFloat16Bits(bits[start + $0 * layout.columnStride]) }
         }
-
-        if shape.count == 1 {
-            guard batchSize == 1 else { return nil }
-            let dim = shape[0]
-            if dataType == .float32, let floatPtr {
-                return [Array(UnsafeBufferPointer(start: floatPtr, count: dim))]
-            }
-            return [(0..<dim).map { readValue(at: $0) }]
-        }
-
-        if shape.count == 2 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[1]
-                    vector[col] = readValue(at: index)
-                }
-                return vector
-            }
-        }
-
-        if shape.count == 3, shape[1] == 1 {
-            let batch = shape[0]
-            let dim = shape[2]
-            guard batch == batchSize else { return nil }
-            
-            let isContiguous = strides[2] == 1 && strides[0] == dim
-            if isContiguous && dataType == .float32, let floatPtr {
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
-                }
-            }
-            
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[2]
-                    vector[col] = readValue(at: index)
-                }
-                return vector
-            }
-        }
-
-        if shape.count == 3, shape[2] == 1 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[1]
-                    vector[col] = readValue(at: index)
-                }
-                return vector
-            }
-        }
-
-        if embeddings.count % batchSize == 0 {
-            let rowStride = embeddings.count / batchSize
-            let dim = min(outputDimension, rowStride)
-            guard dim > 0 else { return nil }
-            
-            if dataType == .float32, let floatPtr {
-                return (0..<batchSize).map { row in
-                    let start = row * rowStride
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
-                }
-            }
-            
-            return (0..<batchSize).map { row in
-                let start = row * rowStride
-                return (0..<dim).map { readValue(at: start + $0) }
-            }
-        }
-
-        return nil
     }
 
-    static func preTokenizedBatchSize(inputIds: MLMultiArray, attentionMask: MLMultiArray) -> Int? {
-        let inputShape = inputIds.shape.map(\.intValue)
-        let maskShape = attentionMask.shape.map(\.intValue)
-        guard inputShape == maskShape else { return nil }
-        guard !inputShape.isEmpty else { return nil }
+    /// Row/column geometry of an accepted sentence-embedding output layout.
+    struct RowLayout {
+        let rows: Int
+        let dimension: Int
+        let rowStride: Int
+        let columnStride: Int
 
-        if inputShape.count == 1 {
-            return inputShape[0] > 0 ? 1 : nil
+        init?(shape: [Int], strides: [Int]) {
+            guard shape.count == strides.count else { return nil }
+            switch shape.count {
+            case 1:
+                (rows, dimension, rowStride, columnStride) = (1, shape[0], 0, strides[0])
+            case 2:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[1], strides[0], strides[1])
+            case 3 where shape[1] == 1:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[2], strides[0], strides[2])
+            case 3 where shape[2] == 1:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[1], strides[0], strides[1])
+            default:
+                return nil
+            }
+            guard rows > 0, dimension > 0 else { return nil }
         }
-
-        let batchSize = inputShape[0]
-        let sequenceLength = inputShape[1]
-        guard batchSize > 0, sequenceLength > 0 else { return nil }
-        return batchSize
     }
 }
 
@@ -521,15 +437,8 @@ package extension MiniLMEmbeddings {
         _ embeddings: MLMultiArray,
         batchSize: Int,
         outputDimension: Int
-    ) -> [[Float]]? {
-        decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
-    }
-
-    static func _preTokenizedBatchSizeForTesting(
-        inputIds: MLMultiArray,
-        attentionMask: MLMultiArray
-    ) -> Int? {
-        preTokenizedBatchSize(inputIds: inputIds, attentionMask: attentionMask)
+    ) throws -> [[Float]] {
+        try decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
     }
 }
 #endif // canImport(CoreML)

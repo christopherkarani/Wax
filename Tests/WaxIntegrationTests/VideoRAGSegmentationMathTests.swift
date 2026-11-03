@@ -108,3 +108,44 @@ func videoRAGSegmentationMaintainsCoverageWithoutStartGaps() {
         #expect(segments[index].startMs <= segments[index - 1].endMs)
     }
 }
+
+@Test
+func videoRAGTranscriptMappingKeepsLongChunkThatOverlapsLaterSegments() {
+    // Chunks sort by startMs, so endMs is not monotonic: the long chunk ends after the
+    // short one. A binary search over endMs skipped the long chunk for the second segment.
+    let mapped = VideoRAGOrchestrator._mapTranscriptForTesting(
+        chunks: [
+            .init(startMs: 0, endMs: 2_000, text: "LONG_TOKEN"),
+            .init(startMs: 100, endMs: 600, text: "SHORT_TOKEN"),
+        ],
+        segments: [
+            .init(startMs: 0, endMs: 1_000),
+            .init(startMs: 1_000, endMs: 2_000),
+        ],
+        maxBytes: 1_024
+    )
+
+    #expect(mapped[0] == "LONG_TOKEN\nSHORT_TOKEN")
+    #expect(mapped[1] == "LONG_TOKEN")
+}
+
+@Test
+func videoRAGTranscriptMappingHandlesUnsortedOverlappingChunks() {
+    let mapped = VideoRAGOrchestrator._mapTranscriptForTesting(
+        chunks: [
+            .init(startMs: 2_500, endMs: 3_000, text: "C"),
+            .init(startMs: 200, endMs: 400, text: "B"),
+            .init(startMs: 0, endMs: 3_000, text: "A"),
+        ],
+        segments: [
+            .init(startMs: 0, endMs: 1_000),
+            .init(startMs: 1_000, endMs: 2_000),
+            .init(startMs: 2_000, endMs: 3_000),
+        ],
+        maxBytes: 1_024
+    )
+
+    #expect(mapped[0] == "A")
+    #expect(mapped[1] == "A")
+    #expect(mapped[2] == "A\nC")
+}

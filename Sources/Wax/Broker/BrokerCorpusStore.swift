@@ -542,6 +542,15 @@ private extension BrokerCorpusStoreBuilder {
         return false
     }
 
+    /// Corpus opens are brief: a superseded-vector re-embed would be cancelled by `close()`
+    /// before its first checkpoint, so it stays with the long-lived broker session.
+    package static func memoryConfig(structuredMemoryEnabled: Bool) -> OrchestratorConfig {
+        var config = OrchestratorConfig.default
+        config.enableStructuredMemory = structuredMemoryEnabled
+        config.automaticallyReembedSupersededVectors = false
+        return config
+    }
+
     static func openMemory(
         at url: URL,
         noEmbedder: Bool,
@@ -549,8 +558,7 @@ private extension BrokerCorpusStoreBuilder {
         embedderTuning: CommandLineEmbedderRuntimeTuning,
         structuredMemoryEnabled: Bool
     ) async throws -> MemoryOrchestrator {
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = structuredMemoryEnabled
+        let config = memoryConfig(structuredMemoryEnabled: structuredMemoryEnabled)
         let request = try HostEmbeddingReadiness.request(
             noEmbedder: noEmbedder,
             requireVector: false,

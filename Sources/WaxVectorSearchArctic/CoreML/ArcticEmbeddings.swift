@@ -6,8 +6,8 @@ import WaxBertTokenizer
 
 /// On-device Snowflake Arctic Embed Small sentence embedding model via CoreML, producing 384-dimensional vectors.
 ///
-/// Unlike MiniLM, Arctic's CoreML graph already includes CLS extraction and L2 normalization,
-/// so the output tensor is the final embedding directly — no post-processing tanh or pooling needed.
+/// Arctic's CoreML graph includes CLS extraction and L2 normalization (MiniLM's graph mean-pools
+/// and leaves L2 normalization to `MiniLMEmbedder`), so the output tensor is the final embedding.
 @available(macOS 15.0, iOS 18.0, *)
 package final class ArcticEmbeddings {
     package enum InitError: LocalizedError, Sendable {
@@ -23,6 +23,27 @@ package final class ArcticEmbeddings {
                 return "Failed to load the Arctic Core ML model: \(details)"
             case .tokenizerLoadFailed(let details):
                 return "Failed to initialize tokenizer: \(details)"
+            }
+        }
+    }
+
+    /// The Core ML output was not a finite sentence-embedding tensor of the expected layout.
+    package enum OutputError: LocalizedError, Sendable, Equatable {
+        case missingOutput(name: String)
+        case unsupportedDataType(rawValue: Int)
+        case unexpectedShape(shape: [Int], batchSize: Int, outputDimension: Int)
+        case nonFiniteValue
+
+        package var errorDescription: String? {
+            switch self {
+            case .missingOutput(let name):
+                return "Arctic Core ML prediction has no multi-array output named '\(name)'."
+            case .unsupportedDataType(let rawValue):
+                return "Arctic Core ML output has unsupported data type \(rawValue); expected Float16 or Float32."
+            case .unexpectedShape(let shape, let batchSize, let outputDimension):
+                return "Arctic Core ML output shape \(shape) does not match \(batchSize) x \(outputDimension) sentence embeddings."
+            case .nonFiniteValue:
+                return "Arctic Core ML output contains a non-finite value."
             }
         }
     }
@@ -91,7 +112,9 @@ package final class ArcticEmbeddings {
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
-            defaultConfig.computeUnits = .cpuAndNeuralEngine
+            // CPU by default: the Neural Engine path intermittently returns non-finite
+            // embeddings for this model. ANE stays available as an explicit opt-in.
+            defaultConfig.computeUnits = .cpuOnly
             defaultConfig.allowLowPrecisionAccumulationOnGPU = true
             return defaultConfig
         }()
@@ -128,27 +151,31 @@ package final class ArcticEmbeddings {
 
     /// Dispatches CoreML prediction to a dedicated non-cooperative queue to prevent
     /// starvation of the Swift concurrency cooperative thread pool.
+    ///
+    /// Prediction and decode errors propagate to the caller; they are never mapped to `nil`.
     private func batchPredictionOffPool(
         inputIds: MLMultiArray,
         attentionMask: MLMultiArray,
         batchSize: Int
-    ) async -> [[Float]]? {
+    ) async throws -> [[Float]] {
         let localModel = model
         let outputDimension = self.outputDimension
-        return await withCheckedContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             Self.predictionQueue.async {
-                let output: snowflake_arctic_embed_sOutput? = try? localModel.prediction(
-                    input_ids: inputIds,
-                    attention_mask: attentionMask
-                )
-                let decoded = output.flatMap {
-                    Self.decodeEmbeddings(
-                        $0.embeddings,
+                do {
+                    let output = try localModel.prediction(
+                        input_ids: inputIds,
+                        attention_mask: attentionMask
+                    )
+                    let decoded = try Self.decodeEmbeddings(
+                        try output.embeddings,
                         batchSize: batchSize,
                         outputDimension: outputDimension
                     )
+                    continuation.resume(returning: decoded)
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                continuation.resume(returning: decoded)
             }
         }
     }
@@ -156,33 +183,30 @@ package final class ArcticEmbeddings {
     // MARK: - Dense Embeddings
 
     /// Encode a single sentence to a 384-dimensional embedding vector.
-    package func encode(sentence: String) async -> [Float]? {
+    package func encode(sentence: String) async throws -> [Float]? {
         guard let batchInputs = try? tokenizer.buildBatchInputs(
             sentences: [sentence],
             sequenceLengthBuckets: Self.sequenceLengthBuckets
         ), batchInputs.sequenceLength > 0 else { return nil }
 
-        guard let embeddings = await batchPredictionOffPool(
+        let embeddings = try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
             attentionMask: batchInputs.attentionMask,
             batchSize: 1
-        ) else {
-            return nil
-        }
-
+        )
         return embeddings.first
     }
 
     /// Encode a batch of sentences to embedding vectors, with optional buffer reuse for efficiency.
-    package func encode(batch sentences: [String]) async -> [[Float]]? {
+    package func encode(batch sentences: [String]) async throws -> [[Float]]? {
         var reuse: BatchInputBuffers?
-        return await encode(batch: sentences, reuseBuffers: &reuse)
+        return try await encode(batch: sentences, reuseBuffers: &reuse)
     }
 
     package func encode(
         batch sentences: [String],
         reuseBuffers: inout BatchInputBuffers?
-    ) async -> [[Float]]? {
+    ) async throws -> [[Float]]? {
         guard !sentences.isEmpty else { return [] }
 
         guard let batchInputs = try? tokenizer.buildBatchInputsWithReuse(
@@ -191,26 +215,12 @@ package final class ArcticEmbeddings {
             reuse: &reuseBuffers
         ), batchInputs.sequenceLength > 0 else { return [] }
 
-        return await batchPredictionOffPool(
+        return try await batchPredictionOffPool(
             inputIds: batchInputs.inputIds,
             attentionMask: batchInputs.attentionMask,
             batchSize: sentences.count
         )
     }
-
-    /// Generate an embedding from pre-tokenized input IDs and attention mask.
-    package func generateEmbeddings(inputIds: MLMultiArray, attentionMask: MLMultiArray) async -> [Float]? {
-        guard let embeddings = await batchPredictionOffPool(
-            inputIds: inputIds,
-            attentionMask: attentionMask,
-            batchSize: 1
-        ) else {
-            return nil
-        }
-
-        return embeddings.first
-    }
-
 }
 
 // MARK: - Sendable Conformances for CoreML Types
@@ -343,139 +353,79 @@ private extension ArcticEmbeddings {
         try ModelCache.shared.model(configuration: configuration)
     }
 
+    /// Decodes the model's `embeddings` output into one vector per input row.
+    ///
+    /// Only unambiguous sentence-embedding layouts are accepted: `[batch, dim]`, `[dim]` for a
+    /// single row, or `[batch, 1, dim]` / `[batch, dim, 1]`. Anything else (for example
+    /// `[batch, sequence, hidden]` token embeddings, or a different hidden size) throws instead of
+    /// being reinterpreted. Non-finite values throw too, so a broken compute path cannot store NaNs.
     static func decodeEmbeddings(
         _ embeddings: MLMultiArray,
         batchSize: Int,
         outputDimension: Int
-    ) -> [[Float]]? {
+    ) throws -> [[Float]] {
         guard batchSize > 0 else { return [] }
-        let elementCount = embeddings.count
-        let shape = embeddings.shape.map { $0.intValue }
-        let strides = embeddings.strides.map { $0.intValue }
         let dataType = embeddings.dataType
-
-        if shape.count == 2 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-
-            let isContiguous = strides[1] == 1 && strides[0] == dim
-
-            if isContiguous && dataType == .float32 {
-                let floatPtr = embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
-                }
-            }
-
-            if isContiguous && dataType == .float16 {
-                let float16BitsPtr = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return (0..<dim).map { col in
-                        floatFromFloat16Bits(float16BitsPtr[start + col])
-                    }
-                }
-            }
+        guard dataType == .float16 || dataType == .float32 else {
+            throw OutputError.unsupportedDataType(rawValue: dataType.rawValue)
+        }
+        let shape = embeddings.shape.map(\.intValue)
+        guard let layout = RowLayout(shape: shape, strides: embeddings.strides.map(\.intValue)),
+              layout.rows == batchSize,
+              layout.dimension == outputDimension
+        else {
+            throw OutputError.unexpectedShape(shape: shape, batchSize: batchSize, outputDimension: outputDimension)
         }
 
-        let float16BitsPtr: UnsafeMutablePointer<UInt16>? = dataType == .float16
-            ? embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: elementCount)
-            : nil
-        let floatPtr: UnsafeMutablePointer<Float>? = dataType == .float32
-            ? embeddings.dataPointer.bindMemory(to: Float.self, capacity: elementCount)
-            : nil
-
-        func readValue(at index: Int) -> Float {
-            if let floatPtr {
-                return floatPtr[index]
-            }
-            if let float16BitsPtr {
-                return floatFromFloat16Bits(float16BitsPtr[index])
-            }
-            return 0
-        }
-
-        if shape.count == 1 {
-            guard batchSize == 1 else { return nil }
-            let dim = shape[0]
-            if dataType == .float32, let floatPtr {
-                return [Array(UnsafeBufferPointer(start: floatPtr, count: dim))]
-            }
-            return [(0..<dim).map { readValue(at: $0) }]
-        }
-
-        if shape.count == 2 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[1]
-                    vector[col] = readValue(at: index)
+        let capacity = (layout.rows - 1) * layout.rowStride + (layout.dimension - 1) * layout.columnStride + 1
+        if dataType == .float32 {
+            let pointer = embeddings.dataPointer.bindMemory(to: Float.self, capacity: capacity)
+            return try requireFinite((0..<layout.rows).map { row in
+                let start = row * layout.rowStride
+                if layout.columnStride == 1 {
+                    return Array(UnsafeBufferPointer(start: pointer.advanced(by: start), count: layout.dimension))
                 }
-                return vector
-            }
+                return (0..<layout.dimension).map { pointer[start + $0 * layout.columnStride] }
+            })
         }
 
-        if shape.count == 3, shape[1] == 1 {
-            let batch = shape[0]
-            let dim = shape[2]
-            guard batch == batchSize else { return nil }
+        let bits = embeddings.dataPointer.bindMemory(to: UInt16.self, capacity: capacity)
+        return try requireFinite((0..<layout.rows).map { row in
+            let start = row * layout.rowStride
+            return (0..<layout.dimension).map { floatFromFloat16Bits(bits[start + $0 * layout.columnStride]) }
+        })
+    }
 
-            let isContiguous = strides[2] == 1 && strides[0] == dim
-            if isContiguous && dataType == .float32, let floatPtr {
-                return (0..<batch).map { row in
-                    let start = row * dim
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
-                }
-            }
-
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[2]
-                    vector[col] = readValue(at: index)
-                }
-                return vector
-            }
+    static func requireFinite(_ rows: [[Float]]) throws -> [[Float]] {
+        guard rows.allSatisfy({ $0.allSatisfy(\.isFinite) }) else {
+            throw OutputError.nonFiniteValue
         }
+        return rows
+    }
 
-        if shape.count == 3, shape[2] == 1 {
-            let batch = shape[0]
-            let dim = shape[1]
-            guard batch == batchSize else { return nil }
-            return (0..<batch).map { row in
-                var vector = [Float](repeating: 0, count: dim)
-                for col in 0..<dim {
-                    let index = row * strides[0] + col * strides[1]
-                    vector[col] = readValue(at: index)
-                }
-                return vector
+    /// Row/column geometry of an accepted sentence-embedding output layout.
+    struct RowLayout {
+        let rows: Int
+        let dimension: Int
+        let rowStride: Int
+        let columnStride: Int
+
+        init?(shape: [Int], strides: [Int]) {
+            guard shape.count == strides.count else { return nil }
+            switch shape.count {
+            case 1:
+                (rows, dimension, rowStride, columnStride) = (1, shape[0], 0, strides[0])
+            case 2:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[1], strides[0], strides[1])
+            case 3 where shape[1] == 1:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[2], strides[0], strides[2])
+            case 3 where shape[2] == 1:
+                (rows, dimension, rowStride, columnStride) = (shape[0], shape[1], strides[0], strides[1])
+            default:
+                return nil
             }
+            guard rows > 0, dimension > 0 else { return nil }
         }
-
-        if embeddings.count % batchSize == 0 {
-            let rowStride = embeddings.count / batchSize
-            let dim = min(outputDimension, rowStride)
-            guard dim > 0 else { return nil }
-
-            if dataType == .float32, let floatPtr {
-                return (0..<batchSize).map { row in
-                    let start = row * rowStride
-                    return Array(UnsafeBufferPointer(start: floatPtr.advanced(by: start), count: dim))
-                }
-            }
-
-            return (0..<batchSize).map { row in
-                let start = row * rowStride
-                return (0..<dim).map { readValue(at: start + $0) }
-            }
-        }
-
-        return nil
     }
 }
 
@@ -486,8 +436,16 @@ package extension ArcticEmbeddings {
         _ embeddings: MLMultiArray,
         batchSize: Int,
         outputDimension: Int
-    ) -> [[Float]]? {
-        decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
+    ) throws -> [[Float]] {
+        try decodeEmbeddings(embeddings, batchSize: batchSize, outputDimension: outputDimension)
+    }
+
+    func _predictForTesting(
+        inputIds: MLMultiArray,
+        attentionMask: MLMultiArray,
+        batchSize: Int
+    ) async throws -> [[Float]] {
+        try await batchPredictionOffPool(inputIds: inputIds, attentionMask: attentionMask, batchSize: batchSize)
     }
 }
 #endif // canImport(CoreML)

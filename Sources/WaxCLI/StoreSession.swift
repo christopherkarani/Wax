@@ -71,6 +71,16 @@ enum StoreSession {
     ///     Built-in / require-vector still compiles through embedding readiness.
     ///   - embedderChoice: Which embedder to use: `.minilm` (default) or `.arctic`.
     ///   - requireVector: Fail instead of opening while the provider is loading.
+    /// Direct-store CLI commands never start a superseded-model re-embed on their own:
+    /// recall/search/stats/vector-health must not rewrite vectors. `embed-backfill` runs it
+    /// explicitly on a copy.
+    static func orchestratorConfig() -> OrchestratorConfig {
+        var config = OrchestratorConfig.default
+        config.enableStructuredMemory = true
+        config.automaticallyReembedSupersededVectors = false
+        return config
+    }
+
     static func open(
         at url: URL,
         noEmbedder: Bool = false,
@@ -99,8 +109,7 @@ enum StoreSession {
             throw CLIError(error.localizedDescription)
         }
 
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = true
+        let config = orchestratorConfig()
         do {
             return try await EmbeddingReadinessBinding.openOrchestrator(
                 at: url,

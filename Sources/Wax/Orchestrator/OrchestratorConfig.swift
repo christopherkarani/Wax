@@ -25,6 +25,13 @@ package struct OrchestratorConfig: Sendable {
     package var vectorSearchTimeout: Duration? = .seconds(10)
 
     package var requireOnDeviceProviders: Bool = true
+    /// Start re-embedding vectors written by a superseded model revision as soon as the
+    /// embedder is ready. Read-only hosts (CLI recall/search/stats) turn this off and
+    /// re-embed only through an explicit ``MemoryOrchestrator/backfillUnembedded()``.
+    package var automaticallyReembedSupersededVectors: Bool = true
+    /// Frames re-embedded between durable progress checkpoints. `nil` picks
+    /// max(512, frames / 16), which bounds the number of full commits per re-embed.
+    package var supersededReembedCheckpointFrames: Int? = nil
     package var liveSetRewriteSchedule: LiveSetRewriteSchedule = .conservativeAutomatic
     package var defaultScopeContext: MemoryScopeContext? = nil
 

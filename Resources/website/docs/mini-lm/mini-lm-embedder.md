@@ -138,7 +138,7 @@ The embedder reports its identity for provenance tracking:
 embedder.identity
 // EmbeddingIdentity(
 //     provider: "Wax",
-//     model: "MiniLMAll",
+//     model: "MiniLMAll-mean",
 //     dimensions: 384,
 //     normalized: true
 // )
