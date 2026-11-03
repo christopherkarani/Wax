@@ -121,6 +121,9 @@ package actor MemoryOrchestrator {
         package var embedderIdentity: EmbeddingIdentity?
         package var embeddingStatus: EmbeddingStatus
         package var framesWithoutVectors: UInt64
+        /// Stored vectors come from a superseded model revision; vector search is off until
+        /// ``MemoryOrchestrator/backfillUnembedded()`` re-embeds every live frame.
+        package var vectorsNeedReembed: Bool
 
         package init(
             frameCount: UInt64,
@@ -136,7 +139,8 @@ package actor MemoryOrchestrator {
             accessStatsScoringEnabled: Bool,
             embedderIdentity: EmbeddingIdentity?,
             embeddingStatus: EmbeddingStatus = .disabled,
-            framesWithoutVectors: UInt64 = 0
+            framesWithoutVectors: UInt64 = 0,
+            vectorsNeedReembed: Bool = false
         ) {
             self.frameCount = frameCount
             self.pendingFrames = pendingFrames
@@ -152,6 +156,7 @@ package actor MemoryOrchestrator {
             self.embedderIdentity = embedderIdentity
             self.embeddingStatus = embeddingStatus
             self.framesWithoutVectors = framesWithoutVectors
+            self.vectorsNeedReembed = vectorsNeedReembed
         }
     }
 
@@ -239,6 +244,11 @@ package actor MemoryOrchestrator {
     private let accessStatsManager = AccessStatsManager()
     private var accessStatsFrameId: UInt64?
     private var hasEnsuredMemoryBinding = false
+    /// Set while the store's vectors come from a superseded revision of the attached model
+    /// (``MemoryBindingCompatibility/Verdict/needsReembed(reason:)``). The vector lane is
+    /// excluded from search, and the next backfill re-embeds every live frame before the
+    /// binding is replaced, so an interrupted re-embed restarts on the next open.
+    private var supersededVectorsReason: String?
     /// Injectable wall-clock source (ms since epoch). Defaults to real time at this
     /// shell boundary so recall decisions remain pure functions of `(store, query, nowMs)`.
     private let nowProvider: @Sendable () -> Int64
@@ -404,17 +414,27 @@ package actor MemoryOrchestrator {
                 break
             }
         }
-        if let binding = existingMemoryBinding, !binding.isEmpty, let embedder {
-            guard let identity = embedder.identity else {
+        var supersededReason: String?
+        if let embedder {
+            if let binding = existingMemoryBinding, !binding.isEmpty, embedder.identity == nil {
                 try? await wax.close()
                 throw WaxError.io(
                     "memory binding requires an identifiable embedder provider"
                 )
             }
-            guard MemoryBindingCompatibility.isCompatible(binding, with: identity) else {
-                let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
-                try? await wax.close()
-                throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+            if let identity = embedder.identity {
+                switch await Self.bindingVerdict(existingMemoryBinding, identity: identity, wax: wax) {
+                case .compatible:
+                    break
+                case .needsReembed(let reason):
+                    supersededReason = reason
+                    if case .ready(let attached, _) = lifecycle {
+                        lifecycle = .ready(attached: attached, degradedReason: reason)
+                    }
+                case .incompatible(let mismatch):
+                    try? await wax.close()
+                    throw WaxError.io("memory binding mismatch with embedder identity (\(mismatch))")
+                }
             }
         }
 
@@ -428,6 +448,7 @@ package actor MemoryOrchestrator {
         )
         self.enrichmentPipeline = resolvedConfig.enableAsyncEnrichment ? EnrichmentPipeline() : nil
         self.hasEnsuredMemoryBinding = existingMemoryBinding != nil
+        self.supersededVectorsReason = supersededReason
 
         let preference = resolvedConfig.vectorEnginePreference
         let sessionConfig = WaxSession.Config(
@@ -967,6 +988,8 @@ package actor MemoryOrchestrator {
 
     private func ensureMemoryBindingIfNeeded(_ binding: MemoryBinding?) async throws {
         guard let binding, !binding.isEmpty, !hasEnsuredMemoryBinding else { return }
+        // The binding is replaced only after every live frame is re-embedded.
+        guard supersededVectorsReason == nil else { return }
         hasEnsuredMemoryBinding = true
 #if DEBUG
         Self._recordMemoryBindingEnsureCallForTests()
@@ -1331,7 +1354,8 @@ package actor MemoryOrchestrator {
             accessStatsScoringEnabled: config.enableAccessStatsScoring,
             embedderIdentity: embeddingStatus.identity,
             embeddingStatus: embeddingStatus,
-            framesWithoutVectors: await Self.framesWithoutVectorsCount(wax)
+            framesWithoutVectors: await Self.framesWithoutVectorsCount(wax),
+            vectorsNeedReembed: supersededVectorsReason != nil
         )
     }
 
@@ -1371,11 +1395,16 @@ package actor MemoryOrchestrator {
             throw WaxError.missingEmbedder
         }
         let embedder = attached
+        let reembedAll = supersededVectorsReason != nil
 
         let missing = try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
             guard !(await isClosed) else { throw CancellationError() }
-            let missing = await unembeddedLiveSources()
+            // Superseded vectors live in another space: every live frame is re-embedded and
+            // `putEmbeddingBatch` overwrites the stale vector.
+            let missing = reembedAll
+                ? await wax.activeSurrogateSourceFrames()
+                : await unembeddedLiveSources()
             if missing.isEmpty {
                 await refreshEmbeddingCoverage()
             } else {
@@ -1383,7 +1412,12 @@ package actor MemoryOrchestrator {
             }
             return missing
         }
-        guard !missing.isEmpty else { return 0 }
+        guard !missing.isEmpty else {
+            if reembedAll, let identity = embedder.identity {
+                try await completeSupersededReembed(identity: identity)
+            }
+            return 0
+        }
 
         let batchSize = max(1, config.ingestBatchSize)
         var embedded: UInt64 = 0
@@ -1415,12 +1449,50 @@ package actor MemoryOrchestrator {
             index = end
         }
 
+        if reembedAll, let identity = embedder.identity {
+            try await completeSupersededReembed(identity: identity)
+        }
         try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
             guard !(await isClosed) else { throw CancellationError() }
             await refreshEmbeddingCoverage()
         }
         return embedded
+    }
+
+    /// Persist the re-embedded vectors, then swap the binding to `identity` and persist that.
+    /// A crash before the second commit leaves the old binding, so the re-embed restarts.
+    private func completeSupersededReembed(identity: EmbeddingIdentity) async throws {
+        try await embeddingBackfillStoreMutex.withLock { [self] in
+            try Task.checkCancellation()
+            guard !(await isClosed) else { throw CancellationError() }
+            try await flush()
+            try await wax.replaceMemoryBinding(MemoryBindingCompatibility.binding(from: identity))
+            try await flush()
+            await markSupersededVectorsReplaced()
+        }
+    }
+
+    private func markSupersededVectorsReplaced() {
+        supersededVectorsReason = nil
+        hasEnsuredMemoryBinding = true
+    }
+
+    private static func bindingVerdict(
+        _ binding: MemoryBinding?,
+        identity: EmbeddingIdentity,
+        wax: Wax
+    ) async -> MemoryBindingCompatibility.Verdict {
+        let unbound = binding?.isEmpty ?? true
+        var storeHasVectors = false
+        if unbound, MemoryBindingCompatibility.treatsUnboundVectorsAsSuperseded(for: identity) {
+            storeHasVectors = !(await embeddedFrameIds(in: wax)).isEmpty
+        }
+        return MemoryBindingCompatibility.verdict(
+            binding: binding,
+            storeHasVectors: storeHasVectors,
+            identity: identity
+        )
     }
 
     /// Broker stores repair historical text-only writes when their provider attaches.
@@ -1431,7 +1503,7 @@ package actor MemoryOrchestrator {
     }
 
     private func scheduleAutomaticEmbeddingBackfillIfReady() {
-        guard automaticEmbeddingBackfillEnabled,
+        guard automaticEmbeddingBackfillEnabled || supersededVectorsReason != nil,
               config.enableVectorSearch,
               readyEmbedderSnapshot != nil,
               !isClosed,
@@ -1454,7 +1526,7 @@ package actor MemoryOrchestrator {
                 WaxDiagnostics.logSwallowed(
                     error,
                     context: "automatic embedding backfill",
-                    fallback: "unembedded frames remain searchable by text; retry on next open"
+                    fallback: "unembedded or superseded frames remain searchable by text; retry on next open"
                 )
             }
         }
@@ -2388,16 +2460,21 @@ package actor MemoryOrchestrator {
         }
         let binding = await wax.memoryBinding()
         guard !isClosed else { return }
-        if let binding, !binding.isEmpty {
-            guard let identity = provider.identity else {
-                markUnavailable("memory binding requires an identifiable embedder provider")
-                return
-            }
-            guard MemoryBindingCompatibility.isCompatible(binding, with: identity) else {
-                let mismatch = MemoryBindingCompatibility.mismatchReason(binding, with: identity) ?? "unknown mismatch"
+        if let binding, !binding.isEmpty, provider.identity == nil {
+            markUnavailable("memory binding requires an identifiable embedder provider")
+            return
+        }
+        if let identity = provider.identity {
+            switch await Self.bindingVerdict(binding, identity: identity, wax: wax) {
+            case .compatible:
+                supersededVectorsReason = nil
+            case .needsReembed(let reason):
+                supersededVectorsReason = reason
+            case .incompatible(let mismatch):
                 markUnavailable("memory binding mismatch with embedder identity (\(mismatch))")
                 return
             }
+            guard !isClosed else { return }
         }
         if config.enableVectorSearch {
             do {
@@ -2423,7 +2500,7 @@ package actor MemoryOrchestrator {
         guard !isClosed else { return }
         embedderLifecycle = .ready(
             attached: provider,
-            degradedReason: lacksVectors ? "some saved frames have no vectors" : nil
+            degradedReason: supersededVectorsReason ?? (lacksVectors ? "some saved frames have no vectors" : nil)
         )
         finishReadinessWaiters()
         scheduleAutomaticEmbeddingBackfillIfReady()
@@ -2479,7 +2556,7 @@ package actor MemoryOrchestrator {
         let lacksVectors = await Self.storeHasUnembeddedChunks(wax)
         embedderLifecycle = .ready(
             attached: attached,
-            degradedReason: lacksVectors ? "some saved frames have no vectors" : nil
+            degradedReason: supersededVectorsReason ?? (lacksVectors ? "some saved frames have no vectors" : nil)
         )
     }
 
@@ -2497,6 +2574,10 @@ package actor MemoryOrchestrator {
             }
             guard let attached else {
                 return QueryEmbeddingResult(embedding: nil, state: .noEmbedder)
+            }
+            guard supersededVectorsReason == nil else {
+                scheduleAutomaticEmbeddingBackfillIfReady()
+                return QueryEmbeddingResult(embedding: nil, state: .vectorsRebuilding)
             }
             guard !queryEmbeddingCircuitOpen else {
                 return QueryEmbeddingResult(embedding: nil, state: .circuitOpen)
@@ -2529,6 +2610,12 @@ package actor MemoryOrchestrator {
             }
             guard let attached else {
                 throw WaxError.missingEmbedder
+            }
+            if let reason = supersededVectorsReason {
+                scheduleAutomaticEmbeddingBackfillIfReady()
+                throw WaxError.io(
+                    "vector search unavailable until stored vectors are re-embedded (\(reason)); text and hybrid search use the text lane meanwhile"
+                )
             }
             guard !queryEmbeddingCircuitOpen else {
                 throw WaxError.io("query embedding paused after timeout; retries automatically after cooldown")

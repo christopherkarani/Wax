@@ -54,6 +54,9 @@ public struct RAGContext: Sendable, Equatable {
         case vectorDisabled = "vector_disabled"
         /// Query embedding failed; the search fell back to the text lane.
         case failed = "failed"
+        /// Stored vectors come from a superseded embedding model and are being re-embedded;
+        /// the text lane was used.
+        case vectorsRebuilding = "vectors_rebuilding"
     }
 
     /// Retrieval diagnostics for a search: what was asked for vs. what actually ran.

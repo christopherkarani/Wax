@@ -50,7 +50,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
   - `public var query: String`, `public var items: [Item]`, `public var totalTokens: Int`
   - `public var diagnostics: RAGContext.Diagnostics?` — requested vs. effective retrieval mode plus query-embedding state. `nil` only for contexts built outside the retrieval pipeline.
 - `RAGContext.Diagnostics`: closed retrieval record. Read computed `requestedMode: SearchMode`, `effectiveMode: SearchMode`, `queryEmbeddingState: QueryEmbeddingState`. There is no public memberwise init that accepts an arbitrary requested×effective×state triple — hybrid/vector **effective** retrieval always implies `queryEmbeddingState == .available`. `Memory.search` produces this value. Use `SearchMode.diagnosticsSummary` (or `String(describing:)`) for the historical wire/docs strings (`"text"`, `"vector"`, `"hybrid(alpha=…)"`). MCP JSON keys stay those strings via `diagnosticsSummary` / `QueryEmbeddingState.rawValue`.
-- `RAGContext.QueryEmbeddingState`: `.notRequested`, `.available`, `.timeout`, `.circuitOpen`, `.noEmbedder`, `.vectorDisabled`, `.failed`.
+- `RAGContext.QueryEmbeddingState`: `.notRequested`, `.available`, `.timeout`, `.circuitOpen`, `.noEmbedder`, `.vectorDisabled`, `.failed`, `.vectorsRebuilding` (stored vectors come from a superseded model revision and are being re-embedded; text lane used, and vector-only search throws until it finishes).
 - `RAGContext.Item`: `kind` (`.snippet`/`.expanded`/`.surrogate`), `frameId`, `score`, `sources` (`.text`/`.vector`/`.timeline`/`.structured`/`.unknown`), `text`, `metadata`, `explanations`.
   - `score` is the rank key used to order hits. It is not a probability. Hybrid fusion may scale fused ranks to `0...1`; intent or semantic rerank may then write an unbounded composite onto the same field.
 
@@ -67,7 +67,7 @@ Source: `Sources/Wax/RAG/RAGContext.swift`
 - `.disabled` — vector search was explicitly turned off
 - `.loading` — a provider is compiling; text operations remain available
 - `.active(EmbeddingIdentity?)` — provider ready
-- `.degraded(EmbeddingIdentity?, reason: String)` — provider ready, some existing frames have no vectors
+- `.degraded(EmbeddingIdentity?, reason: String)` — provider ready, but some existing frames have no vectors, or (reason `"vectors from superseded MiniLM revision"`) the stored vectors come from the pre-mean-pooling MiniLM. In that case search uses the text lane while every live frame is re-embedded automatically, and the store is rebound to `MiniLMAll-mean` once that finishes.
 - `.unavailable(reason: String)` — no provider could be activated; a vector index may still exist
 - `isQueryEmbedderConfigured` — `true` only for `active` and `degraded`
 

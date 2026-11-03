@@ -2893,6 +2893,17 @@ package actor Wax {
         }
     }
 
+    /// Replace the store's binding after every live frame was re-embedded with the new
+    /// identity. Callers commit the vectors first, so a crash before the next commit keeps
+    /// the old binding and the re-embed restarts.
+    package func replaceMemoryBinding(_ binding: MemoryBinding) async throws {
+        await withWriteLock {
+            guard !binding.isEmpty, toc.memoryBinding != binding else { return }
+            toc.memoryBinding = binding
+            dirty = true
+        }
+    }
+
     package func overwriteMemoryBindingForTesting(_ binding: MemoryBinding?) async throws {
         await withWriteLock {
             guard toc.memoryBinding != binding else { return }

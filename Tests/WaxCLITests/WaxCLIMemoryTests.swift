@@ -1543,6 +1543,20 @@ struct WaxCLIMemoryTests {
                 canaryPassed: true
             ) == false
         )
+        #expect(
+            VectorHealthCommand.isHealthy(
+                vectorSearchEnabled: true,
+                queryEmbeddingAvailable: true,
+                embedderPresent: true,
+                framesWithoutVectors: 0,
+                canaryPassed: true,
+                vectorsNeedReembed: true
+            ) == false
+        )
+        #expect(
+            VectorHealthCommand.reembedFixCommand(storePath: "/tmp/memory.wax")
+                == "wax-cli embed-backfill --direct-store --store-path /tmp/memory.wax --output /tmp/memory-reembedded.wax"
+        )
     }
 
     @Test(.disabled(if: !mcpServerTraitEnabled,
