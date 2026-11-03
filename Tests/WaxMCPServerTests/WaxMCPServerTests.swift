@@ -4981,6 +4981,15 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
     #expect(assertFact.lowerBound < flush.lowerBound)
     #expect(body.contains("commit: false"))
     #expect(!body.contains("commit: true"))
+
+    // Before the split this window also spanned currentSessionDiskStats(), now in +Stats.
+    let statsSource = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Stats.swift"),
+        encoding: .utf8
+    )
+    let diskStart = try #require(statsSource.range(of: "private func currentSessionDiskStats() -> SessionDiskStats"))
+    let diskEnd = try #require(statsSource[diskStart.upperBound...].range(of: "func stats(_ command: BrokerCommand.Stats"))
+    #expect(!statsSource[diskStart.lowerBound..<diskEnd.lowerBound].contains("commit: true"))
 }
 
 @Test

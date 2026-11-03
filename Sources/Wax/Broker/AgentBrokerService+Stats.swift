@@ -40,6 +40,8 @@ extension AgentBrokerService {
         ])
     }
 
+    private static let sessionDiskCacheTTLMs: Int64 = 15_000
+
     private func currentSessionDiskStats() -> SessionDiskStats {
         let nowMs = BrokerClock.nowMs()
         if let cached = cachedSessionDisk, nowMs - cached.atMs < Self.sessionDiskCacheTTLMs {

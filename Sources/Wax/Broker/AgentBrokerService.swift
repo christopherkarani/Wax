@@ -29,7 +29,6 @@ package actor AgentBrokerService {
     // from blocking unrelated reads while still serializing concurrent writes.
     let rememberMutex = AsyncMutex()
     var cachedSessionDisk: (atMs: Int64, stats: SessionDiskStats)?
-    static let sessionDiskCacheTTLMs: Int64 = 15_000
     /// Test seam: awaited between a persisted-session harvest and its manifest write.
     var persistedHarvestHookForTesting: (@Sendable (UUID) async -> Void)?
     var activeSessions: [UUID: SessionState] {
