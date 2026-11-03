@@ -32,7 +32,8 @@ import Testing
         bytes: validFlatVecIndexSegment(vectors: [0.1, 0.2], frameIds: [0], dimension: 2, similarity: .cosine),
         vectorCount: 1,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
     try await wax.putEmbedding(frameId: 0, vector: [0.3, 0.4])
 
@@ -40,10 +41,11 @@ import Testing
         try await wax.close()
         #expect(Bool(false))
     } catch let error as WaxError {
-        guard case .io(let reason) = error else {
+        guard case .vectorIndexStale = error else {
             #expect(Bool(false))
             return
         }
+        let reason = error.errorDescription ?? ""
         #expect(reason.contains("vector index is stale relative to pending embeddings"))
     }
 }

@@ -325,7 +325,8 @@ package extension MemoryOrchestrator {
                     bytes: bytes,
                     vectorCount: manifest.vectorCount,
                     dimension: manifest.dimension,
-                    similarity: manifest.similarity
+                    similarity: manifest.similarity,
+                    coverage: .syncedThrough(nil)
                 )
             }
 

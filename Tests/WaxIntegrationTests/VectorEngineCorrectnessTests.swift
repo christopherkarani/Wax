@@ -475,7 +475,8 @@ func metalANNSCancelledLoadDoesNotBlockGraphBuild() async throws {
         ),
         vectorCount: UInt64(base.frameIds.count),
         dimension: UInt32(dimensions),
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     let engine = try await Task {
@@ -667,7 +668,8 @@ private func segmentWithNaNRow() throws -> Data {
         bytes: try segmentWithNaNRow(),
         vectorCount: 3,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 2)
@@ -704,7 +706,8 @@ func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
         bytes: try segmentWithNaNRow(),
         vectorCount: 3,
         dimension: 2,
-        similarity: .cosine
+        similarity: .cosine,
+        coverage: .latestPending
     )
 
     let engine = try await LoadedVectorSearchEngine.load(
@@ -721,7 +724,7 @@ func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [3, 1])
 
-    try await engine.stageForCommit(into: wax)
+    try await metalANNS.stageForCommit(into: wax)
     let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
     guard case .metal(let info, _, _) = try VectorSerializer.decodeVecSegment(from: restaged) else {
         Issue.record("unexpected payload")

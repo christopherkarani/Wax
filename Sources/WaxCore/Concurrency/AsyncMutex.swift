@@ -6,6 +6,9 @@ package actor AsyncMutex {
 
     package init() {}
 
+    /// Tasks parked in `lock()` behind the current holder.
+    package var waiterCount: Int { waiters.count }
+
     package func lock() async {
         if !isLocked {
             isLocked = true
