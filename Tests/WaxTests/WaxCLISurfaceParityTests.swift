@@ -84,6 +84,35 @@ private func runParitySessionLifecycle(extraEnvironment: [String: String] = [:])
         "WAX_LOCK_TIMEOUT_SECS": "10",
     ].merging(extraEnvironment) { _, extra in extra }
 
+    do {
+        try await runParityLifecycleSteps(
+            executable: executable,
+            baseArgs: baseArgs,
+            sessionID: sessionID,
+            brokerEnv: brokerEnv
+        )
+    } catch {
+        for broker in (try? await PersistentBroker.find(storeDirectory: tempDir)) ?? [] {
+            try? await broker.stopAndConfirmGone()
+        }
+        throw error
+    }
+
+    // The broker outlives each CLI call by design. Stop it so it does not linger
+    // for its idle timeout, and check that it is really gone.
+    let brokers = try await PersistentBroker.find(storeDirectory: tempDir)
+    #expect(brokers.count == 1, "expected one persistent broker for the session, found \(brokers.count)")
+    for broker in brokers {
+        try await broker.stopAndConfirmGone()
+    }
+}
+
+private func runParityLifecycleSteps(
+    executable: URL,
+    baseArgs: [String],
+    sessionID: String,
+    brokerEnv: [String: String]
+) async throws {
     let start = try await WaxCLIProcess.run(
         executableURL: executable,
         arguments: ["session-start"] + baseArgs + ["--arg", "session_id=\(sessionID)"],
@@ -122,6 +151,54 @@ private func runParitySessionLifecycle(extraEnvironment: [String: String] = [:])
     )
     #expect(output.status != 0)
     #expect(output.stderr.contains("--direct-store is not supported for broker parity commands"))
+}
+
+/// A `wax-cli daemon` found by its command line.
+private struct PersistentBroker {
+    let pid: pid_t
+    let socketPath: String?
+
+    /// Broker daemons whose store lives in `storeDirectory`.
+    static func find(storeDirectory: URL) async throws -> [PersistentBroker] {
+        // pgrep, not a full ps listing: WaxCLIProcess reads output only after
+        // the child exits, so output past the pipe buffer would stall it.
+        let matches = try await WaxCLIProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/pgrep"),
+            arguments: ["-f", "wax-cli daemon --store-path .*\(storeDirectory.lastPathComponent)"]
+        )
+        var brokers: [PersistentBroker] = []
+        for pid in matches.stdout.split(separator: "\n").compactMap({ pid_t($0) }) {
+            let command = try await WaxCLIProcess.run(
+                executableURL: URL(fileURLWithPath: "/bin/ps"),
+                arguments: ["-ww", "-o", "args=", "-p", String(pid)]
+            )
+            let fields = command.stdout.split(separator: " ").map(String.init)
+            let socketPath = fields.firstIndex(of: "--socket-path")
+                .flatMap { $0 + 1 < fields.count ? fields[$0 + 1] : nil }
+            brokers.append(PersistentBroker(pid: pid, socketPath: socketPath))
+        }
+        return brokers
+    }
+
+    /// SIGTERM is the broker's graceful shutdown. The 30s bound only catches a hang.
+    func stopAndConfirmGone() async throws {
+        kill(pid, SIGTERM)
+        let deadline = Date().addingTimeInterval(30)
+        while kill(pid, 0) == 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let gone = kill(pid, 0) != 0
+        if !gone {
+            kill(pid, SIGKILL)
+        }
+        #expect(gone, "persistent broker \(pid) survived SIGTERM")
+        if let socketPath {
+            #expect(
+                !FileManager.default.fileExists(atPath: socketPath),
+                "persistent broker \(pid) left its socket at \(socketPath)"
+            )
+        }
+    }
 }
 
 private enum WaxCLISource {
