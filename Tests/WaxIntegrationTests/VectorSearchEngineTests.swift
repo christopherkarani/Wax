@@ -193,10 +193,14 @@ import WaxVectorSearch
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-    let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/MetalVectorEngine+Serialization.swift"),
-        encoding: .utf8
-    )
+    let engineDir = repoRoot.appendingPathComponent("Sources/WaxVectorSearch")
+    let engineFiles = try FileManager.default.contentsOfDirectory(atPath: engineDir.path)
+        .filter { $0.hasPrefix("MetalVectorEngine") && $0.hasSuffix(".swift") }
+        .sorted()
+    try #require(engineFiles.contains("MetalVectorEngine.swift"))
+    let source = try engineFiles
+        .map { try String(contentsOf: engineDir.appendingPathComponent($0), encoding: .utf8) }
+        .joined(separator: "\n")
 
     #expect(!source.contains("bindMemory(to: UInt64.self)"))
 }
