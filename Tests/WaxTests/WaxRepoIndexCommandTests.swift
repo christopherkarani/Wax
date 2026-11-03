@@ -25,28 +25,28 @@ import Testing
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoFullReindexReplacesExistingStore() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
-    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-full")
-    try WaxRepoFixture.addCommit(
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-full")
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "old.txt",
         contents: "old searchable content\n",
         message: "Old searchable commit"
     )
-    try WaxRepoFixture.addCommit(
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "new.txt",
         contents: "new searchable content\n",
         message: "New searchable commit"
     )
 
-    let firstIndex = try WaxRepoProcess.run(
+    let firstIndex = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only", "--max-commits", "2"],
         timeout: 15
     )
     #expect(firstIndex.status == 0, "first index failed: \(firstIndex.stderr)")
 
-    let firstStats = try WaxRepoProcess.run(
+    let firstStats = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["stats", "--repo-path", repo.path],
         timeout: 10
@@ -54,14 +54,14 @@ func waxRepoFullReindexReplacesExistingStore() async throws {
     let firstFrames = try frameCount(from: firstStats.stdout)
     #expect(firstFrames >= 2)
 
-    let fullIndex = try WaxRepoProcess.run(
+    let fullIndex = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only", "--full", "--max-commits", "1"],
         timeout: 15
     )
     #expect(fullIndex.status == 0, "full index failed: \(fullIndex.stderr)")
 
-    let fullStats = try WaxRepoProcess.run(
+    let fullStats = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["stats", "--repo-path", repo.path],
         timeout: 10
@@ -74,35 +74,35 @@ func waxRepoFullReindexReplacesExistingStore() async throws {
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoLimitedIndexDoesNotCheckpointPastUnindexedOlderHistory() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
-    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-limited-checkpoint")
-    try WaxRepoFixture.addCommit(
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-limited-checkpoint")
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "old.txt",
         contents: "old checkpoint searchable content\n",
         message: "Old checkpoint searchable commit"
     )
-    try WaxRepoFixture.addCommit(
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "new.txt",
         contents: "new checkpoint searchable content\n",
         message: "New checkpoint searchable commit"
     )
 
-    let limitedIndex = try WaxRepoProcess.run(
+    let limitedIndex = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only", "--max-commits", "1"],
         timeout: 15
     )
     #expect(limitedIndex.status == 0, "limited index failed: \(limitedIndex.stderr)")
 
-    let fullIndex = try WaxRepoProcess.run(
+    let fullIndex = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only"],
         timeout: 15
     )
     #expect(fullIndex.status == 0, "follow-up index failed: \(fullIndex.stderr)")
 
-    let search = try WaxRepoProcess.run(
+    let search = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["search", "old checkpoint searchable", "--repo-path", repo.path, "--text-only"],
         timeout: 10
@@ -115,9 +115,9 @@ func waxRepoLimitedIndexDoesNotCheckpointPastUnindexedOlderHistory() async throw
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoIndexRefusesCheckpointThatIsNotACommitHash() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
-    let repo = try WaxRepoFixture.makeGitRepo(prefix: "wax-repo-since-injection")
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-since-injection")
     defer { try? FileManager.default.removeItem(at: repo) }
-    try WaxRepoFixture.addCommit(
+    try await WaxRepoFixture.addCommit(
         to: repo,
         fileName: "a.txt",
         contents: "content\n",
@@ -133,7 +133,7 @@ func waxRepoIndexRefusesCheckpointThatIsNotACommitHash() async throws {
         encoding: .utf8
     )
 
-    let index = try WaxRepoProcess.run(
+    let index = try await WaxRepoProcess.run(
         executableURL: executable,
         arguments: ["index", "--repo-path", repo.path, "--text-only"],
         timeout: 15

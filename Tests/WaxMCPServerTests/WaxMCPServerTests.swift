@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -222,7 +223,7 @@ func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
     #expect(started == false)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -252,14 +253,19 @@ func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
         embedderTuning: configuration.embedderTuning
     )
 
+    // The dead peer must fail as soon as it exits, not wait out the start
+    // deadline. The deadline is large so that a regression waiting on it
+    // misses the bound below by a wide margin, however slow the host is.
+    let startTimeoutSeconds: TimeInterval = 60
     let started = Date()
     do {
-        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: configuration,
+            startTimeoutSecondsOverride: startTimeoutSeconds
+        )
         Issue.record("expected lock contention to throw")
     } catch {
-        // Well under the 10s start timeout: the dead peer fails fast
-        // instead of waiting out the deadline.
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(Date().timeIntervalSince(started) < startTimeoutSeconds / 2)
         #expect(error.localizedDescription.contains("http://127.0.0.1:3000/mcp"))
         #expect(error.localizedDescription.contains("identical server settings"))
     }
@@ -289,7 +295,7 @@ func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     #expect(started == false)
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -310,8 +316,10 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
         )
         Issue.record("expected mute live socket to fail")
     } catch {
+        // A mute socket costs two pings capped at 5s each. A regression that
+        // waits the full response timeout on either ping misses this bound.
         let elapsed = Date().timeIntervalSince(startedAt)
-        #expect(elapsed < 15)
+        #expect(elapsed < AgentBrokerClient.responseTimeoutSeconds)
         #expect(error.localizedDescription.contains("did not answer"))
         #expect(error.localizedDescription.contains("not starting a second daemon")
             || error.localizedDescription.contains("Not starting a second daemon"))
@@ -9363,7 +9371,7 @@ struct WaxMCPProcessTests {
     }
 
     @Test
-    func waxMCPAndCLIVersionFlagsExitZero() throws {
+    func waxMCPAndCLIVersionFlagsExitZero() async throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -9375,7 +9383,7 @@ struct WaxMCPProcessTests {
         let expectedVersion = try #require(packageObject?["version"] as? String)
 
         let mcp = try MCPServerProcessHarness.waxMCPBinaryURLForTests(packageRoot: packageRoot)
-        try expectVersion(executable: mcp, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: mcp, expectedSubstring: expectedVersion)
 
         let cliCandidates = [
             mcp.deletingLastPathComponent().appendingPathComponent("wax-cli"),
@@ -9383,11 +9391,18 @@ struct WaxMCPProcessTests {
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
         ]
         let cli = try #require(cliCandidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
-        try expectVersion(executable: cli, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: cli, expectedSubstring: expectedVersion)
     }
 }
 
-private func expectVersion(executable: URL, expectedSubstring: String) throws {
+private func expectVersion(executable: URL, expectedSubstring: String) async throws {
+    let (status, output, err) = try await BlockingWork.run { try runVersion(executable: executable) }
+    #expect(status == 0)
+    #expect((output + err).contains(expectedSubstring))
+}
+
+/// Runs `--version` on a GCD thread, off the cooperative pool.
+private func runVersion(executable: URL) throws -> (Int32, String, String) {
     let process = Process()
     process.executableURL = executable
     process.arguments = ["--version"]
@@ -9399,8 +9414,7 @@ private func expectVersion(executable: URL, expectedSubstring: String) throws {
     process.waitUntilExit()
     let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    #expect(process.terminationStatus == 0)
-    #expect((output + err).contains(expectedSubstring))
+    return (process.terminationStatus, output, err)
 }
 
 #else

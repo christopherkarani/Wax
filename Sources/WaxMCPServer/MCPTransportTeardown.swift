@@ -153,7 +153,7 @@ enum MCPTransportTeardown {
         timeoutSeconds: TimeInterval = defaultTimeoutSeconds
     ) -> @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse {
         { request in
-            guard let response = try AgentBrokerClient.probe(
+            guard let response = try await AgentBrokerClient.probeOffPool(
                 request: request,
                 configuration: configuration,
                 timeoutSeconds: timeoutSeconds

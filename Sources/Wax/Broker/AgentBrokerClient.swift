@@ -45,6 +45,10 @@ package enum AgentBrokerClient {
     /// means no broker will ever serve this socket.
     private static let peerExitGraceSeconds: TimeInterval = 1.0
 
+    /// Upper bound on waiting for a SIGKILLed broker to be reaped. A child stuck in
+    /// uninterruptible I/O cannot die until that I/O ends, so the wait must not be open-ended.
+    private static let reapTimeoutSeconds: TimeInterval = 5.0
+
     private static func isLockContention(_ stderr: String) -> Bool {
         let lowered = stderr.lowercased()
         return lowered.contains("lock unavailable") || lowered.contains("exclusive lock")
@@ -57,7 +61,7 @@ package enum AgentBrokerClient {
     ) async throws -> AgentBrokerResponse {
         let startedBroker = try await ensureAvailable(configuration: configuration)
         do {
-            guard let response = try sendIfAvailable(request, socketPath: configuration.socketPath) else {
+            guard let response = try await sendOffPool(request, socketPath: configuration.socketPath) else {
                 throw BrokerClientError("Broker did not respond after startup.")
             }
             if shutdownIfStarted, startedBroker, request.command != "shutdown" {
@@ -86,9 +90,24 @@ package enum AgentBrokerClient {
         )
     }
 
+    /// ``probe(request:configuration:timeoutSeconds:)`` for async callers: the
+    /// round trip runs off the cooperative pool.
+    package static func probeOffPool(
+        request: AgentBrokerRequest,
+        configuration: AgentBrokerConfiguration,
+        timeoutSeconds: TimeInterval = 1.5
+    ) async throws -> AgentBrokerResponse? {
+        try await sendOffPool(
+            request,
+            socketPath: configuration.socketPath,
+            timeoutSeconds: timeoutSeconds,
+            treatTimeoutAsUnavailable: true
+        )
+    }
+
     package static func ping(configuration: AgentBrokerConfiguration) async throws -> AgentBrokerResponse {
         let _ = try await ensureAvailable(configuration: configuration)
-        guard let response = try sendIfAvailable(
+        guard let response = try await sendOffPool(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath
         ) else {
@@ -115,12 +134,15 @@ package enum AgentBrokerClient {
         }
     }
 
+    /// - Parameter onBrokerLaunched: Called with the child's pid right after this call
+    ///   launches a broker process. Not called when a running broker is reused.
     package static func ensureAvailable(
         configuration: AgentBrokerConfiguration,
-        startTimeoutSecondsOverride: TimeInterval? = nil
+        startTimeoutSecondsOverride: TimeInterval? = nil,
+        onBrokerLaunched: (@Sendable (pid_t) -> Void)? = nil
     ) async throws -> Bool {
         let pingTimeout = min(5.0, responseTimeoutSeconds)
-        if let response = try sendIfAvailable(
+        if let response = try await sendOffPool(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath,
             timeoutSeconds: pingTimeout,
@@ -130,7 +152,7 @@ package enum AgentBrokerClient {
         }
 
         if isSocketLive(socketPath: configuration.socketPath) {
-            if let response = try sendIfAvailable(
+            if let response = try await sendOffPool(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath,
                 timeoutSeconds: pingTimeout,
@@ -141,7 +163,8 @@ package enum AgentBrokerClient {
             if try await restartMuteOwnedBroker(configuration: configuration) {
                 return try await startBrokerIfNeeded(
                     configuration: configuration,
-                    timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+                    timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
+                    onBrokerLaunched: onBrokerLaunched
                 )
             }
             throw BrokerUnresponsiveError(
@@ -151,13 +174,15 @@ package enum AgentBrokerClient {
 
         return try await startBrokerIfNeeded(
             configuration: configuration,
-            timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds
+            timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
+            onBrokerLaunched: onBrokerLaunched
         )
     }
 
     private static func startBrokerIfNeeded(
         configuration: AgentBrokerConfiguration,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        onBrokerLaunched: (@Sendable (pid_t) -> Void)?
     ) async throws -> Bool {
         #if os(iOS) || os(tvOS) || os(watchOS)
         throw BrokerClientError("Starting a broker process is not supported on this platform.")
@@ -205,6 +230,7 @@ package enum AgentBrokerClient {
         } catch {
             throw BrokerClientError("Failed to start broker: \(error.localizedDescription)")
         }
+        onBrokerLaunched?(process.processIdentifier)
 
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var observedExitStatus: Int32?
@@ -212,7 +238,7 @@ package enum AgentBrokerClient {
         var peerExitNotedAt: Date?
         var failedFast = false
         while Date() < deadline {
-            if let response = try sendIfAvailable(
+            if let response = try await sendOffPool(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath
             ), response.ok {
@@ -228,7 +254,7 @@ package enum AgentBrokerClient {
             if !process.isRunning {
                 observedExitStatus = process.terminationStatus
                 if observedStderr == nil {
-                    observedStderr = readPipeText(stderrPipe)
+                    observedStderr = await BlockingWork.run { readPipeText(stderrPipe) }
                 }
                 if peerExitNotedAt == nil {
                     peerExitNotedAt = Date()
@@ -255,7 +281,7 @@ package enum AgentBrokerClient {
             }
         }
 
-        if let response = try sendIfAvailable(
+        if let response = try await sendOffPool(
             AgentBrokerRequest(id: "__ping__", command: "stats"),
             socketPath: configuration.socketPath
         ), response.ok {
@@ -286,6 +312,8 @@ package enum AgentBrokerClient {
         #endif
     }
 
+    /// Returns only after the launched broker has exited, so a cancelled or failed
+    /// start never hands control back while the child still holds the socket or store.
     private static func terminateLaunchedBroker(_ process: Process) async {
         guard process.isRunning else { return }
         process.terminate()
@@ -296,6 +324,24 @@ package enum AgentBrokerClient {
         }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
+        }
+        // Wait for the reap off the cooperative pool so a cancelled caller cannot
+        // skip it, and bound it so a child in uninterruptible I/O cannot hang the caller.
+        let stillRunning = await BlockingWork.run {
+            let reapBy = Date().addingTimeInterval(reapTimeoutSeconds)
+            while process.isRunning, Date() < reapBy {
+                usleep(10_000)
+            }
+            return process.isRunning
+        }
+        if stillRunning {
+            WaxDiagnostics.logSwallowed(
+                BrokerClientError(
+                    "Launched broker \(process.processIdentifier) was still running \(reapTimeoutSeconds)s after SIGKILL."
+                ),
+                context: "broker start cleanup",
+                fallback: "return without reaping the launched broker"
+            )
         }
     }
 
@@ -312,7 +358,7 @@ package enum AgentBrokerClient {
     }
 
     private static func shutdownStartedBroker(configuration: AgentBrokerConfiguration) async throws {
-        guard try requestShutdown(configuration: configuration) else { return }
+        guard try await BlockingWork.run({ try requestShutdown(configuration: configuration) }) else { return }
         let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
         while Date() < deadline {
             if try brokerShutdownCompleted(
@@ -444,6 +490,31 @@ package enum AgentBrokerClient {
         return name == "wax-cli"
     }
     #endif
+
+    /// ``sendIfAvailable(_:socketPath:timeoutSeconds:treatTimeoutAsUnavailable:)`` for async
+    /// callers. A round trip blocks its thread for the broker's whole command, up to
+    /// `responseTimeoutSeconds`, so it must not hold a cooperative thread.
+    private static func sendOffPool(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double? = nil,
+        treatTimeoutAsUnavailable: Bool = false
+    ) async throws -> AgentBrokerResponse? {
+        // No socket file means no broker, which `sendIfAvailable` reports
+        // without blocking. Skip the hop: on a busy pool, resuming after it
+        // can take seconds.
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return nil
+        }
+        return try await BlockingWork.run {
+            try sendIfAvailable(
+                request,
+                socketPath: socketPath,
+                timeoutSeconds: timeoutSeconds,
+                treatTimeoutAsUnavailable: treatTimeoutAsUnavailable
+            )
+        }
+    }
 
     private static func sendIfAvailable(
         _ request: AgentBrokerRequest,

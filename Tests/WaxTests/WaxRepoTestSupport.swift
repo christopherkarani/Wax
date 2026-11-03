@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 #if WaxRepo
 let waxRepoExecutableSmokeTestsEnabled = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14
@@ -21,22 +22,22 @@ enum WaxRepoSource {
 }
 
 enum WaxRepoFixture {
-    static func makeGitRepo(prefix: String = "wax-repo-test") throws -> URL {
+    static func makeGitRepo(prefix: String = "wax-repo-test") async throws -> URL {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-        _ = try WaxRepoProcess.run(
+        _ = try await WaxRepoProcess.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "init"],
             currentDirectoryURL: root
         )
-        _ = try WaxRepoProcess.run(
+        _ = try await WaxRepoProcess.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "config", "user.email", "wax@example.com"],
             currentDirectoryURL: root
         )
-        _ = try WaxRepoProcess.run(
+        _ = try await WaxRepoProcess.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "config", "user.name", "Wax Test"],
             currentDirectoryURL: root
@@ -50,18 +51,18 @@ enum WaxRepoFixture {
         fileName: String,
         contents: String,
         message: String
-    ) throws {
+    ) async throws {
         try contents.write(
             to: repo.appendingPathComponent(fileName),
             atomically: true,
             encoding: .utf8
         )
-        _ = try WaxRepoProcess.run(
+        _ = try await WaxRepoProcess.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "add", fileName],
             currentDirectoryURL: repo
         )
-        _ = try WaxRepoProcess.run(
+        _ = try await WaxRepoProcess.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "commit", "-m", message],
             currentDirectoryURL: repo
@@ -91,11 +92,29 @@ enum WaxRepoProcess {
         throw WaxRepoTestError("Build WaxRepo before running this test")
     }
 
+    /// Waits for the child on a GCD thread, so a slow child never holds a
+    /// cooperative thread that the rest of the parallel test run needs.
     static func run(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL? = nil,
         timeout: TimeInterval = 10
+    ) async throws -> Output {
+        try await BlockingWork.run {
+            try runBlocking(
+                executableURL: executableURL,
+                arguments: arguments,
+                currentDirectoryURL: currentDirectoryURL,
+                timeout: timeout
+            )
+        }
+    }
+
+    private static func runBlocking(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL?,
+        timeout: TimeInterval
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL

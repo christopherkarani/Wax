@@ -17,19 +17,20 @@ func pollTimeoutRoundsSubMillisecondRemainderUp() {
 
 #if os(macOS)
 /// A launched broker that never answers must not outlive a cancelled start.
-@Test
+///
+/// The time limit only catches a hang: the launch handshake has no deadline, and
+/// subprocess-driven tests wait on GCD threads, not cooperative ones.
+@Test(.timeLimit(.minutes(2)))
 func cancelledBrokerStartTerminatesTheLaunchedProcess() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-client-cancel-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let pidFile = root.appendingPathComponent("broker.pid")
     let mute = root.appendingPathComponent("mute-broker")
     try """
     #!/bin/sh
-    echo $$ > '\(pidFile.path)'
-    exec sleep 30
+    exec sleep 600
     """.write(to: mute, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mute.path)
 
@@ -44,45 +45,30 @@ func cancelledBrokerStartTerminatesTheLaunchedProcess() async throws {
         embedderTuning: .fromEnvironment()
     )
 
+    // The launch hook is the handshake, so there is no deadline to race.
+    let (launches, launched) = AsyncStream.makeStream(of: pid_t.self)
     let start = Task {
-        try await AgentBrokerClient.ensureAvailable(
+        defer { launched.finish() }
+        return try await AgentBrokerClient.ensureAvailable(
             configuration: configuration,
-            startTimeoutSecondsOverride: 20
+            // Far past any scheduler stall, so the start ends by cancellation.
+            startTimeoutSecondsOverride: 600,
+            onBrokerLaunched: { launched.yield($0) }
         )
     }
-    let pid = try await waitForPID(in: pidFile, timeoutSeconds: 10)
+    guard let pid = await launches.first(where: { _ in true }) else {
+        _ = try await start.value
+        Issue.record("ensureAvailable returned without launching a broker")
+        return
+    }
     start.cancel()
-    _ = await start.result
+    await #expect(throws: CancellationError.self) { try await start.value }
 
-    let exited = await waitForExit(pid: pid, timeoutSeconds: 3)
-    if !exited {
+    // A cancelled start returns only after the child is reaped.
+    let survived = kill(pid, 0) == 0
+    if survived {
         kill(pid, SIGKILL)
     }
-    #expect(exited, "launched broker \(pid) survived a cancelled start")
-}
-
-private func waitForPID(in file: URL, timeoutSeconds: TimeInterval) async throws -> pid_t {
-    let deadline = Date().addingTimeInterval(timeoutSeconds)
-    while Date() < deadline {
-        if let raw = try? String(contentsOf: file, encoding: .utf8),
-           let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            return pid
-        }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    throw BrokerNeverLaunched()
-}
-
-private struct BrokerNeverLaunched: Error {}
-
-private func waitForExit(pid: pid_t, timeoutSeconds: TimeInterval) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeoutSeconds)
-    while Date() < deadline {
-        if kill(pid, 0) != 0 {
-            return true
-        }
-        try? await Task.sleep(for: .milliseconds(20))
-    }
-    return false
+    #expect(!survived, "launched broker \(pid) survived a cancelled start")
 }
 #endif
