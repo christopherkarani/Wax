@@ -23,8 +23,7 @@ WaxCore's file coordinator is the package-only `Wax` actor. It serializes mutati
 │  └── Writer: exclusive (lease)      │
 │                                     │
 │  BlockingIOExecutor                 │
-│  ├── run<T>(): concurrent reads     │
-│  └── runWrite<T>(): exclusive write │
+│  └── run<T>(): blocking POSIX I/O   │
 └─────────────────────────────────────┘
 ```
 
@@ -42,7 +41,7 @@ The `WaxWriterPolicy` enum controls acquisition behavior:
 
 ## Synchronization Primitives
 
-WaxCore provides several lock types for different use cases:
+WaxCore provides these lock types:
 
 ### AsyncReadWriteLock
 
@@ -70,47 +69,23 @@ await mutex.withLock {
 }
 ```
 
-### ReadWriteLock
-
-A synchronous reader-writer lock backed by `pthread_rwlock_t`. Used on hot paths where async overhead is unacceptable:
-
-```swift
-let lock = ReadWriteLock()
-lock.readLock()
-// ... fast read ...
-lock.readUnlock()
-```
-
-### UnfairLock
-
-Minimal-overhead lock for the hottest paths. Uses `os_unfair_lock` on Darwin and `pthread_mutex_t` on Linux:
-
-```swift
-let lock = UnfairLock()
-lock.withLock {
-    // ... critical section ...
-}
-```
-
 ### FileLock
 
 Advisory whole-file lock via POSIX `flock` for cross-process synchronization:
 
 ```swift
-let lock = FileLock()
-try lock.acquire(at: fileURL, mode: .exclusive)
+let lock = try FileLock.acquire(at: fileURL, mode: .exclusive, timeout: .seconds(5))
 // ... exclusive file access ...
-lock.release()
+try lock.release()
 ```
 
-Supports shared (read) and exclusive (write) modes, plus upgrade and downgrade transitions.
+Supports shared (read) and exclusive (write) modes, plus upgrade and downgrade transitions. Blocking acquisition is bounded: omitting `timeout` waits at most `FileLock.defaultAcquireTimeout` (30 seconds), and only an explicit `nil` waits indefinitely. Store opens use `WaxOptions.lockWaitTimeout`, which defaults to the same bound.
 
 ## BlockingIOExecutor
 
 The `BlockingIOExecutor` offloads file I/O to a concurrent `DispatchQueue`:
 
-- **Read operations** via `run<T>()` execute concurrently with other reads
-- **Write operations** via `runWrite<T>()` use a barrier flag for exclusivity
+- Blocking reads and writes run via `run<T>()`; the owning actor serializes mutations
 
 This separates the async actor world from blocking POSIX I/O, preventing actor thread pool exhaustion.
 
@@ -119,6 +94,6 @@ This separates the async actor world from blocking POSIX I/O, preventing actor t
 For multi-process access to the same `.wax` file, `FileLock` provides advisory locking:
 
 - Multiple processes can hold **shared locks** for concurrent reads
-- A process requesting an **exclusive lock** for writes blocks until all shared locks are released
+- A process requesting an **exclusive lock** for writes waits until all shared locks are released, up to the lock wait timeout
 
 Combined with the dual-header A/B mirroring, this ensures that a reader never sees a partially-written header even if the writer crashes mid-update.

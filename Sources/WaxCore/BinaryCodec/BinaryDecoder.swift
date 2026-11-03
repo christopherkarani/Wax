@@ -21,6 +21,16 @@ package struct BinaryDecoder {
 
     // MARK: - Cursor helpers
 
+    /// Bytes not yet consumed.
+    package var remainingByteCount: Int { data.count - cursor }
+
+    /// Whether `count` elements, each encoded in at least `minimumElementBytes`, can still
+    /// fit in the unread bytes. Decoded counts are untrusted: check this before a count
+    /// sizes any allocation (`reserveCapacity`, `Array(repeating:count:)`).
+    package func canFit(count: Int, minimumElementBytes: Int) -> Bool {
+        count >= 0 && count <= remainingByteCount / max(1, minimumElementBytes)
+    }
+
     private mutating func read(count: Int, context: String) throws -> Data {
         guard count >= 0 else {
             throw WaxError.decodingError(reason: "invalid read size \(count) (\(context))")
@@ -100,27 +110,28 @@ package struct BinaryDecoder {
     // MARK: - Arrays
 
     package mutating func decodeArray(_ type: UInt8.Type) throws -> [UInt8] {
-        try decodeArrayElements { try $0.decode(UInt8.self) }
+        try decodeArrayElements(minimumElementBytes: 1) { try $0.decode(UInt8.self) }
     }
 
     package mutating func decodeArray(_ type: UInt16.Type) throws -> [UInt16] {
-        try decodeArrayElements { try $0.decode(UInt16.self) }
+        try decodeArrayElements(minimumElementBytes: 2) { try $0.decode(UInt16.self) }
     }
 
     package mutating func decodeArray(_ type: UInt32.Type) throws -> [UInt32] {
-        try decodeArrayElements { try $0.decode(UInt32.self) }
+        try decodeArrayElements(minimumElementBytes: 4) { try $0.decode(UInt32.self) }
     }
 
     package mutating func decodeArray(_ type: UInt64.Type) throws -> [UInt64] {
-        try decodeArrayElements { try $0.decode(UInt64.self) }
+        try decodeArrayElements(minimumElementBytes: 8) { try $0.decode(UInt64.self) }
     }
 
     package mutating func decodeArray(_ type: Int64.Type) throws -> [Int64] {
-        try decodeArrayElements { try $0.decode(Int64.self) }
+        try decodeArrayElements(minimumElementBytes: 8) { try $0.decode(Int64.self) }
     }
 
     package mutating func decodeArray(_ type: String.Type) throws -> [String] {
-        try decodeArrayElements { try $0.decode(String.self) }
+        // Every string carries a 4-byte length prefix.
+        try decodeArrayElements(minimumElementBytes: 4) { try $0.decode(String.self) }
     }
 
     // MARK: - Optionals
@@ -156,11 +167,15 @@ package struct BinaryDecoder {
     }
 
     private mutating func decodeArrayElements<Element>(
+        minimumElementBytes: Int,
         _ decodeElement: (inout BinaryDecoder) throws -> Element
     ) throws -> [Element] {
         let count = Int(try decode(UInt32.self))
         guard count <= limits.maxArrayCount else {
             throw WaxError.decodingError(reason: "array count \(count) exceeds limit \(limits.maxArrayCount)")
+        }
+        guard canFit(count: count, minimumElementBytes: minimumElementBytes) else {
+            throw WaxError.decodingError(reason: "array count \(count) exceeds remaining bytes (\(remainingByteCount))")
         }
 
         var result: [Element] = []

@@ -817,6 +817,10 @@ package extension MemoryOrchestrator {
                 // the published inode; rollback relies on this copy.
                 options: [.withoutDeletingBackupItem]
             )
+            // Persist the rename itself; fsync of the store file does not cover its name.
+            // Best effort: the rename already happened, so throwing here would send the
+            // caller down the not-promoted path with the files already swapped.
+            try? FDFile.fsyncParentDirectory(of: destinationURL)
             let backupURL = destinationURL.deletingLastPathComponent()
                 .appendingPathComponent(backupName)
             return RewritePromotion(
@@ -828,6 +832,7 @@ package extension MemoryOrchestrator {
         }
 
         try fileManager.moveItem(at: stagingURL, to: destinationURL)
+        try? FDFile.fsyncParentDirectory(of: destinationURL) // best effort, see above
         return RewritePromotion(
             destinationURL: destinationURL,
             backupURL: nil,

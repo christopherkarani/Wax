@@ -110,7 +110,7 @@ Frame payloads support four encoding strategies via `CanonicalEncoding`:
 |----------|-------------|
 | `plain` | No compression |
 | `lzfse` | Apple's LZFSE (best ratio on Apple platforms) |
-| `lz4` | Fast compression/decompression |
+| `lz4` | Fast compression/decompression. Apple writes `bv41`-framed LZ4 (`COMPRESSION_LZ4`) and Linux writes a raw LZ4 block; both platforms read both forms, picking the one that matches the canonical checksum |
 | `deflate` | Widely compatible zlib deflate |
 
 ## Constants and Limits

@@ -152,6 +152,10 @@ extension FrameMeta: BinaryEncodable {
 }
 
 extension FrameMeta: BinaryDecodable {
+    /// Lower bound on one encoded frame: its unconditional fixed-width fields (id,
+    /// timestamp, payload offset/length, 32-byte checksum). Bounds decoded frame counts.
+    package static let minimumEncodedSize = 4 * 8 + 32
+
     package static func decode(from decoder: inout BinaryDecoder) throws -> FrameMeta {
         let id = try decoder.decode(UInt64.self)
         let timestamp = try decoder.decode(Int64.self)
@@ -186,6 +190,10 @@ extension FrameMeta: BinaryDecodable {
         let tagCount = Int(try decoder.decode(UInt32.self))
         guard tagCount <= Constants.maxArrayCount else {
             throw WaxError.decodingError(reason: "tags count \(tagCount) exceeds limit \(Constants.maxArrayCount)")
+        }
+        // Each tag is two strings, each with a 4-byte length prefix.
+        guard decoder.canFit(count: tagCount, minimumElementBytes: 8) else {
+            throw WaxError.decodingError(reason: "tags count \(tagCount) exceeds remaining bytes (\(decoder.remainingByteCount))")
         }
         var tags: [TagPair] = []
         tags.reserveCapacity(tagCount)
