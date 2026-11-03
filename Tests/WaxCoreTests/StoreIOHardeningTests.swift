@@ -117,14 +117,49 @@ func fileLockUpgradeTimesOutWhileAnotherSharedHolderExists() throws {
 
 @Test func fdFileChunksReadsAndWritesLargerThanTheIOLimit() throws {
     try TempFiles.withTempFile { url in
-        let file = try FDFile.create(at: url)
+        let file = try FDFile.create(at: url, ioChunkLimit: 3)
         defer { try? file.close() }
-        file.ioChunkLimit = 3
         let payload = Data((0..<20).map { UInt8($0) })
         try file.writeAll(payload, at: 5)
         #expect(try file.readExactly(length: payload.count, at: 5) == payload)
         #expect(try file.size() == 25)
     }
+}
+
+@Test func putBatchPayloadWritesPrecedeTheDurableAnchorFsync() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let created = try await Wax.create(at: url)
+    _ = try await created.put(Data("seed".utf8))
+    try await created.commit()
+    try await created.close()
+
+    // A reopened store's WAL needs a durable anchor: its first append fsyncs the whole
+    // file before writing the first record. The batch payloads must already be written
+    // by then, or that fsync would not cover them.
+    let wax = try await Wax.open(at: url)
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(recordsOperations: true))
+    let contents = [Data(repeating: 1, count: 777), Data(repeating: 2, count: 1333)]
+    let ids = try await wax.putBatch(contents, options: contents.map { _ in FrameMetaSubset() })
+    let operations = await wax.recordedFileOperationsForTesting()
+    await wax.installFileFaultPlanForTesting(nil)
+
+    let metas = await wax.frameMetasIncludingPending(frameIds: ids)
+    let payloadWrites: [FDFileOperation] = try ids.map { id in
+        let meta = try #require(metas[id])
+        return .pwrite(offset: meta.payloadOffset, length: Int(meta.payloadLength))
+    }
+    let payloadIndices = try payloadWrites.map { try #require(operations.firstIndex(of: $0)) }
+    let firstFsync = try #require(operations.firstIndex(of: .fsync))
+    #expect(payloadIndices.allSatisfy { $0 < firstFsync })
+    // The anchor really ran: WAL records were written after that fsync.
+    #expect(operations[(firstFsync + 1)...].contains { if case .pwrite = $0 { true } else { false } })
+
+    try await wax.commit()
+    for (id, content) in zip(ids, contents) {
+        #expect(try await wax.frameContent(frameId: id) == content)
+    }
+    try await wax.close()
 }
 
 @Test func putBatchWritesEachPayloadAtContiguousOffsets() async throws {

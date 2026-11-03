@@ -86,10 +86,13 @@ package final class FileLock {
 
     /// Convert to an exclusive lock, waiting at most `timeout` (`nil` waits indefinitely).
     ///
-    /// `flock` conversion is not atomic. On Linux a failed exclusive attempt drops the
-    /// shared lock (macOS keeps it), so after a failure the shared lock is re-taken
-    /// without blocking. If another process took the file in between, this lock is
-    /// released and the error says so; otherwise it is still held in `.shared` mode.
+    /// `flock` conversion is not atomic. On Linux every failed `LOCK_EX | LOCK_NB` attempt
+    /// while waiting drops the shared lock (macOS keeps it), so during the wait another
+    /// process can take the file, including exclusively, and write to it, even when the
+    /// shared lock is re-taken afterwards. Callers must not assume the file is unchanged
+    /// across a failed upgrade. After a failure the shared lock is re-taken without
+    /// blocking. If another process holds the file at that point, this lock is released
+    /// and the error says so; otherwise it is still held in `.shared` mode.
     package func upgrade(timeout: Duration? = FileLock.defaultAcquireTimeout) throws {
         try ensureActive()
         if mode == .exclusive { return }

@@ -2911,6 +2911,10 @@ package actor Wax {
         }
     }
 
+    func recordedFileOperationsForTesting() -> [FDFileOperation] {
+        file.recordedOperations()
+    }
+
     // MARK: - Introspection
 
     package func stats() async -> WaxStats {

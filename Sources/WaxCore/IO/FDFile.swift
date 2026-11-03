@@ -53,16 +53,26 @@ enum FDFileWriteFault: Sendable, Equatable {
     case shortWrite(maxBytes: Int)
 }
 
+/// A file operation observed while a fault plan with `recordsOperations` is installed.
+enum FDFileOperation: Sendable, Equatable {
+    case pwrite(offset: UInt64, length: Int)
+    case fsync
+}
+
 struct FDFileFaultPlan: Sendable, Equatable {
     var pread: [FDFileReadFault]
     var pwrite: [FDFileWriteFault]
+    /// Record every `pwrite` and `fsync`, in order, for ordering assertions in tests.
+    var recordsOperations: Bool
 
     init(
         pread: [FDFileReadFault] = [],
-        pwrite: [FDFileWriteFault] = []
+        pwrite: [FDFileWriteFault] = [],
+        recordsOperations: Bool = false
     ) {
         self.pread = pread
         self.pwrite = pwrite
+        self.recordsOperations = recordsOperations
     }
 }
 
@@ -84,10 +94,22 @@ package final class FDFile {
         private let lock = NSLock()
         private var preadPlan: [FDFileReadFault]
         private var pwritePlan: [FDFileWriteFault]
+        private let recordsOperations: Bool
+        private var operations: [FDFileOperation] = []
 
         init(plan: FDFileFaultPlan) {
             self.preadPlan = plan.pread
             self.pwritePlan = plan.pwrite
+            self.recordsOperations = plan.recordsOperations
+        }
+
+        func record(_ operation: FDFileOperation) {
+            guard recordsOperations else { return }
+            lock.withLock { operations.append(operation) }
+        }
+
+        func recordedOperations() -> [FDFileOperation] {
+            lock.withLock { operations }
         }
 
         func nextReadDirective() -> ReadDirective {
@@ -143,13 +165,15 @@ package final class FDFile {
     private var faultInjectionState: FaultInjectionState?
 
     /// Largest single `pread`/`pwrite`. Darwin rejects transfers over `INT_MAX` bytes with
-    /// EINVAL, so larger buffers are moved in chunks. Tests may lower it.
+    /// EINVAL, so larger buffers are moved in chunks. Tests may lower it at creation.
     static let defaultIOChunkLimit = 1 << 30
-    var ioChunkLimit = FDFile.defaultIOChunkLimit
+    let ioChunkLimit: Int
 
-    private init(fd: Int32, url: URL) {
+    private init(fd: Int32, url: URL, ioChunkLimit: Int = FDFile.defaultIOChunkLimit) {
+        precondition(ioChunkLimit > 0, "ioChunkLimit must be positive")
         self.fd = fd
         self.url = url
+        self.ioChunkLimit = ioChunkLimit
     }
 
     deinit {
@@ -166,8 +190,12 @@ package final class FDFile {
 
     /// Create a new file (truncates if exists).
     package static func create(at url: URL) throws -> FDFile {
+        try create(at: url, ioChunkLimit: defaultIOChunkLimit)
+    }
+
+    static func create(at url: URL, ioChunkLimit: Int) throws -> FDFile {
         let fd = try openFile(at: url, flags: O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, mode: mode_t(0o644))
-        return FDFile(fd: fd, url: url)
+        return FDFile(fd: fd, url: url, ioChunkLimit: ioChunkLimit)
     }
 
     /// Open an existing file for read/write.
@@ -188,6 +216,10 @@ package final class FDFile {
 
     func clearFaultPlan() {
         faultInjectionState = nil
+    }
+
+    func recordedOperations() -> [FDFileOperation] {
+        faultInjectionState?.recordedOperations() ?? []
     }
 
     // MARK: - Read/Write
@@ -288,6 +320,7 @@ package final class FDFile {
 
     package func fsync() throws {
         try ensureOpen()
+        faultInjectionState?.record(.fsync)
         #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
         if fcntl(fd, F_FULLFSYNC, 0) == 0 { return }
         #endif
@@ -421,6 +454,7 @@ package final class FDFile {
         case .short(let maxBytes):
             requestedLength = min(length, maxBytes)
         }
+        faultInjectionState?.record(.pwrite(offset: UInt64(offset), length: requestedLength))
         return pwrite(fd, base, requestedLength, offset)
     }
 
