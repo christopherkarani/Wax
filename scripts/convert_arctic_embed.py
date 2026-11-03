@@ -19,7 +19,7 @@ Requirements:
 
 Usage:
     conda run -n arctic-convert python scripts/convert_arctic_embed.py
-    WAX_TEST_ARCTIC=1 swift test -j 4 --filter ArcticPaddedInput
+    WAX_TEST_ARCTIC=1 swift test -j 4 --filter ArcticPaddedInputSmoke
 
 Output:
     Sources/WaxVectorSearchArctic/Resources/snowflake-arctic-embed-s.mlmodelc

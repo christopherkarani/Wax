@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 import WaxCore
 import WaxVectorSearch
 
@@ -146,6 +146,11 @@ private enum CancelFixture {
         await gate.waitUntilBlocked()
         reembed.cancel()
         await #expect(throws: (any Error).self) { _ = try await reembed.value }
+        // The cancelled run commits its own checkpoint; it does not rely on close() for it.
+        let committedMarkers = await memory.wax.frameMetas().filter {
+            $0.kind == CancelFixture.progressKind && $0.status == .active && $0.supersededBy == nil
+        }
+        #expect(committedMarkers.count == 1)
         try await memory.close()
 
         let interrupted = try await CancelFixture.storeState(at: url)

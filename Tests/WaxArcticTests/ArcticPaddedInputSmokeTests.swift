@@ -8,9 +8,12 @@ import Testing
 /// converted with Hugging Face's `finfo(float32).min` mask fill turns that fill into -inf when
 /// the Neural Engine runs in Float16, and `0 * -inf` makes the padded batch NaN.
 /// `scripts/convert_arctic_embed.py` uses a finite `-1e4` fill instead.
+///
+/// Smoke check only, not a regression test: the bundled model still has the `finfo` fill and
+/// passes on the hosts it has been run on. Run it after a reconversion.
 @Suite(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_ARCTIC"] != "1",
                  "Set WAX_TEST_ARCTIC=1 to run Arctic embedder tests"))
-struct ArcticPaddedInputTests {
+struct ArcticPaddedInputSmokeTests {
     static let sentences = [
         "short note",
         Array(repeating: "Wax keeps agent memory searchable in a single local file.", count: 6)
@@ -18,7 +21,7 @@ struct ArcticPaddedInputTests {
     ]
 
     @Test(arguments: [MLComputeUnits.cpuOnly, .cpuAndNeuralEngine, .all])
-    func arcticPaddedBatchEmbeddingsAreFinite(units: MLComputeUnits) async throws {
+    func arcticPaddedBatchSmokeEmbeddingsAreFinite(units: MLComputeUnits) async throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = units
