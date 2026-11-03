@@ -557,7 +557,7 @@ func rerankingHelpersDetectsTentativeLaunchLanguage() {
         "current estimate is June",
     ]
     for text in positives {
-        #expect(RerankingHelpers.containsTentativeLaunchLanguage(text), "Expected true for: \(text)")
+        #expect(RerankingHelpers.containsTentativeLanguage(text), "Expected true for: \(text)")
     }
 }
 
@@ -571,6 +571,6 @@ func rerankingHelpersRejectsNonTentativeText() {
         "person18 owns deployment readiness",
     ]
     for text in negatives {
-        #expect(!RerankingHelpers.containsTentativeLaunchLanguage(text), "Expected false for: \(text)")
+        #expect(!RerankingHelpers.containsTentativeLanguage(text), "Expected false for: \(text)")
     }
 }

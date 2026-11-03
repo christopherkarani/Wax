@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MemoryType: String, CaseIterable, Sendable {
+package enum MemoryType: String, CaseIterable, Sendable {
     case note = "note"
     case taskState = "task_state"
     case userPreference = "user_preference"
@@ -11,20 +11,20 @@ public enum MemoryType: String, CaseIterable, Sendable {
     case fact = "fact"
 }
 
-public enum MemoryDurability: String, CaseIterable, Sendable {
+package enum MemoryDurability: String, CaseIterable, Sendable {
     case ephemeral = "ephemeral"
     case working = "working"
     case durable = "durable"
     case locked = "locked"
 }
 
-public struct MemoryScopeContext: Sendable, Equatable {
-    public var cwdPath: String?
-    public var repoRootPath: String?
-    public var repoName: String?
-    public var projectName: String?
+package struct MemoryScopeContext: Sendable, Equatable {
+    package var cwdPath: String?
+    package var repoRootPath: String?
+    package var repoName: String?
+    package var projectName: String?
 
-    public init(
+    package init(
         cwdPath: String? = nil,
         repoRootPath: String? = nil,
         repoName: String? = nil,
