@@ -31,6 +31,9 @@ package struct WaxWALStats: Equatable, Sendable {
     /// Number of opens that stopped pending WAL replay early because an uncommitted
     /// record referenced a torn or missing payload (the longest valid prefix was kept).
     package var replayTruncationCount: UInt64
+    /// Number of opens that scanned the file tail for a newer footer because neither the header
+    /// nor the replay snapshot pinned a valid footer ending the file.
+    package var replayFooterScanCount: UInt64
 
     package init(
         walSize: UInt64,
@@ -45,7 +48,8 @@ package struct WaxWALStats: Equatable, Sendable {
         writeCallCount: UInt64,
         autoCommitCount: UInt64,
         replaySnapshotHitCount: UInt64,
-        replayTruncationCount: UInt64
+        replayTruncationCount: UInt64,
+        replayFooterScanCount: UInt64 = 0
     ) {
         self.walSize = walSize
         self.writePos = writePos
@@ -60,6 +64,7 @@ package struct WaxWALStats: Equatable, Sendable {
         self.autoCommitCount = autoCommitCount
         self.replaySnapshotHitCount = replaySnapshotHitCount
         self.replayTruncationCount = replayTruncationCount
+        self.replayFooterScanCount = replayFooterScanCount
     }
 }
 
