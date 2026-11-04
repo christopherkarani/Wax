@@ -79,7 +79,8 @@ package struct MemoryRetentionSettings: Sendable, Equatable {
         Logger(subsystem: "com.wax.framework", category: "retention")
             .warning("\(message, privacy: .public)")
         #else
-        FileHandle.standardError.write(Data("wax retention: \(message)\n".utf8))
+        // Throwing write: the broker's stderr is a pipe its launcher may close.
+        try? FileHandle.standardError.write(contentsOf: Data("wax retention: \(message)\n".utf8))
         #endif
     }
 }

@@ -1,48 +1,22 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
-private struct BindingTestEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int
-    let normalize: Bool
-    let identity: EmbeddingIdentity?
-    private let vector: [Float]
+/// Returns `vector` (default: `dimensions` components of 0.25) for every input.
+private typealias BindingTestEmbedder = ConstantEmbedder
 
-    init(
-        provider: String,
-        model: String,
-        dimensions: Int = 4,
-        normalized: Bool = true,
-        vector: [Float]? = nil
-    ) {
-        self.dimensions = dimensions
-        self.normalize = normalized
-        self.identity = EmbeddingIdentity(
+private extension ConstantEmbedder {
+    init(provider: String, model: String, dimensions: Int = 4, normalized: Bool = true, vector: [Float]? = nil) {
+        self.init(
+            vector: vector ?? Array(repeating: 0.25, count: dimensions),
             provider: provider,
             model: model,
-            dimensions: dimensions,
             normalized: normalized
         )
-        self.vector = vector ?? Array(repeating: 0.25, count: dimensions)
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return vector
-    }
-}
-
-private struct UnidentifiedBindingTestEmbedder: EmbeddingProvider, Sendable {
-    let dimensions = 4
-    let normalize = true
-    let identity: EmbeddingIdentity? = nil
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return Array(repeating: 0.25, count: dimensions)
     }
 }
 
@@ -109,7 +83,7 @@ private struct UnidentifiedBindingTestEmbedder: EmbeddingProvider, Sendable {
             _ = try await MemoryOrchestrator(
                 at: url,
                 config: config,
-                embedder: UnidentifiedBindingTestEmbedder()
+                embedder: ConstantEmbedder(vector: Array(repeating: 0.25, count: 4), identity: nil)
             )
         }
     }

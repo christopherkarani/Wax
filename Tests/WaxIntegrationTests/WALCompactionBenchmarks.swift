@@ -98,52 +98,94 @@ final class WALCompactionBenchmarks: XCTestCase {
             vectorDimensions: 0
         )
 
-        let disabled = try await WALCompactionHarness.run(
-            workload: workload,
-            sampleEveryWrites: 250,
-            reopenIterations: 5,
-            waxOptions: WaxOptions(
-                walProactiveCommitThresholdPercent: nil,
-                walProactiveCommitMaxWalSizeBytes: nil
-            )
-        )
-        let enabled = try await WALCompactionHarness.run(
-            workload: workload,
-            sampleEveryWrites: 250,
-            reopenIterations: 5,
-            waxOptions: WaxOptions()
-        )
+        // A run has only about a dozen auto-commit puts, so its auto-commit p95 is in effect its
+        // slowest auto-commit, and one stalled fsync on a shared runner decides the comparison.
+        // Host load also drifts between runs: the disabled p95 alone moves 27–54 ms from round
+        // to round. So each round runs both modes back to back (alternating which goes first),
+        // and the guardrails compare the median over rounds of the paired difference
+        // `enabled - disabled`: drift shared by a round cancels, up to two outlying rounds are
+        // outvoted, and a slowdown in every proactive run still shows in full.
+        var disabledRuns: [WALCompactionWorkloadResult] = []
+        var enabledRuns: [WALCompactionWorkloadResult] = []
+        for round in 0..<Self.proactiveGuardrailRounds {
+            let order = round.isMultiple(of: 2) ? [false, true] : [true, false]
+            for proactive in order {
+                let result = try await WALCompactionHarness.run(
+                    workload: workload,
+                    sampleEveryWrites: 250,
+                    reopenIterations: 5,
+                    waxOptions: proactive
+                        ? WaxOptions()
+                        : WaxOptions(walProactiveCommitThresholdPercent: nil, walProactiveCommitMaxWalSizeBytes: nil)
+                )
+                XCTAssertGreaterThan(result.autoCommitPutLatencyMs.samples, 0)
+                if proactive {
+                    enabledRuns.append(result)
+                } else {
+                    disabledRuns.append(result)
+                }
+            }
+        }
 
-        XCTAssertGreaterThan(disabled.autoCommitPutLatencyMs.samples, 0)
-        XCTAssertGreaterThan(enabled.autoCommitPutLatencyMs.samples, 0)
+        let disabledPutP95 = Self.median(disabledRuns.map(\.putLatencyMs.p95Ms))
+        let disabledAutoCommitP95 = Self.median(disabledRuns.map(\.autoCommitPutLatencyMs.p95Ms))
+        let putP95Increase = Self.medianPairedIncrease(disabledRuns, enabledRuns, \.putLatencyMs.p95Ms)
+        let autoCommitP95Increase = Self.medianPairedIncrease(
+            disabledRuns,
+            enabledRuns,
+            \.autoCommitPutLatencyMs.p95Ms
+        )
+        let putP95Budget = disabledPutP95 * 0.20 + 2.0
+        let autoCommitP95Budget = max(10.0, disabledAutoCommitP95 * 0.15)
+        let roundAutoCommitP95s = zip(disabledRuns, enabledRuns).map { disabled, enabled in
+            "\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs)/\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs)"
+        }
 
         print(
-            "🧪 WAL proactive guardrail: "
-                + "disabled put p95=\(disabled.putLatencyMs.p95Ms.formatMs) "
-                + "enabled put p95=\(enabled.putLatencyMs.p95Ms.formatMs) "
-                + "disabled auto-commit put p95=\(disabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
-                + "enabled auto-commit put p95=\(enabled.autoCommitPutLatencyMs.p95Ms.formatMs) "
-                + "disabled pending p95=\(disabled.pressure.pendingBytesP95) "
-                + "enabled pending p95=\(enabled.pressure.pendingBytesP95)"
+            "🧪 WAL proactive guardrail (\(Self.proactiveGuardrailRounds) paired rounds): "
+                + "put p95 increase=\(putP95Increase.formatMs) (budget \(putP95Budget.formatMs)) "
+                + "auto-commit put p95 increase=\(autoCommitP95Increase.formatMs) "
+                + "(budget \(autoCommitP95Budget.formatMs)) "
+                + "per-round auto-commit p95 disabled/enabled=\(roundAutoCommitP95s) "
+                + "disabled pending p95=\(disabledRuns.map(\.pressure.pendingBytesP95)) "
+                + "enabled pending p95=\(enabledRuns.map(\.pressure.pendingBytesP95))"
         )
 
         // Percentile guardrails: avoid large tail regressions while pressure improves.
-        XCTAssertLessThanOrEqual(
-            enabled.putLatencyMs.p95Ms,
-            disabled.putLatencyMs.p95Ms * 1.20 + 2.0
-        )
+        XCTAssertLessThanOrEqual(putP95Increase, putP95Budget)
         // This workload has no explicit commit schedule, so commitLatencyMs only
         // measures the single final commit and is not a proactive-compaction metric.
         // Explicit commit latency is covered by testWALCompactionWorkloadMatrix().
-        XCTAssertLessThanOrEqual(
-            enabled.autoCommitPutLatencyMs.p95Ms,
-            disabled.autoCommitPutLatencyMs.p95Ms * 1.15 + 10.0
-        )
+        XCTAssertLessThanOrEqual(autoCommitP95Increase, autoCommitP95Budget)
 
-        XCTAssertLessThan(
-            enabled.pressure.pendingBytesP95,
-            disabled.pressure.pendingBytesP95
-        )
+        // Pending bytes do not depend on timing, so every round must show the improvement.
+        for (disabled, enabled) in zip(disabledRuns, enabledRuns) {
+            XCTAssertLessThan(
+                enabled.pressure.pendingBytesP95,
+                disabled.pressure.pendingBytesP95
+            )
+        }
+    }
+
+    /// Odd, so the median is one round's value. Five, because a single round pair on a quiet
+    /// host can still differ by ~17 ms: with three rounds one stall plus one noisy pair would
+    /// outvote the median, while five tolerate two outlying rounds.
+    private static let proactiveGuardrailRounds = 5
+
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        return sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+    }
+
+    /// The median over rounds of `enabled - disabled` for one latency, pairing each round's runs.
+    private static func medianPairedIncrease(
+        _ disabledRuns: [WALCompactionWorkloadResult],
+        _ enabledRuns: [WALCompactionWorkloadResult],
+        _ latency: KeyPath<WALCompactionWorkloadResult, Double>
+    ) -> Double {
+        median(zip(disabledRuns, enabledRuns).map { disabled, enabled in
+            enabled[keyPath: latency] - disabled[keyPath: latency]
+        })
     }
 
     func testReplayStateSnapshotGuardrails() async throws {
@@ -184,60 +226,62 @@ final class WALCompactionBenchmarks: XCTestCase {
             )
         }
 
+        // One stalled open on a loaded host used to decide this check: a p95/p99 of 8 samples is
+        // in effect the slowest sample, and the arms were compared unpaired, disabled always
+        // first. So each round reopens both copies back to back (alternating which goes first),
+        // and the guardrail compares the median over rounds of the paired difference
+        // `enabled - disabled`: load shared by a round cancels, and up to four outlying rounds
+        // are outvoted.
         var disabledSamples: [Double] = []
         var enabledSamples: [Double] = []
         var enabledSnapshotHits = 0
-        disabledSamples.reserveCapacity(8)
-        enabledSamples.reserveCapacity(8)
-        for _ in 0..<8 {
-            let disabledSample = try await measureReopenLatency(
-                at: disabledURL,
-                iterations: 1,
-                options: WaxOptions(walReplayStateSnapshotEnabled: false)
-            )
-            disabledSamples.append(disabledSample.summary.meanMs)
-
-            let enabledSample = try await measureReopenLatency(
-                at: enabledURL,
-                iterations: 1,
-                options: WaxOptions(walReplayStateSnapshotEnabled: true)
-            )
-            enabledSamples.append(enabledSample.summary.meanMs)
-            enabledSnapshotHits += enabledSample.snapshotHits
+        for round in 0..<Self.replayGuardrailRounds {
+            let order: [Bool] = round.isMultiple(of: 2) ? [false, true] : [true, false]
+            for snapshotEnabled in order {
+                let sample = try await measureReopenLatency(
+                    at: snapshotEnabled ? enabledURL : disabledURL,
+                    iterations: 1,
+                    options: WaxOptions(walReplayStateSnapshotEnabled: snapshotEnabled)
+                )
+                if snapshotEnabled {
+                    enabledSamples.append(sample.summary.meanMs)
+                    enabledSnapshotHits += sample.snapshotHits
+                } else {
+                    disabledSamples.append(sample.summary.meanMs)
+                }
+            }
         }
 
-        let disabled = (
-            summary: WALCompactionLatencySummary.from(samples: disabledSamples),
-            snapshotHits: 0
-        )
-        let enabled = (
-            summary: WALCompactionLatencySummary.from(samples: enabledSamples),
-            snapshotHits: enabledSnapshotHits
-        )
+        let pairedIncreases: [Double] = zip(disabledSamples, enabledSamples).map { disabled, enabled in
+            enabled - disabled
+        }
+        let disabledMedian: Double = disabledSamples.sorted()[disabledSamples.count / 2]
+        let medianIncrease: Double = pairedIncreases.sorted()[pairedIncreases.count / 2]
+        // A snapshot hit skips both the WAL replay scan and the scan of the file tail for the
+        // newest footer, which together are most of a full reopen of this store (debug build:
+        // about 74 ms against 375 ms). Requiring at least half the reopen time back fails when
+        // either skip is lost.
+        let increaseBudget: Double = -0.5 * disabledMedian
 
         print(
-            "🧪 WAL replay snapshot guardrail: "
-                + "disabled p50=\(disabled.summary.p50Ms.formatMs) "
-                + "disabled p95=\(disabled.summary.p95Ms.formatMs) "
-                + "disabled p99=\(disabled.summary.p99Ms.formatMs) "
-                + "enabled p50=\(enabled.summary.p50Ms.formatMs) "
-                + "enabled p95=\(enabled.summary.p95Ms.formatMs) "
-                + "enabled p99=\(enabled.summary.p99Ms.formatMs) "
-                + "snapshot_hits=\(enabled.snapshotHits)"
+            "🧪 WAL replay snapshot guardrail (\(Self.replayGuardrailRounds) paired rounds): "
+                + "median increase=\(medianIncrease.formatMs) (budget \(increaseBudget.formatMs)) "
+                + "disabled=\(disabledSamples.map(\.formatMs)) "
+                + "enabled=\(enabledSamples.map(\.formatMs)) "
+                + "snapshot_hits=\(enabledSnapshotHits)"
         )
 
-        XCTAssertGreaterThanOrEqual(enabled.snapshotHits, 1)
-        // CI variance for reopen benchmarks can be high on shared runners.
-        // Keep a mild relative-improvement signal, but allow modest jitter.
+        // Snapshot hits do not depend on timing, so every enabled reopen must hit.
+        XCTAssertEqual(enabledSnapshotHits, Self.replayGuardrailRounds)
         XCTAssertLessThanOrEqual(
-            enabled.summary.p95Ms,
-            disabled.summary.p95Ms * 0.95 + 20.0
-        )
-        XCTAssertLessThanOrEqual(
-            enabled.summary.p99Ms,
-            disabled.summary.p99Ms * 0.95 + 30.0
+            medianIncrease,
+            increaseBudget,
+            "snapshot reopen must take at most half the full-replay reopen time"
         )
     }
+
+    /// Odd, so the median is one round's value; nine tolerate four outlying rounds.
+    private static let replayGuardrailRounds = 9
 
     private func prepareReplaySnapshotStressFile(at url: URL) async throws {
         let wax = try await Wax.create(
@@ -291,7 +335,7 @@ final class WALCompactionBenchmarks: XCTestCase {
         for _ in 0..<iterations {
             let start = clock.now
             let wax = try await Wax.open(at: url, options: options)
-            let elapsedMs = Double((clock.now - start).components.attoseconds) / 1_000_000_000_000_000
+            let elapsedMs = WALCompactionHarness.durationMs(clock.now - start)
             samples.append(elapsedMs)
             let stats = await wax.walStats()
             if stats.replaySnapshotHitCount > 0 {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 // MARK: - Expired hits must not shrink the result set below topK
@@ -355,7 +356,7 @@ func coverageUnknownClearsOnNextSuccessfulStats() async throws {
 func refreshDuringCoverageScanKeepsNewerAttachReason() async throws {
     try await TempFiles.withTempFile { url in
         let orchestrator = try await embeddedOrchestrator(at: url)
-        let newer = ConfigurableIdentityEmbedder(
+        let newer = DeterministicTextEmbedder(
             identity: EmbeddingIdentity(provider: "Mock", model: "Newer", dimensions: 2, normalized: true)
         )
         // The refresh scan sees an empty store (fully embedded). While it is
@@ -432,7 +433,7 @@ func attachDuringScanDoesNotOverrideMarkUnavailable() async throws {
 func attachDuringScanDoesNotOverrideNewerAttach() async throws {
     try await TempFiles.withTempFile { url in
         let orchestrator = try await embeddedOrchestrator(at: url, initialStatus: .loading)
-        let newer = ConfigurableIdentityEmbedder(
+        let newer = DeterministicTextEmbedder(
             identity: EmbeddingIdentity(provider: "Mock", model: "Newer", dimensions: 2, normalized: true)
         )
         await orchestrator.setCoverageScanHookForTesting {

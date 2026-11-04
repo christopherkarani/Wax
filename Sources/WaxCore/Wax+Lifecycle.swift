@@ -231,6 +231,7 @@ extension Wax {
             walAutoCommitCount: 0,
             walReplaySnapshotHitCount: 0,
             walReplayTruncationCount: 0,
+            walReplayFooterScanCount: 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,
@@ -283,7 +284,8 @@ extension Wax {
             generation: UInt64,
             dirty: Bool,
             replaySnapshotUsed: Bool,
-            replayTruncated: Bool
+            replayTruncated: Bool,
+            footerScanned: Bool
         ) in
             let lock = try FileLock.acquire(
                 at: url,
@@ -321,6 +323,18 @@ extension Wax {
 
             let footerSlice: FooterSlice
             let shouldScanForNewerFooter: Bool = {
+                // Each commit appends its footer past the previous one, so a valid footer that
+                // ends the file is the newest. The replay snapshot names that footer even when
+                // the header page that pointed at it was lost.
+                if let snapshotFooter,
+                   let snapshot = header.walReplaySnapshot,
+                   snapshot.fileGeneration == snapshotFooter.footer.generation,
+                   snapshot.walCommittedSeq == snapshotFooter.footer.walCommittedSeq,
+                   snapshotFooter.footer.generation >= (fastFooter?.footer.generation ?? 0),
+                   fileSize == snapshotFooter.footerOffset + Constants.footerSize
+                {
+                    return false
+                }
                 guard let fastFooter else { return true }
                 guard selectedHeaderFileGeneration == fastFooter.footer.generation else { return true }
                 guard header.tocChecksum == fastFooter.footer.tocHash else { return true }
@@ -502,7 +516,8 @@ extension Wax {
                 generation: footerSlice.footer.generation,
                 dirty: !pendingMutations.isEmpty,
                 replaySnapshotUsed: usedReplaySnapshot,
-                replayTruncated: replayTruncated
+                replayTruncated: replayTruncated,
+                footerScanned: shouldScanForNewerFooter
             )
         }
 
@@ -529,6 +544,7 @@ extension Wax {
             walAutoCommitCount: 0,
             walReplaySnapshotHitCount: opened.replaySnapshotUsed ? 1 : 0,
             walReplayTruncationCount: opened.replayTruncated ? 1 : 0,
+            walReplayFooterScanCount: opened.footerScanned ? 1 : 0,
             walProactiveCommitThresholdBytes: walProactiveCommitThresholdBytes(
                 walSize: opened.header.walSize,
                 thresholdPercent: options.walProactiveCommitThresholdPercent,

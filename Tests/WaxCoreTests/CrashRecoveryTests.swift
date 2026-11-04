@@ -172,6 +172,105 @@ import Testing
     }
 }
 
+/// Builds a two-commit snapshot store and loses its newest header page: the surviving page points
+/// at the older footer, but its replay snapshot points at the newest one, which ends the file.
+private func makeStoreWithLostNewestHeaderPage() async throws -> URL {
+    let url = TempFiles.uniqueURL()
+    let wax = try await Wax.create(
+        at: url,
+        walSize: 256 * 1024,
+        options: WaxOptions(walReplayStateSnapshotEnabled: true)
+    )
+    _ = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+    try await wax.commit()
+    _ = try await wax.put(Data("latest".utf8), options: FrameMetaSubset(searchText: "latest"))
+    try await wax.commit()
+    try await wax.close()
+
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
+    let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
+    let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+    let selectedOffset = UInt64(selected.pageIndex) * Constants.headerPageSize
+    try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
+    try file.fsync()
+    return url
+}
+
+private func fileSize(at url: URL) throws -> UInt64 {
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    return try file.size()
+}
+
+private func appendBytes(_ data: Data, to url: URL) throws {
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    try file.writeAll(data, at: try file.size())
+    try file.fsync()
+}
+
+/// The replay snapshot on the surviving header page already names the newest footer. When that
+/// footer is valid and ends the file, no newer footer can follow it, so open must not pay for a
+/// scan of the whole file tail (most of reopen time on a large store).
+@Test func openSkipsFooterScanWhenReplaySnapshotFooterEndsFile() async throws {
+    let url = try await makeStoreWithLostNewestHeaderPage()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    for snapshotEnabled in [true, false] {
+        let reopened = try await Wax.open(
+            at: url,
+            options: WaxOptions(walReplayStateSnapshotEnabled: snapshotEnabled)
+        )
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == 2)
+        #expect(try await reopened.frameContent(frameId: 1) == Data("latest".utf8))
+        let walStats = await reopened.walStats()
+        // Without the snapshot, the stale header gives no proof of the newest footer: scan.
+        #expect(walStats.replayFooterScanCount == (snapshotEnabled ? 0 : 1))
+        #expect(walStats.replaySnapshotHitCount == (snapshotEnabled ? 1 : 0))
+        try await reopened.close()
+    }
+}
+
+/// Bytes left past the snapshot footer by a crash.
+enum TailPastSnapshotFooter: String, CaseIterable, Sendable {
+    /// A partial next commit: TOC bytes, then a torn footer magic.
+    case tornCommit
+    case zeroPadding
+
+    var bytes: Data {
+        switch self {
+        case .tornCommit:
+            var torn = Data((0..<300).map { UInt8($0 & 0xff) })
+            torn.append(contentsOf: Constants.footerMagic.prefix(4))
+            return torn
+        case .zeroPadding:
+            return Data(repeating: 0, count: 64 * 1024)
+        }
+    }
+}
+
+/// Bytes past the snapshot footer mean it no longer ends the file, so open must scan, recover the
+/// newest valid generation, and truncate the tail back to the clean end.
+@Test(arguments: TailPastSnapshotFooter.allCases)
+func openScansAndTruncatesTailPastReplaySnapshotFooter(_ tail: TailPastSnapshotFooter) async throws {
+    let url = try await makeStoreWithLostNewestHeaderPage()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let cleanSize = try fileSize(at: url)
+    try appendBytes(tail.bytes, to: url)
+
+    let reopened = try await Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+    let stats = await reopened.stats()
+    #expect(stats.frameCount == 2)
+    #expect(try await reopened.frameContent(frameId: 1) == Data("latest".utf8))
+    let walStats = await reopened.walStats()
+    #expect(walStats.replayFooterScanCount == 1)
+    try await reopened.close()
+    #expect(try fileSize(at: url) == cleanSize)
+}
+
 @Test func cleanReopenUsesReplaySnapshotFastPath() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -328,6 +427,9 @@ import Testing
         #expect(try await reopened.frameContent(frameId: 0) == Data("v1".utf8))
         #expect(try await reopened.frameContent(frameId: 1) == Data("v2".utf8))
         #expect(try await reopened.frameContent(frameId: 2) == Data("v3".utf8))
+        // The snapshot footer (generation 2) does not end the file, so only a scan finds generation 3.
+        let walStats = await reopened.walStats()
+        #expect(walStats.replayFooterScanCount == 1)
         try await reopened.close()
     }
 }

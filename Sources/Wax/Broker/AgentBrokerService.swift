@@ -25,6 +25,10 @@ package actor AgentBrokerService {
     let virtualSessions: VirtualSessionStore
     let endedSessions: DiskEndedSessionStore
     private let commandMutex = AsyncMutex()
+    #if DEBUG
+    /// Test-only: awaited inside a command's locks, just before it runs.
+    private var commandHold: (@Sendable (String) async -> Void)?
+    #endif
     // A remember may wait for deferred embedding readiness. Keep that wait
     // from blocking unrelated reads while still serializing concurrent writes.
     let rememberMutex = AsyncMutex()
@@ -253,10 +257,23 @@ package actor AgentBrokerService {
         }
     }
 
+    #if DEBUG
+    /// Test-only: lets a daemon test hold a command while it owns the store's
+    /// locks, as a long remember or migration would.
+    package func setCommandHold(_ hold: (@Sendable (String) async -> Void)?) {
+        commandHold = hold
+    }
+    #endif
+
     private func dispatch(
         _ command: BrokerCommand,
         request: AgentBrokerRequest
     ) async -> AgentBrokerResponse {
+        #if DEBUG
+        if let commandHold {
+            await commandHold(request.command)
+        }
+        #endif
         do {
             let payload: AgentBrokerValue
             let shouldExit: Bool

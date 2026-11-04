@@ -3,6 +3,7 @@ import Foundation
 import MCP
 import Testing
 @testable import Wax
+import WaxTestSupport
 @testable import wax_mcp
 
 private func withIsolatedBroker<T>(
@@ -49,22 +50,6 @@ private func requireObject(_ value: AgentBrokerValue?) throws -> [String: AgentB
 
 private func requireString(_ object: [String: AgentBrokerValue], _ key: String) throws -> String {
     try #require(object[key]?.stringValue)
-}
-
-private struct StatsReasonEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "StatsReason",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return [1, 0]
-    }
 }
 
 @Test
@@ -910,7 +895,7 @@ func statsIncludesReasonWhenEmbeddingStatusIsDegradedOrUnavailable() async throw
         noEmbedder: false,
         embedderChoice: "auto",
         requireVector: false,
-        embedderOverride: StatsReasonEmbedder(),
+        embedderOverride: ConstantEmbedder(vector: [1, 0], provider: "Test", model: "StatsReason"),
         automaticEmbeddingBackfill: false
     )
     defer { Task { try? await service.close() } }

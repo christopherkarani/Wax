@@ -15,6 +15,13 @@ import Foundation
 import Metal
 import WaxCore
 
+/// Brute-force GPU cosine search over vectors held in Metal buffers.
+///
+/// - Important: Deprecated. Wax's search path does not use this engine: it searches with
+///   ``AccelerateVectorEngine`` (exact, CPU) or ``MetalANNSVectorEngine`` (approximate, GPU)
+///   through ``LoadedVectorSearchEngine``. Use one of those instead. This engine and its
+///   shaders will be removed in the next major version. It is `package`, not public API, so
+///   it carries no `@available(*, deprecated)` attribute.
 package actor MetalVectorEngine {
     static let maxResults = 10_000
     private static let initialReserve: UInt32 = 64

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 
 @Test
 func backfillUnembeddedLiveChunksClearsDegradedAndRanksKnownHit() async throws {
