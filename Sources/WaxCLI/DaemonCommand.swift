@@ -104,6 +104,7 @@ struct DaemonCommand: AsyncParsableCommand {
             // the drain bound finishes first. That extends graceful shutdown;
             // a second signal forces the exit.
             try await service.close()
+            DaemonTestHooks.current?.markClosed()
             // Such a command's response is written only once it releases the
             // locks, so give it a moment to go out before the process exits.
             await waitWhileHandling(inflight, seconds: socketResponseFlushSeconds)
@@ -123,7 +124,7 @@ private extension DaemonCommand {
     var maxSocketRequestBytes: Int { 1_048_576 }
     /// A client must send its whole request within this many seconds of being
     /// accepted. One deadline, so trickled bytes cannot hold a client thread.
-    var socketRequestReadSeconds: TimeInterval { 5 }
+    var socketRequestReadSeconds: TimeInterval { DaemonTestHooks.current?.requestReadSeconds ?? 5 }
     /// How long shutdown waits for requests already in `service.handle`. Well
     /// under the client's 2s SIGTERM grace; `service.close()` then queues behind
     /// any command still holding the store's locks.
@@ -286,7 +287,9 @@ private extension DaemonCommand {
             loopError = error
         }
 
-        await drainHandledRequests(inflight)
+        // Bounded from the signal: the accept loop notices it only at its next
+        // poll slice, and on a busy host resuming here can take longer still.
+        await drainHandledRequests(inflight, startedAt: shutdown.requestedAt ?? Date())
         if let loopError {
             throw loopError
         }
@@ -354,14 +357,17 @@ private extension DaemonCommand {
     /// Stops new requests from reaching the service, then waits a bounded time
     /// for the ones already in it. Clients still sending a request are not
     /// waited for: the process exits under them once the store is closed.
-    func drainHandledRequests(_ inflight: SocketInflight) async {
+    func drainHandledRequests(_ inflight: SocketInflight, startedAt: Date) async {
         inflight.startDraining()
         DaemonTestHooks.current?.markDraining()
-        await waitWhileHandling(inflight, seconds: socketShutdownDrainSeconds)
+        await waitWhileHandling(inflight, until: startedAt.addingTimeInterval(socketShutdownDrainSeconds))
     }
 
     func waitWhileHandling(_ inflight: SocketInflight, seconds: TimeInterval) async {
-        let deadline = Date().addingTimeInterval(seconds)
+        await waitWhileHandling(inflight, until: Date().addingTimeInterval(seconds))
+    }
+
+    func waitWhileHandling(_ inflight: SocketInflight, until deadline: Date) async {
         while inflight.isHandling, Date() < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
@@ -424,12 +430,16 @@ private extension DaemonCommand {
         case .empty:
             response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
         case .line(let line):
-            // Once shutdown is draining, nothing new reaches the service.
-            guard inflight.beginHandling() else { return false }
-            admitted = true
-            let handled = await handleRequest(line, service: service)
-            response = handled.0
-            command = handled.1
+            // Once shutdown is draining, nothing new reaches the service. The
+            // client is told so rather than left to read a bare EOF.
+            if inflight.beginHandling() {
+                admitted = true
+                let handled = await handleRequest(line, service: service)
+                response = handled.0
+                command = handled.1
+            } else {
+                response = AgentBrokerResponse.failure(message: "Broker is shutting down; retry the request")
+            }
         }
 
         do {
@@ -607,13 +617,25 @@ private enum SocketRequestRead: Sendable {
 private final class DaemonShutdown: @unchecked Sendable {
     private let lock = NSLock()
     private var signalsReceived = 0
+    private var firstSignalAt: Date?
 
     /// Records a signal. Returns true for the first one.
     func recordSignal() -> Bool {
         lock.lock()
         defer { lock.unlock() }
         signalsReceived += 1
+        if signalsReceived == 1 {
+            firstSignalAt = Date()
+        }
         return signalsReceived == 1
+    }
+
+    /// When the first signal was handled, so shutdown's bounds count from the
+    /// signal rather than from whenever the server loop noticed it.
+    var requestedAt: Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return firstSignalAt
     }
 
     var isRequested: Bool {
@@ -628,9 +650,8 @@ private final class DaemonShutdown: @unchecked Sendable {
 /// handlers and stdio flushing, which may themselves be what is wedged.
 private func installShutdownSignalHandlers(_ shutdown: DaemonShutdown) -> [DispatchSourceSignal] {
     ShutdownSignals.observe { signalNumber in
-        if !shutdown.recordSignal() {
-            _exit(128 + signalNumber)
-        }
+        guard shutdown.recordSignal() else { _exit(128 + signalNumber) }
+        DaemonTestHooks.current?.markSignalled()
     }
 }
 

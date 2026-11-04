@@ -22,10 +22,22 @@ import Glibc
 package enum ShutdownSignals {
     package static let watched: [Int32] = [SIGTERM, SIGINT]
 
+    /// The handlers' own serial queue. Serial queues are overcommit, so this one
+    /// gets a thread even when every worker of the global queues is blocked,
+    /// for example by socket clients still sending their requests, each waiting
+    /// in `BlockingWork`. On `.global()` a signal can then wait until one of
+    /// them finishes, and a second signal cannot force the exit.
+    package static let handlerQueue = DispatchQueue(
+        label: "com.wax.shutdown-signals",
+        qos: .userInteractive
+    )
+
     /// Starts the sources. Keep them alive for as long as the signals should be
-    /// handled, and cancel them when done. `handler` receives the signal number.
+    /// handled, and cancel them when done. `handler` receives the signal number,
+    /// once per signal: signals that arrive before the handler runs are merged
+    /// into one event, so it is called that many times.
     package static func observe(
-        queue: DispatchQueue = .global(),
+        queue: DispatchQueue = handlerQueue,
         handler: @escaping @Sendable (Int32) -> Void
     ) -> [DispatchSourceSignal] {
         watched.map { signalNumber in
@@ -33,7 +45,13 @@ package enum ShutdownSignals {
             signal(signalNumber, SIG_IGN)
             #endif
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
-            source.setEventHandler { handler(signalNumber) }
+            // Strong capture: `DispatchSourceSignal` is not class-bound on Linux,
+            // and cancelling the source releases the handler.
+            source.setEventHandler {
+                for _ in 0..<max(1, source.data) {
+                    handler(signalNumber)
+                }
+            }
             source.resume()
             return source
         }
