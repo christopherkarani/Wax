@@ -49,7 +49,7 @@ package struct WaxWALStats: Equatable, Sendable {
         autoCommitCount: UInt64,
         replaySnapshotHitCount: UInt64,
         replayTruncationCount: UInt64,
-        replayFooterScanCount: UInt64 = 0
+        replayFooterScanCount: UInt64
     ) {
         self.walSize = walSize
         self.writePos = writePos
