@@ -24,7 +24,7 @@ private func withVirtualSessionStore<T>(
     let store = VirtualSessionStore(
         sessionRootURL: rootURL,
         brokerInstanceID: brokerInstanceID,
-        openExisting: { url in
+        openExisting: { url, _ in
             var config = OrchestratorConfig.default
             config.enableVectorSearch = false
             config.enableStructuredMemory = false
@@ -649,7 +649,7 @@ struct VirtualSessionStoreTests {
         try await withVirtualSessionStore { store, root in
             let missing = root.appendingPathComponent("ghost.wax")
             do {
-                _ = try await store.openExistingSessionMemory(at: missing)
+                _ = try await store.openExistingSessionMemory(at: missing, catchUp: false)
                 Issue.record("openExistingSessionMemory should throw when the file is missing")
             } catch {
                 #expect(error.localizedDescription.contains("session store is missing"))

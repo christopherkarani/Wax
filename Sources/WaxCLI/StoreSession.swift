@@ -78,6 +78,7 @@ enum StoreSession {
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = true
         config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
         return config
     }
 

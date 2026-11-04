@@ -246,6 +246,7 @@ extension AgentBrokerService {
         config.enableAccessStatsScoring = false
         config.liveSetRewriteSchedule = .disabled
         config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
         return config
     }
 

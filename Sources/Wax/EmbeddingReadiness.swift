@@ -267,6 +267,7 @@ package enum EmbeddingReadinessBinding {
                 initialEmbeddingStatus: .active(provider.identity)
             )
         case .automatic(let provider, let options):
+            let config = config.sizingChunks(for: provider)
             let factory = factoryOverride ?? {
                 try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: true)
             }
@@ -284,6 +285,7 @@ package enum EmbeddingReadinessBinding {
                 waxOptions: waxOptions
             )
         case .builtIn(let provider, let options):
+            let config = config.sizingChunks(for: provider)
             let factory = factoryOverride ?? {
                 try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: false)
             }

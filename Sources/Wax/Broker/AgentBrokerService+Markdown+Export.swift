@@ -18,8 +18,10 @@ extension AgentBrokerService {
                 sessionMemory = active.memory
                 shouldClose = false
             } else {
+                // Export only reads: it must not commit a catch-up into an ended store.
                 sessionMemory = try await virtualSessions.openExistingSessionMemory(
-                    at: URL(fileURLWithPath: manifest.storePath)
+                    at: URL(fileURLWithPath: manifest.storePath),
+                    catchUp: false
                 )
                 shouldClose = true
             }

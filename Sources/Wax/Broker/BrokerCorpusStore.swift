@@ -548,6 +548,7 @@ private extension BrokerCorpusStoreBuilder {
         var config = OrchestratorConfig.default
         config.enableStructuredMemory = structuredMemoryEnabled
         config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
         return config
     }
 

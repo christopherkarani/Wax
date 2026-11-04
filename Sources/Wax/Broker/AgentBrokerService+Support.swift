@@ -164,8 +164,9 @@ extension AgentBrokerService {
         try await virtualSessions.validateActiveOrRebind(sessionID)
     }
 
+    /// Brief inspection open: it never commits a text-index catch-up.
     func openSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
-        try await virtualSessions.openExistingSessionMemory(at: url)
+        try await virtualSessions.openExistingSessionMemory(at: url, catchUp: false)
     }
 
     func writeScope(for sessionID: UUID?, clientCWD: String? = nil) -> MemoryScopeContext {
