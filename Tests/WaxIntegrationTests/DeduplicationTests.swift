@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
 @Test func rememberIdenticalContentTwiceIsIdempotent() async throws {

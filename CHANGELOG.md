@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Deprecated `MetalVectorEngine` (package-only, not public API). Wax's search path never used it: vector search runs on `AccelerateVectorEngine` (exact, CPU) or `MetalANNSVectorEngine` (approximate, GPU), which is what to use instead. `MetalVectorEngine` and its Metal shaders will be removed in the next major version.
 - MiniLM now uses sentence-transformers mean pooling and reports the embedding identity `MiniLMAll-mean`. Stores written by the old `MiniLMAll` pooler are re-embedded automatically (resumable; text search keeps working meanwhile) and then rebound to `MiniLMAll-mean`. Once a store is rebound, older `wax-cli` / `wax-mcp` builds refuse to open it with a model-binding mismatch. Upgrade every host that shares the store. To re-embed a copy explicitly, run `wax-cli embed-backfill --direct-store --store-path <store> --output <copy>`.
 - New public error case `WaxError.vectorsRebuilding(reason:progress:)`, thrown by vector-only search while a store's vectors are re-embedded. This is source-breaking for exhaustive `switch` statements over `WaxError`; add a case or a `default`.
 - New public error case `WaxError.vectorIndexStale`, thrown by a commit when an embedding was written after the vector index it carries was staged. It replaces `WaxError.io("vector index is stale relative to pending embeddings; restage vector index before commit")` (the description text is unchanged), so code that matched that `.io` case no longer matches. This is source-breaking for exhaustive `switch` statements over `WaxError`; add a case or a `default`.

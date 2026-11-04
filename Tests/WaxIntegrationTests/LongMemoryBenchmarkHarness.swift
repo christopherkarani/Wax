@@ -2,6 +2,7 @@
 import Foundation
 import XCTest
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 private enum LongMemoryBenchmarkError: Error {
@@ -242,10 +243,10 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
         let wax = try await Wax.create(at: url)
         let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
 
-        let embedder: DeterministicEmbedder?
+        let embedder: SeededHashEmbedder?
         let vector: WaxVectorSearchSession?
         if config.includeVectors {
-            let local = DeterministicEmbedder(dimensions: config.vectorDimensions)
+            let local = SeededHashEmbedder(dimensions: config.vectorDimensions)
             embedder = local
             vector = try await wax.enableVectorSearch(dimensions: local.dimensions)
         } else {
@@ -618,7 +619,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
 
     private static func queryEmbedding(
         _ query: String,
-        embedder: DeterministicEmbedder?
+        embedder: SeededHashEmbedder?
     ) async throws -> [Float]? {
         guard let embedder else { return nil }
         let raw = try await embedder.embed(query)
@@ -722,7 +723,7 @@ final class LongMemoryBenchmarkHarness: XCTestCase {
     private func latencySummary(
         fixture: LongMemoryFixture,
         wax: Wax,
-        embedder: DeterministicEmbedder?,
+        embedder: SeededHashEmbedder?,
         topK: Int,
         includeVectors: Bool,
         alpha: Float

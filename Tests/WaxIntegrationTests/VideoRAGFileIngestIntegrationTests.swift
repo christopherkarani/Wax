@@ -2,26 +2,10 @@ import CoreGraphics
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
-private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 8
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "Multimodal", dimensions: 8, normalized: true)
-
-    func embed(text: String) async throws -> [Float] {
-        let hash = text.utf8.reduce(0) { $0 &+ Int($1) }
-        let raw = (0..<dimensions).map { i in Float((hash &+ i) % 97) / 97.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-
-    func embed(image: CGImage) async throws -> [Float] {
-        let hash = (image.width &* 31) &+ image.height
-        let raw = (0..<dimensions).map { i in Float((hash &+ i &* 13) % 101) / 101.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-}
+private let testVideoEmbedder = ByteSumMultimodalEmbedder(model: "Multimodal")
 
 private struct TestTranscriptProvider: VideoTranscriptProvider {
     static let token = "INGEST_TOKEN"
@@ -110,7 +94,7 @@ func videoRAGFileIngestWritesSearchableTranscriptAndRecallFindsIt() async throws
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -152,7 +136,7 @@ func videoRAGFileIngestRecallWithThumbsIsDeterministic() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -242,7 +226,7 @@ func videoRAGFileIngestRespectsCaptureTimeRangeForSegmentSearch() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: SegmentScopedTranscriptProvider()
         )
 
@@ -272,7 +256,7 @@ func videoRAGRejectsNetworkTranscriptProviderByDefault() async throws {
             _ = try await VideoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: TestVideoEmbedder(),
+                embedder: testVideoEmbedder,
                 transcriptProvider: NetworkTranscriptProvider()
             )
             Issue.record("Expected WaxError for network transcript provider")
@@ -308,7 +292,7 @@ func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -370,7 +354,7 @@ func videoRAGTranscriptFailureFallsBackToFrameOnlyIngest() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: FailingTranscriptProvider()
         )
 
@@ -433,7 +417,7 @@ func videoRAGTranscriptCancellationPropagatesInsteadOfFallingBack() async throws
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: CancellationObservingTranscriptProvider(started: startedContinuation)
         )
 
@@ -472,7 +456,7 @@ func videoRAGFileIngestWithConcurrentEmbeddingIsDeterministic() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -513,7 +497,7 @@ func videoRAGFileIngestSupportsBoundedConcurrentIngest() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -592,7 +576,7 @@ func videoRAGRecallTracksThumbnailUnavailableDiagnosticsForPhotosBackedItems() a
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: nil
         )
 
@@ -668,7 +652,7 @@ func videoRAGPhotosBackedLocalFileURLEnablesThumbnails() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: nil
         )
 
@@ -758,7 +742,7 @@ func videoRAGThumbnailBudgetDoesNotConsumeOnUnavailableBeforeFileBackedItems() a
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: FixedTokenTranscriptProvider(token: token)
         )
         try await rag.ingest(files: [VideoFile(id: "file-second", url: mp4Url, captureDate: nil)])
@@ -803,7 +787,7 @@ func videoRAGConfigIncludeThumbnailsFalseProducesNoThumbnails() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -846,7 +830,7 @@ func videoRAGFileIngestQueryWithVideoIDFilterReturnsOnlyMatchingVideos() async t
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -894,7 +878,7 @@ func videoRAGDiagnosticsThumbnailCountsForFileBacked() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 

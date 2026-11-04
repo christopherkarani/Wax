@@ -2,29 +2,18 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 // MARK: - Shared test stubs
 
-private struct StubEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
+/// Text → `[1, 0, 0, 0]`, image → `[0, 1, 0, 0]`.
+private let stubEmbedder = DeterministicMultimodalEmbedder(
+    identity: EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
+)
 
-    func embed(text: String) async throws -> [Float] { [1, 0, 0, 0] }
-    func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
-}
-
-private struct NetworkEmbedder: MultimodalEmbeddingProvider {
-    var executionMode: ProviderExecutionMode { .mayUseNetwork }
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = nil
-
-    func embed(text: String) async throws -> [Float] { [1, 0, 0, 0] }
-    func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
-}
+/// Like `stubEmbedder`, but unidentified and declared as network-capable.
+private let networkEmbedder = DeterministicMultimodalEmbedder(identity: nil, executionMode: .mayUseNetwork)
 
 private struct NetworkCaptionProvider: CaptionProvider {
     var executionMode: ProviderExecutionMode { .mayUseNetwork }
@@ -41,7 +30,7 @@ func photoRAGRejectsNetworkEmbedderByDefault() async throws {
             _ = try await PhotoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: NetworkEmbedder()
+                embedder: networkEmbedder
             )
             Issue.record("Expected WaxError for network embedding provider")
         } catch let error as WaxError {
@@ -61,7 +50,7 @@ func photoRAGRejectsNetworkCaptionProviderByDefault() async throws {
             _ = try await PhotoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: StubEmbedder(),
+                embedder: stubEmbedder,
                 captioner: NetworkCaptionProvider()
             )
             Issue.record("Expected WaxError for network caption provider")
@@ -84,7 +73,7 @@ func videoRAGRejectsNetworkEmbedderByDefault() async throws {
             _ = try await VideoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: NetworkEmbedder()
+                embedder: networkEmbedder
             )
             Issue.record("Expected WaxError for network embedding provider")
         } catch let error as WaxError {
@@ -153,7 +142,7 @@ func photoRAGDeleteRemovesAssetFrames() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubEmbedder()
+            embedder: stubEmbedder
         )
 
         // Delete asset A
@@ -302,7 +291,7 @@ func videoRAGDeleteRemovesVideoFrames() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubEmbedder()
+            embedder: stubEmbedder
         )
 
         try await rag.ingest(files: [VideoFile(id: "fixture", url: mp4Url, captureDate: nil)])
@@ -337,7 +326,7 @@ func videoRAGIngestEmptyFilesArrayIsNoOp() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubEmbedder()
+            embedder: stubEmbedder
         )
 
         // Ingest empty array should not throw
@@ -357,7 +346,7 @@ func videoRAGIngestMissingFileThrows() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubEmbedder()
+            embedder: stubEmbedder
         )
 
         let missingURL = FileManager.default.temporaryDirectory
@@ -441,7 +430,7 @@ func photoRAGRecallOnEmptyStoreReturnsEmptyContext() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubEmbedder()
+            embedder: stubEmbedder
         )
 
         let query = PhotoQuery(

@@ -29,6 +29,8 @@ Wax package internals select this engine for CPU-backed indexes through the vect
 
 ## MetalVectorEngine (GPU)
 
+> Deprecated: Wax's search path does not use `MetalVectorEngine`. It searches with AccelerateVectorEngine (exact, CPU) or MetalANNSVectorEngine (approximate, GPU). `MetalVectorEngine` and its shaders will be removed in the next major version.
+
 ``MetalVectorEngine`` uses Metal compute shaders for brute-force cosine distance computation on the GPU. It achieves high throughput through SIMD vectorization and Unified Memory.
 
 ### Metal Shader Pipeline

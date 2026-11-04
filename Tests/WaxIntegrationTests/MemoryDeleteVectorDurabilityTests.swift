@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 import WaxVectorSearch
 

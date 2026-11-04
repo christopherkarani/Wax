@@ -2,17 +2,13 @@ import Foundation
 import CoreGraphics
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
-private struct StubMultimodalEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
-
-    func embed(text: String) async throws -> [Float] { [1, 0, 0, 0] }
-    func embed(image: CGImage) async throws -> [Float] { [0, 1, 0, 0] }
-}
+/// Text → `[1, 0, 0, 0]`, image → `[0, 1, 0, 0]`.
+private let stubMultimodalEmbedder = DeterministicMultimodalEmbedder(
+    identity: EmbeddingIdentity(provider: "stub", model: "stub", dimensions: 4, normalized: true)
+)
 
 @Test
 func photoRAGTimeOnlyQueryUsesTimelineFallback() async throws {
@@ -69,7 +65,7 @@ func photoRAGTimeOnlyQueryUsesTimelineFallback() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let start = Date(timeIntervalSince1970: TimeInterval(tsB - 1_000) / 1000)
@@ -150,7 +146,7 @@ func photoRAGLocationOnlyRadiusZeroDoesNotFilterAll() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let location = PhotoLocationQuery(
@@ -233,7 +229,7 @@ func photoRAGLocationRadiusAppliesExactDistanceAfterCoarseBin() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let query = PhotoQuery(
@@ -299,7 +295,7 @@ func photoRAGLocationRadiusHandlesAntimeridianBins() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let ctx = try await orchestrator.recall(
@@ -389,7 +385,7 @@ func photoRAGRecallAppliesLocalAvailabilityFilter() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let ctx = try await orchestrator.recall(
@@ -483,7 +479,7 @@ func photoRAGFilterOnlyRecallScansPastFallbackWindow() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let ctx = try await orchestrator.recall(
@@ -552,7 +548,7 @@ func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: StubMultimodalEmbedder()
+            embedder: stubMultimodalEmbedder
         )
 
         let ctx = try await orchestrator.recall(
