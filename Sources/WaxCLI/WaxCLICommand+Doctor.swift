@@ -72,15 +72,25 @@ extension WaxCLI.MCP {
             if failures.isEmpty {
                 let expandedStore = Pathing.expandPath(storePath)
                 let storeURL = URL(fileURLWithPath: expandedStore)
-                if (try? StoreLockProbe.tryExclusiveAccess(at: storeURL)) == false {
-                    warnings.append(
-                        "store is held by another process (likely the HTTP LaunchAgent); smoke-checking an isolated store"
+                do {
+                    if try !StoreLockProbe.tryExclusiveAccess(at: storeURL) {
+                        warnings.append(
+                            "store is held by another process (likely the HTTP LaunchAgent); smoke-checking an isolated store"
+                        )
+                        storePath = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("wax-doctor-smoke-\(UUID().uuidString).wax")
+                            .path
+                    }
+                } catch {
+                    // The store may be in use; smoke-checking it could open a live store.
+                    failures.append(
+                        "Could not check whether the store at \(expandedStore) is held (\(error.localizedDescription)); " +
+                            "server smoke check skipped"
                     )
-                    storePath = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("wax-doctor-smoke-\(UUID().uuidString).wax")
-                        .path
                 }
+            }
 
+            if failures.isEmpty {
                 var env = ProcessInfo.processInfo.environment
                 env["WAX_MCP_FEATURE_LICENSE"] = featureLicense ? "1" : "0"
                 env.merge(embedderRuntime.resolvedTuning().environmentOverrides(), uniquingKeysWith: { _, new in new })
@@ -122,9 +132,14 @@ extension WaxCLI.MCP {
                             "Smoke check timed out waiting for tools/list response. " +
                                 smokeCheckFailureContext(output)
                         )
-                    } else if output.status != EXIT_SUCCESS {
+                    } else if let status = output.status, status != EXIT_SUCCESS {
                         failures.append(
-                            "Smoke check failed with exit code \(output.status). " +
+                            "Smoke check failed with exit code \(status). " +
+                                smokeCheckFailureContext(output)
+                        )
+                    } else if output.status == nil {
+                        failures.append(
+                            "Smoke check server did not exit after stdin closed. " +
                                 smokeCheckFailureContext(output)
                         )
                     } else if !output.missingExpectedTools.isEmpty {
@@ -285,7 +300,8 @@ enum MCPVectorHealthDiagnostics {
 }
 
 private struct MCPSmokeCheckOutput {
-    let status: Int32
+    /// Nil when the server did not exit after its stdin closed and was killed.
+    let status: Int32?
     let stdout: String
     let stderr: String
     let missingExpectedTools: [String]
@@ -332,8 +348,14 @@ extension ProcessRunner {
         return seconds
     }
 
-    /// How long the smoke-checked server gets to exit once its stdin closes.
-    private static let mcpSmokeCheckExitGraceSeconds: TimeInterval = 5
+    /// How long the smoke-checked server gets to exit once its stdin closes, at
+    /// least: a host loaded enough to need a longer response budget needs the
+    /// same for the exit, so the grace is never below the smoke timeout.
+    private static let mcpSmokeCheckMinimumExitGraceSeconds: TimeInterval = 5
+
+    static func mcpSmokeCheckExitGraceSeconds(timeoutSeconds: TimeInterval) -> TimeInterval {
+        max(mcpSmokeCheckMinimumExitGraceSeconds, timeoutSeconds)
+    }
 
     fileprivate static func runMCPSmokeCheck(
         command: String,
@@ -446,8 +468,11 @@ extension ProcessRunner {
         stderrPipe.fileHandleForReading.readabilityHandler = nil
 
         // Closing stdin asks the server to exit. One that does not is killed,
-        // so doctor cannot hang on it.
-        process.waitForExit(timeout: mcpSmokeCheckExitGraceSeconds)
+        // so doctor cannot hang on it, and reported without a status: it may
+        // still be running, and reading `terminationStatus` then raises.
+        let status = process.waitForExit(
+            timeout: mcpSmokeCheckExitGraceSeconds(timeoutSeconds: timeoutSeconds)
+        )
 
         // Drain any remaining output.
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
@@ -470,7 +495,7 @@ extension ProcessRunner {
         }
 
         return MCPSmokeCheckOutput(
-            status: process.terminationStatus,
+            status: status,
             stdout: stdout,
             stderr: stderr,
             missingExpectedTools: missingExpectedTools,

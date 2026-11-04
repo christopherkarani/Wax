@@ -22,11 +22,13 @@ import Glibc
 package enum ShutdownSignals {
     package static let watched: [Int32] = [SIGTERM, SIGINT]
 
-    /// The handlers' own serial queue. Serial queues are overcommit, so this one
-    /// gets a thread even when every worker of the global queues is blocked,
-    /// for example by socket clients still sending their requests, each waiting
-    /// in `BlockingWork`. On `.global()` a signal can then wait until one of
-    /// them finishes, and a second signal cannot force the exit.
+    /// The handlers' own serial queue, a defensive choice. Serial queues are
+    /// overcommit, so this one gets a thread even when every worker of the
+    /// global queues is blocked, for example by socket clients still sending
+    /// their requests, each waiting in `BlockingWork`. No failure has been shown
+    /// on `.global()`: a probe saw its signal source still fire with every
+    /// constrained worker blocked. The handler only has to call `_exit` on the
+    /// second signal, so it gets a queue nothing else shares.
     package static let handlerQueue = DispatchQueue(
         label: "com.wax.shutdown-signals",
         qos: .userInteractive
@@ -36,6 +38,11 @@ package enum ShutdownSignals {
     /// handled, and cancel them when done. `handler` receives the signal number,
     /// once per signal: signals that arrive before the handler runs are merged
     /// into one event, so it is called that many times.
+    ///
+    /// On Linux the count can still be short. The kernel keeps one pending
+    /// instance of a standard signal, so two SIGTERMs that are both pending
+    /// before the manager thread reads the `signalfd` arrive as one. A second
+    /// signal sent after the first has been taken in is always counted.
     package static func observe(
         queue: DispatchQueue = handlerQueue,
         handler: @escaping @Sendable (Int32) -> Void

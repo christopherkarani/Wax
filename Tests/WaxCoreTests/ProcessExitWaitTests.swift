@@ -6,33 +6,39 @@ import Testing
 /// `Process.waitForExit(timeout:)` returns for a child that is already gone,
 /// reports its status, and kills one that will not exit instead of waiting on it.
 @Suite struct ProcessExitWaitTests {
-    @Test func returnsTheStatusOfAChildThatHasAlreadyExited() async throws {
+    @Test func returnsTheStatusOfAChildThatHasAlreadyExited() throws {
         let process = try launch("exit 3")
-        // Foundation clears isRunning once it has reaped the child.
-        while process.isRunning {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try waitUntilReaped(process)
         #expect(process.waitForExit(timeout: 5) == 3)
-        #expect(await process.waitForExitOffPool(timeout: 5) == 3)
     }
 
-    @Test func waitsForAChildThatExitsBeforeTheDeadline() async throws {
-        let blocking = try launch("sleep 0.2; exit 0")
-        #expect(blocking.waitForExit(timeout: 30) == 0)
-
-        let offPool = try launch("sleep 0.2; exit 4")
-        #expect(await offPool.waitForExitOffPool(timeout: 30) == 4)
+    @Test func waitsForAChildThatExitsBeforeTheDeadline() throws {
+        let process = try launch("sleep 0.2; exit 4")
+        #expect(process.waitForExit(timeout: 30) == 4)
     }
 
-    @Test func killsAChildThatWillNotExit() async throws {
+    @Test func killsAChildThatWillNotExit() throws {
         // Runs far past the wait, and is reaped once killed.
-        let blocking = try launch("exec sleep 60")
-        #expect(blocking.waitForExit(timeout: 0.2) == nil)
-        expectKilled(blocking)
+        let process = try launch("exec sleep 60")
+        #expect(process.waitForExit(timeout: 0.2) == nil)
+        #expect(!process.isRunning, "the child outlived the wait")
+        #expect(process.terminationReason == .uncaughtSignal)
+        #expect(process.terminationStatus == SIGKILL)
+    }
 
-        let offPool = try launch("exec sleep 60")
-        #expect(await offPool.waitForExitOffPool(timeout: 0.2) == nil)
-        expectKilled(offPool)
+    /// The kill at the deadline is skipped once Foundation has reaped the
+    /// child, because its pid may then belong to another process.
+    @Test func onlyAnUnreapedChildCountsAsKillable() throws {
+        let running = try launch("exec sleep 60")
+        defer { running.waitForExit(timeout: 0) }
+        #expect(Process.isUnreapedChild(running.processIdentifier))
+
+        let reaped = try launch("exit 0")
+        try waitUntilReaped(reaped)
+        #expect(!Process.isUnreapedChild(reaped.processIdentifier))
+
+        // Not a child of this process at all.
+        #expect(!Process.isUnreapedChild(1))
     }
 
     private func launch(_ script: String) throws -> Process {
@@ -45,10 +51,13 @@ import Testing
         return process
     }
 
-    private func expectKilled(_ process: Process) {
-        #expect(!process.isRunning, "the child outlived the wait")
-        #expect(process.terminationReason == .uncaughtSignal)
-        #expect(process.terminationStatus == SIGKILL)
+    /// Foundation clears isRunning once it has reaped the child.
+    private func waitUntilReaped(_ process: Process) throws {
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning {
+            try #require(Date() < deadline, "the child was never reaped")
+            usleep(10_000)
+        }
     }
 }
 #endif

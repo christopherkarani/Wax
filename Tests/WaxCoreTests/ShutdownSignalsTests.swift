@@ -17,8 +17,20 @@ import Testing
     func handlerSeesEverySignalEvenWhenTheyArriveTogether() async throws {
         let queue = DispatchQueue(label: "shutdown-signals-test")
         let calls = SignalCalls()
+        // `observe` sets SIG_IGN; put back what the test process had (SIG_DFL).
+        let previous = ShutdownSignals.watched.map { signalNumber in
+            var action = sigaction()
+            sigaction(signalNumber, nil, &action)
+            return (signalNumber, action)
+        }
         let sources = ShutdownSignals.observe(queue: queue) { calls.record($0) }
-        defer { sources.forEach { $0.cancel() } }
+        defer {
+            sources.forEach { $0.cancel() }
+            for (signalNumber, action) in previous {
+                var action = action
+                sigaction(signalNumber, &action, nil)
+            }
+        }
         // The sources register on their queue; this runs once they have.
         queue.sync {}
 

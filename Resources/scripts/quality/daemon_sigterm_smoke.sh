@@ -3,6 +3,8 @@
 # client's 2s SIGTERM grace, remove its socket, and leave a store that reopens
 # with the data written before the signal. Needs python3. wax-mcp, given its path,
 # must also exit 0 on SIGTERM (its graceful path) rather than die of the signal.
+# A second SIGTERM must force the daemon's exit while a command holds shutdown;
+# that check uses debug-only test hooks, so wax-cli must be a debug build.
 # Dispatch signal delivery differs by platform (kqueue on Darwin, signalfd on
 # Linux), so CI runs this on Linux as well as macOS.
 #
@@ -113,6 +115,69 @@ case "$RECALLED" in
   *) fail "memory written before SIGTERM is missing after shutdown: $RECALLED" ;;
 esac
 echo "daemon_sigterm_smoke: wax-cli daemon ok"
+
+# A second SIGTERM must force the exit while a command holds graceful shutdown.
+# The command is held inside the service through the debug-only test hooks, so
+# wax-cli must be a debug build; a release build never writes `held` and this
+# fails. The second signal is sent only once the first has been handled: on
+# Linux, two SIGTERMs pending at once reach the signalfd as one.
+HOOKS="$WORK_DIR/hooks"
+mkdir -p "$HOOKS"
+FORCED_SOCKET="$WORK_DIR/f.sock"
+WAX_BROKER_TEST_HOOKS_DIR="$HOOKS" \
+WAX_BROKER_TEST_HOLD_COMMAND=stats \
+WAX_BROKER_TEST_HOLD_POINT=service \
+"$WAX_CLI" daemon \
+  --store-path "$WORK_DIR/forced.wax" \
+  --session-root "$WORK_DIR/forced-sessions" \
+  --no-embedder \
+  --idle-timeout-secs 300 \
+  --socket-path "$FORCED_SOCKET" </dev/null >/dev/null 2>"$WORK_DIR/forced.err" &
+FORCED_PID=$!
+PIDS+=("$FORCED_PID")
+wait_for_path "$FORCED_SOCKET" "$FORCED_PID" "held wax-cli daemon"
+
+# The client keeps its connection open until the daemon goes away.
+python3 -I - "$FORCED_SOCKET" <<'PY' &
+import json, socket, sys
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(60)
+client.connect(sys.argv[1])
+client.sendall((json.dumps({"command": "stats", "arguments": {}}) + "\n").encode())
+try:
+    while client.recv(4096):
+        pass
+except OSError:
+    pass
+PY
+HELD_CLIENT_PID=$!
+PIDS+=("$HELD_CLIENT_PID")
+wait_for_path "$HOOKS/held" "$FORCED_PID" "held wax-cli daemon"
+
+kill -TERM "$FORCED_PID"
+wait_for_path "$HOOKS/signalled" "$FORCED_PID" "held wax-cli daemon"
+sleep 0.5
+alive "$FORCED_PID" || fail "held wax-cli daemon exited on the first SIGTERM; the held command should keep it draining"
+
+kill -TERM "$FORCED_PID"
+( sleep "$GRACE_SECONDS"; if kill -0 "$FORCED_PID" 2>/dev/null; then touch "$WORK_DIR/forced.late"; fi ) &
+FORCED_WATCHDOG=$!
+waited=0
+while alive "$FORCED_PID" && [ "$waited" -lt $((HANG_SECONDS * 10)) ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+alive "$FORCED_PID" && fail "held wax-cli daemon did not exit within ${HANG_SECONDS}s of the second SIGTERM"
+forced_status=0
+wait "$FORCED_PID" || forced_status=$?
+wait "$FORCED_WATCHDOG" || true
+# The forced path calls _exit(128 + SIGTERM). It lived through the first
+# SIGTERM above, so this status is the handler's exit, not the signal's default.
+[ "$forced_status" -eq 143 ] || fail "held wax-cli daemon exited with status $forced_status after the second SIGTERM, expected 143"
+[ ! -e "$WORK_DIR/forced.late" ] || fail "held wax-cli daemon was still running ${GRACE_SECONDS}s after the second SIGTERM"
+kill "$HELD_CLIENT_PID" 2>/dev/null || true
+wait "$HELD_CLIENT_PID" 2>/dev/null || true
+echo "daemon_sigterm_smoke: wax-cli daemon second SIGTERM ok"
 
 if [ -n "$WAX_MCP" ]; then
   # stdin stays open through a FIFO, so wax-mcp is idle, not at EOF, when signalled.

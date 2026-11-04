@@ -314,9 +314,10 @@ import Testing
 
     /// Each client still sending its request holds a GCD worker thread while
     /// its read waits. Enough of them fill the worker pool, which can stall
-    /// closing the store, and a signal handled on `.global()` may then wait for
-    /// a worker too. The first SIGTERM must still start shutdown, and a second
-    /// must still force the exit.
+    /// closing the store. The first SIGTERM must still start shutdown, and a
+    /// second must still force the exit. This checks the behaviour only. It
+    /// also passes with the signal handler on `.global()`, so it does not show
+    /// that `ShutdownSignals.handlerQueue` is needed.
     @Test(.timeLimit(.minutes(3)))
     func daemonHandlesSignalsWhileWaitingClientsFillTheWorkerPool() async throws {
         let workers = try constrainedWorkerThreadLimit()
