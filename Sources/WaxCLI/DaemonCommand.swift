@@ -1,10 +1,14 @@
 import ArgumentParser
 import Foundation
 import Wax
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#endif
+#if canImport(os)
+import os
 #endif
 
 struct DaemonCommand: AsyncParsableCommand {
@@ -30,7 +34,26 @@ struct DaemonCommand: AsyncParsableCommand {
     @Option(name: .customLong("idle-timeout-secs"), help: "Exit after this many idle seconds in socket mode")
     var idleTimeoutSeconds = 300.0
 
+    @Option(name: .customLong("max-clients"), help: "Most socket clients served at once; more are refused as busy")
+    var maxClients = 64
+
+    func validate() throws {
+        guard maxClients > 0 else {
+            throw ValidationError("--max-clients must be at least 1")
+        }
+    }
+
     func runAsync() async throws {
+        // A client or the launching process can vanish before its response.
+        // Writes then fail with EPIPE instead of killing the daemon. SIGPIPE has
+        // no dispatch source, so SIG_IGN is right on every platform.
+        signal(SIGPIPE, SIG_IGN)
+        // Before the store opens: SIGTERM's default action would kill the
+        // broker mid-write, which is what the client's SIGTERM grace exists to avoid.
+        let shutdown = DaemonShutdown()
+        let signalSources = installShutdownSignalHandlers(shutdown)
+        defer { signalSources.forEach { $0.cancel() } }
+
         let service = try await AgentBrokerService(
             storePath: store.storePath,
             sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(
@@ -52,26 +75,38 @@ struct DaemonCommand: AsyncParsableCommand {
                 await service.prewarmEmbedder()
             }
         }
+        #if DEBUG
+        if let hooks = DaemonTestHooks.current, hooks.holdsInService {
+            await service.setCommandHold { await hooks.holdIfMatching($0) }
+        }
+        #endif
 
+        let inflight = SocketInflight()
         do {
             if let socketPath {
                 try await runSocketServer(
                     service: service,
                     at: socketPath,
-                    idleTimeoutSeconds: idleTimeoutSeconds
+                    idleTimeoutSeconds: idleTimeoutSeconds,
+                    shutdown: shutdown,
+                    inflight: inflight
                 )
             } else {
                 try await runLoop(
                     service: service,
                     input: FileHandle.standardInput,
-                    output: FileHandle.standardOutput
+                    output: FileHandle.standardOutput,
+                    shutdown: shutdown
                 )
             }
+            DaemonTestHooks.current?.markClosing()
+            // close() takes the store's locks, so a command still running past
+            // the drain bound finishes first. That extends graceful shutdown;
+            // a second signal forces the exit.
             try await service.close()
-        } catch is BrokerStoreBusyDuringShutdown {
-            throw CLIError(
-                "Broker still has in-flight clients after shutdown drain; not closing the store"
-            )
+            // Such a command's response is written only once it releases the
+            // locks, so give it a moment to go out before the process exits.
+            await waitWhileHandling(inflight, seconds: socketResponseFlushSeconds)
         } catch {
             try? await service.close()
             throw error
@@ -85,18 +120,37 @@ private extension DaemonCommand {
     #elseif canImport(Glibc)
     var unixStreamSocketType: Int32 { Int32(SOCK_STREAM.rawValue) }
     #endif
-    var socketClientReadTimeoutMS: Int32 { 1_000 }
     var maxSocketRequestBytes: Int { 1_048_576 }
-    var socketInflightDrainSeconds: TimeInterval { AgentBrokerClient.responseTimeoutSeconds }
+    /// A client must send its whole request within this many seconds of being
+    /// accepted. One deadline, so trickled bytes cannot hold a client thread.
+    var socketRequestReadSeconds: TimeInterval { 5 }
+    /// How long shutdown waits for requests already in `service.handle`. Well
+    /// under the client's 2s SIGTERM grace; `service.close()` then queues behind
+    /// any command still holding the store's locks.
+    var socketShutdownDrainSeconds: TimeInterval { 1 }
+    /// After the store closes, how long a response still being written may delay
+    /// the exit.
+    var socketResponseFlushSeconds: TimeInterval { 0.25 }
+    /// How often the accept and stdin loops check for a shutdown request.
+    var shutdownPollSliceMS: Int32 { 200 }
 
     func runLoop(
         service: AgentBrokerService,
         input: FileHandle,
-        output: FileHandle
+        output: FileHandle,
+        shutdown: DaemonShutdown
     ) async throws {
         var buffered = Data()
+        let daemon = self
+        let inputDescriptor = input.fileDescriptor
         while true {
-            let chunk = try input.read(upToCount: 4096) ?? Data()
+            // Waiting on stdin blocks for as long as the client is quiet, so it
+            // must not hold a cooperative thread. Nil means shutdown was requested.
+            guard let chunk = try await BlockingWork.run({
+                try daemon.readStdioChunk(fd: inputDescriptor, shutdown: shutdown)
+            }) else {
+                return
+            }
             if chunk.isEmpty {
                 if !buffered.isEmpty {
                     do {
@@ -129,14 +183,41 @@ private extension DaemonCommand {
         }
     }
 
+    /// Reads the next chunk of stdin, polling in slices so a shutdown request is
+    /// seen. Returns empty data at EOF and nil once shutdown is requested. Blocks
+    /// its thread, so callers run it off the pool.
+    func readStdioChunk(fd: Int32, shutdown: DaemonShutdown) throws -> Data? {
+        while !shutdown.isRequested {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
+            if pollResult == 0 { continue }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker stdin poll failed: \(String(cString: strerror(errno)))")
+            }
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = read(fd, &chunk, chunk.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker stdin read failed: \(String(cString: strerror(errno)))")
+            }
+            return Data(chunk.prefix(count))
+        }
+        return nil
+    }
+
     func runSocketServer(
         service: AgentBrokerService,
         at rawSocketPath: String,
-        idleTimeoutSeconds: Double
+        idleTimeoutSeconds: Double,
+        shutdown: DaemonShutdown,
+        inflight: SocketInflight
     ) async throws {
         let socketURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(rawSocketPath))
         let parent = socketURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        // A signal during store open: close the store without ever listening.
+        if shutdown.isRequested { return }
         if AgentBrokerClient.isSocketLive(socketPath: socketURL.path) {
             throw CLIError("Broker already running at \(socketURL.path)")
         }
@@ -185,67 +266,124 @@ private extension DaemonCommand {
         guard listen(listener, 16) == 0 else {
             throw CLIError("Unable to listen on broker socket: \(String(cString: strerror(errno)))")
         }
+        DaemonTestHooks.current?.markListening()
 
-        let inflight = SocketInflight()
-        let pollSliceMS: Int32 = 200
-        var lastActivity = Date()
         var loopError: Error?
+        let daemon = self
         do {
-            while !inflight.shouldStop {
-                var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-                let pollResult = poll(&descriptor, 1, pollSliceMS)
-                if pollResult == 0 {
-                    if idleTimeoutSeconds > 0,
-                       Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
-                       !inflight.isBusy {
-                        break
-                    }
-                    continue
-                }
-                if pollResult < 0 {
-                    if errno == EINTR { continue }
-                    throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
-                }
-
-                let client = accept(listener, nil, nil)
-                if client < 0 {
-                    if errno == EINTR { continue }
-                    throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
-                }
-
-                lastActivity = Date()
-                inflight.enter()
-                Task {
-                    defer { inflight.leave() }
-                    do {
-                        let shouldExit = try await handleSocketClient(service: service, fd: client)
-                        if shouldExit {
-                            inflight.requestStop()
-                        }
-                    } catch {
-                        // FileHandle owns the accepted fd. A dead peer must not
-                        // double-close it or skip inflight.leave().
-                    }
-                }
+            // The accept loop blocks in poll for the daemon's whole life. On a
+            // cooperative thread it would starve the client tasks it spawns.
+            try await BlockingWork.run {
+                try daemon.acceptClients(
+                    listener: listener,
+                    service: service,
+                    inflight: inflight,
+                    idleTimeoutSeconds: idleTimeoutSeconds,
+                    shutdown: shutdown
+                )
             }
         } catch {
             loopError = error
         }
 
-        try await drainSocketInflight(inflight)
+        await drainHandledRequests(inflight)
         if let loopError {
             throw loopError
         }
     }
 
-    func drainSocketInflight(_ inflight: SocketInflight) async throws {
-        let drainDeadline = Date().addingTimeInterval(socketInflightDrainSeconds)
-        while inflight.isBusy, Date() < drainDeadline {
-            try await Task.sleep(for: .milliseconds(20))
+    /// Accepts clients until a client or a signal requests shutdown, or the broker
+    /// is idle for `idleTimeoutSeconds`. Blocks its thread, so callers run it off the pool.
+    func acceptClients(
+        listener: Int32,
+        service: AgentBrokerService,
+        inflight: SocketInflight,
+        idleTimeoutSeconds: Double,
+        shutdown: DaemonShutdown
+    ) throws {
+        var lastActivity = Date()
+        while !inflight.shouldStop, !shutdown.isRequested {
+            var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+            let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
+            if pollResult == 0 {
+                if idleTimeoutSeconds > 0,
+                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                   !inflight.hasClients {
+                    return
+                }
+                continue
+            }
+            if pollResult < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker poll failed: \(String(cString: strerror(errno)))")
+            }
+
+            let client = accept(listener, nil, nil)
+            if client < 0 {
+                if errno == EINTR { continue }
+                throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
+            }
+
+            lastActivity = Date()
+            disableSIGPIPE(on: client)
+            guard inflight.admitClient(limit: maxClients) else {
+                rejectBusyClient(client)
+                continue
+            }
+            let readDeadline = Date().addingTimeInterval(socketRequestReadSeconds)
+            Task {
+                defer { inflight.clientDone() }
+                do {
+                    let shouldExit = try await handleSocketClient(
+                        service: service,
+                        fd: client,
+                        readDeadline: readDeadline,
+                        inflight: inflight
+                    )
+                    if shouldExit {
+                        inflight.requestStop()
+                    }
+                } catch {
+                    // FileHandle owns the accepted fd. A dead peer must not
+                    // double-close it or skip inflight.leave().
+                }
+            }
         }
-        if inflight.isBusy {
-            throw BrokerStoreBusyDuringShutdown()
+    }
+
+    /// Stops new requests from reaching the service, then waits a bounded time
+    /// for the ones already in it. Clients still sending a request are not
+    /// waited for: the process exits under them once the store is closed.
+    func drainHandledRequests(_ inflight: SocketInflight) async {
+        inflight.startDraining()
+        DaemonTestHooks.current?.markDraining()
+        await waitWhileHandling(inflight, seconds: socketShutdownDrainSeconds)
+    }
+
+    func waitWhileHandling(_ inflight: SocketInflight, seconds: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(seconds)
+        while inflight.isHandling, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
         }
+    }
+
+    /// Answers a client past the cap with a busy failure and closes it. Best
+    /// effort: the client may already be gone, so a failed send is ignored.
+    func rejectBusyClient(_ fd: Int32) {
+        defer { close(fd) }
+        let response = AgentBrokerResponse.failure(
+            message: "Broker is serving its limit of \(maxClients) clients; retry shortly"
+        )
+        try? writeJSONLine(response, to: fd)
+    }
+
+    /// Darwin raises SIGPIPE per socket unless told not to; Linux relies on
+    /// the process-wide SIG_IGN set in `runAsync`.
+    func disableSIGPIPE(on fd: Int32) {
+        #if canImport(Darwin)
+        var noSIGPIPE: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
+        #endif
     }
 
     func bindUnixSocket(_ listener: Int32, address: inout sockaddr_un) -> Int32 {
@@ -256,25 +394,52 @@ private extension DaemonCommand {
         }
     }
 
-    func handleSocketClient(service: AgentBrokerService, fd: Int32) async throws -> Bool {
-        let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    func handleSocketClient(
+        service: AgentBrokerService,
+        fd: Int32,
+        readDeadline: Date,
+        inflight: SocketInflight
+    ) async throws -> Bool {
+        defer { close(fd) }
         let response: AgentBrokerResponse
+        var command: String?
+        // An admitted request counts as in flight until its response is
+        // written, so the shutdown drain never exits under the write.
+        var admitted = false
+        defer {
+            if admitted { inflight.endHandling() }
+        }
+        let daemon = self
 
-        if let line = try readSocketRequestLine(fd: fd) {
-            do {
-                let request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
-                response = await service.handle(request)
-            } catch {
-                response = AgentBrokerResponse.failure(
-                    message: "Invalid request: \(error.localizedDescription)"
-                )
-            }
-        } else {
+        // The read polls until its deadline and the write blocks on a slow
+        // reader; neither may hold a cooperative thread.
+        let read = try await BlockingWork.run {
+            try daemon.readSocketRequestLine(fd: fd, deadline: readDeadline)
+        }
+        switch read {
+        case .timedOut:
+            response = AgentBrokerResponse.failure(
+                message: "Invalid request: not received within \(Int(socketRequestReadSeconds))s"
+            )
+        case .empty:
             response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
+        case .line(let line):
+            // Once shutdown is draining, nothing new reaches the service.
+            guard inflight.beginHandling() else { return false }
+            admitted = true
+            let handled = await handleRequest(line, service: service)
+            response = handled.0
+            command = handled.1
         }
 
-        try writeJSONLine(response, to: fileHandle)
-        try? fileHandle.close()
+        do {
+            try await BlockingWork.run { try daemon.writeJSONLine(response, to: fd) }
+        } catch is BrokerClientGone {
+            logDaemonDebug("socket client left before its response")
+        }
+        if let command {
+            DaemonTestHooks.current?.markResponded(command)
+        }
         return response.shouldExit
     }
 
@@ -293,25 +458,56 @@ private extension DaemonCommand {
             let response = AgentBrokerResponse.failure(
                 message: "Invalid request: \(error.localizedDescription)"
             )
-            try writeJSONLine(response, to: output)
+            try await writeStdioResponse(response, to: output)
             return
         }
 
         let response = await service.handle(request)
-        try writeJSONLine(response, to: output)
+        try await writeStdioResponse(response, to: output)
         if response.shouldExit {
             throw ExitRequested()
         }
     }
 
-    func readSocketRequestLine(fd: Int32) throws -> String? {
+    /// With nobody left reading stdout there is no one to serve, so the loop
+    /// ends and the store closes.
+    func writeStdioResponse(_ response: AgentBrokerResponse, to output: FileHandle) async throws {
+        do {
+            try await writeJSONLineOffPool(response, to: output.fileDescriptor)
+        } catch is BrokerClientGone {
+            logDaemonDebug("stdio reader left before its response")
+            throw ExitRequested()
+        }
+    }
+
+    /// Decodes and runs one admitted request. Returns the command name for the
+    /// test hooks, nil when the line does not decode.
+    func handleRequest(
+        _ line: String,
+        service: AgentBrokerService
+    ) async -> (AgentBrokerResponse, String?) {
+        let request: AgentBrokerRequest
+        do {
+            request = try JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line.utf8))
+        } catch {
+            return (AgentBrokerResponse.failure(message: "Invalid request: \(error.localizedDescription)"), nil)
+        }
+        if let hooks = DaemonTestHooks.current, !hooks.holdsInService {
+            await hooks.holdIfMatching(request.command)
+        }
+        return (await service.handle(request), request.command)
+    }
+
+    /// Reads one request line, giving up at `deadline`. Blocks its thread, so
+    /// callers run it off the pool.
+    func readSocketRequestLine(fd: Int32, deadline: Date) throws -> SocketRequestRead {
         var buffer = Data()
         while true {
+            let remainingMS = AgentBrokerClient.pollTimeoutMilliseconds(remaining: deadline.timeIntervalSinceNow)
+            guard remainingMS > 0 else { return .timedOut }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let pollResult = poll(&descriptor, 1, socketClientReadTimeoutMS)
-            if pollResult == 0 {
-                return nil
-            }
+            let pollResult = poll(&descriptor, 1, remainingMS)
+            if pollResult == 0 { continue }
             if pollResult < 0 {
                 if errno == EINTR { continue }
                 throw CLIError("Broker client poll failed: \(String(cString: strerror(errno)))")
@@ -330,16 +526,10 @@ private extension DaemonCommand {
                 throw CLIError("Broker socket request exceeds \(maxSocketRequestBytes) bytes")
             }
             if let newlineIndex = buffer.firstIndex(of: 0x0A) {
-                let line = String(decoding: buffer[..<newlineIndex], as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return line.isEmpty ? nil : line
+                return SocketRequestRead(buffer[..<newlineIndex])
             }
         }
-
-        guard !buffer.isEmpty else { return nil }
-        let line = String(decoding: buffer, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return line.isEmpty ? nil : line
+        return SocketRequestRead(buffer)
     }
 
     func removeExistingSocket(at path: String) throws {
@@ -358,37 +548,147 @@ private extension DaemonCommand {
         }
     }
 
-    func writeJSONLine(_ response: AgentBrokerResponse, to output: FileHandle) throws {
-        let data = try JSONEncoder().encode(response)
-        output.write(data)
-        output.write(Data([0x0A]))
+    /// A write blocks while the reader is slow, so it must not hold a cooperative thread.
+    func writeJSONLineOffPool(_ response: AgentBrokerResponse, to fd: Int32) async throws {
+        let daemon = self
+        try await BlockingWork.run { try daemon.writeJSONLine(response, to: fd) }
+    }
+
+    /// Writes with `write(2)`, not `FileHandle.write`, which raises an
+    /// Objective-C exception on EPIPE that Swift cannot catch. Throws
+    /// `BrokerClientGone` when the reader has gone away.
+    func writeJSONLine(_ response: AgentBrokerResponse, to fd: Int32) throws {
+        var line = try JSONEncoder().encode(response)
+        line.append(0x0A)
+        try line.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var sent = 0
+            while sent < buffer.count {
+                let count = write(fd, base + sent, buffer.count - sent)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    if errno == EPIPE || errno == ECONNRESET { throw BrokerClientGone() }
+                    throw CLIError("Broker response write failed: \(String(cString: strerror(errno)))")
+                }
+                sent += count
+            }
+        }
     }
 }
 
 private struct ExitRequested: Error {}
-private struct BrokerStoreBusyDuringShutdown: Error {}
 
-private final class SocketInflight: @unchecked Sendable {
+/// The reader of a response closed its end before the response was written.
+private struct BrokerClientGone: Error {}
+
+private func logDaemonDebug(_ message: String) {
+    #if canImport(os)
+    Logger(subsystem: "com.wax.framework", category: "broker-daemon").debug("\(message, privacy: .public)")
+    #endif
+}
+
+private enum SocketRequestRead: Sendable {
+    case line(String)
+    case empty
+    case timedOut
+
+    init(_ bytes: Data) {
+        let line = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        self = line.isEmpty ? .empty : .line(line)
+    }
+}
+
+/// Set by SIGTERM or SIGINT. The accept and stdin loops stop taking work once it
+/// is set; the daemon then drains only the requests already in the service, so a
+/// client still sending one cannot hold it, closes the store and exits 0.
+/// Closing waits for a command that is still running, such as a long remember or
+/// a migration, so that command extends graceful shutdown until it completes. A
+/// second signal forces the exit.
+private final class DaemonShutdown: @unchecked Sendable {
     private let lock = NSLock()
-    private var count = 0
-    private var stop = false
+    private var signalsReceived = 0
 
-    func enter() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-    }
-
-    func leave() {
-        lock.lock()
-        count = max(0, count - 1)
-        lock.unlock()
-    }
-
-    var isBusy: Bool {
+    /// Records a signal. Returns true for the first one.
+    func recordSignal() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return count > 0
+        signalsReceived += 1
+        return signalsReceived == 1
+    }
+
+    var isRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return signalsReceived > 0
+    }
+}
+
+/// The first SIGTERM or SIGINT shuts the daemon down gracefully; a second one
+/// exits at once, so a wedged shutdown never needs SIGKILL. `_exit` skips atexit
+/// handlers and stdio flushing, which may themselves be what is wedged.
+private func installShutdownSignalHandlers(_ shutdown: DaemonShutdown) -> [DispatchSourceSignal] {
+    ShutdownSignals.observe { signalNumber in
+        if !shutdown.recordSignal() {
+            _exit(128 + signalNumber)
+        }
+    }
+}
+
+/// Counts accepted socket clients, for the cap and the idle timeout, and the
+/// requests inside `service.handle`, which are the only ones shutdown waits for.
+private final class SocketInflight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var clients = 0
+    private var handling = 0
+    private var draining = false
+    private var stop = false
+
+    /// Takes a client slot. False once `limit` clients are being served.
+    func admitClient(limit: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard clients < limit else { return false }
+        clients += 1
+        return true
+    }
+
+    func clientDone() {
+        lock.lock()
+        clients = max(0, clients - 1)
+        lock.unlock()
+    }
+
+    var hasClients: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return clients > 0
+    }
+
+    /// Admits a request to the service. False once draining has started.
+    func beginHandling() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !draining else { return false }
+        handling += 1
+        return true
+    }
+
+    func endHandling() {
+        lock.lock()
+        handling = max(0, handling - 1)
+        lock.unlock()
+    }
+
+    func startDraining() {
+        lock.lock()
+        draining = true
+        lock.unlock()
+    }
+
+    var isHandling: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return handling > 0
     }
 
     func requestStop() {

@@ -2,29 +2,13 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 private let ragClampTestNowMs: Int64 = 1_700_000_000_000
 
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 private let tinyPhotoQueryImage = PhotoQueryImage(data: tinyPNGData, format: .png)
-
-private struct BlendAwareEmbedder: MultimodalEmbeddingProvider {
-    let dimensions: Int = 4
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "BlendAware", dimensions: 4, normalized: true)
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-
-    func embed(text: String) async throws -> [Float] {
-        _ = text
-        return [1, 0, 0, 0]
-    }
-
-    func embed(image: CGImage) async throws -> [Float] {
-        _ = image
-        return [0, 1, 0, 0]
-    }
-}
 
 private func writePhotoBlendFixtures(at url: URL) async throws {
     let wax = try await Wax.create(at: url)
@@ -104,7 +88,9 @@ private func firstAssetIDForPhotoBlendWeight(_ textEmbeddingWeight: Float) async
         let orchestrator = try await PhotoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: BlendAwareEmbedder()
+            embedder: DeterministicMultimodalEmbedder(
+                identity: EmbeddingIdentity(provider: "Test", model: "BlendAware", dimensions: 4, normalized: true)
+            )
         )
         let result = try await orchestrator.recall(blendedPhotoQuery())
         guard let first = result.items.first else {
