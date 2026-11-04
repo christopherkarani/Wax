@@ -356,6 +356,16 @@ enum StoreRepairSupport {
         try FileManager.default.removeItem(at: backup)
     }
 
+    /// For callers that rethrow their own error: a failed rollback leaves the
+    /// output path for operator recovery, so it is reported, not hidden.
+    static func rollbackPromotionReportingFailure(_ promotion: Promotion) {
+        do {
+            try rollbackPromotion(promotion)
+        } catch {
+            writeStderr("warning: rollback of \(promotion.destination.path) failed: \(error)")
+        }
+    }
+
     static func rollbackPromotion(_ promotion: Promotion) throws {
         let fileManager = FileManager.default
         if let backup = promotion.backup {

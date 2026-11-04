@@ -144,6 +144,33 @@ func waxRepoIndexRefusesCheckpointThatIsNotACommitHash() async throws {
     #expect(!FileManager.default.fileExists(atPath: injected.path + "..HEAD"))
 }
 
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoIndexNeverOverwritesAnUnreadableGitignore() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-gitignore")
+    defer { try? FileManager.default.removeItem(at: repo) }
+    try await WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "file.txt",
+        contents: "content\n",
+        message: "Initial commit"
+    )
+    // Latin-1 bytes are not valid UTF-8, so a UTF-8 read of this file fails.
+    let original = Data("# caf".utf8) + Data([0xE9]) + Data("\nbuild/\n".utf8)
+    let gitignore = repo.appendingPathComponent(".gitignore")
+    try original.write(to: gitignore)
+
+    let index = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(index.status == 0, "index failed: \(index.stderr)")
+    #expect(try Data(contentsOf: gitignore) == original)
+    #expect(index.stderr.contains(".gitignore"))
+}
+
 private func frameCount(from statsOutput: String) throws -> Int {
     for line in statsOutput.components(separatedBy: .newlines) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)

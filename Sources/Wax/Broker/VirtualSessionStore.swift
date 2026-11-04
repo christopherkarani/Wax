@@ -556,8 +556,25 @@ package final class VirtualSessionStore: @unchecked Sendable {
             return values
         }
         for session in sessions {
-            try? await session.memory.flush()
-            try? await session.memory.close()
+            // close() flushes again; the flush runs first so a close failure cannot hide it.
+            do {
+                try await session.memory.flush()
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "session store flush at broker shutdown",
+                    fallback: "unflushed session writes may be lost; closing the rest"
+                )
+            }
+            do {
+                try await session.memory.close()
+            } catch {
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "session store close at broker shutdown",
+                    fallback: "closing the remaining sessions"
+                )
+            }
         }
     }
 
