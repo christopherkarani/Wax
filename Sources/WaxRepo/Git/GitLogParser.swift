@@ -1,5 +1,6 @@
 import Foundation
 import Wax
+import WaxCore
 
 /// Parses `git log` output into `GitCommit` values using a line-by-line state machine.
 enum GitLogParser {
@@ -73,6 +74,8 @@ enum GitLogParser {
 
     // MARK: - Shell execution
 
+    private static let exitAfterEOFTimeoutSeconds: TimeInterval = 30
+
     private static func runGit(_ arguments: [String]) async throws -> String {
         // Move blocking I/O off the Swift cooperative thread pool.
         // readDataToEndOfFile() and waitUntilExit() both block their calling thread;
@@ -95,11 +98,15 @@ enum GitLogParser {
                     return
                 }
 
-                // Drain stdout and stderr together before waitUntilExit: either
+                // Drain stdout and stderr together before waiting: either
                 // pipe fills at ~64 KB and blocks git if left unread.
                 let captured = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe).wait()
-                process.waitUntilExit()
-
+                // Both pipes are closed, so git is exiting; the bound only
+                // stops a wedged wait.
+                guard process.waitForExit(timeout: exitAfterEOFTimeoutSeconds) != nil else {
+                    continuation.resume(throwing: GitLogError.gitFailed("git did not exit after closing its output"))
+                    return
+                }
                 guard process.terminationStatus == 0 else {
                     let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
                     let message = stderr.isEmpty ? "git exited with \(process.terminationStatus)" : stderr

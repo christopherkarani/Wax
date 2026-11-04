@@ -1,6 +1,7 @@
 #if WaxRepo
 import ArgumentParser
 import Foundation
+import WaxCore
 
 /// Resolve the git repository root from a given path by running `git rev-parse --show-toplevel`.
 func resolveRepoRoot(_ path: String) throws -> String {
@@ -20,11 +21,13 @@ func resolveRepoRoot(_ path: String) throws -> String {
 
     try process.run()
 
-    // Read pipe before waitUntilExit to avoid pipe buffer deadlock.
+    // Read the pipe before waiting, so a full pipe buffer cannot deadlock git.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
+    // git has closed stdout, so it is exiting; the bound only stops a wedged wait.
+    guard let status = process.waitForExit(timeout: 30) else {
+        throw ValidationError("git rev-parse did not exit in \(absolutePath)")
+    }
+    guard status == 0 else {
         throw ValidationError("Not a git repository: \(absolutePath)")
     }
     guard let root = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),

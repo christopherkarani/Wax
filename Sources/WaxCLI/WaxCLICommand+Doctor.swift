@@ -332,6 +332,9 @@ extension ProcessRunner {
         return seconds
     }
 
+    /// How long the smoke-checked server gets to exit once its stdin closes.
+    private static let mcpSmokeCheckExitGraceSeconds: TimeInterval = 5
+
     fileprivate static func runMCPSmokeCheck(
         command: String,
         arguments: [String],
@@ -442,8 +445,9 @@ extension ProcessRunner {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
 
-        // Wait for clean exit.
-        process.waitUntilExit()
+        // Closing stdin asks the server to exit. One that does not is killed,
+        // so doctor cannot hang on it.
+        process.waitForExit(timeout: mcpSmokeCheckExitGraceSeconds)
 
         // Drain any remaining output.
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {

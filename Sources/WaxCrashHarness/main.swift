@@ -55,6 +55,7 @@ struct WaxCrashHarness {
     private static let storePathEnv = "WAX_CRASH_HARNESS_STORE_PATH"
     private static let scenarioEnv = "WAX_CRASH_HARNESS_SCENARIO"
     private static let crashCheckpointEnv = "WAX_CRASH_INJECT_CHECKPOINT"
+    private static let childTimeoutSeconds: TimeInterval = 120
 
     private static func writeStderr(_ message: String) {
         guard let data = (message + "\n").data(using: .utf8) else { return }
@@ -151,7 +152,11 @@ struct WaxCrashHarness {
         env[crashCheckpointEnv] = scenario.checkpoint
         process.environment = env
         try process.run()
-        process.waitUntilExit()
+        // The child crashes itself at its checkpoint; the bound only stops a
+        // wedged wait from hanging the harness and the test that runs it.
+        guard process.waitForExit(timeout: childTimeoutSeconds) != nil else {
+            throw HarnessError.invariantFailed("child for \(scenario.rawValue) did not exit in \(childTimeoutSeconds)s")
+        }
         return (status: process.terminationStatus, reason: process.terminationReason)
     }
 

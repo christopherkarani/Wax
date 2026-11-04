@@ -742,7 +742,7 @@ struct WaxCLIMemoryTests {
         defer {
             if process.isRunning {
                 process.terminate()
-                process.waitUntilExit()
+                process.waitForExit(timeout: 10)
             }
         }
 
@@ -1887,11 +1887,10 @@ struct WaxCLIMemoryTests {
 
         if terminated.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             throw CLIError("Process timed out: \(executableURL.path) \(arguments.joined(separator: " "))")
         }
-
-        process.waitUntilExit()
+        process.waitForExit(timeout: 10)
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -2135,7 +2134,7 @@ struct WaxCLIMemoryTests {
 
         if state.semaphore.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw CLIError("Timed out waiting for MCP tools/list response")
@@ -2144,7 +2143,9 @@ struct WaxCLIMemoryTests {
         try? stdinPipe.fileHandleForWriting.close()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        process.waitUntilExit()
+        guard process.waitForExit(timeout: 60) != nil else {
+            throw CLIError("wax-mcp did not exit after its stdin closed")
+        }
 
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
             state.appendStdout(data, expectedToolName: expectedToolName)

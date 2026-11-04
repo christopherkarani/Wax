@@ -335,8 +335,7 @@ private func copyMigrationFixtureBlocking(named name: String) throws -> URL {
     process.arguments = ["-dc", bundled.path]
     process.standardOutput = output
     try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
+    guard process.waitForExit(timeout: 120) == 0 else {
         throw WaxError.io("failed to expand migration fixture \(name).wax.gz")
     }
 
