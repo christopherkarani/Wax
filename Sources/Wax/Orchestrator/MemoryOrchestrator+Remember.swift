@@ -21,7 +21,7 @@ extension MemoryOrchestrator {
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        let chunks = await ingestChunks(for: content)
         let attached = readyEmbedderSnapshot
         let localEmbedder = attached
 
@@ -48,11 +48,12 @@ extension MemoryOrchestrator {
                 )
             }
             // Single-chunk remember writes only the document. A matching
-            // document is not complete unless it is actually searchable.
-            if chunks.count == 1 {
+            // document is not complete unless it is actually searchable. A document stored as
+            // one chunk under other chunk sizing keeps its own text.
+            if let text = chunks.count == 1 ? chunks[0] : existingProbe.singleChunkText {
                 try await ensureSingleChunkDocumentSearchable(
                     documentId: existingProbe.documentId,
-                    text: chunks[0]
+                    text: text
                 )
                 return RememberResult(
                     frameId: existingProbe.documentId,
@@ -300,6 +301,13 @@ extension MemoryOrchestrator {
             deduplicated: false,
             searchable: config.enableTextSearch || writeVectors
         )
+    }
+
+    /// Internal only for tests.
+    func ingestChunks(for content: String) async -> [String] {
+        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        guard config.fitsChunksToMiniLMInput else { return chunks }
+        return await MiniLMChunkSizing.fit(chunks)
     }
 
     private static func rememberDedupEmbeddingIdentity(

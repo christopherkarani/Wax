@@ -26,7 +26,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
     private let leaseSeconds: Int
     let nowMs: @Sendable () -> Int64
     private let waxOptions: WaxOptions
-    private let openExisting: @Sendable (URL) async throws -> MemoryOrchestrator
+    /// Opens a session store. The `Bool` says whether this open owns the store and may commit
+    /// a text-index catch-up (`OrchestratorConfig.catchUpTextIndexOnOpen`).
+    private let openExisting: @Sendable (URL, Bool) async throws -> MemoryOrchestrator
     private let endMutex = AsyncMutex()
     private let lock = NSLock()
     private var _live: [UUID: SessionState] = [:]
@@ -59,7 +61,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
         leaseSeconds: Int = VirtualSessionStore.defaultSessionLeaseSeconds,
         nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() },
         waxOptions: WaxOptions = CommandLineEmbedderFactory.waxOptions(),
-        openExisting: @escaping @Sendable (URL) async throws -> MemoryOrchestrator
+        openExisting: @escaping @Sendable (URL, Bool) async throws -> MemoryOrchestrator
     ) {
         self.sessionRootURL = sessionRootURL
         self.brokerInstanceID = brokerInstanceID
@@ -80,17 +82,19 @@ package final class VirtualSessionStore: @unchecked Sendable {
             )
             try await created.close()
         }
-        return try await openExisting(url)
+        return try await openExisting(url, true)
     }
 
     /// Open an existing session file. Missing files fail closed and do not mint.
-    package func openExistingSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
+    /// `catchUp` is `true` only for the open that makes the session live and owns its store;
+    /// brief reads (export, inspection) pass `false` so they never write.
+    package func openExistingSessionMemory(at url: URL, catchUp: Bool) async throws -> MemoryOrchestrator {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BrokerValidationError.invalid(
                 "session store is missing at \(url.lastPathComponent); call session_start again"
             )
         }
-        return try await openExisting(url)
+        return try await openExisting(url, catchUp)
     }
 
     package func start(
@@ -183,7 +187,10 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
         let timestamp = nowMs()
         let recoveredLease = manifest.brokerLeaseOwnerID != nil && manifest.brokerLeaseOwnerID != brokerInstanceID
-        let memory = try await openExistingSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
+        let memory = try await openExistingSessionMemory(
+            at: URL(fileURLWithPath: manifest.storePath),
+            catchUp: true
+        )
         do {
             if let existing = locked({
                 endingSessions.contains(manifest.sessionID) ? nil : _live[manifest.sessionID]

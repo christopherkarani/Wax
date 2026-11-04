@@ -290,6 +290,7 @@ package struct DiskEndedSessionStore: EndedSessionStore {
         config.enableStructuredMemory = false
         // Brief open: a re-embed here would be cancelled by close() before it checkpoints.
         config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
         config.enableAccessStatsScoring = enableAccessStatsScoring
         config.defaultScopeContext = scopeContext
         let request = try HostEmbeddingReadiness.request(

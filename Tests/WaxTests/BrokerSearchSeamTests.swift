@@ -26,7 +26,7 @@ private func withBrokerSearchSeam<T>(
     let sessions = VirtualSessionStore(
         sessionRootURL: sessionRoot,
         brokerInstanceID: UUID().uuidString,
-        openExisting: { url in
+        openExisting: { url, _ in
             var sessionConfig = OrchestratorConfig.default
             sessionConfig.enableVectorSearch = false
             sessionConfig.enableTextSearch = true

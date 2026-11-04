@@ -9,7 +9,10 @@ package struct OrchestratorConfig: Sendable {
     package var enableAsyncEnrichment: Bool = false
 
     package var rag: FastRAGConfig = .init()
-    package var chunking: ChunkingStrategy = .tokenCount(targetTokens: 400, overlapTokens: 40)
+    package static let defaultChunking = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
+    package var chunking: ChunkingStrategy = defaultChunking
+    /// Re-split chunks that overflow the MiniLM input window. Set by ``sizingChunks(forEmbedderModel:)``.
+    package var fitsChunksToMiniLMInput: Bool = false
     package var ingestConcurrency: Int = 1
     package var ingestBatchSize: Int = 32
     package var embeddingCacheCapacity: Int = 2_048
@@ -29,6 +32,11 @@ package struct OrchestratorConfig: Sendable {
     /// embedder is ready. Read-only hosts (CLI recall/search/stats) turn this off and
     /// re-embed only through an explicit ``MemoryOrchestrator/backfillUnembedded()``.
     package var automaticallyReembedSupersededVectors: Bool = true
+    /// On open, index durable frames the text index does not cover yet; the next commit
+    /// persists them. Off by default so brief opens (corpus, ended-session, migration
+    /// verification, direct-store CLI) never write. The store's owning writer turns it on:
+    /// the broker's long-term and live session stores, and the library's `Memory`.
+    package var catchUpTextIndexOnOpen: Bool = false
     /// Frames re-embedded between durable progress checkpoints. `nil` picks
     /// max(512, frames / 16), which bounds the number of full commits per re-embed.
     package var supersededReembedCheckpointFrames: Int? = nil

@@ -29,19 +29,28 @@ package actor FTS5SearchEngine {
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
     var pendingStructuredOps: [StructuredOp] = []
+    /// Every text-indexable frame below this id is indexed (or was when it was staged).
+    /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
+    var coveredBelowFrameId: UInt64
+    /// `false` until the blob stores a watermark. A blob written before the watermark existed
+    /// vouches for nothing, so catch-up scans every frame once and the next commit records it.
+    var coverageRecorded: Bool
 
     private init(
         dbQueue: DatabaseQueue,
         io: BlockingIOExecutor,
         backingStoreDirectory: URL?,
         docCount: UInt64,
-        dirty: Bool
+        dirty: Bool,
+        coveredBelowFrameId: UInt64? = nil
     ) {
         self.dbQueue = dbQueue
         self.io = io
         self.backingStoreDirectory = backingStoreDirectory
         self.docCount = docCount
         self.dirty = dirty
+        self.coveredBelowFrameId = coveredBelowFrameId ?? 0
+        self.coverageRecorded = coveredBelowFrameId != nil
     }
 
     deinit {
@@ -75,8 +84,9 @@ package actor FTS5SearchEngine {
         try queue.writeWithoutTransaction { db in
             try FTS5Schema.validateOrUpgrade(in: db)
         }
-        let count = try queue.read { db in
-            try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+        let (count, coveredBelowFrameId) = try queue.read { db in
+            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
         }
         let docCount = UInt64(max(0, count))
         return FTS5SearchEngine(
@@ -84,7 +94,8 @@ package actor FTS5SearchEngine {
             io: io,
             backingStoreDirectory: storeDirectory,
             docCount: docCount,
-            dirty: false
+            dirty: false,
+            coveredBelowFrameId: coveredBelowFrameId
         )
     }
 
@@ -228,6 +239,7 @@ package actor FTS5SearchEngine {
         try await removeInactiveFrames(metas)
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
+        try await recordCoverage(of: metas)
         let blob = try await serialize(compact: compact)
         try await wax.stageLexIndexForNextCommit(bytes: blob, docCount: docCount)
         dirty = false
@@ -251,6 +263,13 @@ package actor FTS5SearchEngine {
             factHash: Data
         )
         case retractFact(factId: FactRowID, atMs: Int64)
+    }
+
+    /// Queues an upsert unless the frame already has a queued op. Returns whether it queued one.
+    func enqueueCatchUpUpsert(frameIdValue: Int64, text: String) -> Bool {
+        guard pendingOps[frameIdValue] == nil else { return false }
+        enqueuePendingOp(frameIdValue: frameIdValue, op: .upsert(text))
+        return true
     }
 
     private func enqueuePendingOp(frameIdValue: Int64, op: PendingOp) {
