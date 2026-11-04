@@ -3,6 +3,7 @@ import CoreGraphics
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 import WaxVectorSearch
 import WaxCore
 import WaxTextSearch

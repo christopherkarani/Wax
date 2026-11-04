@@ -303,6 +303,14 @@ let package = Package(
             path: "Sources/WaxCrashHarness"
         ),
     ] + waxRepoTargets + [
+        // Deterministic stub embedders shared by the test targets below. Not a product.
+        .target(
+            name: "WaxTestSupport",
+            dependencies: [
+                "Wax",
+            ],
+            path: "Tests/WaxTestSupport"
+        ),
         .testTarget(
             name: "WaxCoreTests",
             dependencies: [
@@ -314,6 +322,7 @@ let package = Package(
             name: "WaxIntegrationTests",
             dependencies: [
                 "Wax",
+                "WaxTestSupport",
                 "WaxVectorSearchMiniLM",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
@@ -338,6 +347,7 @@ let package = Package(
             name: "wax-mcpTests",
             dependencies: [
                 "Wax",
+                "WaxTestSupport",
                 .target(
                     name: "wax-mcp",
                     condition: .when(traits: ["MCPServer"])
@@ -373,6 +383,7 @@ let package = Package(
             name: "waxTests",
             dependencies: [
                 "Wax",
+                "WaxTestSupport",
             ],
             path: "Tests/WaxTests",
             swiftSettings: [
