@@ -49,13 +49,13 @@ import Testing
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
+            "daemon took \(exit) from SIGTERM, past the client's SIGTERM grace; \(fixture.shutdownTimeline(since: killedAt))"
         )
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
         let fd = slow.fd
         let slowResponse = try await BlockingWork.run { try readLine(fd: fd) }
         #expect(slowResponse.isEmpty, "the slow client was answered instead of dropped: \(slowResponse)")
-        try fixture.expectStoreReleasedAndCommitted()
+        try await fixture.expectStoreReleasedAndCommitted()
     }
 
     /// One read deadline from accept: trickled bytes must not keep a request
@@ -90,11 +90,14 @@ import Testing
     func daemonSocketModeRefusesClientsPastItsCap() async throws {
         let fixture = try DaemonFixture()
         defer { fixture.remove() }
-        let daemon = try fixture.launch(arguments: ["--socket-path", fixture.socketPath, "--max-clients", "2"])
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath, "--max-clients", "2"],
+            environment: DaemonFixture.longReadDeadline
+        )
         defer { daemon.forceStop() }
         try await fixture.waitForSocket(daemon)
 
-        // Two clients that send nothing hold both slots until their deadline.
+        // Two clients that have not sent yet hold both slots until they do.
         let holders = try [SocketClient(path: fixture.socketPath), SocketClient(path: fixture.socketPath)]
         defer { holders.forEach { $0.close() } }
 
@@ -107,13 +110,12 @@ import Testing
         #expect(refused.contains("limit of 2 clients"), "unexpected refusal: \(refused)")
 
         for holder in holders {
-            let fd = holder.fd
-            _ = try await BlockingWork.run { try readLine(fd: fd) }
+            let answered = try await holder.finish(#"{"command":"stats","arguments":{}}"#)
+            #expect(answered.contains(#""ok":true"#), "a holder was not served: \(answered)")
         }
-        let served = try await SocketClient.roundTrip(
-            #"{"command":"stats","arguments":{}}"#,
-            path: fixture.socketPath
-        )
+        // A slot frees just after its response is written, so a client right
+        // behind it may still be refused once.
+        let served = try await fixture.roundTripUntilAdmitted(#"{"command":"stats","arguments":{}}"#)
         #expect(served.contains(#""ok":true"#), "freed slots did not serve again: \(served)")
     }
 
@@ -146,15 +148,20 @@ import Testing
     }
 
     /// SIGTERM while a command is in the service: that command finishes and is
-    /// answered, a request arriving during the drain is refused, and the daemon
-    /// then closes the store and exits 0.
+    /// answered, a request arriving during the drain is refused with a
+    /// response, and the daemon then closes the store and exits 0.
+    ///
+    /// The command is held inside the service, so closing waits for it however
+    /// long the test takes to send the late request, and the late client's read
+    /// deadline is long for the same reason.
     @Test(.timeLimit(.minutes(2)))
     func daemonDrainAnswersTheInFlightCommandAndRefusesNewOnes() async throws {
         let fixture = try DaemonFixture()
         defer { fixture.remove() }
         let daemon = try fixture.launch(
             arguments: ["--socket-path", fixture.socketPath],
-            environment: fixture.holdEnvironment(command: "stats")
+            environment: fixture.holdEnvironment(command: "stats", inService: true)
+                .merging(DaemonFixture.longReadDeadline) { _, new in new }
         )
         defer { daemon.forceStop() }
         try await fixture.waitForSocket(daemon)
@@ -179,7 +186,8 @@ import Testing
         let refused = try await late.finish(
             #"{"command":"remember","arguments":{"content":"sent during the drain"}}"#
         )
-        #expect(refused.isEmpty, "a request sent during the drain was served: \(refused)")
+        #expect(refused.contains(#""ok":false"#), "a request sent during the drain was served: \(refused)")
+        #expect(refused.contains("shutting down"), "unexpected refusal: \(refused)")
 
         try fixture.releaseHeldCommand()
         let fd = inFlight.fd
@@ -189,7 +197,7 @@ import Testing
         let exit = try await daemon.waitForExit(since: Date())
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
-        try fixture.expectStoreReleasedAndCommitted()
+        try await fixture.expectStoreReleasedAndCommitted()
     }
 
     /// A command still running when the drain bound passes must not keep the
@@ -224,10 +232,10 @@ import Testing
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
+            "daemon took \(exit) from SIGTERM, past the client's SIGTERM grace; \(fixture.shutdownTimeline(since: killedAt))"
         )
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
-        try fixture.expectStoreReleasedAndCommitted()
+        try await fixture.expectStoreReleasedAndCommitted()
     }
 
     /// A command already running inside the service holds the store's locks.
@@ -268,7 +276,7 @@ import Testing
         let exit = try await daemon.waitForExit(since: Date())
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath), "socket was not removed")
-        try fixture.expectStoreReleasedAndCommitted()
+        try await fixture.expectStoreReleasedAndCommitted()
     }
 
     /// While a running command holds graceful shutdown, a second signal exits
@@ -300,7 +308,50 @@ import Testing
         )
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s to exit after the second SIGTERM"
+            "daemon took \(exit) after the second SIGTERM; \(fixture.shutdownTimeline(since: secondSignalAt))"
+        )
+    }
+
+    /// Each client still sending its request holds a GCD worker thread while
+    /// its read waits. Enough of them fill the worker pool, which can stall
+    /// closing the store. The first SIGTERM must still start shutdown, and a
+    /// second must still force the exit. This checks the behaviour only. It
+    /// also passes with the signal handler on `.global()`, so it does not show
+    /// that `ShutdownSignals.handlerQueue` is needed.
+    @Test(.timeLimit(.minutes(3)))
+    func daemonHandlesSignalsWhileWaitingClientsFillTheWorkerPool() async throws {
+        let workers = try constrainedWorkerThreadLimit()
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath, "--max-clients", String(workers + 16)],
+            environment: DaemonFixture.longReadDeadline
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        var waiting: [SocketClient] = []
+        defer { waiting.forEach { $0.close() } }
+        for _ in 0..<(workers + 8) {
+            waiting.append(try await SocketClient.connectWhenBacklogAllows(path: fixture.socketPath))
+        }
+
+        kill(daemon.pid, SIGTERM)
+        try await fixture.waitForMarker("closing", daemon: daemon)
+
+        // Closing may itself wait for a worker thread; the second signal must not.
+        let secondSignalAt = Date()
+        if daemon.process.isRunning {
+            kill(daemon.pid, SIGTERM)
+        }
+        let exit = try await daemon.waitForExit(since: secondSignalAt)
+        #expect(
+            exit.reason == .exit && [0, 128 + SIGTERM].contains(exit.status),
+            "the daemon did not shut down on SIGTERM: \(exit)"
+        )
+        #expect(
+            exit.elapsed < Self.clientTerminateGraceSeconds,
+            "daemon took \(exit) after the second SIGTERM; \(fixture.shutdownTimeline(since: secondSignalAt))"
         )
     }
 
@@ -330,9 +381,9 @@ import Testing
         #expect(exit.reason == .exit && exit.status == 0, "daemon exited with \(exit)")
         #expect(
             exit.elapsed < Self.clientTerminateGraceSeconds,
-            "daemon took \(exit.elapsed)s from SIGTERM to exit, past the client's SIGTERM grace"
+            "daemon took \(exit) from SIGTERM, past the client's SIGTERM grace; \(fixture.shutdownTimeline(since: killedAt))"
         )
-        try fixture.expectStoreReleasedAndCommitted()
+        try await fixture.expectStoreReleasedAndCommitted()
     }
 }
 
@@ -421,36 +472,74 @@ private struct DaemonFixture {
     }
 
     /// The lock is free and a fresh process reopens the store and finds the data.
-    func expectStoreReleasedAndCommitted() throws {
+    /// The recall runs off the cooperative pool.
+    func expectStoreReleasedAndCommitted() async throws {
         let lock = try FileLock.tryAcquire(at: storeURL, mode: .exclusive)
         #expect(lock != nil, "the daemon left the store locked")
         try lock?.release()
 
-        let recall = Process()
-        recall.executableURL = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
-        recall.arguments = [
+        let executable = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
+        let arguments = [
             "recall", "--direct-store", "--store-path", storeURL.path,
             "--no-embedder", "--format", "json", token,
         ]
-        let output = Pipe()
-        recall.standardOutput = output
-        recall.standardError = FileHandle.nullDevice
-        try recall.run()
-        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        recall.waitUntilExit()
-        #expect(recall.terminationStatus == 0, "reopening the store failed: \(text)")
+        let (status, text) = try await BlockingWork.run { () throws -> (Int32?, String) in
+            let recall = Process()
+            recall.executableURL = executable
+            recall.arguments = arguments
+            let output = Pipe()
+            recall.standardOutput = output
+            recall.standardError = FileHandle.nullDevice
+            try recall.run()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return (recall.waitForExit(timeout: 120), text)
+        }
+        #expect(status == 0, "reopening the store failed: \(text)")
         #expect(text.contains(token), "committed memory missing after shutdown: \(text)")
     }
+
+    /// When the daemon reached each shutdown marker, in seconds after `start`,
+    /// so a slow exit shows where its time went.
+    func shutdownTimeline(since start: Date) -> String {
+        let stages = ["signalled", "draining", "closing", "closed"].map { name -> String in
+            let path = hooksDirectory.appendingPathComponent(name).path
+            guard let data = FileManager.default.contents(atPath: path),
+                  let time = Double(String(decoding: data, as: UTF8.self)) else {
+                return "\(name) -"
+            }
+            return "\(name) +\(String(format: "%.3f", time - start.timeIntervalSince1970))s"
+        }
+        return stages.joined(separator: ", ")
+    }
+
+    /// Sends `line` until it is not refused for the client cap. The 30s bound
+    /// only catches a slot that never frees.
+    func roundTripUntilAdmitted(_ line: String) async throws -> String {
+        let deadline = Date().addingTimeInterval(30)
+        while true {
+            let response = try await SocketClient.roundTrip(line, path: socketPath)
+            guard response.contains("clients; retry shortly"), Date() < deadline else { return response }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Gives each client this long to send its request, instead of 5s, so a
+    /// client the test is still holding is not cut off while the test waits.
+    static let longReadDeadline = ["WAX_BROKER_TEST_READ_DEADLINE_SECS": "120"]
 }
 
 private struct DaemonExit: CustomStringConvertible {
     let reason: Process.TerminationReason
     let status: Int32
-    /// Seconds from the signal to the exit.
+    /// Seconds from the signal to the exit, timed when the process ended.
     let elapsed: TimeInterval
+    /// Seconds from the signal until this test saw the exit. On a starved
+    /// cooperative pool this lags `elapsed` by however long the await took to
+    /// resume, which says nothing about the daemon.
+    let observedAfter: TimeInterval
 
     var description: String {
-        "\(reason == .exit ? "exit" : "signal") \(status) after \(elapsed)s"
+        "\(reason == .exit ? "exit" : "signal") \(status) after \(elapsed)s (seen after \(observedAfter)s)"
     }
 }
 
@@ -459,13 +548,20 @@ private final class DaemonProcess: @unchecked Sendable {
     let stdin: Pipe
     let stdout: Pipe
     private let exited = DispatchSemaphore(value: 0)
+    private let exitClock = ExitClock()
 
     init(process: Process, stdin: Pipe, stdout: Pipe) throws {
         self.process = process
         self.stdin = stdin
         self.stdout = stdout
         let exited = exited
-        process.terminationHandler = { _ in exited.signal() }
+        let exitClock = exitClock
+        // Foundation calls this on its own queue as it reaps the child, so the
+        // time does not depend on when the test's tasks next get a thread.
+        process.terminationHandler = { _ in
+            exitClock.stop()
+            exited.signal()
+        }
         try process.run()
     }
 
@@ -477,11 +573,14 @@ private final class DaemonProcess: @unchecked Sendable {
     func waitForExit(since start: Date) async throws -> DaemonExit {
         let exited = exited
         let didExit = await BlockingWork.run { exited.wait(timeout: .now() + 60) == .success }
-        guard didExit else { throw DaemonTestError("daemon \(pid) did not exit after SIGTERM") }
+        guard didExit, let exitedAt = exitClock.stoppedAt else {
+            throw DaemonTestError("daemon \(pid) did not exit after SIGTERM")
+        }
         return DaemonExit(
             reason: process.terminationReason,
             status: process.terminationStatus,
-            elapsed: Date().timeIntervalSince(start)
+            elapsed: exitedAt.timeIntervalSince(start),
+            observedAfter: Date().timeIntervalSince(start)
         )
     }
 
@@ -491,10 +590,11 @@ private final class DaemonProcess: @unchecked Sendable {
         return try await BlockingWork.run { try readLine(fd: fd) }
     }
 
+    /// Bounded, so a lost exit notification cannot hang the test's teardown.
     func forceStop() {
         if process.isRunning {
             kill(pid, SIGKILL)
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
         }
     }
 }
@@ -535,8 +635,10 @@ private final class SocketClient: @unchecked Sendable {
 
     func send(_ text: String) throws {
         let bytes = Array(text.utf8)
-        guard write(fd, bytes, bytes.count) == bytes.count else {
-            throw DaemonTestError("socket write failed")
+        let sent = write(fd, bytes, bytes.count)
+        guard sent == bytes.count else {
+            let reason = sent < 0 ? String(cString: strerror(errno)) : "short write of \(sent) bytes"
+            throw DaemonTestError("socket write failed: \(reason)")
         }
     }
 
@@ -554,18 +656,50 @@ private final class SocketClient: @unchecked Sendable {
         return trickle
     }
 
-    /// Sends the request and reads the response line.
+    /// Sends the request and reads the response line. A daemon that refuses a
+    /// client may answer and close before reading the request, so a write the
+    /// peer has closed (EPIPE) still reads what the daemon sent.
     func finish(_ line: String) async throws -> String {
-        try send(line + "\n")
+        let bytes = Array((line + "\n").utf8)
+        if write(fd, bytes, bytes.count) != bytes.count, errno != EPIPE {
+            throw DaemonTestError("socket write failed: \(String(cString: strerror(errno)))")
+        }
         shutdown(fd, SHUT_WR)
         let fd = fd
         return try await BlockingWork.run { try readLine(fd: fd) }
+    }
+
+    /// Connects, retrying while the daemon's listen backlog is full. The 30s
+    /// bound only catches an accept loop that stopped.
+    static func connectWhenBacklogAllows(path: String) async throws -> SocketClient {
+        let deadline = Date().addingTimeInterval(30)
+        while true {
+            do {
+                return try SocketClient(path: path)
+            } catch where Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
     }
 
     static func roundTrip(_ line: String, path: String) async throws -> String {
         let client = try SocketClient(path: path)
         defer { client.close() }
         return try await client.finish(line)
+    }
+}
+
+/// When the daemon process ended.
+private final class ExitClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped: Date?
+
+    func stop() {
+        lock.withLock { stopped = Date() }
+    }
+
+    var stoppedAt: Date? {
+        lock.withLock { stopped }
     }
 }
 
@@ -590,6 +724,17 @@ private final class Trickle: @unchecked Sendable {
         let done = done
         await BlockingWork.run { done.wait() }
     }
+}
+
+/// How many worker threads GCD runs at once for its non-overcommit queues,
+/// such as `.global()` and the queues that target it.
+private func constrainedWorkerThreadLimit() throws -> Int {
+    var limit: UInt32 = 0
+    var size = MemoryLayout<UInt32>.size
+    guard sysctlbyname("kern.wq_max_constrained_threads", &limit, &size, nil, 0) == 0, limit > 0 else {
+        throw DaemonTestError("could not read kern.wq_max_constrained_threads")
+    }
+    return Int(limit)
 }
 
 /// Reads one newline-terminated line. The 30s poll bound only catches a hang.

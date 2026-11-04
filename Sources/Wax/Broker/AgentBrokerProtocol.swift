@@ -546,6 +546,9 @@ package enum AgentBrokerPathing {
             .standardizedFileURL
     }
 
+    /// `which` answers at once; this only stops a wedged lookup.
+    private static let executableLookupTimeoutSeconds: TimeInterval = 5
+
     private static func resolveExecutableOnPath(
         _ tool: String,
         environment: [String: String]
@@ -568,9 +571,9 @@ package enum AgentBrokerPathing {
         } catch {
             return nil
         }
-        process.waitUntilExit()
-
-        guard process.terminationStatus == EXIT_SUCCESS else {
+        // A broker client resolves its executable through this, so a wedged
+        // lookup must not hang it.
+        guard process.waitForExit(timeout: executableLookupTimeoutSeconds) == EXIT_SUCCESS else {
             return nil
         }
 

@@ -742,7 +742,7 @@ struct WaxCLIMemoryTests {
         defer {
             if process.isRunning {
                 process.terminate()
-                process.waitUntilExit()
+                process.waitForExit(timeout: 10)
             }
         }
 
@@ -1709,6 +1709,133 @@ struct WaxCLIMemoryTests {
         expectHostAgnosticDoctorOutput(output.stdout)
     }
 
+    @Test func mcpDoctorExitGraceIsNeverBelowTheSmokeTimeout() {
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 1) == 5)
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 5) == 5)
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 120) == 120)
+    }
+
+    /// A server that takes longer than the 5s floor to exit after stdin closes,
+    /// but less than the smoke timeout, passes instead of being killed and
+    /// reported as "exit code 9".
+    @Test func mcpDoctorWaitsUpToTheSmokeTimeoutForTheServerToExit() async throws {
+        let output = try await runDoctorAgainstServer(
+            exitingAfterStdinClosesIn: 7,
+            smokeTimeoutSeconds: 15
+        )
+        #expect(output.stdout.contains("Doctor passed."), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("exit code") == false)
+    }
+
+    /// A server that never exits after stdin closes is killed, and reported as
+    /// such, without a made-up exit code.
+    @Test func mcpDoctorReportsAServerThatDoesNotExitAfterStdinCloses() async throws {
+        let output = try await runDoctorAgainstServer(
+            exitingAfterStdinClosesIn: 3600,
+            smokeTimeoutSeconds: 10
+        )
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("did not exit after stdin closed"), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("exit code") == false)
+        #expect(output.stdout.contains("Doctor passed.") == false)
+    }
+
+    /// When doctor cannot tell whether the store is held, it must not smoke-check
+    /// it as though it were free: it reports why and skips the check.
+    @Test func mcpDoctorSkipsTheSmokeCheckWhenTheStoreLockCannotBeProbed() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-probe-\(UUID().uuidString)", isDirectory: true)
+        // A directory where the store should be: the probe cannot open it.
+        let storeURL = tempRoot.appendingPathComponent("store.wax", isDirectory: true)
+        let fakeServer = tempRoot.appendingPathComponent("fake-mcp")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: storeURL, withIntermediateDirectories: true)
+        try makeExecutableStub(at: fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try await runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", fakeServer.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: doctorEnvironment,
+            timeout: hangTimeoutSeconds
+        )
+
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("Could not check whether the store"), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("server smoke check skipped"))
+        #expect(output.stdout.contains("Smoke check") == false, "doctor ran the smoke check: \(output.stdout)")
+    }
+
+    /// Runs `mcp doctor` against a stub server that answers the smoke check
+    /// with the full daily tool surface, then lingers for `exitDelay` seconds
+    /// after its stdin reaches EOF.
+    private func runDoctorAgainstServer(
+        exitingAfterStdinClosesIn exitDelay: Int,
+        smokeTimeoutSeconds: Int
+    ) async throws -> ProcessOutput {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try #require(FileManager.default.isExecutableFile(atPath: python.path))
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-exit-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("doctor.wax")
+        let fakeServer = tempRoot.appendingPathComponent("fake-mcp")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let tools = MCPDoctorSurface.dailyToolNames.map { #"{"name": "\#($0)"}"# }.joined(separator: ", ")
+        try #"""
+        #!/usr/bin/python3
+        import json
+        import sys
+        import time
+
+        tools = [\#(tools)]
+        for raw in sys.stdin:
+            line = raw.strip()
+            if not line:
+                continue
+            message = json.loads(line)
+            method = message.get("method")
+            request_id = message.get("id")
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fake-mcp", "version": "0"},
+                }
+            elif method == "tools/list":
+                result = {"tools": tools}
+            else:
+                continue
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}) + "\n")
+            sys.stdout.flush()
+        time.sleep(\#(exitDelay))
+        """#.write(to: fakeServer, atomically: true, encoding: .utf8)
+        try setExecutable(fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        return try await runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", fakeServer.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: [
+                "PATH": "/usr/bin:/bin",
+                ProcessRunner.mcpSmokeCheckTimeoutEnvKey: String(smokeTimeoutSeconds),
+            ],
+            timeout: hangTimeoutSeconds
+        )
+    }
+
     @Test(.disabled(if: !mcpServerTraitEnabled,
                     "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
     func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() async throws {
@@ -1889,11 +2016,10 @@ struct WaxCLIMemoryTests {
 
         if terminated.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             throw CLIError("Process timed out: \(executableURL.path) \(arguments.joined(separator: " "))")
         }
-
-        process.waitUntilExit()
+        process.waitForExit(timeout: 10)
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -2137,7 +2263,7 @@ struct WaxCLIMemoryTests {
 
         if state.semaphore.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw CLIError("Timed out waiting for MCP tools/list response")
@@ -2146,7 +2272,9 @@ struct WaxCLIMemoryTests {
         try? stdinPipe.fileHandleForWriting.close()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        process.waitUntilExit()
+        guard process.waitForExit(timeout: 60) != nil else {
+            throw CLIError("wax-mcp did not exit after its stdin closed")
+        }
 
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
             state.appendStdout(data, expectedToolName: expectedToolName)

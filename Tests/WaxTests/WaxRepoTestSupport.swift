@@ -132,11 +132,11 @@ enum WaxRepoProcess {
         try process.run()
         if terminated.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             throw WaxRepoTestError("Process timed out: \(executableURL.path) \(arguments.joined(separator: " "))")
         }
 
-        process.waitUntilExit()
+        process.waitForExit(timeout: 10)
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return Output(status: process.terminationStatus, stdout: stdout, stderr: stderr)
