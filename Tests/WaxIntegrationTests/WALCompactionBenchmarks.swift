@@ -184,60 +184,62 @@ final class WALCompactionBenchmarks: XCTestCase {
             )
         }
 
+        // One stalled open on a loaded host used to decide this check: a p95/p99 of 8 samples is
+        // in effect the slowest sample, and the arms were compared unpaired, disabled always
+        // first. So each round reopens both copies back to back (alternating which goes first),
+        // and the guardrail compares the median over rounds of the paired difference
+        // `enabled - disabled`: load shared by a round cancels, and up to four outlying rounds
+        // are outvoted.
         var disabledSamples: [Double] = []
         var enabledSamples: [Double] = []
         var enabledSnapshotHits = 0
-        disabledSamples.reserveCapacity(8)
-        enabledSamples.reserveCapacity(8)
-        for _ in 0..<8 {
-            let disabledSample = try await measureReopenLatency(
-                at: disabledURL,
-                iterations: 1,
-                options: WaxOptions(walReplayStateSnapshotEnabled: false)
-            )
-            disabledSamples.append(disabledSample.summary.meanMs)
-
-            let enabledSample = try await measureReopenLatency(
-                at: enabledURL,
-                iterations: 1,
-                options: WaxOptions(walReplayStateSnapshotEnabled: true)
-            )
-            enabledSamples.append(enabledSample.summary.meanMs)
-            enabledSnapshotHits += enabledSample.snapshotHits
+        for round in 0..<Self.replayGuardrailRounds {
+            let order: [Bool] = round.isMultiple(of: 2) ? [false, true] : [true, false]
+            for snapshotEnabled in order {
+                let sample = try await measureReopenLatency(
+                    at: snapshotEnabled ? enabledURL : disabledURL,
+                    iterations: 1,
+                    options: WaxOptions(walReplayStateSnapshotEnabled: snapshotEnabled)
+                )
+                if snapshotEnabled {
+                    enabledSamples.append(sample.summary.meanMs)
+                    enabledSnapshotHits += sample.snapshotHits
+                } else {
+                    disabledSamples.append(sample.summary.meanMs)
+                }
+            }
         }
 
-        let disabled = (
-            summary: WALCompactionLatencySummary.from(samples: disabledSamples),
-            snapshotHits: 0
-        )
-        let enabled = (
-            summary: WALCompactionLatencySummary.from(samples: enabledSamples),
-            snapshotHits: enabledSnapshotHits
-        )
+        let pairedIncreases: [Double] = zip(disabledSamples, enabledSamples).map { disabled, enabled in
+            enabled - disabled
+        }
+        let disabledMedian: Double = disabledSamples.sorted()[disabledSamples.count / 2]
+        let medianIncrease: Double = pairedIncreases.sorted()[pairedIncreases.count / 2]
+        // A snapshot hit skips both the WAL replay scan and the scan of the file tail for the
+        // newest footer, which together are most of a full reopen of this store (debug build:
+        // about 74 ms against 375 ms). Requiring at least half the reopen time back fails when
+        // either skip is lost.
+        let increaseBudget: Double = -0.5 * disabledMedian
 
         print(
-            "🧪 WAL replay snapshot guardrail: "
-                + "disabled p50=\(disabled.summary.p50Ms.formatMs) "
-                + "disabled p95=\(disabled.summary.p95Ms.formatMs) "
-                + "disabled p99=\(disabled.summary.p99Ms.formatMs) "
-                + "enabled p50=\(enabled.summary.p50Ms.formatMs) "
-                + "enabled p95=\(enabled.summary.p95Ms.formatMs) "
-                + "enabled p99=\(enabled.summary.p99Ms.formatMs) "
-                + "snapshot_hits=\(enabled.snapshotHits)"
+            "🧪 WAL replay snapshot guardrail (\(Self.replayGuardrailRounds) paired rounds): "
+                + "median increase=\(medianIncrease.formatMs) (budget \(increaseBudget.formatMs)) "
+                + "disabled=\(disabledSamples.map(\.formatMs)) "
+                + "enabled=\(enabledSamples.map(\.formatMs)) "
+                + "snapshot_hits=\(enabledSnapshotHits)"
         )
 
-        XCTAssertGreaterThanOrEqual(enabled.snapshotHits, 1)
-        // CI variance for reopen benchmarks can be high on shared runners.
-        // Keep a mild relative-improvement signal, but allow modest jitter.
+        // Snapshot hits do not depend on timing, so every enabled reopen must hit.
+        XCTAssertEqual(enabledSnapshotHits, Self.replayGuardrailRounds)
         XCTAssertLessThanOrEqual(
-            enabled.summary.p95Ms,
-            disabled.summary.p95Ms * 0.95 + 20.0
-        )
-        XCTAssertLessThanOrEqual(
-            enabled.summary.p99Ms,
-            disabled.summary.p99Ms * 0.95 + 30.0
+            medianIncrease,
+            increaseBudget,
+            "snapshot reopen must take at most half the full-replay reopen time"
         )
     }
+
+    /// Odd, so the median is one round's value; nine tolerate four outlying rounds.
+    private static let replayGuardrailRounds = 9
 
     private func prepareReplaySnapshotStressFile(at url: URL) async throws {
         let wax = try await Wax.create(
@@ -291,7 +293,7 @@ final class WALCompactionBenchmarks: XCTestCase {
         for _ in 0..<iterations {
             let start = clock.now
             let wax = try await Wax.open(at: url, options: options)
-            let elapsedMs = Double((clock.now - start).components.attoseconds) / 1_000_000_000_000_000
+            let elapsedMs = WALCompactionHarness.durationMs(clock.now - start)
             samples.append(elapsedMs)
             let stats = await wax.walStats()
             if stats.replaySnapshotHitCount > 0 {
