@@ -304,3 +304,62 @@ private enum BriefOpenFixture {
         #expect(try await TextCatchUpFixture.textHits("harbor", at: url).count == 3)
     }
 }
+
+/// `markdown_export` reads ended session stores through the broker's session opener; it must
+/// not commit a text-index catch-up into them.
+@Test func briefOpensForMarkdownExportLeaveEndedSessionStoresUntouched() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-export-brief-\(UUID().uuidString)", isDirectory: true)
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    var config = OrchestratorConfig.default
+    config.enableVectorSearch = false
+    config.liveSetRewriteSchedule = .disabled
+    let service = try await AgentBrokerService(
+        storePath: rootURL.appendingPathComponent("memory.wax").path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false,
+        orchestratorConfig: config
+    )
+    do {
+        let started = await service.handle(.init(
+            command: "session_start",
+            arguments: ["agent_id": .string("export-agent"), "run_id": .string("export-run")]
+        ))
+        let sessionID = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+        let ended = await service.handle(.init(command: "session_end", arguments: ["session_id": .string(sessionID)]))
+        #expect(ended.ok, "session_end failed: \(ended.error ?? "nil")")
+
+        let manifest = try #require(
+            try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
+                .first { $0.sessionID.uuidString == sessionID }
+        )
+        let storeURL = URL(fileURLWithPath: manifest.storePath)
+        // Frames the ended store's text index does not cover.
+        let wax = try await Wax.open(at: storeURL)
+        _ = try await wax.put(
+            Data("export".utf8),
+            options: FrameMetaSubset(role: .document, searchText: "export harbor")
+        )
+        try await wax.commit()
+        try await wax.close()
+        let before = try await BriefOpenFixture.snapshot(at: storeURL)
+
+        let outputURL = rootURL.appendingPathComponent("export", isDirectory: true)
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(outputURL.path)]
+        ))
+        #expect(export.ok, "markdown_export failed: \(export.error ?? "nil")")
+
+        #expect(try await BriefOpenFixture.snapshot(at: storeURL) == before)
+        try await service.close()
+    } catch {
+        try? await service.close()
+        throw error
+    }
+}

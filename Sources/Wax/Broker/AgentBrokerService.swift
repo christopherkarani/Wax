@@ -113,12 +113,12 @@ package actor AgentBrokerService {
         self.virtualSessions = VirtualSessionStore(
             sessionRootURL: sessionRootURL,
             brokerInstanceID: brokerInstanceID,
-            openExisting: { url in
+            openExisting: { url, catchUp in
                 var sessionConfig = OrchestratorConfig.default
                 sessionConfig.enableStructuredMemory = false
                 sessionConfig.enableAccessStatsScoring = capturedAccessStats
                 sessionConfig.defaultScopeContext = capturedScope
-                sessionConfig.catchUpTextIndexOnOpen = true
+                sessionConfig.catchUpTextIndexOnOpen = catchUp
                 let memory = try await EmbeddingReadinessBinding.openOrchestrator(
                     at: url,
                     config: sessionConfig,

@@ -141,6 +141,10 @@ public actor Memory {
     ///
     /// If another process holds the store file's lock, opening waits up to 30 seconds and
     /// then throws `WaxError.lockUnavailable`.
+    ///
+    /// `Memory` owns the store it opens. If the text index is missing frames (after a crash, or
+    /// frames written without one), opening indexes them and ``close()`` commits that, so a
+    /// store opened only to read can still be written once on close.
     public init(at url: URL, config: Config = .default) async throws {
         try await self.init(at: url, config: config, readiness: .shared, readinessFactory: nil)
     }
