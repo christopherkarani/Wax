@@ -18,7 +18,8 @@ import Testing
         writeCallCount: 1,
         autoCommitCount: 0,
         replaySnapshotHitCount: 0,
-        replayTruncationCount: 0
+        replayTruncationCount: 0,
+        replayFooterScanCount: 0
     )
     let summary = StatsCommand.walSummary(wal)
     #expect(summary == "WAL: 0 bytes pending (committed seq 12, last seq 174775)")

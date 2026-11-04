@@ -509,7 +509,7 @@ enum WALCompactionHarness {
         Int64((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
-    private static func durationMs(_ duration: Duration) -> Double {
+    static func durationMs(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1_000_000_000_000_000
     }

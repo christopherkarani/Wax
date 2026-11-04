@@ -51,6 +51,7 @@ package actor Wax {
     private var walAutoCommitCount: UInt64
     private var walReplaySnapshotHitCount: UInt64
     private let walReplayTruncationCount: UInt64
+    private let walReplayFooterScanCount: UInt64
     private let walProactiveCommitThresholdBytes: UInt64?
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
@@ -83,6 +84,7 @@ package actor Wax {
         walAutoCommitCount: UInt64,
         walReplaySnapshotHitCount: UInt64,
         walReplayTruncationCount: UInt64,
+        walReplayFooterScanCount: UInt64,
         walProactiveCommitThresholdBytes: UInt64?,
         walProactiveCommitMaxWalSizeBytes: UInt64?,
         walProactiveCommitMinPendingBytes: UInt64,
@@ -111,6 +113,7 @@ package actor Wax {
         self.walAutoCommitCount = walAutoCommitCount
         self.walReplaySnapshotHitCount = walReplaySnapshotHitCount
         self.walReplayTruncationCount = walReplayTruncationCount
+        self.walReplayFooterScanCount = walReplayFooterScanCount
         self.walProactiveCommitThresholdBytes = walProactiveCommitThresholdBytes
         self.walProactiveCommitMaxWalSizeBytes = walProactiveCommitMaxWalSizeBytes
         self.walProactiveCommitMinPendingBytes = walProactiveCommitMinPendingBytes
@@ -722,7 +725,8 @@ package actor Wax {
                 writeCallCount: wal.writeCallCount,
                 autoCommitCount: walAutoCommitCount,
                 replaySnapshotHitCount: walReplaySnapshotHitCount,
-                replayTruncationCount: walReplayTruncationCount
+                replayTruncationCount: walReplayTruncationCount,
+                replayFooterScanCount: walReplayFooterScanCount
             )
         }
     }
