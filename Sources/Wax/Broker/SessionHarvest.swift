@@ -32,6 +32,13 @@ package enum SessionHarvest {
             leftoverReasons: []
         )
 
+        /// Not harvested; the manifest records the error, which blocks reclaim until a retry succeeds.
+        package static func failed(_ message: String) -> Report {
+            var report = skipped
+            report.error = message
+            return report
+        }
+
         package var immediateReclaimEligible: Bool {
             harvested
                 && error == nil

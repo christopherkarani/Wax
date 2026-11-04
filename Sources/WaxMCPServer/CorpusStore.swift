@@ -129,7 +129,12 @@ enum CorpusStoreBuilder {
                 for: standardizedTarget
             )
         } else {
-            try? CorpusBuildManifestStore.delete(for: standardizedTarget)
+            do {
+                try CorpusBuildManifestStore.delete(for: standardizedTarget)
+            } catch {
+                // A stale manifest makes this partial build look up to date to the next build.
+                writeStderr("warning: corpus build manifest delete failed (\(error)); delete the .manifest.json beside the corpus store to force a rebuild")
+            }
         }
 
         return CorpusBuildSummary(

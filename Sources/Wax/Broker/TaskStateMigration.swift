@@ -409,7 +409,7 @@ package extension AgentBrokerService {
             let info = MemorySemantics.parse(metadata: document.metadata, nowMs: BrokerClock.nowMs())
             let provenance = taskStateSessionID(in: document.metadata)
             let validSession = if let provenance {
-                validSessionProvenance(provenance)
+                try validSessionProvenance(provenance)
             } else {
                 false
             }
@@ -518,12 +518,17 @@ package extension AgentBrokerService {
         try await memory.delete(frameIds: frameIDs.sorted(by: >))
     }
 
-    private func validSessionProvenance(_ sessionID: UUID) -> Bool {
-        guard let manifest = try? BrokerSessionPersistence.loadManifest(
-            rootURL: sessionRootURL,
-            sessionID: sessionID
-        ), manifest.sessionID == sessionID,
-        manifest.status == .active || manifest.status == .ended else {
+    /// Only a missing manifest makes a record an orphan. An unreadable one throws:
+    /// treating it as orphan would let `orphan_policy=drop` discard task state that still has a session.
+    private func validSessionProvenance(_ sessionID: UUID) throws -> Bool {
+        let manifest: BrokerSessionManifest
+        do {
+            manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        } catch BrokerSessionPersistenceError.manifestNotFound {
+            return false
+        }
+        guard manifest.sessionID == sessionID,
+              manifest.status == .active || manifest.status == .ended else {
             return false
         }
         let storeURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(manifest.storePath))
