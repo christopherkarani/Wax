@@ -28,7 +28,8 @@ package actor MemoryOrchestrator {
     /// Internal only because of the file split; immutable after init.
     let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
-    private let flushMutex = AsyncMutex()
+    /// Internal only because of the file split.
+    let flushMutex = AsyncMutex()
     private let embeddingBackfillMutex = AsyncMutex()
     /// Internal only because of the file split.
     let embeddingBackfillStoreMutex = AsyncMutex()

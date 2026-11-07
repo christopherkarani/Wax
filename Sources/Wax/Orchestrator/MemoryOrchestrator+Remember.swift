@@ -123,6 +123,13 @@ extension MemoryOrchestrator {
                 chunkEmbedding = nil
             }
 
+            if let chunkEmbedding {
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: [chunk],
+                    metadata: docMeta.entries,
+                    embeddingDimensions: chunkEmbedding.count
+                ))
+            }
             // Put without identity so doc metadata stays user keys + hash.
             // `put(..., identity:)` stamps wax.embedding.* and the rematch
             // probe uses exact metadata equality without those keys.
@@ -229,6 +236,13 @@ extension MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
+        if writeVectors {
+            try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                searchTexts: [nil],
+                metadata: docMeta.entries,
+                embeddingDimensions: nil
+            ))
+        }
         let docId = try await localSession.put(
             contentData,
             options: FrameMetaSubset(
@@ -262,6 +276,11 @@ extension MemoryOrchestrator {
                 guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
                     throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
                 }
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: batchChunks,
+                    metadata: metadata,
+                    embeddingDimensions: embeddings.first?.count
+                ))
                 let frameIds = try await localSession.putBatch(
                     contents: batchContents,
                     embeddings: embeddings,
