@@ -164,7 +164,8 @@ metadata; most competitors store vectors only.
 | LanceDB IVF-PQ | 100,000 | 22,584 | 177 | 556 | 2.49 / 3.02 | 0.522 |
 
 Wax latency and open figures are the median of three query runs on the final build. Wax
-hybrid search (text and vector lanes fused) at 100k: p50 7.8 ms, p95 28.1 ms.
+hybrid search (text and vector lanes fused) at 100k: p50 5.7 ms, p95 14.8 ms, p99 17.8 ms
+(before `386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9).
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
 sqlite-vec 1.9 GB at 330 ms. Wax was not run at 1M (see open issues).
@@ -197,6 +198,16 @@ Fixes on the branch, each with tests:
   text-only search, which never read it: 95 ms per query at 100k, on 7.4% of queries.
   Single-lane searches skip it, and hybrid selects the newest frames with a bounded heap
   instead of copying and sorting all of them. Vector p95 at 100k: 96.8 ms to 5.7 ms.
+- **Full-text fan-out (`386a642e1`, `c890c4b6d`).** 96% of 100k queries match no row
+  with AND, so the OR fallback runs, and SQLite scores and snippets every matching row
+  (about a third of the corpus) before `LIMIT`. Indexes with 50k or more documents now
+  split that query across up to four read-only connections by rowid range and merge the
+  results. `bm25()` takes its statistics from the whole table, so the rows, ranks and
+  snippets are identical to a single query (checked on all 3,922 query plans of the 100k
+  index). Hybrid p95 at 100k: 27.6 ms to 14.8 ms; recall unchanged.
+- **Index writes (`487c5c53d`).** A flush cleared text-index ops queued while its write
+  was in flight, so those frames never reached the text index. Flushes now settle only
+  the ops they wrote.
 - **Open (`c8c97916a`, `d6c933114`, `3006c3a3c`).** Opening a store read and checksummed
   the 153 MB vector segment three times at 100k. It now reads it once. Table-of-contents
   records decode in place instead of copying each field, and the full-text catch-up no
@@ -218,9 +229,10 @@ Fixes on the branch, each with tests:
    multi-session questions. The opt-in e5-small-v2 embedder at text weight 0.4 comes
    within 0.002 of Contriever overall (0.900 against 0.902). No small embedder tested
    beats it with Wax's default weights.
-2. **Hybrid tail latency.** Hybrid p95 is 28.1 ms at 100k. The full-text query dominates,
-   and the structured-memory lane waits behind it on the same database queue even when
-   the store has no structured entities.
+2. **Hybrid tail latency.** Hybrid p95 is 14.8 ms at 100k, against 4.3 ms for vector
+   search. The OR fallback still scores every matching row. Going under 10 ms needs top-k
+   pruning (MaxScore or WAND), which stock FTS5 cannot do: a custom `bm25` function or a
+   separate inverted index.
 3. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
    the vector segment and the table of contents. That limits sustained ingest (1,858
    docs/s at 100k) and is why Wax was not run at 1M. Fixing it needs a file-format change.
