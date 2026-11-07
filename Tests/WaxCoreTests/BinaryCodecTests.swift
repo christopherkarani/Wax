@@ -345,3 +345,41 @@ import Testing
         #expect(reason.contains("UTF-8"))
     }
 }
+
+/// A repairing UTF-8 decode turns a truncated 4-byte sequence into one U+FFFD, which is
+/// also 3 bytes, so a byte-count check alone would accept it. The decoder must reject it.
+@Test func truncatedMultibyteSequenceThrowsAsInvalidUTF8() throws {
+    let bytes: [UInt8] = [0xF0, 0x9F, 0x98, 0x41]
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt32(bytes.count))
+    var data = encoder.data
+    data.append(contentsOf: bytes)
+
+    var decoder = try BinaryDecoder(data: data)
+    #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
+}
+
+@Test func multibyteAndReplacementCharacterStringsRoundtrip() throws {
+    let values = ["naïve café ☕️ 日本語 🧠", "literal \u{FFFD} replacement", "\u{FEFF}leading BOM"]
+    var encoder = BinaryEncoder()
+    for value in values {
+        try encoder.encode(value)
+    }
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    for value in values {
+        let decoded = try decoder.decode(String.self)
+        #expect(Array(decoded.utf8) == Array(value.utf8))
+    }
+    try decoder.finalize()
+}
+
+@Test func stringLongerThanTheBufferThrows() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt32(10))
+    var data = encoder.data
+    data.append(contentsOf: Array("abc".utf8))
+
+    var decoder = try BinaryDecoder(data: data)
+    #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
+}
