@@ -247,6 +247,10 @@ extension Wax {
             ),
             walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
+        await wax.initializeDataSpace(
+            committedTocRange: (Constants.walOffset + walSize)..<created.dataEnd,
+            mayHoldUnreferencedFooter: false
+        )
         do {
             try Self.applyDataProtectionIfSupported(at: url)
         } catch {
@@ -281,6 +285,7 @@ extension Wax {
             wal: WALRingWriter,
             pendingMutations: [PendingMutation],
             dataEnd: UInt64,
+            committedTocRange: Range<UInt64>,
             generation: UInt64,
             dirty: Bool,
             replaySnapshotUsed: Bool,
@@ -513,6 +518,7 @@ extension Wax {
                 wal: wal,
                 pendingMutations: pendingMutations,
                 dataEnd: dataEnd,
+                committedTocRange: footerSlice.tocOffset..<expectedEnd,
                 generation: footerSlice.footer.generation,
                 dirty: !pendingMutations.isEmpty,
                 replaySnapshotUsed: usedReplaySnapshot,
@@ -560,6 +566,7 @@ extension Wax {
             ),
             walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
+        await wax.initializeDataSpace(committedTocRange: opened.committedTocRange, mayHoldUnreferencedFooter: true)
         do {
             try Self.applyDataProtectionIfSupported(at: url)
         } catch {

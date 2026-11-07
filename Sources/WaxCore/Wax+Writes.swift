@@ -67,22 +67,25 @@ extension Wax {
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
 
-        let payloadOffset = dataEnd
-        let entry = WALEntry.putFrame(
-            PutFrame(
-                frameId: frameId,
-                timestampMs: timestampMs ?? currentTimestampMs(),
-                options: options,
-                payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
-                canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
-                canonicalChecksum: canonicalChecksum,
-                storedChecksum: storedChecksum
-            )
+        var putFrame = PutFrame(
+            frameId: frameId,
+            timestampMs: timestampMs ?? currentTimestampMs(),
+            options: options,
+            payloadOffset: 0,
+            payloadLength: UInt64(storedBytes.count),
+            canonicalEncoding: canonicalEncoding,
+            canonicalLength: UInt64(content.count),
+            canonicalChecksum: canonicalChecksum,
+            storedChecksum: storedChecksum
         )
+        // The offset is fixed-width in the encoding, so the size is known before placement.
+        let walPayloadSize = try WALEntryCodec.encode(.putFrame(putFrame)).count
+        // May commit, which places segments and a TOC; place the payload only afterwards.
+        try await ensureWalCapacityLocked(payloadSize: walPayloadSize)
+        let payloadOffset = allocateDataLocked(length: UInt64(storedBytes.count))
+        putFrame.payloadOffset = payloadOffset
+        let entry = WALEntry.putFrame(putFrame)
         let payload = try WALEntryCodec.encode(entry)
-        try await ensureWalCapacityLocked(payloadSize: payload.count)
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
@@ -91,7 +94,6 @@ extension Wax {
             return try wal.append(payload: payload)
         }
 
-        dataEnd += UInt64(storedBytes.count)
         appendPendingMutation(sequence: seq, entry: entry)
         dirty = true
         return frameId
@@ -193,7 +195,7 @@ extension Wax {
             for (index, frame) in prepared.enumerated() {
                 try await ensureWalCapacityLocked(payloadSize: walPayloadSizes[index])
                 var putFrame = frame.putFrame
-                putFrame.payloadOffset = dataEnd
+                putFrame.payloadOffset = allocateDataLocked(length: UInt64(frame.storedBytes.count))
                 let entry = WALEntry.putFrame(putFrame)
                 let walPayload = try WALEntryCodec.encode(entry)
 
@@ -203,7 +205,6 @@ extension Wax {
                     try file.writeAll(storedBytes, at: payloadOffset)
                     return try wal.append(payload: walPayload)
                 }
-                dataEnd += UInt64(frame.storedBytes.count)
                 appendPendingMutation(sequence: seq, entry: entry)
                 frameIds.append(putFrame.frameId)
             }
@@ -222,14 +223,15 @@ extension Wax {
         // Capture values for Sendable closure
         let file = self.file
         let wal = self.wal
-        let startOffset = dataEnd
+        // One contiguous range for the batch, so its payloads go out in one I/O hop.
+        let startOffset = allocateDataLocked(length: UInt64(totalPayloadSize))
         let storedBytesArray = prepared.map { $0.storedBytes }
 
         var walPayloadsArray: [Data] = []
         walPayloadsArray.reserveCapacity(prepared.count)
         var entries: [WALEntry] = []
         entries.reserveCapacity(prepared.count)
-        var currentOffset = dataEnd
+        var currentOffset = startOffset
 
         for frame in prepared {
             var putFrame = frame.putFrame
@@ -263,7 +265,6 @@ extension Wax {
         }
 
         // Update state
-        dataEnd = currentOffset
         for (index, entry) in entries.enumerated() {
             appendPendingMutation(sequence: sequences[index], entry: entry)
         }

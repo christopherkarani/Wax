@@ -51,7 +51,12 @@ package actor Wax {
 
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var dataEnd: UInt64
-    private var generation: UInt64
+    /// Free ranges below `dataEnd` and the durable TOC range (Wax+DataSpace.swift). Not part of
+    /// commit rollback: ranges a failed commit wrote stay reserved until the next open.
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var dataSpace = DataSpaceState()
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    private(set) var generation: UInt64
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var dirty: Bool
     private var walAutoCommitCount: UInt64
@@ -469,6 +474,7 @@ package actor Wax {
         )
 
         let file = self.file
+        var supersededRanges: [Range<UInt64>] = []
         if let staged = stagedLexIndex {
             let byteCount = staged.bytes.count
             guard byteCount <= Constants.maxBlobBytes else {
@@ -477,12 +483,11 @@ package actor Wax {
                     requested: UInt64(byteCount)
                 )
             }
-            let lexOffset = dataEnd
+            let lexLength = UInt64(byteCount)
+            let lexOffset = allocateDataLocked(length: lexLength)
             try await io.run {
                 try file.writeAll(staged.bytes, at: lexOffset)
             }
-            let lexLength = UInt64(byteCount)
-            dataEnd += lexLength
 
             toc.indexes.lex = LexIndexManifest(
                 docCount: staged.docCount,
@@ -492,6 +497,7 @@ package actor Wax {
                 version: staged.version
             )
             let segmentId = nextSegmentId()
+            supersededRanges += removeSupersededSegmentsLocked(kind: .lex)
             let entry = SegmentCatalogEntry(
                 segmentId: segmentId,
                 bytesOffset: lexOffset,
@@ -512,12 +518,11 @@ package actor Wax {
                 )
             }
 
-            let vecOffset = dataEnd
+            let vecLength = UInt64(byteCount)
+            let vecOffset = allocateDataLocked(length: vecLength)
             try await io.run {
                 try file.writeAll(staged.bytes, at: vecOffset)
             }
-            let vecLength = UInt64(byteCount)
-            dataEnd += vecLength
 
             toc.indexes.vec = VecIndexManifest(
                 vectorCount: staged.vectorCount,
@@ -528,6 +533,7 @@ package actor Wax {
                 similarity: staged.similarity
             )
             let segmentId = nextSegmentId()
+            supersededRanges += removeSupersededSegmentsLocked(kind: .vec)
             let entry = SegmentCatalogEntry(
                 segmentId: segmentId,
                 bytesOffset: vecOffset,
@@ -543,12 +549,16 @@ package actor Wax {
         let tocChecksum = tocBytes.suffix(32)
         toc.tocChecksum = Data(tocChecksum)
 
-        let tocOffset = dataEnd
-        let footerOffset = tocOffset + UInt64(tocBytes.count)
+        let tocLength = UInt64(tocBytes.count)
+        let tocOffset = allocateDataLocked(
+            length: tocLength + Constants.footerSize,
+            notBelow: Self.referencedDataEnd(of: toc)
+        )
+        let footerOffset = tocOffset + tocLength
         let footer = WaxFooter(
-            tocLen: UInt64(tocBytes.count),
+            tocLen: tocLength,
             tocHash: Data(tocChecksum),
-            generation: generation &+ 1,
+            generation: nextFooterGenerationLocked(),
             walCommittedSeq: appliedWalSeq
         )
         let wal = self.wal
@@ -620,8 +630,11 @@ package actor Wax {
         surrogateIndex = nil
         dirty = false
         generation = footer.generation
-        dataEnd = footerOffset + Constants.footerSize
         commitSucceeded = true
+        await reclaimAfterDurableCommitLocked(
+            superseded: supersededRanges,
+            committedTocRange: tocOffset..<(footerOffset + Constants.footerSize)
+        )
     }
 
     private struct CommitRollbackState {
