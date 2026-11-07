@@ -142,3 +142,40 @@ private func crashCopy(of url: URL) throws -> URL {
     #expect(try await reopened.readCommittedLexIndexBytes() == lex1)
     try await reopened.close()
 }
+
+@Test func failedHeaderWriteKeepsTheSyncedCommitIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    var copy: URL?
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        if let copy { try? FileManager.default.removeItem(at: copy) }
+    }
+    let lex2 = lexBlob(docCount: 40, round: 2)
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 20, round: 1), docCount: 20)
+    try await wax.commit()
+    let committedGeneration = await wax.stats().generation
+    try await putFrames(wax, 20..<40)
+    try await wax.stageLexIndexForNextCommit(bytes: lex2, docCount: 40)
+    // Lex, TOC and footer writes go through (a full-length "short" write is a plain write);
+    // the header write fails after the footer synced.
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [
+        .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .eio,
+    ]))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    // Later writes must not land on the failed commit's segments: its footer is durable.
+    for index in 40..<60 {
+        _ = try await wax.put(noise(byteCount: 4096, seed: UInt64(index)))
+    }
+    copy = try crashCopy(of: url)
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: try #require(copy))
+    #expect(await reopened.stats().generation == committedGeneration + 1, "the scan recovers the synced commit")
+    try await reopened.verify(deep: true)
+    #expect(try await reopened.readCommittedLexIndexBytes() == lex2)
+    try await reopened.close()
+}

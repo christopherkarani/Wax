@@ -651,7 +651,8 @@ package actor Wax {
         var stagedVecIndexStamp: UInt64?
         var stagedLexIndexStampCounter: UInt64
         var stagedVecIndexStampCounter: UInt64
-        var dataEnd: UInt64
+        // No `dataEnd`: what a failed commit appended stays reserved, since a footer it synced
+        // can still be recovered by a footer scan.
         var generation: UInt64
         var dirty: Bool
 
@@ -670,7 +671,6 @@ package actor Wax {
                 stagedVecIndexStamp: wax.stagedVecIndexStamp,
                 stagedLexIndexStampCounter: wax.stagedLexIndexStampCounter,
                 stagedVecIndexStampCounter: wax.stagedVecIndexStampCounter,
-                dataEnd: wax.dataEnd,
                 generation: wax.generation,
                 dirty: wax.dirty
             )
@@ -690,7 +690,6 @@ package actor Wax {
             wax.stagedVecIndexStamp = stagedVecIndexStamp
             wax.stagedLexIndexStampCounter = stagedLexIndexStampCounter
             wax.stagedVecIndexStampCounter = stagedVecIndexStampCounter
-            wax.dataEnd = dataEnd
             wax.generation = generation
             wax.dirty = dirty
         }

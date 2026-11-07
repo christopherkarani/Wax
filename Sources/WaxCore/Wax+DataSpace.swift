@@ -86,8 +86,7 @@ extension Wax {
             return offset
         }
         // Referenced ranges end at or below `dataEnd`, so the floor never lies past it; if it
-        // did, the gap stays unused rather than entering the free map, which commit rollback
-        // (it restores `dataEnd`) must never leave above `dataEnd`.
+        // did, the gap would stay unused rather than enter the free map.
         let offset = max(dataEnd, minimumOffset)
         dataEnd = offset + length
         return offset
