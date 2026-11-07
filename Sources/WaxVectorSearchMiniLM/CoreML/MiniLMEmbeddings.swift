@@ -328,45 +328,6 @@ private extension MiniLMEmbeddings {
         Thread.sleep(forTimeInterval: interval)
     }
 
-    struct ModelCacheKey: Hashable {
-        let computeUnits: MLComputeUnits
-        let allowLowPrecisionAccumulationOnGPU: Bool
-    }
-
-    final class ModelCache: @unchecked Sendable {
-        static let shared = ModelCache()
-        private var models: [ModelCacheKey: all_MiniLM_L6_v2] = [:]
-        private let lock = NSLock()
-
-        func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
-            if configuration.preferredMetalDevice != nil || hasParameters {
-                return try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            }
-            let key = ModelCacheKey(
-                computeUnits: configuration.computeUnits,
-                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
-            )
-            lock.lock()
-            if let cached = models[key] {
-                lock.unlock()
-                return cached
-            }
-            defer { lock.unlock() }
-
-            // NOTE: CoreML / Espresso compilation has been observed to deadlock when multiple threads
-            // load the same model concurrently. Serializing model loads avoids that class of issues
-            // and preserves determinism for callers initializing `MiniLMEmbeddings` in parallel.
-            let model = try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            models[key] = model
-            return model
-        }
-    }
-
-    static func cachedModel(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-        try ModelCache.shared.model(configuration: configuration)
-    }
-
     /// Decodes the model's `embeddings` output into one vector per input row.
     ///
     /// Only unambiguous sentence-embedding layouts are accepted: `[batch, dim]`, `[dim]` for a
@@ -433,6 +394,50 @@ private extension MiniLMEmbeddings {
             }
             guard rows > 0, dimension > 0 else { return nil }
         }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension MiniLMEmbeddings {
+    struct ModelCacheKey: Hashable {
+        let computeUnits: MLComputeUnits
+        let allowLowPrecisionAccumulationOnGPU: Bool
+    }
+
+    /// Process-wide cache of loaded models, one per compute-unit configuration.
+    ///
+    /// Callers asking for the same configuration share one load, so one configuration is never
+    /// compiled twice at once. A load for one configuration never waits for a load of another: a
+    /// GPU load of a model with range input shapes can spend many minutes in MPSGraph shape
+    /// solving, and it must not stall the CPU load.
+    ///
+    /// CoreML / Espresso compilation has been observed to deadlock when several threads load the
+    /// same model concurrently, which is why one configuration only ever has one load in flight.
+    final class ModelCache: Sendable {
+        static let shared = ModelCache { try MiniLMEmbeddings.loadModelFromBundle(configuration: $0) }
+
+        private let models = KeyedLoadCache<ModelCacheKey, all_MiniLM_L6_v2>()
+        private let loader: @Sendable (MLModelConfiguration) throws -> all_MiniLM_L6_v2
+
+        init(loader: @escaping @Sendable (MLModelConfiguration) throws -> all_MiniLM_L6_v2) {
+            self.loader = loader
+        }
+
+        func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
+            if configuration.preferredMetalDevice != nil || hasParameters {
+                return try loader(configuration)
+            }
+            let key = ModelCacheKey(
+                computeUnits: configuration.computeUnits,
+                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
+            )
+            return try models.value(for: key) { try loader(configuration) }
+        }
+    }
+
+    static func cachedModel(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+        try ModelCache.shared.model(configuration: configuration)
     }
 }
 

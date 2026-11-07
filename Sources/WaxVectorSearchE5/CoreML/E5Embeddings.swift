@@ -323,42 +323,6 @@ private extension E5Embeddings {
         Thread.sleep(forTimeInterval: interval)
     }
 
-    struct ModelCacheKey: Hashable {
-        let computeUnits: MLComputeUnits
-        let allowLowPrecisionAccumulationOnGPU: Bool
-    }
-
-    final class ModelCache: @unchecked Sendable {
-        static let shared = ModelCache()
-        private var models: [ModelCacheKey: e5_small_v2] = [:]
-        private let lock = NSLock()
-
-        func model(configuration: MLModelConfiguration) throws -> e5_small_v2 {
-            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
-            if configuration.preferredMetalDevice != nil || hasParameters {
-                return try E5Embeddings.loadModelFromBundle(configuration: configuration)
-            }
-            let key = ModelCacheKey(
-                computeUnits: configuration.computeUnits,
-                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
-            )
-            lock.lock()
-            if let cached = models[key] {
-                lock.unlock()
-                return cached
-            }
-            defer { lock.unlock() }
-
-            let model = try E5Embeddings.loadModelFromBundle(configuration: configuration)
-            models[key] = model
-            return model
-        }
-    }
-
-    static func cachedModel(configuration: MLModelConfiguration) throws -> e5_small_v2 {
-        try ModelCache.shared.model(configuration: configuration)
-    }
-
     /// Decodes the model's `embeddings` output into one vector per input row.
     ///
     /// Only unambiguous sentence-embedding layouts are accepted: `[batch, dim]`, `[dim]` for a
@@ -432,6 +396,47 @@ private extension E5Embeddings {
             }
             guard rows > 0, dimension > 0 else { return nil }
         }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension E5Embeddings {
+    struct ModelCacheKey: Hashable {
+        let computeUnits: MLComputeUnits
+        let allowLowPrecisionAccumulationOnGPU: Bool
+    }
+
+    /// Process-wide cache of loaded models, one per compute-unit configuration.
+    ///
+    /// Callers asking for the same configuration share one load, so one configuration is never
+    /// compiled twice at once. A load for one configuration never waits for a load of another: a
+    /// GPU load of a model with range input shapes can spend many minutes in MPSGraph shape
+    /// solving, and it must not stall the CPU load.
+    final class ModelCache: Sendable {
+        static let shared = ModelCache { try E5Embeddings.loadModelFromBundle(configuration: $0) }
+
+        private let models = KeyedLoadCache<ModelCacheKey, e5_small_v2>()
+        private let loader: @Sendable (MLModelConfiguration) throws -> e5_small_v2
+
+        init(loader: @escaping @Sendable (MLModelConfiguration) throws -> e5_small_v2) {
+            self.loader = loader
+        }
+
+        func model(configuration: MLModelConfiguration) throws -> e5_small_v2 {
+            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
+            if configuration.preferredMetalDevice != nil || hasParameters {
+                return try loader(configuration)
+            }
+            let key = ModelCacheKey(
+                computeUnits: configuration.computeUnits,
+                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
+            )
+            return try models.value(for: key) { try loader(configuration) }
+        }
+    }
+
+    static func cachedModel(configuration: MLModelConfiguration) throws -> e5_small_v2 {
+        try ModelCache.shared.model(configuration: configuration)
     }
 }
 
