@@ -45,6 +45,8 @@ Official protocol (LongMemEval `src/retrieval`, commit 9e0b455f), session level,
 | Retriever | R_all@5 | R_all@10 | NDCG@10 |
 |---|---|---|---|
 | Contriever | **0.902** | **0.971** | **0.927** |
+| Wax hybrid, e5-small-v2, text weight 0.4 | 0.900 | 0.967 | **0.927** |
+| Wax hybrid, e5-small-v2 | 0.885 | 0.957 | 0.924 |
 | Wax hybrid, MiniLM | 0.883 | 0.950 | 0.917 |
 | Wax hybrid, Arctic | 0.878 | 0.940 | 0.899 |
 | Wax vector, MiniLM | 0.869 | 0.947 | 0.892 |
@@ -59,6 +61,20 @@ gap is multi-session questions, where the evidence is spread over several sessio
 (0.760 against 0.851). Fusing Wax's own text and vector rankings offline peaks near 0.88,
 so the remaining gap comes from the embedder rather than from ranking.
 
+### Embedder choice
+
+Small embedders were scored through Wax hybrid search before any was converted to Core
+ML. On LongMemEval R_all@5: MiniLM 0.883, gte-small 0.883, e5-small-v2 0.883, bge-small
+0.885, bge-base 0.888. None beat Contriever by default. e5-small-v2 with the text weight
+lowered to 0.4 (`.hybrid(alpha: 0.4)`) reaches 0.900, against Contriever's 0.902, and
+keeps the LoCoMo lead (0.503). It ships as the opt-in `E5Embeddings` trait
+(`7b1892861`); MiniLM stays the default. The e5 rows above come from the bundled Core ML
+model, whose embeddings match PyTorch to a cosine of at least 0.9996 on 215 texts.
+
+A rule that picked the text weight from the corpus's median document length scored
+0.912 on LongMemEval but failed a held-out check (LongMemEval turn level), so it was not
+shipped.
+
 ## LoCoMo retrieval
 
 Mem0's evaluation protocol (commit aae5989e), categories 1–4: 1,540 questions, of which
@@ -68,6 +84,8 @@ the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the
 |---|---|---|---|
 | Wax hybrid, Arctic | **0.537** | **0.618** | **0.725** |
 | Wax vector, Arctic | 0.509 | 0.586 | 0.717 |
+| Wax hybrid, e5-small-v2 | 0.509 | 0.579 | 0.687 |
+| Wax hybrid, e5-small-v2, text weight 0.4 | 0.503 | 0.583 | 0.690 |
 | Wax hybrid, MiniLM | 0.466 | 0.550 | 0.665 |
 | Wax text | 0.429 | 0.495 | 0.586 |
 | Contriever | 0.407 | 0.494 | – |
@@ -197,8 +215,9 @@ Fixes on the branch, each with tests:
 ## Open issues
 
 1. **LongMemEval multi-session retrieval.** MiniLM trails Contriever by 9 points on
-   multi-session questions. Closing it needs a stronger on-device embedder; ranking
-   changes reach about 0.88.
+   multi-session questions. The opt-in e5-small-v2 embedder at text weight 0.4 comes
+   within 0.002 of Contriever overall (0.900 against 0.902). No small embedder tested
+   beats it with Wax's default weights.
 2. **Hybrid tail latency.** Hybrid p95 is 28.1 ms at 100k. The full-text query dominates,
    and the structured-memory lane waits behind it on the same database queue even when
    the store has no structured entities.
