@@ -9,11 +9,12 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | Benchmark | Metric | Wax | Best reference | Before fixes |
 |---|---|---|---|---|
 | LoCoMo retrieval | R_all@5 / @10 | **0.537 / 0.618** (hybrid, Arctic) | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
-| LoCoMo QA | LLM judge J | **70.4%** (hybrid, Arctic, top 30) | Contriever top 30: 62.4% | 56.3% (vector, top 30) |
+| LoCoMo QA | LLM judge J | **70.4%** (hybrid, Arctic, top 30); 64.9% with MiniLM | Contriever top 30: 62.4% | 56.3% (vector, top 30) |
 | LongMemEval-S retrieval | R_all@5 / NDCG@10 | 0.883 / 0.917 (hybrid, MiniLM) | **Contriever 0.902 / 0.927** | 0.742 / – |
 | LongMemEval-S QA | accuracy | 86.0% (hybrid, MiniLM, top 5) | **Contriever top 5: 87.8%** | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
 | Systems, 100k passages | disk | 395 MB | Chroma 408 MB (text + vectors) | 13.5 GB |
+| Systems, 100k passages | vector p95 | 5.7 ms | Chroma HNSW 1.4 ms | 64–97 ms |
 
 Wax leads LoCoMo on retrieval and QA. On LongMemEval it is 1.9 points behind Contriever
 in retrieval and 1.8 points behind in QA, using a model one fifth the size (MiniLM-L6,
@@ -59,8 +60,8 @@ so the remaining gap comes from the embedder rather than from ranking.
 
 ## LoCoMo retrieval
 
-Mem0's evaluation protocol (commit aae5989e), categories 1–4, 1,540 questions.
-R_all@k: every evidence turn is in the top k.
+Mem0's evaluation protocol (commit aae5989e), categories 1–4: 1,540 questions, of which
+the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the top k.
 
 | Retriever | R_all@5 | R_all@10 | R_all@30 |
 |---|---|---|---|
@@ -117,6 +118,7 @@ against 78.5%), which follows the retrieval gap above.
 |---|---|---|---|---|---|---|
 | Full conversation | **76.6%** | 0.461 | 67.4% | 70.1% | 52.1% | 85.0% |
 | Wax hybrid Arctic top 30 | 70.4% | **0.471** | 55.7% | 61.1% | 51.0% | 81.1% |
+| Wax hybrid MiniLM top 30 | 64.9% | 0.445 | 43.6% | 58.3% | 46.9% | 76.7% |
 | Contriever top 30 | 62.4% | 0.435 | 48.6% | 52.6% | 49.0% | 72.3% |
 | Wax vector MiniLM top 30, before fixes | 56.3% | 0.383 | 39.0% | 51.1% | 44.8% | 65.4% |
 
@@ -129,17 +131,19 @@ metadata; most competitors store vectors only.
 
 | System | N | Ingest docs/s | Disk MB | Cold open + 1st query ms | Vector p50 / p95 ms | Recall@10 |
 |---|---|---|---|---|---|---|
-| Wax | 10,000 | 3,401 | 53 | 165 | 4.74 / 15.8 | 0.998 |
+| Wax | 10,000 | 3,401 | 53 | 138 | 2.30 / 3.21 | 0.998 |
 | Chroma HNSW | 10,000 | 3,064 | 51 | 283 | 0.83 / 1.02 | 0.992 |
 | sqlite-vec | 10,000 | 43,334 | 19 | 4 | 2.27 / 2.54 | 1.000 |
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
-| Wax | 100,000 | 1,858 | 395 | 810 | 3.96 / 95.0 | 0.998 |
+| Wax | 100,000 | 1,858 | 395 | 840 | 4.13 / 5.74 | 0.998 |
 | Chroma HNSW | 100,000 | 2,820 | 408 | 384 | 1.06 / 1.37 | 0.976 |
 | sqlite-vec | 100,000 | 40,608 | 192 | 27 | 26.3 / 28.9 | 1.000 |
 | usearch HNSW | 100,000 | 12,630 | 169 | 65 | 0.34 / 0.48 | 0.968 |
 | FAISS flat | 100,000 | 1,236,051 | 154 | 53 | 1.57 / 2.04 | 1.000 |
 | LanceDB IVF-PQ | 100,000 | 22,584 | 177 | 556 | 2.49 / 3.02 | 0.522 |
+
+Wax hybrid search (text and vector lanes fused) at 100k: p50 8.5 ms, p95 31.6 ms.
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
 sqlite-vec 1.9 GB at 330 ms. Wax was not run at 1M (see open issues).
@@ -167,6 +171,11 @@ Fixes on the branch, each with tests:
   - Commits reuse space from superseded index segments instead of appending a full copy
     each time.
   - Three crash-recovery paths found in review are covered by tests.
+- **Search latency (`7c523d726`, `6c3634747`).** Queries the classifier labels temporal
+  ("when", "last", ...) built a recency list over every frame even in vector-only and
+  text-only search, which never read it: 95 ms per query at 100k, on 7.4% of queries.
+  Single-lane searches skip it, and hybrid selects the newest frames with a bounded heap
+  instead of copying and sorting all of them. Vector p95 at 100k: 96.8 ms to 5.7 ms.
 - **Embeddings (`c67cb0088`).** The CoreML autorelease pool drains after every prediction.
 
 ## Open issues
@@ -177,8 +186,10 @@ Fixes on the branch, each with tests:
 2. **Dot-product embedders.** `Memory` always ranks by cosine. Ranking by inner product
    when an embedder sets `normalize = false` gains 13 points on LongMemEval for
    Contriever, but it changes behaviour for existing custom embedders and stores.
-3. **Tail latency.** Vector search p95 is 95 ms at 100k against a 4 ms p50.
+3. **Hybrid tail latency.** Hybrid p95 is 31.6 ms at 100k. The full-text query dominates,
+   and the structured-memory lane waits behind it on the same database queue even when
+   the store has no structured entities.
 4. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
    the vector segment and the table of contents. That limits sustained ingest (1,858
    docs/s at 100k) and is why Wax was not run at 1M. Fixing it needs a file-format change.
-5. **Cold open** is 810 ms at 100k, against 384 ms for Chroma.
+5. **Cold open** is 840 ms at 100k, against 384 ms for Chroma.
