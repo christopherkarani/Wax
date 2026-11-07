@@ -28,6 +28,7 @@ package actor FTS5SearchEngine {
     var dirty: Bool
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
+    var afterFlushWriteForTesting: (@Sendable () async throws -> Void)?
     var pendingStructuredOps: [StructuredOp] = []
     /// Every text-indexable frame below this id is indexed (or was when it was staged).
     /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
@@ -45,6 +46,10 @@ package actor FTS5SearchEngine {
     var fanOutReadsInFlight = 0
     var writeInProgress = false
     var writeGateWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Writers queued at the gate, and fan-out reads held back behind them.
+    var writersWaiting = 0
+    var fanOutReadersWaiting = 0
+    var duringFanOutReadForTesting: (@Sendable () async -> Void)?
 
     private init(
         dbQueue: DatabaseQueue,
@@ -241,6 +246,21 @@ package actor FTS5SearchEngine {
         lastSearchPartitionCount
     }
 
+    /// Runs after a flush's database write returns and before the flush settles its ops,
+    /// which is where other calls can queue ops while the write is in flight.
+    /// Runs inside every fan-out read, after it passes the write gate.
+    package func setDuringFanOutReadForTesting(_ hook: (@Sendable () async -> Void)?) {
+        duringFanOutReadForTesting = hook
+    }
+
+    package func writersWaitingForTesting() -> Int { writersWaiting }
+    package func fanOutReadersWaitingForTesting() -> Int { fanOutReadersWaiting }
+    package func fanOutReadsInFlightForTesting() -> Int { fanOutReadsInFlight }
+
+    package func setAfterFlushWriteForTesting(_ hook: (@Sendable () async throws -> Void)?) {
+        afterFlushWriteForTesting = hook
+    }
+
     package func serialize(compact: Bool = false) async throws -> Data {
         try await flushPendingOpsIfNeeded()
         // VACUUM rewrites the file the fan-out readers have open.
@@ -379,6 +399,9 @@ package actor FTS5SearchEngine {
 
             return (added, removed)
         }
+        if let afterFlushWriteForTesting {
+            try await afterFlushWriteForTesting()
+        }
 
         if addedCount > 0 {
             docCount &+= UInt64(addedCount)
@@ -388,8 +411,12 @@ package actor FTS5SearchEngine {
             docCount = docCount > removedU ? (docCount &- removedU) : 0
         }
 
-        pendingOps.removeAll(keepingCapacity: true)
-        pendingKeys.removeAll(keepingCapacity: true)
+        // Other calls can queue ops while the write is awaited. Settle only the ops this
+        // flush wrote; a newer op for the same frame stays queued for the next flush.
+        for key in keys where pendingOps[key] == ops[key] {
+            pendingOps[key] = nil
+        }
+        pendingKeys.removeAll { pendingOps[$0] == nil }
     }
 
     private static func makeConfiguration() -> Configuration {

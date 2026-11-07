@@ -329,8 +329,13 @@ extension FTS5SearchEngine {
                 }
             }
         }
+        if let afterFlushWriteForTesting {
+            try await afterFlushWriteForTesting()
+        }
 
-        pendingStructuredOps.removeAll(keepingCapacity: true)
+        // Other calls can append ops while the write is awaited, and only a flush (which
+        // holds the write gate) removes them, so the written ops are still the first ones.
+        pendingStructuredOps.removeFirst(ops.count)
     }
 
     private struct FactObjectColumns {
