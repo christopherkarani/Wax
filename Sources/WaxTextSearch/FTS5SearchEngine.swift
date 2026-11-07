@@ -203,13 +203,16 @@ package actor FTS5SearchEngine {
                     LIMIT ?
                     """
                 let rows = try Row.fetchAll(db, sql: sql, arguments: [trimmed, limit])
+                // Rows are ordered best-first, so the first row is this query's best
+                // match whatever the limit is.
+                let topRank: Double = rows.first?["rank"] ?? 0
                 return rows.compactMap { row in
                     guard let frameIdValue: Int64 = row["frame_id"], frameIdValue >= 0 else { return nil }
                     let rank: Double = row["rank"] ?? 0
                     let snippet: String? = row["snippet"]
                     return TextSearchResult(
                         frameId: UInt64(frameIdValue),
-                        score: Self.scoreFromBM25Rank(rank),
+                        score: Self.score(bm25Rank: rank, topBM25Rank: topRank),
                         snippet: snippet
                     )
                 }
@@ -377,6 +380,31 @@ package actor FTS5SearchEngine {
             throw WaxError.io("sqlite connection unavailable")
         }
         return connection
+    }
+
+    /// Above this BM25 relevance, a match has at least one query term with real IDF.
+    ///
+    /// FTS5 clamps the IDF of a term found in half the rows or more to 1e-6, so such a
+    /// term adds at most 1e-6 × (k1 + 1) = 2.2e-6. Even 20 clamped MATCH clauses (16
+    /// tokens and 4 phrases, the planner's caps) stay under 5e-5.
+    static let clampedIDFRelevanceCeiling = 0.000_1
+
+    /// Published score for one row of a query whose best row has rank `topRank`.
+    ///
+    /// When the best match has real IDF, the score is the best match's confidence
+    /// times this row's share of its BM25 relevance. The saturation curve alone maps
+    /// every ordinary BM25 value (about 1 to 40) to within 1e-7 of 1, the same
+    /// `Float`, so rerankers that add small signals to the score saw a tie and
+    /// reordered by those signals alone. The ratio keeps BM25's order and spacing.
+    ///
+    /// When every term's IDF is clamped (tiny or uniform corpora), BM25 only
+    /// measures term frequency and length, so the per-row curve is kept and its
+    /// near-ties stay for rerank signals to break.
+    static func score(bm25Rank rank: Double, topBM25Rank topRank: Double) -> Double {
+        let topRelevance = topRank.isFinite ? max(0, -topRank) : 0
+        guard topRelevance > clampedIDFRelevanceCeiling else { return scoreFromBM25Rank(rank) }
+        let relevance = rank.isFinite ? max(0, -rank) : 0
+        return scoreFromBM25Rank(topRank) * min(1, relevance / topRelevance)
     }
 
     private static func scoreFromBM25Rank(_ rank: Double) -> Double {

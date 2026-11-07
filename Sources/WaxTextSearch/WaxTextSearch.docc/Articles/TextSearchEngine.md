@@ -73,7 +73,7 @@ string (`AND` / `OR` / `NOT` / `NEAR`) must be stripped by the planner, not forw
 
 ### BM25 Scoring
 
-SQLite FTS5's built-in `bm25()` function provides Okapi BM25 ranking. The engine inverts the raw rank (which is "lower is better") so that returned scores follow a "higher is better" convention. Scores typically range from 0 to 100+, depending on term frequency and document length.
+SQLite FTS5's built-in `bm25()` function provides Okapi BM25 ranking. Scores are in `0...1`, higher is better. The best hit's score is a saturating function of its BM25 relevance; every other hit gets that score times its share of the best hit's relevance. (When every query term is too common to carry IDF, which FTS5 clamps to 1e-6, each hit keeps its own saturated score.) That keeps BM25's order and spacing in the score, so rerankers that add small signals to it break near-ties instead of overriding the ranking. A hit's score does not depend on `topK`.
 
 ## Structured Memory
 
