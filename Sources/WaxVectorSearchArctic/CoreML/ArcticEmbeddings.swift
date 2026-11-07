@@ -14,6 +14,7 @@ package final class ArcticEmbeddings {
         case missingModelResource
         case modelLoadFailed(String)
         case tokenizerLoadFailed(String)
+        case unsupportedComputeUnits(String)
 
         package var errorDescription: String? {
             switch self {
@@ -23,6 +24,8 @@ package final class ArcticEmbeddings {
                 return "Failed to load the Arctic Core ML model: \(details)"
             case .tokenizerLoadFailed(let details):
                 return "Failed to initialize tokenizer: \(details)"
+            case .unsupportedComputeUnits(let details):
+                return "The Arctic Core ML model cannot load with \(details) compute units: its range input shapes keep MPSGraph shape solving running for minutes. Use cpuOnly (the default), cpuAndNeuralEngine or all."
             }
         }
     }
@@ -304,6 +307,14 @@ private extension ArcticEmbeddings {
 
         guard overrides.usesBundleFallback else {
             throw InitError.missingModelResource
+        }
+
+        // The bundled graph has range input shapes (batch 1-64, sequence 32-512). With cpuAndGPU,
+        // MPSGraph shape solving outlasts any load timeout (still running after 120 s; over 10
+        // minutes reported), so refuse it instead of stalling. `.all` and `.cpuAndNeuralEngine`
+        // load in seconds.
+        if configuration.computeUnits == .cpuAndGPU {
+            throw InitError.unsupportedComputeUnits("cpuAndGPU")
         }
 
         do {

@@ -22,6 +22,9 @@ public enum BuiltInEmbeddingComputeUnit: String, CaseIterable, Sendable, Equatab
     /// Run inference on the CPU only.
     case cpuOnly
     /// Prefer CPU and GPU execution.
+    ///
+    /// Arctic and e5 refuse this: their range input shapes keep the GPU load in MPSGraph
+    /// shape solving for minutes. They skip it and move on to the next compute unit.
     case cpuAndGPU
     /// Prefer CPU and Apple Neural Engine execution.
     case cpuAndNeuralEngine

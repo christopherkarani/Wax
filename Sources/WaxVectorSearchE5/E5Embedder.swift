@@ -228,7 +228,8 @@ extension E5Embedder {
     /// e5's fallback order when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS` chose one.
     /// It matches Arctic: the graph computes in FP32 over INT8 weights, the Neural Engine runs
     /// it in Float16, and a single startup probe cannot prove that path finite, so ANE is opt-in.
-    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly, .cpuAndGPU]
+    /// There is no GPU fallback: `E5Embeddings` refuses `.cpuAndGPU`, whose load stalls.
+    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
 
     /// Explicit order wins, then a customized tuning order, then `defaultComputeUnitsOrder`.
     package static func resolveComputeUnitsOrder(

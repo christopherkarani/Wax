@@ -234,10 +234,11 @@ extension ArcticEmbedder {
         )
     }
 
-    /// Arctic's fallback order when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
-    /// chose one. The Neural Engine path intermittently emits non-finite embeddings for
+    /// Arctic's compute units when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
+    /// chose any. The Neural Engine path intermittently emits non-finite embeddings for
     /// this model, and a single startup probe cannot catch that, so ANE is opt-in only.
-    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly, .cpuAndGPU]
+    /// There is no GPU fallback: `ArcticEmbeddings` refuses `.cpuAndGPU`, whose load stalls.
+    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
 
     /// Explicit order wins, then a customized tuning order, then `defaultComputeUnitsOrder`.
     package static func resolveComputeUnitsOrder(

@@ -8,11 +8,26 @@ import WaxCore
 @available(macOS 15.0, iOS 18.0, *)
 @Test func e5DefaultsToCPUComputeUnitsUnlessConfigured() {
     let defaults = E5Embedder.resolveComputeUnitsOrder(explicit: [], tuning: CommandLineEmbedderRuntimeTuning())
-    #expect(defaults == [.cpuOnly, .cpuAndGPU])
+    #expect(defaults == [.cpuOnly])
 
     let customized = CommandLineEmbedderRuntimeTuning(computeUnitsOrder: [.cpuAndNeuralEngine])
     #expect(E5Embedder.resolveComputeUnitsOrder(explicit: [], tuning: customized) == [.cpuAndNeuralEngine])
     #expect(E5Embedder.resolveComputeUnitsOrder(explicit: [.all], tuning: customized) == [.all])
+}
+
+/// A cpuAndGPU load of the bundled model spends minutes in MPSGraph shape solving (range input
+/// shapes), so it is refused up front. The timeout is a hang guard, not a latency budget.
+@available(macOS 15.0, iOS 18.0, *)
+@Test func e5RejectsCPUAndGPUComputeUnitsInsteadOfStalling() async {
+    let configuration = MLModelConfiguration()
+    configuration.computeUnits = .cpuAndGPU
+    do {
+        _ = try await E5Embeddings.make(configuration: configuration, timeout: .seconds(60))
+        Issue.record("expected the cpuAndGPU load to be refused")
+    } catch E5Embeddings.InitError.unsupportedComputeUnits {
+    } catch {
+        Issue.record("expected unsupportedComputeUnits, got \(error)")
+    }
 }
 
 @available(macOS 15.0, iOS 18.0, *)
