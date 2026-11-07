@@ -483,8 +483,8 @@ func runQueries(_ options: PerfOptions, dataset: PerfDataset, embedder: Precompu
     let openStart = ContinuousClock.now
     let memory = try await Memory(at: URL(fileURLWithPath: options.storePath), config: perfConfig(embedder: embedder))
     let openMs = elapsedMs(since: openStart)
-    // The first search loads the vector index into the engine (and, on the MetalANNS path,
-    // builds its graph inline), so it is reported as part of the cold start.
+    // The first search loads the vector index into the engine, so it is reported as part
+    // of the cold start.
     let firstMode = options.modes.first ?? "vector"
     let firstStart = ContinuousClock.now
     _ = try await memory.search(dataset.queryTexts[0], options: searchOptions(mode: firstMode, topK: options.topK))

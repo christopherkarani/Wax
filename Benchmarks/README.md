@@ -125,5 +125,5 @@ bash $S/perf_run_all.sh                                                     # 1-
 ```
 
 Run it on an idle machine; `machine.json` records the load average at start. Wax runs at
-10k and 100k only: through the public `Memory` API, saves get slower as the store grows and
-each `flush()` rewrites the vector index, so 1M is not practical (see the report).
+10k and 100k only: every commit still rewrites the full-text and vector indexes, so ingest
+through the public `Memory` API slows as the store grows and 1M is not practical (see the report).
