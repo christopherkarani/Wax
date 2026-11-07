@@ -22,10 +22,11 @@ struct DataSpaceState: Sendable {
     /// Ranges only the commit the other header page names uses. Freed when the next commit's
     /// header overwrites that page.
     var retainedForOtherHeaderPage: [Range<UInt64>] = []
-    /// Highest footer generation that may exist in the file, committed or not. A commit that
-    /// fails (or crashes) after syncing its footer but before its header leaves a valid footer
-    /// in what is now free space; numbering past it keeps every later footer strictly newer,
-    /// so a footer scan never prefers the stale one over a footer it shares an offset rank with.
+    /// Highest footer generation this handle knows may exist in the file, committed or not. A
+    /// commit that fails after syncing its footer but before its header leaves a valid footer
+    /// in what is now free space; numbering past it keeps the next footer strictly newer. Stale
+    /// footers from earlier sessions can tie a later commit; `newerFooter` settles that tie in
+    /// favour of the header's footer.
     var highestWrittenFooterGeneration: UInt64 = 0
 }
 
@@ -69,6 +70,21 @@ extension Wax {
             retainedForOtherHeaderPage: retained,
             highestWrittenFooterGeneration: mayHoldUnreferencedFooter ? generation &+ 1 : generation
         )
+    }
+
+    /// The newer of two recovery candidates: the higher generation, and on a tie the footer the
+    /// selected header page names, else the higher offset.
+    ///
+    /// A footer synced before its header write, by a session that then crashed, can sit in free
+    /// space that open never scans and carry the generation the next session commits under. The
+    /// header names the commit that completed, so it wins that tie wherever the stale one lies.
+    static func newerFooter(_ lhs: FooterSlice, _ rhs: FooterSlice, headerFooterOffset: UInt64) -> FooterSlice {
+        if rhs.footer.generation != lhs.footer.generation {
+            return rhs.footer.generation > lhs.footer.generation ? rhs : lhs
+        }
+        if lhs.footerOffset == headerFooterOffset { return lhs }
+        if rhs.footerOffset == headerFooterOffset { return rhs }
+        return rhs.footerOffset > lhs.footerOffset ? rhs : lhs
     }
 
     /// Every range the commit ending at `footer` uses (frames, catalog segments, TOC and

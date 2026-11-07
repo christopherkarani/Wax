@@ -179,3 +179,52 @@ private func crashCopy(of url: URL) throws -> URL {
     #expect(try await reopened.readCommittedLexIndexBytes() == lex2)
     try await reopened.close()
 }
+
+/// Reads the durable commit's TOC bytes and footer.
+private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, footer: WaxFooter) {
+    let range = await wax.dataSpace.committedTocRange
+    let file = try FDFile.openReadOnly(at: await wax.fileURL())
+    defer { try? file.close() }
+    let tocLength = UInt64(range.count) - Constants.footerSize
+    let toc = try file.readExactly(length: Int(tocLength), at: range.lowerBound)
+    let footer = try WaxFooter.decode(
+        from: try file.readExactly(length: Int(Constants.footerSize), at: range.lowerBound + tocLength)
+    )
+    return (toc, footer)
+}
+
+@Test func headerCommitWinsAGenerationTieWithAStaleFooter() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.commit()
+    let older = try await committedTocAndFooter(wax)
+    try await putFrames(wax, 20..<21)
+    try await wax.commit()
+    let committed = await wax.stats().generation
+    try await wax.close()
+
+    // Footers synced before their headers in sessions that then crashed carry the generation
+    // the next session commits under, because open cannot see them (they sit in free space
+    // below the file end). One that survives at a higher offset than that commit, with an
+    // older TOC, ties the header's commit when a later open scans.
+    let file = try FDFile.open(at: url)
+    let staleOffset = try file.size() + 4096
+    try file.writeAll(older.toc, at: staleOffset)
+    let stale = WaxFooter(
+        tocLen: UInt64(older.toc.count),
+        tocHash: older.footer.tocHash,
+        generation: committed,
+        walCommittedSeq: older.footer.walCommittedSeq
+    )
+    try file.writeAll(try stale.encode(), at: staleOffset + UInt64(older.toc.count))
+    try file.fsync()
+    try file.close()
+
+    let reopened = try await Wax.open(at: url)
+    #expect(await reopened.stats().frameCount == 21, "the header's commit wins the tie")
+    #expect(await reopened.stats().generation == committed)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}

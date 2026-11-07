@@ -55,14 +55,7 @@ extension Wax {
                 throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
             }
             let footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate) { current, candidate in
-                if candidate.footer.generation > current.footer.generation {
-                    return candidate
-                }
-                if candidate.footer.generation == current.footer.generation,
-                   candidate.footerOffset > current.footerOffset {
-                    return candidate
-                }
-                return current
+                Self.newerFooter(current, candidate, headerFooterOffset: header.footerOffset)
             }
             let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
 

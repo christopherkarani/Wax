@@ -309,13 +309,9 @@ extension Wax {
             var header = selected.page
             let selectedHeaderFileGeneration = header.fileGeneration
 
+            let headerFooterOffset = header.footerOffset
             func newerFooter(_ lhs: FooterSlice, _ rhs: FooterSlice) -> FooterSlice {
-                if rhs.footer.generation > lhs.footer.generation { return rhs }
-                if rhs.footer.generation == lhs.footer.generation,
-                   rhs.footerOffset > lhs.footerOffset {
-                    return rhs
-                }
-                return lhs
+                Self.newerFooter(lhs, rhs, headerFooterOffset: headerFooterOffset)
             }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
