@@ -87,9 +87,15 @@ package final class MiniLMEmbeddings {
     /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
     /// (non-cooperative) queue prevents starvation of the Swift concurrency cooperative thread pool,
     /// which the MCP server's transport readLoop and send operations depend on for progress.
+    ///
+    /// `.workItem` drains the autorelease pool after every prediction. CoreML autoreleases
+    /// IOSurface-backed outputs, and a GCD thread otherwise drains only when it goes idle, so
+    /// back-to-back predictions from concurrent callers grew memory until IOSurface allocation
+    /// failed with an uncaught NSException ("Failed to allocate E5 buffer object").
     private static let predictionQueue = DispatchQueue(
         label: "wax.minilm.coreml-prediction",
-        qos: .userInitiated
+        qos: .userInitiated,
+        autoreleaseFrequency: .workItem
     )
 
     package var computeUnits: MLComputeUnits {
