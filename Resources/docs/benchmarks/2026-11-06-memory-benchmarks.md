@@ -49,7 +49,7 @@ Official protocol (LongMemEval `src/retrieval`, commit 9e0b455f), session level,
 | Wax hybrid, Arctic | 0.878 | 0.940 | 0.899 |
 | Wax vector, MiniLM | 0.869 | 0.947 | 0.892 |
 | MiniLM | 0.852 | 0.938 | 0.878 |
-| Wax text | 0.764 | 0.869 | 0.802 |
+| Wax text | 0.828 | 0.893 | 0.875 |
 | BM25 | 0.742 | 0.823 | – |
 | Wax hybrid, MiniLM, before fixes | 0.742 | 0.840 | – |
 
@@ -69,6 +69,7 @@ the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the
 | Wax hybrid, Arctic | **0.537** | **0.618** | **0.725** |
 | Wax vector, Arctic | 0.509 | 0.586 | 0.717 |
 | Wax hybrid, MiniLM | 0.466 | 0.550 | 0.665 |
+| Wax text | 0.429 | 0.495 | 0.586 |
 | Contriever | 0.407 | 0.494 | – |
 | BM25, normalized | 0.399 | 0.469 | – |
 | Wax vector, MiniLM | 0.372 | 0.429 | – |
@@ -186,6 +187,11 @@ Fixes on the branch, each with tests:
 - **Dot-product embedders (`82cd29e13`, `828d03b46`).** `EmbeddingProvider` has a
   `similarity` requirement, default `.cosine`. A store records the similarity of its
   vector index and refuses to open with an embedder that declares another one.
+- **Text lane (`52c47c47d`).** Published FTS5 scores went through a curve that mapped
+  every real-corpus BM25 value to the same float, so the text-mode rerankers sorted ties
+  by snippet heuristics. Scores now keep BM25's order and spacing. Wax text-only search
+  now beats normalized BM25 on LoCoMo (R_all@5 0.359 to 0.429, against 0.399) and gains
+  on LongMemEval (0.809 to 0.828). Hybrid search ranks by fused rank and is unchanged.
 - **Embeddings (`c67cb0088`).** The CoreML autorelease pool drains after every prediction.
 
 ## Open issues
