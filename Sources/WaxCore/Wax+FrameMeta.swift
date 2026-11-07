@@ -185,10 +185,62 @@ extension Wax {
             // Committed ids are dense and in order (the TOC decode checks it), so with nothing
             // pending the merge below would rebuild `toc.frames`. It runs on every open.
             guard !pendingMutations.isEmpty else { return toc.frames }
-            let frameIds = frameIdsTouchedByCommittedOrPendingFramesUnlocked()
-            let metas = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
-            return metas.values.sorted { $0.id < $1.id }
+            return allFrameMetasIncludingPendingUnlocked()
         }
+    }
+
+    /// Committed frames with pending mutations applied, then pending puts, in id order.
+    ///
+    /// Same result as `frameMetasIncludingPendingUnlocked(frameIds:)` over every committed and
+    /// pending id, without building a dictionary over the whole store: every commit stages
+    /// the text index from this list, so its cost is paid once per commit.
+    private func allFrameMetasIncludingPendingUnlocked() -> [FrameMeta] {
+        var committed = toc.frames
+        let committedCount = UInt64(committed.count)
+        var pending: [UInt64: FrameMeta] = [:]
+
+        func update(_ frameId: UInt64, _ body: (inout FrameMeta) -> Void) {
+            if frameId < committedCount {
+                body(&committed[Int(frameId)])
+            } else if var meta = pending[frameId] {
+                body(&meta)
+                pending[frameId] = meta
+            }
+        }
+
+        let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
+        for mutation in ordered {
+            switch mutation.entry {
+            case .putFrame(let put):
+                guard let pendingMeta = try? FrameMeta.fromPut(put) else { continue }
+                if put.frameId < committedCount {
+                    committed[Int(put.frameId)] = pendingMeta
+                } else {
+                    pending[put.frameId] = pendingMeta
+                }
+            case .deleteFrame(let delete):
+                update(delete.frameId) { $0.status = .deleted }
+            case .supersedeFrame(let supersede):
+                guard supersede.supersededId != supersede.supersedingId else { continue }
+                update(supersede.supersededId) { meta in
+                    if meta.supersededBy == nil || meta.supersededBy == supersede.supersedingId {
+                        meta.supersededBy = supersede.supersedingId
+                    }
+                }
+                update(supersede.supersedingId) { meta in
+                    if meta.supersedes == nil {
+                        meta.supersedes = supersede.supersededId
+                    }
+                }
+            case .putEmbedding:
+                continue
+            }
+        }
+
+        guard !pending.isEmpty else { return committed }
+        committed.reserveCapacity(committed.count + pending.count)
+        committed.append(contentsOf: pending.values.sorted { $0.id < $1.id })
+        return committed
     }
 
     package func frameMeta(frameId: UInt64) async throws -> FrameMeta {
@@ -271,24 +323,6 @@ extension Wax {
         }
 
         return metas
-    }
-
-    private func frameIdsTouchedByCommittedOrPendingFramesUnlocked() -> [UInt64] {
-        var frameIds = Set(toc.frames.map(\.id))
-        for mutation in pendingMutations {
-            switch mutation.entry {
-            case .putFrame(let put):
-                frameIds.insert(put.frameId)
-            case .deleteFrame(let delete):
-                frameIds.insert(delete.frameId)
-            case .supersedeFrame(let supersede):
-                frameIds.insert(supersede.supersededId)
-                frameIds.insert(supersede.supersedingId)
-            case .putEmbedding:
-                continue
-            }
-        }
-        return Array(frameIds)
     }
 
     /// Live frames that should have vectors when a provider is active.
