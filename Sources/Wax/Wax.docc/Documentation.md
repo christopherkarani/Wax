@@ -9,7 +9,7 @@ The Wax module is the primary public API surface for building memory-augmented a
 - **``Memory``** — The main text memory facade: save content, search/recall context, flush, and close
 - **Foundation Models adapters** — Use Wax as durable memory for Apple's on-device Foundation Models
 - **``RAGContext``** — Token-budget-aware retrieval results for prompts and agents
-- **Built-in embeddings** — Optional MiniLM / Arctic providers for vector search
+- **Built-in embeddings** — Optional MiniLM / Arctic / e5 providers for vector search
 - **``PhotoMemory`` / ``VideoMemory``** — Experimental Darwin facades for photo and video RAG (`BuiltInMultimodalEmbeddings`). `PhotoRAGOrchestrator` and `VideoRAGOrchestrator` remain package-only.
 
 ```swift

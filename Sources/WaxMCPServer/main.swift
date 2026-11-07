@@ -43,7 +43,7 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
 
-    @Option(name: .customLong("embedder"), help: "Embedding provider: minilm (default) or arctic")
+    @Option(name: .customLong("embedder"), help: "Embedding provider: minilm (default), arctic, or e5")
     var embedderChoice: String = "minilm"
 
     @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")

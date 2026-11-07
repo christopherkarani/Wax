@@ -120,6 +120,10 @@ assert_accepts_expected_skip \
   'Suite ArcticEmbedderTests skipped: "Set WAX_TEST_ARCTIC=1 to run Arctic embedder tests"'
 
 assert_accepts_expected_skip \
+  "e5-env-gated" \
+  'Suite E5EmbedderTests skipped: "Set WAX_TEST_E5=1 to run e5 embedder tests"'
+
+assert_accepts_expected_skip \
   "minilm-env-gated" \
   'Test miniLMEmbedderProducesExpectedDimensions() skipped: "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"'
 

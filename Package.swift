@@ -122,6 +122,11 @@ let package = Package(
             enabledTraits: []
         ),
         .init(
+            name: "E5Embeddings",
+            description: "Includes the intfloat/e5-small-v2 provider",
+            enabledTraits: []
+        ),
+        .init(
             name: "MCPServer",
             description: "Builds the WaxMCPServer executable with stdio and HTTP transports",
             enabledTraits: ["MiniLMEmbeddings"]
@@ -211,6 +216,17 @@ let package = Package(
             ]
         ),
         .target(
+            name: "WaxVectorSearchE5",
+            dependencies: [
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/e5-small-v2.mlmodelc"),
+                .copy("Resources/e5-small-v2-LICENSE.txt"),
+            ]
+        ),
+        .target(
             name: "Wax",
             dependencies: [
                 "WaxCore",
@@ -224,11 +240,16 @@ let package = Package(
                     name: "WaxVectorSearchArctic",
                     condition: .when(traits: ["ArcticEmbeddings"])
                 ),
+                .target(
+                    name: "WaxVectorSearchE5",
+                    condition: .when(traits: ["E5Embeddings"])
+                ),
             ],
             resources: [.process("RAG/Resources")],
             swiftSettings: [
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
             ]
         ),
         .executableTarget(
@@ -342,6 +363,16 @@ let package = Package(
                 "WaxBertTokenizer",
             ],
             path: "Tests/WaxArcticTests"
+        ),
+        .testTarget(
+            name: "WaxE5Tests",
+            dependencies: [
+                "Wax",
+                "WaxVectorSearchE5",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxE5Tests",
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "wax-mcpTests",

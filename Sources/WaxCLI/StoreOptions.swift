@@ -20,6 +20,7 @@ struct StoreOptions: ParsableArguments {
 enum EmbedderChoice: String, CaseIterable, ExpressibleByArgument, Sendable {
     case minilm
     case arctic
+    case e5
 }
 
 struct VectorStoreOptions: ParsableArguments {
@@ -27,7 +28,7 @@ struct VectorStoreOptions: ParsableArguments {
 
     @OptionGroup var runtime: EmbedderRuntimeOptions
 
-    @Option(name: .customLong("embedder"), help: "Embedder to use: minilm (default) or arctic")
+    @Option(name: .customLong("embedder"), help: "Embedder to use: minilm (default), arctic, or e5")
     var embedder: EmbedderChoice = .minilm
 
     @Flag(

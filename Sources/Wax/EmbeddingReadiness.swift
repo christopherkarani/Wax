@@ -185,9 +185,11 @@ package enum HostEmbeddingReadiness {
             return .miniLM
         case "arctic":
             return .arctic
+        case "e5":
+            return .e5
         default:
             throw WaxError.encodingError(
-                reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, or auto."
+                reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, e5, or auto."
             )
         }
     }

@@ -10,7 +10,7 @@
 - Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API. Source: `README.md`.
 
 ## Vector Search and Embeddings
-- Built-in embedders (MiniLM, Arctic) require iOS 18/macOS 15+ and their package traits (`MiniLMEmbeddings` on by default, `ArcticEmbeddings` opt-in). Source: `Sources/Wax/BuiltInEmbeddings.swift`.
+- Built-in embedders (MiniLM, Arctic, e5) require iOS 18/macOS 15+ and their package traits (`MiniLMEmbeddings` on by default, `ArcticEmbeddings` and `E5Embeddings` opt-in). Source: `Sources/Wax/BuiltInEmbeddings.swift`.
 - `Memory(at:)` opens with `.automatic` embedding: the store is usable while MiniLM loads, then live-attaches. If the provider cannot activate, `stats().embeddingStatus` is `unavailable` (hybrid is text; the vector index remains). Source: `Sources/Wax/Memory.swift`.
 - On a fresh store with vector search enabled but no embedder, vector search is auto-disabled (text-only); `memory.stats().vectorSearchEnabled` reports the effective state. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
 - `Memory.RetrievalMode.hybrid` (default; alias of the canonical `SearchMode`) falls back to the text lane when the vector lane is unavailable; `vectorOnly` throws. `RAGContext.diagnostics` reports requested vs. effective mode. Source: `Sources/Wax/Memory.swift`.

@@ -147,7 +147,7 @@ func demoPhotoMemory(storeURL: URL, imageURL: URL) async throws {
 - `BuiltInMultimodalEmbeddings`: Factory for the on-device multimodal embedder used by the photo/video facades.
 - `RAGContext`: Retrieval output with items, total token count, and `diagnostics` (requested vs. effective mode).
 - `EmbeddingProvider`: Supplies text embeddings for vector search.
-- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` on-device CoreML embedders (iOS 18/macOS 15+).
+- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` / `.e5` on-device CoreML embedders (iOS 18/macOS 15+).
 
 ## References
 - `references/public-api.md`

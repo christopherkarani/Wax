@@ -8,6 +8,9 @@ public enum BuiltInEmbeddingProvider: String, CaseIterable, Sendable, Equatable,
     case miniLM = "minilm"
     /// The Snowflake Arctic Embed Small CoreML embedding provider.
     case arctic
+    /// The `intfloat/e5-small-v2` CoreML embedding provider. Embeds queries and passages
+    /// without e5's `"query: "` / `"passage: "` prefixes.
+    case e5
 
     package var commandLineChoice: String {
         rawValue
@@ -118,6 +121,8 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
                 "requires iOS 18/macOS 15 or later and the default `MiniLMEmbeddings` package trait"
             case .arctic:
                 "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
+            case .e5:
+                "requires iOS 18/macOS 15 or later and the `E5Embeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
         case .timedOut(let provider):

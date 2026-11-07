@@ -69,7 +69,7 @@ enum StoreSession {
     /// - Parameters:
     ///   - skipPrewarm: Unused for automatic open (compile is process-wide and live-attaches).
     ///     Built-in / require-vector still compiles through embedding readiness.
-    ///   - embedderChoice: Which embedder to use: `.minilm` (default) or `.arctic`.
+    ///   - embedderChoice: Which embedder to use: `.minilm` (default), `.arctic`, or `.e5`.
     ///   - requireVector: Fail instead of opening while the provider is loading.
     /// Direct-store CLI commands never start a superseded-model re-embed on their own:
     /// recall/search/stats/vector-health must not rewrite vectors. `embed-backfill` runs it

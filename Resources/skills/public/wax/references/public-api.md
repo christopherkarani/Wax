@@ -94,9 +94,10 @@ Use `Memory` for text memory and search. `FrameStore` frames are not indexed.
 
 Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
-- `public enum BuiltInEmbeddingProvider { case miniLM, arctic }`
+- `public enum BuiltInEmbeddingProvider { case miniLM, arctic, e5 }`
   - `.miniLM` — all-MiniLM-L6-v2 CoreML embedder; iOS 18/macOS 15+, default `MiniLMEmbeddings` trait.
   - `.arctic` — Snowflake Arctic Embed Small; iOS 18/macOS 15+, `ArcticEmbeddings` trait.
+  - `.e5` — `intfloat/e5-small-v2` (MIT), mean pooling, no query/passage prefixes; iOS 18/macOS 15+, `E5Embeddings` trait.
 - `public enum BuiltInEmbeddings { public static func make(_:options:) async throws -> any EmbeddingProvider }`
 - `public struct BuiltInEmbeddingProviderOptions` (`batchSize`, `prewarmBatchSize`, `allowLowPrecisionGPU`, `timeoutSeconds`, `computeUnitsOrder`).
 - `public enum BuiltInEmbeddingComputeUnit { cpuOnly, cpuAndGPU, cpuAndNeuralEngine, all }`

@@ -10,7 +10,11 @@ import WaxVectorSearchMiniLM
 import WaxVectorSearchArctic
 #endif
 
-/// Single compile path for built-in MiniLM / Arctic providers.
+#if E5Embeddings && canImport(WaxVectorSearchE5) && canImport(CoreML)
+import WaxVectorSearchE5
+#endif
+
+/// Single compile path for built-in MiniLM / Arctic / e5 providers.
 package enum BuiltInEmbeddingCompiler {
     package static func loadKey(
         _ provider: BuiltInEmbeddingProvider,
@@ -47,6 +51,19 @@ package enum BuiltInEmbeddingCompiler {
                 throw BuiltInEmbeddingProviderError.unavailable(provider)
             }
             return try await ArcticEmbedder.makeCommandLineEmbedder(
+                prewarmBatchSize: options.prewarmBatchSize,
+                skipPrewarm: skipPrewarm,
+                tuning: options.tuning
+            )
+            #else
+            throw BuiltInEmbeddingProviderError.unavailable(provider)
+            #endif
+        case .e5:
+            #if E5Embeddings && canImport(WaxVectorSearchE5) && canImport(CoreML)
+            guard #available(macOS 15.0, iOS 18.0, *) else {
+                throw BuiltInEmbeddingProviderError.unavailable(provider)
+            }
+            return try await E5Embedder.makeCommandLineEmbedder(
                 prewarmBatchSize: options.prewarmBatchSize,
                 skipPrewarm: skipPrewarm,
                 tuning: options.tuning
