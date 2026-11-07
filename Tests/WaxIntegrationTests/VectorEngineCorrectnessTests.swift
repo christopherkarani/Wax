@@ -73,6 +73,13 @@ private func metalANNSAvailable() -> Bool {
     MetalANNSVectorEngine.isAvailable
 }
 
+/// In `.exact` mode MetalANNS scans flat up to `exactSearchMaxVectorCount` vectors, and the
+/// engine then builds no graph. A cap of 0 sends every search to the graph, so tests of the
+/// graph lifecycle (build, install, mutate, rebuild) still run it at small sizes.
+private func makeGraphBackedMetalANNS(metric: VectorMetric, dimensions: Int) throws -> MetalANNSVectorEngine {
+    try MetalANNSVectorEngine(metric: metric, dimensions: dimensions, searchMode: .exact, exactSearchMaxVectorCount: 0)
+}
+
 @Test(
     "MetalANNS engine matches Accelerate ordering and scores",
     .enabled(if: metalANNSAvailable()),
@@ -83,7 +90,7 @@ func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric, count: In
     let dimensions = 16
     let dataset = makeDataset(count: count, dimensions: dimensions, seed: 0xC0FFEE)
     let accelerate = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
-    let metalANNS = try MetalANNSVectorEngine(metric: metric, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: metric, dimensions: dimensions)
     try await accelerate.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
     try await metalANNS.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
 
@@ -196,7 +203,7 @@ func metalANNSHandlesMutationsAfterGraphBuild() async throws {
     // 40 > MetalANNS graph degree (32), so the graph exists before the mutations.
     let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
     let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
-    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     func apply(_ body: (any VectorSearchEngine) async throws -> Void) async throws {
         try await body(metalANNS)
@@ -232,7 +239,7 @@ func metalANNSReAddsRemovedIdInPlace() async throws {
     let dimensions = 8
     let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
     let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0xFEED)
-    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
     try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
@@ -260,7 +267,7 @@ func metalANNSGrowsPastBuiltCapacity() async throws {
     let dimensions = 8
     let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
     let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
-    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
     try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
@@ -287,7 +294,7 @@ func metalANNSMutationsRacingGraphRebuildAreNotLost() async throws {
     let removedId = base.frameIds[7]
 
     for _ in 0..<5 {
-        let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+        let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
         let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
         try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
         try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
@@ -351,6 +358,7 @@ func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -411,6 +419,7 @@ func metalANNSAppendsDuringGraphBuildAreCaughtUp() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -452,6 +461,7 @@ func metalANNSAppendOnlyIngestAfterDiscardedBuildInstallsGraph() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -509,7 +519,12 @@ func metalANNSCancelledLoadDoesNotBlockGraphBuild() async throws {
 
     let engine = try await Task {
         withUnsafeCurrentTask { $0?.cancel() }
-        return try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
+        return try await MetalANNSVectorEngine.load(
+            from: wax,
+            metric: .cosine,
+            dimensions: dimensions,
+            exactSearchMaxVectorCount: 0
+        )
     }.value
     // Cancellation is not a build failure: no count, and the next search may build.
     #expect(await engine.graphBuildFailureCount == 0)
@@ -535,6 +550,7 @@ func metalANNSFailedGraphBuildFallsBackToExactSearch() async throws {
         metric: .l2,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: {
             await gate.enter()
             throw InjectedGraphBuildFailure()
@@ -566,6 +582,44 @@ func metalANNSFailedGraphBuildFallsBackToExactSearch() async throws {
     await metalANNS.waitForPendingGraphBuild()
     #expect(await gate.started == 2)
     #expect(await metalANNS.graphBuildFailureCount == 2)
+}
+
+@Test(
+    "MetalANNS exact mode at or below the exact-scan cap never builds the graph",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSExactModeOpenSkipsGraphBuild() async throws {
+    // The auto-selection threshold: stores this large open on the MetalANNS engine.
+    let count = MetalANNSVectorEngine.autoThreshold
+    let dimensions = 8
+    let base = makeDataset(count: count, dimensions: dimensions, seed: 0x0FE7)
+    let tempDir = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("exact-open.wax"))
+    let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await seed.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await seed.stageForCommit(into: wax)
+    try await wax.commit()
+
+    let engine = try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
+    // MetalANNS answers exact searches at this size with a flat scan, so open builds no graph.
+    #expect(!(await engine.isGraphReady))
+
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0x0FE8)
+    try await engine.add(frameId: 5_000_000, vector: extra.vectors[0])
+    try await seed.add(frameId: 5_000_000, vector: extra.vectors[0])
+    for query in [base.vectors[17], base.vectors[count - 1], extra.vectors[0]] {
+        let actual = try await engine.search(vector: query, topK: 10)
+        let expected = try await seed.search(vector: query, topK: 10)
+        #expect(actual.map(\.frameId) == expected.map(\.frameId))
+        for (lhs, rhs) in zip(actual, expected) {
+            #expect(abs(lhs.score - rhs.score) <= 1e-4)
+        }
+        // Searches do not schedule a background build either.
+        await engine.waitForPendingGraphBuild()
+        #expect(!(await engine.isGraphReady))
+    }
+    try await wax.close()
 }
 
 /// Exact-path parity: the store has no current graph, so results must equal Accelerate's.

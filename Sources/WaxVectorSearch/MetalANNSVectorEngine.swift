@@ -22,7 +22,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private let graphBuildHook: GraphBuildHook?
 
     /// Graph over `vectors`/`frameIds`, which are the source of truth. While it is `nil`,
-    /// searches scan `vectors` exactly and a background build is scheduled.
+    /// searches scan `vectors` exactly, and a background build is scheduled when the graph
+    /// would serve searches (see `graphServesSearches`).
     private var index: ReadyIndex?
     /// Bumped on every change to `vectors`/`frameIds`. A graph built from a snapshot is
     /// installed only if the generation is unchanged when the build finishes.
@@ -62,6 +63,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         dimensions: Int,
         searchMode: MetalANNS.SearchMode,
         degree: Int? = nil,
+        exactSearchMaxVectorCount: Int? = nil,
         graphBuildHook: GraphBuildHook? = nil
     ) throws {
         guard dimensions > 0 else {
@@ -80,6 +82,9 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         configuration.searchMode = searchMode
         if let degree {
             configuration.degree = degree
+        }
+        if let exactSearchMaxVectorCount {
+            configuration.exactSearchMaxVectorCount = max(0, exactSearchMaxVectorCount)
         }
         self.configuration = configuration
         self.graphBuildHook = graphBuildHook
@@ -101,8 +106,20 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         await graphBuildTask?.value
     }
 
-    package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> MetalANNSVectorEngine {
-        let engine = try MetalANNSVectorEngine(metric: metric, dimensions: dimensions)
+    /// - Parameter exactSearchMaxVectorCount: Overrides the MetalANNS exact flat-scan cap;
+    ///   `nil` keeps the MetalANNS default. A test seam for exercising the graph path.
+    package static func load(
+        from wax: Wax,
+        metric: VectorMetric,
+        dimensions: Int,
+        exactSearchMaxVectorCount: Int? = nil
+    ) async throws -> MetalANNSVectorEngine {
+        let engine = try MetalANNSVectorEngine(
+            metric: metric,
+            dimensions: dimensions,
+            searchMode: .exact,
+            exactSearchMaxVectorCount: exactSearchMaxVectorCount
+        )
         if let staged = await wax.readStagedVecIndexBytes() {
             try await engine.deserialize(staged.bytes)
         } else if let bytes = try await wax.readCommittedVecIndexBytes() {
@@ -320,33 +337,46 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             }
     }
 
-    /// A graph over no more nodes than its degree is no faster than the exact scan.
+    /// A graph is built only when it would serve searches; one over no more nodes than its
+    /// degree is no faster than the exact scan.
     private var canBuildIndex: Bool {
-        frameIds.count > configuration.degree
+        graphServesSearches && frameIds.count > configuration.degree
     }
 
-    /// Exact scan used while there is no current graph (the store is too small for one, or a
-    /// build is pending or failed). Scores use the
-    /// same scale and ordering as AccelerateVectorEngine (cosine/dot: dot product of the
+    /// Whether MetalANNS would search a graph at the current size. In `.exact` mode it answers
+    /// every search up to `exactSearchMaxVectorCount` vectors with a flat scan, so a graph
+    /// built there would never be read; this engine scans `vectors` exactly instead.
+    private var graphServesSearches: Bool {
+        configuration.searchMode != .exact || frameIds.count > configuration.exactSearchMaxVectorCount
+    }
+
+    /// Exact scan used while there is no current graph (exact mode at or below the flat-scan
+    /// cap, a store too small for a graph, or a build that is pending or failed). Scores use
+    /// the same scale and ordering as AccelerateVectorEngine (cosine/dot: dot product of the
     /// stored and prepared query vectors; L2: negative squared distance).
     private func exactHits(for query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
         guard !frameIds.isEmpty else { return [] }
         var scores = [Float](repeating: 0, count: frameIds.count)
+        let rowCount = frameIds.count
         let length = vDSP_Length(dimensions)
         vectors.withUnsafeBufferPointer { rows in
             query.withUnsafeBufferPointer { queryBuffer in
-                guard let rowBase = rows.baseAddress, let queryBase = queryBuffer.baseAddress else { return }
-                for row in frameIds.indices {
-                    let rowStart = rowBase + row * dimensions
-                    var value: Float = 0
+                scores.withUnsafeMutableBufferPointer { scoreBuffer in
+                    guard let rowBase = rows.baseAddress,
+                          let queryBase = queryBuffer.baseAddress,
+                          let scoreBase = scoreBuffer.baseAddress
+                    else { return }
                     switch metric {
                     case .cosine, .dot:
-                        vDSP_dotpr(rowStart, 1, queryBase, 1, &value, length)
+                        // One matrix-vector product over the row-major store, as Accelerate does.
+                        vDSP_mmul(rowBase, 1, queryBase, 1, scoreBase, 1, vDSP_Length(rowCount), 1, length)
                     case .l2:
-                        vDSP_distancesq(rowStart, 1, queryBase, 1, &value, length)
-                        value = -value
+                        for row in 0..<rowCount {
+                            var value: Float = 0
+                            vDSP_distancesq(rowBase + row * dimensions, 1, queryBase, 1, &value, length)
+                            scoreBase[row] = -value
+                        }
                     }
-                    scores[row] = value
                 }
             }
         }
@@ -416,7 +446,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         await installGraph(result, generation: generation, snapshotCount: snapshotCount)
     }
 
-    /// Builds the graph inline (used on load), under the same generation rule.
+    /// Builds the graph inline (used on load when the graph would serve searches), under the
+    /// same generation rule.
     private func buildGraphNow() async {
         invalidateIndex()
         guard canBuildIndex else { return }
