@@ -35,6 +35,16 @@ package actor FTS5SearchEngine {
     /// `false` until the blob stores a watermark. A blob written before the watermark existed
     /// vouches for nothing, so catch-up scans every frame once and the next commit records it.
     var coverageRecorded: Bool
+    /// The on-disk database the read-only fan-out connections open; `nil` in memory.
+    let databaseURL: URL?
+    let searchFanOut: SearchFanOut
+    var readerPool: Task<[DatabaseQueue], any Error>?
+    var lastSearchPartitionCount = 1
+    /// Fan-out reads in flight, and whether a write on the writer connection is running.
+    /// Together they keep every partition of one search on the same snapshot.
+    var fanOutReadsInFlight = 0
+    var writeInProgress = false
+    var writeGateWaiters: [CheckedContinuation<Void, Never>] = []
 
     private init(
         dbQueue: DatabaseQueue,
@@ -42,11 +52,15 @@ package actor FTS5SearchEngine {
         backingStoreDirectory: URL?,
         docCount: UInt64,
         dirty: Bool,
-        coveredBelowFrameId: UInt64? = nil
+        coveredBelowFrameId: UInt64? = nil,
+        databaseURL: URL? = nil,
+        searchFanOut: SearchFanOut = .disabled
     ) {
         self.dbQueue = dbQueue
         self.io = io
         self.backingStoreDirectory = backingStoreDirectory
+        self.databaseURL = databaseURL
+        self.searchFanOut = searchFanOut
         self.docCount = docCount
         self.dirty = dirty
         self.coveredBelowFrameId = coveredBelowFrameId ?? 0
@@ -68,7 +82,10 @@ package actor FTS5SearchEngine {
         return FTS5SearchEngine(dbQueue: queue, io: io, backingStoreDirectory: nil, docCount: 0, dirty: false)
     }
 
-    package static func deserialize(from data: Data) throws -> FTS5SearchEngine {
+    package static func deserialize(
+        from data: Data,
+        searchFanOut: SearchFanOut = .default
+    ) throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
         let storeDirectory = FileManager.default.temporaryDirectory
@@ -95,7 +112,9 @@ package actor FTS5SearchEngine {
             backingStoreDirectory: storeDirectory,
             docCount: docCount,
             dirty: false,
-            coveredBelowFrameId: coveredBelowFrameId
+            coveredBelowFrameId: coveredBelowFrameId,
+            databaseURL: dbURL,
+            searchFanOut: searchFanOut
         )
     }
 
@@ -156,6 +175,8 @@ package actor FTS5SearchEngine {
         guard !inactiveFrameIds.isEmpty else { return }
 
         try await flushPendingOpsIfNeeded()
+        await beginWrite()
+        defer { endWrite() }
         let dbQueue = self.dbQueue
         let removedCount = try await io.run {
             try dbQueue.write { db in
@@ -189,39 +210,42 @@ package actor FTS5SearchEngine {
         let trimmed = matchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         let limit = try Self.validatedTopK(topK)
-        let dbQueue = self.dbQueue
-        return try await io.run {
-            try dbQueue.read { db in
-                let sql = """
-                    SELECT m.frame_id AS frame_id,
-                           bm25(frames_fts) AS rank,
-                           snippet(frames_fts, 0, '\(Self.snippetOpenMarker)', '\(Self.snippetCloseMarker)', '...', 10) AS snippet
-                    FROM frames_fts
-                    JOIN frame_mapping m ON m.rowid_ref = frames_fts.rowid
-                    WHERE frames_fts MATCH ?
-                    ORDER BY rank ASC, m.frame_id ASC
-                    LIMIT ?
-                    """
-                let rows = try Row.fetchAll(db, sql: sql, arguments: [trimmed, limit])
-                // Rows are ordered best-first, so the first row is this query's best
-                // match whatever the limit is.
-                let topRank: Double = rows.first?["rank"] ?? 0
-                return rows.compactMap { row in
-                    guard let frameIdValue: Int64 = row["frame_id"], frameIdValue >= 0 else { return nil }
-                    let rank: Double = row["rank"] ?? 0
-                    let snippet: String? = row["snippet"]
-                    return TextSearchResult(
-                        frameId: UInt64(frameIdValue),
-                        score: Self.score(bm25Rank: rank, topBM25Rank: topRank),
-                        snippet: snippet
-                    )
+        let partitions = databaseURL == nil ? 1 : searchFanOut.partitionCount(docCount: docCount)
+        lastSearchPartitionCount = partitions
+        let rows: [MatchRow]
+        if partitions > 1 {
+            rows = try await fanOutMatchRows(matchQuery: trimmed, limit: limit, partitions: partitions)
+        } else {
+            let dbQueue = self.dbQueue
+            rows = try await io.run {
+                try dbQueue.read { db in
+                    try Self.matchRows(db, matchQuery: trimmed, limit: limit, rowidRange: nil)
                 }
             }
         }
+        // Rows are ordered best-first, so the first row is this query's best
+        // match whatever the limit is.
+        let topRank = rows.first?.rank ?? 0
+        return rows.compactMap { row in
+            guard let frameId = row.frameId, frameId >= 0 else { return nil }
+            return TextSearchResult(
+                frameId: UInt64(frameId),
+                score: Self.score(bm25Rank: row.rank, topBM25Rank: topRank),
+                snippet: row.snippet
+            )
+        }
+    }
+
+    /// Partitions the most recent `search(matchQuery:topK:)` ran on.
+    package func lastSearchPartitionCountForTesting() -> Int {
+        lastSearchPartitionCount
     }
 
     package func serialize(compact: Bool = false) async throws -> Data {
         try await flushPendingOpsIfNeeded()
+        // VACUUM rewrites the file the fan-out readers have open.
+        await beginWrite()
+        defer { endWrite() }
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.writeWithoutTransaction { db in
@@ -295,6 +319,17 @@ package actor FTS5SearchEngine {
             }
             return
         }
+        try await flushPendingFrameOps()
+        if !pendingStructuredOps.isEmpty {
+            try await flushPendingStructuredOpsIfNeeded()
+        }
+    }
+
+    private func flushPendingFrameOps() async throws {
+        await beginWrite()
+        defer { endWrite() }
+        // Another flush may have written these ops while this one waited for the gate.
+        guard !pendingOps.isEmpty else { return }
 
         let ops = pendingOps
         let keys = pendingKeys
@@ -355,14 +390,12 @@ package actor FTS5SearchEngine {
 
         pendingOps.removeAll(keepingCapacity: true)
         pendingKeys.removeAll(keepingCapacity: true)
-
-        if !pendingStructuredOps.isEmpty {
-            try await flushPendingStructuredOpsIfNeeded()
-        }
     }
 
     private static func makeConfiguration() -> Configuration {
         var config = Configuration()
+        // Fan-out readers hold shared locks while they scan; a commit waits for them.
+        config.busyMode = .timeout(busyTimeoutSeconds)
         config.prepareDatabase { db in
             try applyPragmas(db)
         }

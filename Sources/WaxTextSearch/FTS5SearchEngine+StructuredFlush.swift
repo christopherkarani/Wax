@@ -15,6 +15,10 @@ extension FTS5SearchEngine {
 
     func flushPendingStructuredOpsIfNeeded() async throws {
         guard !pendingStructuredOps.isEmpty else { return }
+        await beginWrite()
+        defer { endWrite() }
+        // Another flush may have written these ops while this one waited for the gate.
+        guard !pendingStructuredOps.isEmpty else { return }
 
         let ops = pendingStructuredOps
         let dbQueue = self.dbQueue

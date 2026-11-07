@@ -104,6 +104,8 @@ extension FTS5SearchEngine {
         }
         let dbQueue = self.dbQueue
         let watermark = covered
+        await beginWrite()
+        defer { endWrite() }
         try await io.run {
             try dbQueue.write { db in
                 try FTS5Coverage.write(coveredBelowFrameId: watermark, in: db)
