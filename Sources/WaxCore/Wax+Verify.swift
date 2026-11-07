@@ -140,9 +140,23 @@ extension Wax {
     }
 
     private struct DataRange {
+        /// What uses the range. Named only when an overlap is reported: formatting a label for
+        /// every frame cost a string per frame on each commit and open.
+        enum Owner {
+            case frame(UInt64)
+            case segment(UInt64)
+
+            var label: String {
+                switch self {
+                case .frame(let id): "frame \(id)"
+                case .segment(let id): "segment \(id)"
+                }
+            }
+        }
+
         var start: UInt64
         var end: UInt64
-        var label: String
+        var owner: Owner
     }
 
     /// Internal only because of the file split.
@@ -194,7 +208,7 @@ extension Wax {
             guard end <= dataEnd else {
                 throw WaxError.invalidToc(reason: "frame \(frame.id) payload exceeds data end")
             }
-            ranges.append(DataRange(start: frame.payloadOffset, end: end, label: "frame \(frame.id)"))
+            ranges.append(DataRange(start: frame.payloadOffset, end: end, owner: .frame(frame.id)))
         }
 
         return ranges
@@ -220,7 +234,7 @@ extension Wax {
             guard end <= dataEnd else {
                 throw WaxError.invalidToc(reason: "segment \(entry.segmentId) exceeds data end")
             }
-            ranges.append(DataRange(start: entry.bytesOffset, end: end, label: "segment \(entry.segmentId)"))
+            ranges.append(DataRange(start: entry.bytesOffset, end: end, owner: .segment(entry.segmentId)))
         }
 
         return ranges
@@ -232,7 +246,7 @@ extension Wax {
             let prev = sorted[idx - 1]
             let next = sorted[idx]
             if prev.end > next.start {
-                throw WaxError.invalidToc(reason: "data overlap between \(prev.label) and \(next.label)")
+                throw WaxError.invalidToc(reason: "data overlap between \(prev.owner.label) and \(next.owner.label)")
             }
         }
     }
