@@ -68,6 +68,8 @@ struct Options {
     var mode: Memory.RetrievalMode = .hybrid()
     var topK = 50
     var embedder: BuiltInEmbeddingProvider = .miniLM
+    /// Set by `--embedder http://...`: embed through scripts/embed_server.py instead.
+    var embedderURL: URL?
     var concurrency = 4
     var storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("wax-bench").path
 
@@ -87,6 +89,11 @@ struct Options {
             case "--store-dir": options.storeDir = try value(flag)
             case "--embedder":
                 let raw = try value(flag)
+                if raw.hasPrefix("http://") {
+                    guard let url = URL(string: raw) else { throw BenchError.usage("bad embedder URL \(raw)") }
+                    options.embedderURL = url
+                    continue
+                }
                 guard let provider = BuiltInEmbeddingProvider(rawValue: raw) else {
                     throw BenchError.usage("unknown embedder \(raw)")
                 }
@@ -213,7 +220,11 @@ func readJobs(_ path: String) throws -> [Job] {
 func retrieve(_ options: Options) async throws {
     let jobs = try readJobs(options.input)
     try FileManager.default.createDirectory(atPath: options.storeDir, withIntermediateDirectories: true)
-    let embedder = try await BuiltInEmbeddings.make(options.embedder)
+    let embedder: any EmbeddingProvider = if let url = options.embedderURL {
+        try await HTTPEmbeddings.connect(to: url)
+    } else {
+        try await BuiltInEmbeddings.make(options.embedder)
+    }
     FileManager.default.createFile(atPath: options.output, contents: nil)
     guard let out = FileHandle(forWritingAtPath: options.output) else {
         throw BenchError.failed("cannot open \(options.output)")

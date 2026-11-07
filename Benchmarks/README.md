@@ -18,12 +18,14 @@ depends on the parent package with the `MiniLMEmbeddings` and `ArcticEmbeddings`
 ```
 Sources/WaxBench/main.swift       wax-bench retrieve: fresh store per job, public Memory API only
 Sources/WaxBench/Perf.swift       wax-bench perf: ingest / query timing on precomputed vectors
+Sources/WaxBench/HTTPEmbeddings.swift  --embedder http://...: embed through scripts/embed_server.py
 scripts/longmemeval_prepare.py    LongMemEval JSON -> jobs + gold (official corpus and filter logic)
 scripts/longmemeval_score_retrieval.py  official recall_any/recall_all/ndcg_any, turn->session
 scripts/longmemeval_baselines.py  bm25 / bm25norm / minilm / contriever / stella reference retrievers
 scripts/longmemeval_qa.py         reader prompts (CoT, json history), per-type judge prompts, scoring
 scripts/locomo.py                 LoCoMo prepare / recall / reader / judge / score (Mem0 prompts)
 scripts/llm_run.py                resumable parallel runner over `claude -p`
+scripts/embed_server.py           local HTTP embedder, so Wax and a baseline can share one model
 scripts/perf_*.py, perf_run_all.sh  systems benchmark data prep, competitors, driver, summary
 ```
 
@@ -65,6 +67,16 @@ python3 -I $S/longmemeval_score_retrieval.py --gold $RUNS/lme_s_session.gold.jso
 # Reference retrievers (needs torch, transformers, sentence-transformers, rank_bm25)
 python3 -I $S/longmemeval_baselines.py --jobs $RUNS/lme_s_session.jobs.jsonl --retriever contriever \
   --cache-dir $RUNS/vec-cache --out $RUNS/baseline-contriever-session.ranked.jsonl
+```
+
+To compare the Wax pipeline with a bare retriever on the same model, serve that model
+locally and point Wax at it. Vectors come from `scripts/embed_server.py` (mean pooling, as
+in the baselines); Wax still does the chunking, text lane and fusion.
+
+```bash
+python3 -I $S/embed_server.py --model facebook/contriever --port 8765 &   # torch + transformers
+$BIN retrieve --input $RUNS/lme_s_session.jobs.jsonl --output $RUNS/wax-hybrid-contriever.ranked.jsonl \
+  --mode hybrid --embedder http://127.0.0.1:8765 --top-k 300 --concurrency 4
 ```
 
 `--top-k 300` is deliberate: Wax returns chunks, and several chunks of one session collapse
