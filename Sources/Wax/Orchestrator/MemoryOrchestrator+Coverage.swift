@@ -95,9 +95,15 @@ extension MemoryOrchestrator {
         return reason
     }
 
-    /// Store-open variant (no actor state yet).
+    /// Store-open variant (no actor state yet). `loadedFrameIds` are the frame IDs of the
+    /// vector engine the session just loaded (committed segment plus pending embeddings,
+    /// the set the store holds right after open); `nil` reads them from the store.
     /// Internal only because of the file split.
-    static func vectorCoverageDegradedReason(in wax: Wax) async -> String? {
+    static func vectorCoverageDegradedReason(in wax: Wax, loadedFrameIds: Set<UInt64>?) async -> String? {
+        if let loadedFrameIds {
+            let sources = await wax.activeSurrogateSourceFrames()
+            return sources.allSatisfy { loadedFrameIds.contains($0.id) } ? nil : missingVectorsReason
+        }
         do {
             return try await unembeddedLiveSources(in: wax, cached: nil).sources.isEmpty
                 ? nil

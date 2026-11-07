@@ -206,6 +206,7 @@ extension Wax {
                 throw WaxError.invalidToc(reason: "vec index exceeds footer offset")
             }
 
+            committedVecIndexReads &+= 1
             let file = self.file
             let bytes = try await io.run {
                 try file.readExactly(length: Int(manifest.bytesLength), at: manifest.bytesOffset)
@@ -223,6 +224,12 @@ extension Wax {
             guard let staged = stagedVecIndex else { return nil }
             return (bytes: staged.bytes, dimension: staged.dimension, similarity: staged.similarity)
         }
+    }
+
+    /// Reads of the committed vector segment (each one reads and hashes all of it) since this
+    /// handle opened.
+    package func committedVecIndexReadsForTesting() async -> UInt64 {
+        await withReadLock { committedVecIndexReads }
     }
 
     package func committedVecIndexManifest() async -> VecIndexManifest? {

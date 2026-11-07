@@ -101,6 +101,11 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         index != nil
     }
 
+    /// Frame IDs that currently have a vector here.
+    package func storedFrameIds() -> Set<UInt64> {
+        Set(frameIds)
+    }
+
     /// Waits for the in-flight background graph build, if any, to finish.
     package func waitForPendingGraphBuild() async {
         await graphBuildTask?.value
@@ -114,16 +119,32 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         dimensions: Int,
         exactSearchMaxVectorCount: Int? = nil
     ) async throws -> MetalANNSVectorEngine {
+        try await load(
+            from: wax,
+            segment: try await LoadedVectorSearchEngine.currentSegmentBytes(for: wax),
+            metric: metric,
+            dimensions: dimensions,
+            exactSearchMaxVectorCount: exactSearchMaxVectorCount
+        )
+    }
+
+    /// Loads `segment` (the bytes ``LoadedVectorSearchEngine/currentSegmentBytes(for:)``
+    /// returned) plus the store's pending embeddings.
+    package static func load(
+        from wax: Wax,
+        segment: Data?,
+        metric: VectorMetric,
+        dimensions: Int,
+        exactSearchMaxVectorCount: Int? = nil
+    ) async throws -> MetalANNSVectorEngine {
         let engine = try MetalANNSVectorEngine(
             metric: metric,
             dimensions: dimensions,
             searchMode: .exact,
             exactSearchMaxVectorCount: exactSearchMaxVectorCount
         )
-        if let staged = await wax.readStagedVecIndexBytes() {
-            try await engine.deserialize(staged.bytes)
-        } else if let bytes = try await wax.readCommittedVecIndexBytes() {
-            try await engine.deserialize(bytes)
+        if let segment {
+            try await engine.deserialize(segment)
         }
         let pending = await wax.pendingEmbeddingMutations(since: nil)
         if !pending.embeddings.isEmpty {

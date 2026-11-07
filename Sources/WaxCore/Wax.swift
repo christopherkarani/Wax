@@ -44,6 +44,9 @@ package actor Wax {
     /// Full frame-list timeline scans since open, for tests.
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var timelineScans: UInt64 = 0
+    /// Verified reads of the committed vector segment since open, for tests.
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var committedVecIndexReads: UInt64 = 0
     private var stagedLexIndex: StagedLexIndex?
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var stagedVecIndex: StagedVecIndex?

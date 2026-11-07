@@ -33,11 +33,25 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     }
 
     package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> AccelerateVectorEngine {
+        try await load(
+            from: wax,
+            segment: try await LoadedVectorSearchEngine.currentSegmentBytes(for: wax),
+            metric: metric,
+            dimensions: dimensions
+        )
+    }
+
+    /// Loads `segment` (the bytes ``LoadedVectorSearchEngine/currentSegmentBytes(for:)``
+    /// returned) plus the store's pending embeddings.
+    package static func load(
+        from wax: Wax,
+        segment: Data?,
+        metric: VectorMetric,
+        dimensions: Int
+    ) async throws -> AccelerateVectorEngine {
         let engine = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
-        if let staged = await wax.readStagedVecIndexBytes() {
-            try await engine.deserialize(staged.bytes)
-        } else if let bytes = try await wax.readCommittedVecIndexBytes() {
-            try await engine.deserialize(bytes)
+        if let segment {
+            try await engine.deserialize(segment)
         }
         let pending = await wax.pendingEmbeddingMutations(since: nil)
         if !pending.embeddings.isEmpty {
@@ -90,6 +104,11 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
             }
         }
         dirty = true
+    }
+
+    /// Frame IDs that currently have a vector here.
+    package func storedFrameIds() -> Set<UInt64> {
+        Set(frameIds)
     }
 
     package func remove(frameId: UInt64) async throws {

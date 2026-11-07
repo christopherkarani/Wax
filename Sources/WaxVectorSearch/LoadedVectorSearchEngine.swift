@@ -58,6 +58,17 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
+    package func storedFrameIds() async -> Set<UInt64> {
+        switch self {
+        case .accelerate(let engine):
+            await engine.storedFrameIds()
+        #if canImport(Metal) && canImport(MetalANNS)
+        case .metalANNS(let engine):
+            await engine.storedFrameIds()
+        #endif
+        }
+    }
+
     package func remove(frameId: UInt64) async throws {
         switch self {
         case .accelerate(let engine):
@@ -100,7 +111,9 @@ package enum LoadedVectorSearchEngine: Sendable {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> LoadedVectorSearchEngine {
-        let encoding = try await currentEncoding(for: wax)
+        // Read (and checksum) the segment once: kind selection and the engine share it.
+        let segment = try await currentSegmentBytes(for: wax)
+        let encoding = try segment.map(validatedCurrentEncoding(from:))
         let projectedCount = try await projectedVectorCount(for: wax, fallbackDimensions: dimensions)
         let selectedKind = try resolveKind(
             encoding: encoding,
@@ -110,10 +123,20 @@ package enum LoadedVectorSearchEngine: Sendable {
 
         switch selectedKind {
         case .accelerate:
-            return .accelerate(try await AccelerateVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .accelerate(try await AccelerateVectorEngine.load(
+                from: wax,
+                segment: segment,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #if canImport(Metal) && canImport(MetalANNS)
         case .metalANNS:
-            return .metalANNS(try await MetalANNSVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .metalANNS(try await MetalANNSVectorEngine.load(
+                from: wax,
+                segment: segment,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #endif
         }
     }
@@ -150,13 +173,16 @@ package enum LoadedVectorSearchEngine: Sendable {
     }
 
     package static func currentEncoding(for wax: Wax) async throws -> VectorSerializer.VecEncoding? {
+        try await currentSegmentBytes(for: wax).map(validatedCurrentEncoding(from:))
+    }
+
+    /// The vector segment an engine loads: the staged one, else the committed one (whose
+    /// checksum the read verifies).
+    package static func currentSegmentBytes(for wax: Wax) async throws -> Data? {
         if let staged = await wax.readStagedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: staged.bytes)
+            return staged.bytes
         }
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: bytes)
-        }
-        return nil
+        return try await wax.readCommittedVecIndexBytes()
     }
 
     private static func validatedCurrentEncoding(from data: Data) throws -> VectorSerializer.VecEncoding {

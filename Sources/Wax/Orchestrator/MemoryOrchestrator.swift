@@ -195,15 +195,6 @@ package actor MemoryOrchestrator {
         } else {
             lifecycle = .disabled
         }
-        if embedder != nil,
-           let degradedReason = await Self.vectorCoverageDegradedReason(in: wax) {
-            switch lifecycle {
-            case .ready(let attached, _):
-                lifecycle = .ready(attached: attached, degradedReason: degradedReason)
-            case .disabled, .loading, .unavailable:
-                break
-            }
-        }
         var supersededReason: String?
         if let embedder {
             if let binding = existingMemoryBinding, !binding.isEmpty, embedder.identity == nil {
@@ -251,6 +242,16 @@ package actor MemoryOrchestrator {
             catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        // A superseded-vectors reason outranks the coverage one, so skip the scan then. The
+        // session's engine already holds every embedded frame ID, so the scan reuses them
+        // instead of reading and decoding the vector segment again.
+        if embedder != nil, supersededReason == nil, case .ready(let attached, _) = lifecycle,
+           let degradedReason = await Self.vectorCoverageDegradedReason(
+               in: wax,
+               loadedFrameIds: await session.loadedVectorFrameIds()
+           ) {
+            self.embedderLifecycle = .ready(attached: attached, degradedReason: degradedReason)
+        }
 
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm

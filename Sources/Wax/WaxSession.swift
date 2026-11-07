@@ -212,6 +212,12 @@ package actor WaxSession {
         try await textEngine.remove(frameId: frameId)
     }
 
+    /// Frame IDs with a vector in the loaded engine, or `nil` when no engine is loaded.
+    /// Reflects only the pending embeddings synced so far (all of them right after open).
+    package func loadedVectorFrameIds() async -> Set<UInt64>? {
+        await concreteVectorEngine?.storedFrameIds()
+    }
+
     /// Removes a frame from the in-memory vector index when vector search is enabled.
     ///
     /// Records the id for re-application after pending-embedding sync on the next stage/commit
