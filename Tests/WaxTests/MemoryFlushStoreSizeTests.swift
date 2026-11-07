@@ -38,7 +38,9 @@ private func storeBytes(saving count: Int, flushEvery: Int) async throws -> UInt
 
     let live = flushedOnce - fixed
     let often = flushedOften - fixed
-    // 30 flushes without reuse keep about 15 index snapshots; with reuse the holes stay
-    // within about one extra copy of the live data.
-    #expect(often <= live * 5 / 2, "data after 30 flushes \(often) B vs one flush \(live) B")
+    // 30 flushes without reuse keep about 15 index snapshots. With reuse the file holds the
+    // live data, the commit the other header page names (kept until that page is overwritten,
+    // so a torn header can fall back to it), and holes within about one more copy. Measured
+    // at 2.97x after 6 flushes and 3.61x after 300, so the bound doesn't depend on flush count.
+    #expect(often <= live * 4, "data after 30 flushes \(often) B vs one flush \(live) B")
 }
