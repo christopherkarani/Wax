@@ -35,6 +35,12 @@ package actor Wax {
     var pendingMutationSummary: PendingMutationSummary
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var encodedCommittedFramePayloadCache: Data?
+    /// Built by the first remember dedup probe, then updated by every pending mutation and commit.
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var rememberDedupIndex: RememberDedupIndex?
+    /// Frames the remember dedup probe has examined since open, for tests.
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var rememberDedupFramesExamined: UInt64 = 0
     private var stagedLexIndex: StagedLexIndex?
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var stagedVecIndex: StagedVecIndex?
@@ -606,6 +612,7 @@ package actor Wax {
         }
 
         clearPendingMutations()
+        rememberDedupIndex?.didCommit()
         stagedLexIndex = nil
         stagedVecIndex = nil
         stagedLexIndexStamp = nil

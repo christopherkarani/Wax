@@ -21,6 +21,7 @@ extension Wax {
         let mutation = PendingMutation(sequence: sequence, entry: entry)
         pendingMutations.append(mutation)
         pendingMutationSummary.record(mutation)
+        rememberDedupIndex?.record(entry)
     }
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
