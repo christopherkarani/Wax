@@ -42,8 +42,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private var failedGraphBuildGeneration: UInt64?
     /// Graph builds that threw. Searches keep using the exact scan when this happens.
     package private(set) var graphBuildFailureCount = 0
-    /// Ids soft-deleted from `index`; MetalANNS keeps them reserved until the graph is rebuilt.
-    private var softDeletedFrameIds: Set<UInt64> = []
     private var frameIds: [UInt64] = []
     private var positions: [UInt64: Int] = [:]
     private var vectors: [Float] = []
@@ -194,7 +192,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         } else if let index {
             do {
                 try await index.delete(id: frameId)
-                softDeletedFrameIds.insert(frameId)
             } catch {
                 invalidateIndex()
             }
@@ -315,7 +312,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private func hits(from neighbors: [VectorNeighbor<UInt64>]) -> [(frameId: UInt64, score: Float)] {
         neighbors
             .filter { positions[$0.id] != nil }
-            .map { (frameId: $0.id, score: metric.score(fromDistance: $0.score)) }
+            .map { (frameId: $0.id, score: metric.score(fromDistance: $0.distance)) }
             .filter { $0.score.isFinite }
             .sorted { lhs, rhs in
                 if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
@@ -323,7 +320,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             }
     }
 
-    /// MetalANNS graph construction requires more nodes than the graph degree.
+    /// A graph over no more nodes than its degree is no faster than the exact scan.
     private var canBuildIndex: Bool {
         frameIds.count > configuration.degree
     }
@@ -357,17 +354,11 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
-    /// Applies new-id inserts to the graph incrementally when MetalANNS can take them;
-    /// otherwise drops the graph so the next search rebuilds it from `vectors`.
-    /// MetalANNS 0.3.0 cannot re-insert an id it soft-deleted, and inserts past the capacity
-    /// fixed when the graph was built throw. The graph is a derived cache, so any insert
-    /// failure is handled by rebuilding rather than by failing an add whose data is stored.
+    /// Applies new-id inserts (including re-adds of removed ids) to the graph incrementally.
+    /// The graph is a derived cache, so an insert failure drops it for a rebuild from
+    /// `vectors` rather than failing an add whose data is stored.
     private func insertIntoIndex(_ records: [VectorRecord<UInt64>]) async {
         guard let index, !records.isEmpty else { return }
-        guard !records.contains(where: { softDeletedFrameIds.contains($0.id) }) else {
-            invalidateIndex()
-            return
-        }
         do {
             if records.count == 1, let record = records.first {
                 try await index.insert(record)
@@ -381,7 +372,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
 
     private func invalidateIndex() {
         index = nil
-        softDeletedFrameIds.removeAll()
     }
 
     /// Starts a background graph build from a snapshot of the stored vectors, unless one is
@@ -399,13 +389,20 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             return
         }
         let generation = mutationGeneration
-        let rows = matrixVectors()
+        let rows = vectors
         let ids = frameIds
+        let dimension = dimensions
         let configuration = configuration
         let hook = graphBuildHook
         // Weak: a pending build must not keep a discarded engine alive.
         graphBuildTask = Task { [weak self] in
-            let result = await Self.buildGraph(rows: rows, ids: ids, configuration: configuration, hook: hook)
+            let result = await Self.buildGraph(
+                flatVectors: rows,
+                dimension: dimension,
+                ids: ids,
+                configuration: configuration,
+                hook: hook
+            )
             await self?.finishBackgroundGraphBuild(result, generation: generation, snapshotCount: ids.count)
         }
     }
@@ -426,7 +423,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let generation = mutationGeneration
         let snapshotCount = frameIds.count
         let result = await Self.buildGraph(
-            rows: matrixVectors(),
+            flatVectors: vectors,
+            dimension: dimensions,
             ids: frameIds,
             configuration: configuration,
             hook: graphBuildHook
@@ -453,7 +451,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 return
             }
             index = built
-            softDeletedFrameIds.removeAll()
             rebuildDebounceGeneration = nil
             guard frameIds.count > snapshotCount else { return }
             let appended = (snapshotCount..<frameIds.count).map { row in
@@ -477,7 +474,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     private static func buildGraph(
-        rows: [[Float]],
+        flatVectors: [Float],
+        dimension: Int,
         ids: [UInt64],
         configuration: IndexConfiguration,
         hook: GraphBuildHook?
@@ -488,21 +486,12 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             try await hook?()
             try Task.checkCancellation()
             let builder = VectorIndex<UInt64, VectorIndexState.Unbuilt>(configuration: configuration)
-            return .success(try await builder.build(vectors: rows, ids: ids))
+            return .success(
+                try await builder.build(flatVectors: flatVectors, dimension: dimension, ids: ids)
+            )
         } catch {
             return .failure(error)
         }
-    }
-
-    private func matrixVectors() -> [[Float]] {
-        guard !frameIds.isEmpty else { return [] }
-        var rows: [[Float]] = []
-        rows.reserveCapacity(frameIds.count)
-        for index in frameIds.indices {
-            let start = index * dimensions
-            rows.append(Array(vectors[start..<(start + dimensions)]))
-        }
-        return rows
     }
 
     private func overwriteVector(at index: Int, with vector: [Float]) {

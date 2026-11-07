@@ -225,6 +225,34 @@ func metalANNSHandlesMutationsAfterGraphBuild() async throws {
 }
 
 @Test(
+    "MetalANNS engine re-adds a removed id without dropping the graph",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSReAddsRemovedIdInPlace() async throws {
+    let dimensions = 8
+    let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0xFEED)
+    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    _ = try await metalANNS.search(vector: base.vectors[0], topK: 5)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await metalANNS.isGraphReady)
+
+    let reused = base.frameIds[6]
+    for engine in [metalANNS, accelerate] as [any VectorSearchEngine] {
+        try await engine.remove(frameId: reused)
+        try await engine.add(frameId: reused, vector: extra.vectors[0])
+    }
+    // MetalANNS 0.4.0 re-inserts a soft-deleted id into its slot, so no rebuild is needed.
+    #expect(await metalANNS.isGraphReady)
+    let hits = try await metalANNS.search(vector: extra.vectors[0], topK: 1)
+    #expect(hits.first?.frameId == reused)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[0], count: 40)
+}
+
+@Test(
     "MetalANNS engine grows past the capacity its graph was built with",
     .enabled(if: metalANNSAvailable())
 )

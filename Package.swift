@@ -133,7 +133,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.3.0"),
+        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.4.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
