@@ -41,6 +41,9 @@ package actor Wax {
     /// Frames the remember dedup probe has examined since open, for tests.
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var rememberDedupFramesExamined: UInt64 = 0
+    /// Full frame-list timeline scans since open, for tests.
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var timelineScans: UInt64 = 0
     private var stagedLexIndex: StagedLexIndex?
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var stagedVecIndex: StagedVecIndex?

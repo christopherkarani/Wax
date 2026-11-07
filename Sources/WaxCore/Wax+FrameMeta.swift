@@ -310,7 +310,13 @@ extension Wax {
 
     package func timeline(_ query: TimelineQuery) async -> [FrameMeta] {
         await withReadLock {
-            TimelineQuery.filter(frames: toc.frames, query: query)
+            timelineScans &+= 1
+            return TimelineQuery.filter(frames: toc.frames, query: query)
         }
+    }
+
+    /// Timeline scans (each one walks every frame) since this handle opened.
+    package func timelineScansForTesting() async -> UInt64 {
+        await withReadLock { timelineScans }
     }
 }

@@ -237,8 +237,10 @@ extension Wax {
         }
         let structuredFrameIds = try await structuredFrameIdsAsync
 
+        // Only hybrid fusion reads the recency lane, and the timeline walks every frame, so
+        // single-lane searches skip it.
         var timelineFrameIds: [UInt64] = []
-        if queryType == .temporal, weights.temporal > 0 {
+        if case .hybrid = request.lane, queryType == .temporal, weights.temporal > 0 {
             let timelineQuery = TimelineQuery(
                 limit: max(candidateLimit, request.timelineFallbackLimit),
                 order: .reverseChronological,
