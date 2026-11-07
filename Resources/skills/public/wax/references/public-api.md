@@ -106,7 +106,8 @@ Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
 Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
-- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode`.
+- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode` and `similarity: VectorSimilarity` (default `.cosine`).
+- `public enum VectorSimilarity: String, Sendable, Equatable { case cosine, dotProduct }` — how the store ranks the provider's vectors. `.dotProduct` ranks by raw inner product (for dot-product-trained models such as `facebook/contriever`; pair it with `normalize = false`, since with `normalize = true` it ranks like cosine), and its vector-lane scores are not bounded to `-1...1`. A store records its similarity when it first commits vectors; opening it with an embedder that declares another one throws `WaxError.io` ("vector similarity mismatch"), and a provider that attaches later is reported `unavailable`. Changing similarity needs a new store.
 - `public protocol BatchEmbeddingProvider: EmbeddingProvider` — `func embed(batch:) async throws -> [[Float]]`.
 - `public protocol QueryAwareEmbeddingProvider: EmbeddingProvider` — `func embedQuery(_:) async throws -> [Float]` for retrieval-optimized query embeddings.
 - `public struct EmbeddingIdentity` (`provider`, `model`, `dimensions`, `normalized`).

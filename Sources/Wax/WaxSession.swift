@@ -57,6 +57,9 @@ package actor WaxSession {
 
     private let textEngine: FTS5SearchEngine?
     private var concreteVectorEngine: ConcreteVectorEngine?
+    /// Metric of `concreteVectorEngine`: `config.vectorMetric`, or the attaching provider's
+    /// when the engine loads late through `ensureVectorEngine(dimensions:metric:)`.
+    private var vectorEngineMetric: VectorMetric
     private var lastPendingEmbeddingSequence: UInt64?
     /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
     private var pendingRemovedFrameIds: Set<UInt64> = []
@@ -77,6 +80,7 @@ package actor WaxSession {
         self.wax = wax
         self.mode = mode
         self.config = config
+        self.vectorEngineMetric = config.vectorMetric
 
         var acquiredWriterLeaseId: UUID?
         if case .readWrite(let policy) = mode {
@@ -152,16 +156,26 @@ package actor WaxSession {
     }
 
     /// Load the vector engine after a provider attaches when dimensions were unknown at open.
-    package func ensureVectorEngine(dimensions: Int) async throws {
+    /// `metric` is the attaching provider's; an engine already loaded with another metric
+    /// (the store's recorded one) cannot serve it, so that throws.
+    package func ensureVectorEngine(dimensions: Int, metric: VectorMetric) async throws {
         guard config.enableVectorSearch else { return }
-        if concreteVectorEngine != nil { return }
+        if concreteVectorEngine != nil {
+            guard vectorEngineMetric == metric else {
+                throw WaxError.io(
+                    VectorSimilarityBinding.mismatchReason(stored: vectorEngineMetric, declared: metric)
+                )
+            }
+            return
+        }
         let loaded = try await Self.loadVectorEngine(
             wax: wax,
-            metric: config.vectorMetric,
+            metric: metric,
             dimensions: dimensions,
             preference: config.vectorEnginePreference
         )
         concreteVectorEngine = loaded
+        vectorEngineMetric = metric
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
         lastPendingEmbeddingSequence = snapshot.latestSequence
     }

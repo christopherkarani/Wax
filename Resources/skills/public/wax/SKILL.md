@@ -22,7 +22,7 @@ Do not load this skill at session start or for MCP `remember` / `recall` /
 2. Use experimental `PhotoMemory` / `VideoMemory` (`import Wax`) for photo and video RAG on Darwin. Build the embedder with `BuiltInMultimodalEmbeddings.make`.
 3. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, `WaxSession`, and `MiniLMEmbedder` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
 4. Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API.
-5. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
+5. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`, `VectorSimilarity`). A custom embedder for a dot-product-trained model declares `let similarity = VectorSimilarity.dotProduct` with `normalize = false`; the default is `.cosine`.
 
 ## Core Workflow
 1. Choose a `.wax` store URL.

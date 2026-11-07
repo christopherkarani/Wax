@@ -39,6 +39,7 @@ The module also defines the ``EmbeddingProvider`` protocol for text-to-vector co
 - ``BatchEmbeddingProvider``
 - ``EmbeddingIdentity``
 - ``ProviderExecutionMode``
+- ``VectorSimilarity``
 
 ### Serialization
 

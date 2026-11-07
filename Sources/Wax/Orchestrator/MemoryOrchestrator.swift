@@ -218,6 +218,19 @@ package actor MemoryOrchestrator {
                 }
             }
         }
+        // Without a provider yet (it may attach later), rank by what the store recorded.
+        let storedVectorMetric = await VectorSimilarityBinding.storedMetric(in: wax)
+        var vectorMetric = storedVectorMetric ?? .cosine
+        if let embedder, resolvedConfig.enableVectorSearch {
+            let declared = VectorMetric(embedder.similarity)
+            if let storedVectorMetric, storedVectorMetric != declared {
+                try? await wax.close()
+                throw WaxError.io(
+                    VectorSimilarityBinding.mismatchReason(stored: storedVectorMetric, declared: declared)
+                )
+            }
+            vectorMetric = declared
+        }
 
         self.config = resolvedConfig
         self.ragBuilder = FastRAGContextBuilder()
@@ -237,7 +250,7 @@ package actor MemoryOrchestrator {
             enableVectorSearch: resolvedConfig.enableVectorSearch,
             enableStructuredMemory: resolvedConfig.enableStructuredMemory,
             vectorEnginePreference: preference,
-            vectorMetric: .cosine,
+            vectorMetric: vectorMetric,
             vectorDimensions: embedder?.dimensions,
             catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
@@ -357,7 +370,10 @@ package actor MemoryOrchestrator {
             if missing.isEmpty {
                 await refreshEmbeddingCoverage()
             } else {
-                try await session.ensureVectorEngine(dimensions: embedder.dimensions)
+                try await session.ensureVectorEngine(
+                    dimensions: embedder.dimensions,
+                    metric: VectorMetric(embedder.similarity)
+                )
             }
             return missing
         }
@@ -410,7 +426,10 @@ package actor MemoryOrchestrator {
         let plan = try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
             guard !(await isClosed) else { throw CancellationError() }
-            try await session.ensureVectorEngine(dimensions: attached.dimensions)
+            try await session.ensureVectorEngine(
+                dimensions: attached.dimensions,
+                metric: VectorMetric(attached.similarity)
+            )
             let marker = await reembedProgressMarker(targetModel: targetModel)
             return SupersededReembedPlan(
                 nextFrameId: marker?.nextFrameId ?? 0,
