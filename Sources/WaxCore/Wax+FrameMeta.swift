@@ -182,6 +182,9 @@ extension Wax {
 
     package func frameMetasIncludingPending() async -> [FrameMeta] {
         await withReadLock {
+            // Committed ids are dense and in order (the TOC decode checks it), so with nothing
+            // pending the merge below would rebuild `toc.frames`. It runs on every open.
+            guard !pendingMutations.isEmpty else { return toc.frames }
             let frameIds = frameIdsTouchedByCommittedOrPendingFramesUnlocked()
             let metas = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
             return metas.values.sorted { $0.id < $1.id }
