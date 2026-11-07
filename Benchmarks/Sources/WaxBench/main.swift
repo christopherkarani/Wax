@@ -70,6 +70,8 @@ struct Options {
     var embedder: BuiltInEmbeddingProvider = .miniLM
     /// Set by `--embedder http://...`: embed through scripts/embed_server.py instead.
     var embedderURL: URL?
+    /// Set by `--embedder-similarity cosine|dot`; applies to the HTTP embedder only.
+    var embedderSimilarity: VectorSimilarity = .cosine
     var concurrency = 4
     var storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("wax-bench").path
 
@@ -98,6 +100,12 @@ struct Options {
                     throw BenchError.usage("unknown embedder \(raw)")
                 }
                 options.embedder = provider
+            case "--embedder-similarity":
+                switch try value(flag) {
+                case "cosine": options.embedderSimilarity = .cosine
+                case "dot": options.embedderSimilarity = .dotProduct
+                case let other: throw BenchError.usage("embedder similarity must be cosine or dot, got \(other)")
+                }
             case "--mode":
                 switch try value(flag) {
                 case "text": options.mode = .textOnly
@@ -115,6 +123,9 @@ struct Options {
         }
         guard !options.input.isEmpty, !options.output.isEmpty else {
             throw BenchError.usage("--input and --output are required")
+        }
+        guard options.embedderSimilarity == .cosine || options.embedderURL != nil else {
+            throw BenchError.usage("--embedder-similarity dot needs --embedder http://...; built-in embedders are cosine")
         }
         return options
     }
@@ -221,7 +232,7 @@ func retrieve(_ options: Options) async throws {
     let jobs = try readJobs(options.input)
     try FileManager.default.createDirectory(atPath: options.storeDir, withIntermediateDirectories: true)
     let embedder: any EmbeddingProvider = if let url = options.embedderURL {
-        try await HTTPEmbeddings.connect(to: url)
+        try await HTTPEmbeddings.connect(to: url, similarity: options.embedderSimilarity)
     } else {
         try await BuiltInEmbeddings.make(options.embedder)
     }

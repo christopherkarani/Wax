@@ -76,8 +76,12 @@ in the baselines); Wax still does the chunking, text lane and fusion.
 ```bash
 python3 -I $S/embed_server.py --model facebook/contriever --port 8765 &   # torch + transformers
 $BIN retrieve --input $RUNS/lme_s_session.jobs.jsonl --output $RUNS/wax-hybrid-contriever.ranked.jsonl \
-  --mode hybrid --embedder http://127.0.0.1:8765 --top-k 300 --concurrency 4
+  --mode hybrid --embedder http://127.0.0.1:8765 --embedder-similarity dot --top-k 300 --concurrency 4
 ```
+
+Contriever was trained for dot product, so pass `--embedder-similarity dot` (default
+`cosine`): Wax then keeps the server's unnormalized vectors and ranks by inner product, as
+the bare baseline does. It applies to `--embedder http://...` only.
 
 `--top-k 300` is deliberate: Wax returns chunks, and several chunks of one session collapse
 to one doc id, so a small top-k yields fewer than 50 distinct sessions. 419 of 500 questions

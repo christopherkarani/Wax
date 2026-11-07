@@ -3,10 +3,17 @@ import Wax
 
 /// Embeds through `scripts/embed_server.py` on localhost, so Wax and a bare reference
 /// retriever can share one model. Used with `--embedder http://127.0.0.1:<port>`.
+///
+/// `--embedder-similarity dot` declares a dot-product model (such as Contriever): Wax then
+/// stores the server's unnormalized vectors and ranks them by inner product. The default,
+/// cosine, normalizes them.
 struct HTTPEmbeddings: BatchEmbeddingProvider {
     let dimensions: Int
-    let normalize = true
+    let similarity: VectorSimilarity
     let identity: EmbeddingIdentity?
+
+    /// Dot product needs the vectors' lengths; normalizing them would rank like cosine.
+    var normalize: Bool { similarity == .cosine }
 
     private let embedURL: URL
     private let session: URLSession
@@ -24,7 +31,7 @@ struct HTTPEmbeddings: BatchEmbeddingProvider {
         let vectors: [[Float]]
     }
 
-    static func connect(to base: URL) async throws -> HTTPEmbeddings {
+    static func connect(to base: URL, similarity: VectorSimilarity) async throws -> HTTPEmbeddings {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 600
         let session = URLSession(configuration: configuration)
@@ -36,8 +43,12 @@ struct HTTPEmbeddings: BatchEmbeddingProvider {
         }
         return HTTPEmbeddings(
             dimensions: info.dimensions,
+            similarity: similarity,
             identity: EmbeddingIdentity(
-                provider: "wax-bench-http", model: info.model, dimensions: info.dimensions, normalized: true
+                provider: "wax-bench-http",
+                model: info.model,
+                dimensions: info.dimensions,
+                normalized: similarity == .cosine
             ),
             embedURL: base.appendingPathComponent("embed"),
             session: session
