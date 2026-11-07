@@ -91,11 +91,11 @@ vectors served by `Benchmarks/scripts/embed_server.py`.
 | LoCoMo R_all@5 (cosine, as Wax ships) | – | 0.282 | 0.443 |
 | LongMemEval R_all@5 (cosine, as Wax ships) | 0.754 | 0.776 | 0.878 |
 
-Contriever was trained for dot product. `Memory` always ranks vectors by cosine, which
-costs a dot-product model 15 points on LongMemEval. The dot-product rows used a local
-build where `Memory` ranks by inner product when the embedder sets `normalize = false`;
-that change is not on the branch. Wax's bundled MiniLM and Arctic models are cosine
-models and are unaffected.
+Contriever was trained for dot product. Before `82cd29e13`, `Memory` always ranked
+vectors by cosine, which cost a dot-product model 15 points on LongMemEval. Embedders now
+declare `similarity: .dotProduct` (the default stays `.cosine`); the bench passes
+`--embedder-similarity dot`. The dot-product rows come from the branch build. Wax's
+bundled MiniLM and Arctic models are cosine models and are unaffected.
 
 ## End-to-end QA
 
@@ -183,6 +183,9 @@ Fixes on the branch, each with tests:
   records decode in place instead of copying each field, and the full-text catch-up no
   longer rebuilds the frame list when nothing is pending. Open plus first query at 100k:
   840 ms to 482 ms.
+- **Dot-product embedders (`82cd29e13`, `828d03b46`).** `EmbeddingProvider` has a
+  `similarity` requirement, default `.cosine`. A store records the similarity of its
+  vector index and refuses to open with an embedder that declares another one.
 - **Embeddings (`c67cb0088`).** The CoreML autorelease pool drains after every prediction.
 
 ## Open issues
@@ -190,15 +193,12 @@ Fixes on the branch, each with tests:
 1. **LongMemEval multi-session retrieval.** MiniLM trails Contriever by 9 points on
    multi-session questions. Closing it needs a stronger on-device embedder; ranking
    changes reach about 0.88.
-2. **Dot-product embedders.** `Memory` always ranks by cosine. Ranking by inner product
-   when an embedder sets `normalize = false` gains 13 points on LongMemEval for
-   Contriever, but it changes behaviour for existing custom embedders and stores.
-3. **Hybrid tail latency.** Hybrid p95 is 28.1 ms at 100k. The full-text query dominates,
+2. **Hybrid tail latency.** Hybrid p95 is 28.1 ms at 100k. The full-text query dominates,
    and the structured-memory lane waits behind it on the same database queue even when
    the store has no structured entities.
-4. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
+3. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
    the vector segment and the table of contents. That limits sustained ingest (1,858
    docs/s at 100k) and is why Wax was not run at 1M. Fixing it needs a file-format change.
-5. **Cold open** is 482 ms at 100k, against 384 ms for Chroma. What remains is mostly the
+4. **Cold open** is 482 ms at 100k, against 384 ms for Chroma. What remains is mostly the
    vector segment's checksum and decode (about 150 ms) and the table-of-contents parse
    (about 105 ms). Going lower needs lazy loading or per-chunk checksums.
