@@ -105,6 +105,9 @@ extension FTS5SearchEngine {
         let readers = try await fanOutReaders()
         await beginFanOutRead()
         defer { endFanOutRead() }
+        if let duringFanOutReadForTesting {
+            await duringFanOutReadForTesting()
+        }
 
         let first = readers[0]
         let bounds = try await io.run {
@@ -188,12 +191,14 @@ extension FTS5SearchEngine {
     // them would mix snapshots (an upserted frame could appear under its old and new rowid),
     // and a rollback-journal commit racing the readers' shared locks can fail outright.
     // Every write on the writer connection waits for fan-out reads to finish, and fan-out
-    // reads wait for a running write. Only this actor writes, so the gate covers every writer.
+    // reads wait for a running or queued write. Only this actor writes, so the gate covers every writer.
 
     func beginWrite() async {
+        writersWaiting += 1
         while writeInProgress || fanOutReadsInFlight > 0 {
             await withCheckedContinuation { writeGateWaiters.append($0) }
         }
+        writersWaiting -= 1
         writeInProgress = true
     }
 
@@ -203,8 +208,13 @@ extension FTS5SearchEngine {
     }
 
     private func beginFanOutRead() async {
-        while writeInProgress {
+        // Queued writers go first, so back-to-back searches cannot hold off a commit. A
+        // writer only waits for reads already in flight, which never wait, so this cannot
+        // deadlock.
+        while writeInProgress || writersWaiting > 0 {
+            fanOutReadersWaiting += 1
             await withCheckedContinuation { writeGateWaiters.append($0) }
+            fanOutReadersWaiting -= 1
         }
         fanOutReadsInFlight += 1
     }

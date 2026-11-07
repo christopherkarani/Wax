@@ -114,3 +114,53 @@ func partitionedSearchNeverMixesSnapshotsWithConcurrentWrites() async throws {
         }
     }
 }
+
+private actor Latch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
+@Test
+func queuedWriteIsNotStarvedByLaterSearches() async throws {
+    // A commit (serialize) waits for fan-out reads in flight. Searches that arrive after
+    // it must wait for it too, or back-to-back searches could hold off a commit forever.
+    let fanned = try await engine(docs: 400, fanOut: .init(minDocsPerPartition: 50, maxPartitions: 4))
+    let entered = Latch()
+    let release = Latch()
+    // Every fan-out read pauses inside the gate until released.
+    await fanned.setDuringFanOutReadForTesting {
+        await entered.open()
+        await release.wait()
+    }
+
+    let first = Task { try await fanned.search(matchQuery: queries[0], topK: 10) }
+    await entered.wait()
+    let commit = Task { _ = try await fanned.serialize() }
+    while await fanned.writersWaitingForTesting() == 0 { await Task.yield() }
+
+    // The later search either waits behind the queued commit, or overtakes it and
+    // becomes a second read in flight (where it pauses too).
+    let later = Task { try await fanned.search(matchQuery: queries[1], topK: 10) }
+    while await fanned.fanOutReadersWaitingForTesting() == 0,
+          await fanned.fanOutReadsInFlightForTesting() < 2 {
+        await Task.yield()
+    }
+    #expect(await fanned.fanOutReadsInFlightForTesting() == 1)
+    #expect(await fanned.fanOutReadersWaitingForTesting() == 1)
+
+    await release.open()
+    _ = try await first.value
+    try await commit.value
+    _ = try await later.value
+}
