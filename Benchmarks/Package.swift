@@ -6,7 +6,7 @@ let package = Package(
     name: "WaxBenchmarks",
     platforms: [.macOS(.v15)],
     dependencies: [
-        .package(path: "..", traits: ["MiniLMEmbeddings", "ArcticEmbeddings"]),
+        .package(path: "..", traits: ["MiniLMEmbeddings", "ArcticEmbeddings", "E5Embeddings"]),
     ],
     targets: [
         .executableTarget(

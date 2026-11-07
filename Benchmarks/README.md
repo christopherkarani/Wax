@@ -4,7 +4,7 @@ Reproducible retrieval, end-to-end QA, and systems benchmarks for Wax. Results a
 analysis: [Resources/docs/benchmarks/2026-11-06-memory-benchmarks.md](../Resources/docs/benchmarks/2026-11-06-memory-benchmarks.md).
 
 This is a separate SwiftPM package so the benchmark harness never ships with Wax. It
-depends on the parent package with the `MiniLMEmbeddings` and `ArcticEmbeddings` traits.
+depends on the parent package with the `MiniLMEmbeddings`, `ArcticEmbeddings` and `E5Embeddings` traits.
 
 | Benchmark | What it measures | Protocol source |
 |---|---|---|
@@ -59,7 +59,7 @@ for g in session turn; do
   python3 -I $S/longmemeval_prepare.py --input $DATA/longmemeval/longmemeval_s_cleaned.json \
     --granularity $g --jobs $RUNS/lme_s_$g.jobs.jsonl --gold $RUNS/lme_s_$g.gold.jsonl
 done
-# Wax: --mode text | vector | hybrid | hybrid:<alpha>, --embedder minilm | arctic
+# Wax: --mode text | vector | hybrid | hybrid:<alpha>, --embedder minilm | arctic | e5
 $BIN retrieve --input $RUNS/lme_s_session.jobs.jsonl --output $RUNS/wax-vector-minilm-session.ranked.jsonl \
   --mode vector --embedder minilm --top-k 300 --concurrency 4
 python3 -I $S/longmemeval_score_retrieval.py --gold $RUNS/lme_s_session.gold.jsonl \

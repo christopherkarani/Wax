@@ -97,7 +97,7 @@ struct Options {
                     continue
                 }
                 guard let provider = BuiltInEmbeddingProvider(rawValue: raw) else {
-                    throw BenchError.usage("unknown embedder \(raw)")
+                    throw BenchError.usage("unknown embedder \(raw); expected minilm, arctic, e5 or http://...")
                 }
                 options.embedder = provider
             case "--embedder-similarity":
