@@ -14,7 +14,8 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | LongMemEval-S QA | accuracy | 86.0% (hybrid, MiniLM, top 5) | **Contriever top 5: 87.8%** | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
 | Systems, 100k passages | disk | 395 MB | Chroma 408 MB (text + vectors) | 13.5 GB |
-| Systems, 100k passages | vector p95 | 5.7 ms | Chroma HNSW 1.4 ms | 64–97 ms |
+| Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
+| Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
 
 Wax leads LoCoMo on retrieval and QA. On LongMemEval it is 1.9 points behind Contriever
 in retrieval and 1.8 points behind in QA, using a model one fifth the size (MiniLM-L6,
@@ -131,19 +132,20 @@ metadata; most competitors store vectors only.
 
 | System | N | Ingest docs/s | Disk MB | Cold open + 1st query ms | Vector p50 / p95 ms | Recall@10 |
 |---|---|---|---|---|---|---|
-| Wax | 10,000 | 3,401 | 53 | 138 | 2.30 / 3.21 | 0.998 |
+| Wax | 10,000 | 3,401 | 53 | 81 | 2.23 / 2.81 | 0.998 |
 | Chroma HNSW | 10,000 | 3,064 | 51 | 283 | 0.83 / 1.02 | 0.992 |
 | sqlite-vec | 10,000 | 43,334 | 19 | 4 | 2.27 / 2.54 | 1.000 |
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
-| Wax | 100,000 | 1,858 | 395 | 840 | 4.13 / 5.74 | 0.998 |
+| Wax | 100,000 | 1,858 | 395 | 482 | 3.86 / 4.44 | 0.998 |
 | Chroma HNSW | 100,000 | 2,820 | 408 | 384 | 1.06 / 1.37 | 0.976 |
 | sqlite-vec | 100,000 | 40,608 | 192 | 27 | 26.3 / 28.9 | 1.000 |
 | usearch HNSW | 100,000 | 12,630 | 169 | 65 | 0.34 / 0.48 | 0.968 |
 | FAISS flat | 100,000 | 1,236,051 | 154 | 53 | 1.57 / 2.04 | 1.000 |
 | LanceDB IVF-PQ | 100,000 | 22,584 | 177 | 556 | 2.49 / 3.02 | 0.522 |
 
-Wax hybrid search (text and vector lanes fused) at 100k: p50 8.5 ms, p95 31.6 ms.
+Wax latency and open figures are the median of three query runs on the final build. Wax
+hybrid search (text and vector lanes fused) at 100k: p50 7.8 ms, p95 28.1 ms.
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
 sqlite-vec 1.9 GB at 330 ms. Wax was not run at 1M (see open issues).
@@ -176,6 +178,11 @@ Fixes on the branch, each with tests:
   text-only search, which never read it: 95 ms per query at 100k, on 7.4% of queries.
   Single-lane searches skip it, and hybrid selects the newest frames with a bounded heap
   instead of copying and sorting all of them. Vector p95 at 100k: 96.8 ms to 5.7 ms.
+- **Open (`c8c97916a`, `d6c933114`, `3006c3a3c`).** Opening a store read and checksummed
+  the 153 MB vector segment three times at 100k. It now reads it once. Table-of-contents
+  records decode in place instead of copying each field, and the full-text catch-up no
+  longer rebuilds the frame list when nothing is pending. Open plus first query at 100k:
+  840 ms to 482 ms.
 - **Embeddings (`c67cb0088`).** The CoreML autorelease pool drains after every prediction.
 
 ## Open issues
@@ -186,10 +193,12 @@ Fixes on the branch, each with tests:
 2. **Dot-product embedders.** `Memory` always ranks by cosine. Ranking by inner product
    when an embedder sets `normalize = false` gains 13 points on LongMemEval for
    Contriever, but it changes behaviour for existing custom embedders and stores.
-3. **Hybrid tail latency.** Hybrid p95 is 31.6 ms at 100k. The full-text query dominates,
+3. **Hybrid tail latency.** Hybrid p95 is 28.1 ms at 100k. The full-text query dominates,
    and the structured-memory lane waits behind it on the same database queue even when
    the store has no structured entities.
 4. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
    the vector segment and the table of contents. That limits sustained ingest (1,858
    docs/s at 100k) and is why Wax was not run at 1M. Fixing it needs a file-format change.
-5. **Cold open** is 840 ms at 100k, against 384 ms for Chroma.
+5. **Cold open** is 482 ms at 100k, against 384 ms for Chroma. What remains is mostly the
+   vector segment's checksum and decode (about 150 ms) and the table-of-contents parse
+   (about 105 ms). Going lower needs lazy loading or per-chunk checksums.
