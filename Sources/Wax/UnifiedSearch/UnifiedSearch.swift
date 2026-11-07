@@ -337,7 +337,9 @@ extension Wax {
 
             let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
             let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
-            let timelineIds = timelineFrameIds
+            // Recency only reorders frames that matched the query. Ranking every
+            // recent frame pushes unrelated notes above the relevant ones.
+            let timelineIds = timelineFrameIds.filter { textSet.contains($0) || vectorSet.contains($0) }
 
             var lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])] = []
             if textWeight > 0, !textIds.isEmpty { lists.append((source: .text, weight: textWeight, frameIds: textIds)) }

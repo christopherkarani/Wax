@@ -96,11 +96,11 @@ package struct FastRAGConfig: Sendable, Equatable {
     /// Search parameters used to collect candidates.
     package var searchTopK: Int = 24
     package var searchMode: SearchMode = .hybrid(alpha: 0.5)
-    package var rrfK: Int = 60
+    package var rrfK: Int = 10
     package var previewMaxBytes: Int = 512
 
     /// Enable deterministic query-aware reranking for context item ordering.
-    package var enableAnswerFocusedRanking: Bool = true
+    package var enableAnswerFocusedRanking: Bool = false
 
     /// Max top candidates to rerank for answer-focused ordering.
     package var answerRerankWindow: Int = 12
@@ -132,9 +132,9 @@ package struct FastRAGConfig: Sendable, Equatable {
         surrogateMaxTokens: Int = 60,
         searchTopK: Int = 24,
         searchMode: SearchMode = .hybrid(alpha: 0.5),
-        rrfK: Int = 60,
+        rrfK: Int = 10,
         previewMaxBytes: Int = 512,
-        enableAnswerFocusedRanking: Bool = true,
+        enableAnswerFocusedRanking: Bool = false,
         answerRerankWindow: Int = 12,
         answerDistractorPenalty: Float = 0.30,
         tierSelectionPolicy: TierSelectionPolicy = .importanceBalanced,

@@ -114,7 +114,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let vec = try await wax.enableVectorSearch(dimensions: 4)
 
-        let id0 = try await vec.putWithEmbedding(Data("Swift programming".utf8), embedding: [0.0, 0.0, 0.0, 1.0])
+        let id0 = try await wax.put(Data("Swift programming".utf8))
         try await text.indexText(frameId: id0, text: "Swift programming")
 
         let id1 = try await vec.putWithEmbedding(Data("Swift is fast".utf8), embedding: [1.0, 0.0, 0.0, 0.0])
@@ -1086,7 +1086,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: query,
-                lane: .hybrid(alpha: 0.3, embedding: [1.0, 0.0, 0.0, 0.0]),
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
                 topK: 2,
                 enableRankingDiagnostics: true,
@@ -1561,12 +1561,13 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let textResult = try #require(byID[textHit])
         let vectorResult = try #require(byID[vectorOnly])
         let evidenceResult = try #require(byID[evidence])
-        let timelineResult = try #require(byID[timelineOnly])
+        // Recency reorders matched frames; it must not pull in a recent frame
+        // that neither the text nor the vector lane retrieved.
+        #expect(byID[timelineOnly] == nil)
         #expect(textResult.sources.contains(.text))
+        #expect(textResult.sources.contains(.timeline))
         #expect(vectorResult.sources.contains(.vector))
         #expect(evidenceResult.sources.contains(.structured))
-        #expect(timelineResult.sources.contains(.timeline))
-        #expect(timelineResult.sources.contains(.text) == false)
 
         let laneSources = Set(
             response.results.compactMap(\.rankingDiagnostics).flatMap(\.laneContributions).map(\.source)

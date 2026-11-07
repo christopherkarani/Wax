@@ -168,6 +168,9 @@ package enum UnifiedRanking {
         return combined
     }
 
+    /// Weight of intent signals relative to the fused retrieval score.
+    package static let intentSignalScale: Float = 0.02
+
     package static func intentAwareRerank(
         results: [SearchResponse.Result],
         query: String,
@@ -344,11 +347,16 @@ package enum UnifiedRanking {
             return total
         }
 
+        // The signals above are sized in whole points, but fused RRF scores are
+        // about 1/(k + rank), roughly 0.1 at rank 1. At full size a date literal
+        // or an entity hit outranks every retrieval signal in the window, so the
+        // signals are scaled down to break near-ties between retrieved results.
         var scoredHead: [(index: Int, score: Float)] = []
         scoredHead.reserveCapacity(cappedWindow)
         for index in 0..<cappedWindow {
             let result = results[index]
-            scoredHead.append((index: index, score: compositeScore(for: result)))
+            let signal = compositeScore(for: result) - result.score
+            scoredHead.append((index: index, score: result.score + signal * intentSignalScale))
         }
         scoredHead.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
