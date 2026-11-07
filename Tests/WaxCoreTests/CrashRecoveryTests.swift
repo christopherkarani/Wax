@@ -215,10 +215,10 @@ private func appendBytes(_ data: Data, to url: URL) throws {
 /// footer is valid and ends the file, no newer footer can follow it, so open must not pay for a
 /// scan of the whole file tail (most of reopen time on a large store).
 @Test func openSkipsFooterScanWhenReplaySnapshotFooterEndsFile() async throws {
-    let url = try await makeStoreWithLostNewestHeaderPage()
-    defer { try? FileManager.default.removeItem(at: url) }
-
     for snapshotEnabled in [true, false] {
+        // A fresh store each time: open rewrites the lost header page once it recovers.
+        let url = try await makeStoreWithLostNewestHeaderPage()
+        defer { try? FileManager.default.removeItem(at: url) }
         let reopened = try await Wax.open(
             at: url,
             options: WaxOptions(walReplayStateSnapshotEnabled: snapshotEnabled)

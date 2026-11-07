@@ -85,6 +85,29 @@ struct FreeSpaceMap: Equatable, Sendable {
         extents = kept
     }
 
+    /// Marks `range` used and returns the parts of it that were free, in ascending order.
+    mutating func reserve(_ range: Range<UInt64>) -> [Range<UInt64>] {
+        guard !range.isEmpty else { return [] }
+        var taken: [Range<UInt64>] = []
+        var kept: [Range<UInt64>] = []
+        kept.reserveCapacity(extents.count + 1)
+        for extent in extents {
+            guard extent.overlaps(range) else {
+                kept.append(extent)
+                continue
+            }
+            taken.append(extent.clamped(to: range))
+            if extent.lowerBound < range.lowerBound {
+                kept.append(extent.lowerBound..<range.lowerBound)
+            }
+            if extent.upperBound > range.upperBound {
+                kept.append(range.upperBound..<extent.upperBound)
+            }
+        }
+        extents = kept
+        return taken
+    }
+
     /// Whether every byte of `range` is free.
     func isFree(_ range: Range<UInt64>) -> Bool {
         guard !range.isEmpty else { return true }

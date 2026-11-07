@@ -286,6 +286,8 @@ extension Wax {
             pendingMutations: [PendingMutation],
             dataEnd: UInt64,
             committedTocRange: Range<UInt64>,
+            headerCommitRanges: [Range<UInt64>],
+            releasesHeaderCommitsAfterNextCommit: Bool,
             generation: UInt64,
             dirty: Bool,
             replaySnapshotUsed: Bool,
@@ -317,6 +319,15 @@ extension Wax {
             }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
+            // The other page names an older commit that open falls back to when the newest
+            // page is torn; space reuse keeps it intact, and its footer may end the file.
+            let otherHeaderPageIndex = selected.pageIndex == 0 ? 1 : 0
+            let otherHeaderPage = try? WaxHeaderPage.decodeWithChecksumValidation(
+                from: otherHeaderPageIndex == 0 ? pageA : pageB
+            )
+            let otherPageFooter = otherHeaderPage.flatMap {
+                try? FooterScanner.findFooter(at: $0.footerOffset, in: url)
+            }
             let snapshotFooter: FooterSlice?
             if options.walReplayStateSnapshotEnabled,
                let snapshot = header.walReplaySnapshot {
@@ -344,7 +355,11 @@ extension Wax {
                 guard selectedHeaderFileGeneration == fastFooter.footer.generation else { return true }
                 guard header.tocChecksum == fastFooter.footer.tocHash else { return true }
                 let expectedEnd = fastFooter.footerOffset + Constants.footerSize
-                guard fileSize == expectedEnd else { return true }
+                let otherPageFooterEndsFile = otherPageFooter.map {
+                    $0.footer.generation < fastFooter.footer.generation
+                        && fileSize == $0.footerOffset + Constants.footerSize
+                } ?? false
+                guard fileSize == expectedEnd || otherPageFooterEndsFile else { return true }
                 if let snapshotFooter {
                     if snapshotFooter.footer.generation > fastFooter.footer.generation {
                         return true
@@ -502,6 +517,47 @@ extension Wax {
                 requiredEnd = max(requiredEnd, put.payloadOffset + put.payloadLength)
             }
 
+            // Ranges of commits a header page names besides the recovered one: they stay
+            // reserved, and repair must not truncate them.
+            var selectedHeaderPageIndex = selected.pageIndex
+            var headerCommitRanges: [Range<UInt64>] = []
+            let releasesHeaderCommitsAfterNextCommit: Bool
+            func commitRanges(_ slice: FooterSlice?) -> [Range<UInt64>] {
+                guard let slice, slice.footerOffset != footerSlice.footerOffset,
+                      let ranges = Self.commitRanges(of: slice)
+                else { return [] }
+                return ranges
+            }
+            if !selectedHeaderWasStale {
+                headerCommitRanges = commitRanges(otherPageFooter)
+                releasesHeaderCommitsAfterNextCommit = true
+            } else if repair {
+                // Neither page names the recovered commit. Name it on the other page now, so
+                // the pages again name the durable commit and the one before it.
+                var recoveredHeader = header
+                recoveredHeader.headerPageGeneration = max(
+                    selected.page.headerPageGeneration,
+                    otherHeaderPage?.headerPageGeneration ?? 0
+                ) &+ 1
+                recoveredHeader.walReplaySnapshot = nil
+                try file.writeAll(
+                    try recoveredHeader.encodeWithChecksum(),
+                    at: UInt64(otherHeaderPageIndex) * Constants.headerPageSize
+                )
+                try file.fsync()
+                header = recoveredHeader
+                selectedHeaderPageIndex = otherHeaderPageIndex
+                headerCommitRanges = commitRanges(fastFooter)
+                releasesHeaderCommitsAfterNextCommit = true
+            } else {
+                // Without repair the pages stay as they are; keep both their commits until close.
+                headerCommitRanges = commitRanges(fastFooter) + commitRanges(otherPageFooter)
+                releasesHeaderCommitsAfterNextCommit = false
+            }
+            for range in headerCommitRanges {
+                requiredEnd = max(requiredEnd, range.upperBound)
+            }
+
             if repair, fileSize > requiredEnd {
                 try file.truncate(to: requiredEnd)
                 try file.fsync()
@@ -513,12 +569,14 @@ extension Wax {
                 file: file,
                 lock: lock,
                 header: header,
-                selectedHeaderPageIndex: selected.pageIndex,
+                selectedHeaderPageIndex: selectedHeaderPageIndex,
                 toc: toc,
                 wal: wal,
                 pendingMutations: pendingMutations,
                 dataEnd: dataEnd,
                 committedTocRange: footerSlice.tocOffset..<expectedEnd,
+                headerCommitRanges: headerCommitRanges,
+                releasesHeaderCommitsAfterNextCommit: releasesHeaderCommitsAfterNextCommit,
                 generation: footerSlice.footer.generation,
                 dirty: !pendingMutations.isEmpty,
                 replaySnapshotUsed: usedReplaySnapshot,
@@ -566,7 +624,12 @@ extension Wax {
             ),
             walReplayStateSnapshotEnabled: options.walReplayStateSnapshotEnabled
         )
-        await wax.initializeDataSpace(committedTocRange: opened.committedTocRange, mayHoldUnreferencedFooter: true)
+        await wax.initializeDataSpace(
+            committedTocRange: opened.committedTocRange,
+            headerCommitRanges: opened.headerCommitRanges,
+            releasesHeaderCommitsAfterNextCommit: opened.releasesHeaderCommitsAfterNextCommit,
+            mayHoldUnreferencedFooter: true
+        )
         do {
             try Self.applyDataProtectionIfSupported(at: url)
         } catch {
