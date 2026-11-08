@@ -113,12 +113,15 @@ package final class ArcticEmbeddings {
         overrides: Overrides = .default,
         timeout: Duration
     ) async throws -> ArcticEmbeddings {
-        try await AsyncTimeout.run(timeout: timeout, operation: "Arctic model load") {
+        // Before the timeout: a refusal must not wait on a busy cooperative pool.
+        try refuseUnsupportedComputeUnits(configuration, overrides: overrides)
+        return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic model load") {
             try ArcticEmbeddings(configuration: configuration, overrides: overrides)
         }
     }
 
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
+        try Self.refuseUnsupportedComputeUnits(configuration, overrides: overrides)
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
             // CPU by default: the Neural Engine path intermittently returns non-finite
@@ -309,19 +312,27 @@ private extension ArcticEmbeddings {
             throw InitError.missingModelResource
         }
 
-        // The bundled graph has range input shapes (batch 1-64, sequence 32-512). With cpuAndGPU,
-        // MPSGraph shape solving outlasts any load timeout (still running after 120 s; over 10
-        // minutes reported), so refuse it instead of stalling. `.all` and `.cpuAndNeuralEngine`
-        // load in seconds.
-        if configuration.computeUnits == .cpuAndGPU {
-            throw InitError.unsupportedComputeUnits("cpuAndGPU")
-        }
-
         do {
             return try cachedModel(configuration: configuration)
         } catch {
             throw InitError.modelLoadFailed(error.localizedDescription)
         }
+    }
+
+    /// The bundled graph has range input shapes (batch 1-64, sequence 32-512). With cpuAndGPU,
+    /// MPSGraph shape solving outlasts any load timeout (still running after 120 s; over 10
+    /// minutes reported), so it is refused instead of stalling. `.all` and `.cpuAndNeuralEngine`
+    /// load in seconds. Only the bundled model is refused; a model from `modelURLProvider` may
+    /// have fixed shapes. This runs before any load work, so a slow load cannot delay it.
+    static func refuseUnsupportedComputeUnits(
+        _ configuration: MLModelConfiguration?,
+        overrides: Overrides
+    ) throws {
+        guard overrides.modelURLProvider == nil,
+              overrides.usesBundleFallback,
+              configuration?.computeUnits == .cpuAndGPU
+        else { return }
+        throw InitError.unsupportedComputeUnits("cpuAndGPU")
     }
 
     static func applyBlockingLoadDelay(_ overrides: Overrides) {
