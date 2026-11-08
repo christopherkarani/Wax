@@ -25,11 +25,7 @@ extension MemoryOrchestrator {
         let attached = readyEmbedderSnapshot
         let localEmbedder = attached
 
-        var docMeta = Metadata(metadata)
-        docMeta.entries[Self.contentHashMetadataKey] = contentHash
-        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
-            docMeta.entries["session_id"] = session.uuidString
-        }
+        let docMeta = rememberDocumentMetadata(metadata, contentHash: contentHash)
         let effectiveSessionId = docMeta.entries["session_id"]
         if let existingProbe = await wax.rememberDedupProbe(
             contentHash: contentHash,
@@ -329,7 +325,19 @@ extension MemoryOrchestrator {
         return await MiniLMChunkSizing.fit(chunks)
     }
 
-    private static func rememberDedupEmbeddingIdentity(
+    /// Document metadata a remember writes: the caller's keys, the content hash and the
+    /// current session unless the caller set one. Internal only because of the file split.
+    func rememberDocumentMetadata(_ metadata: [String: String], contentHash: String) -> Metadata {
+        var docMeta = Metadata(metadata)
+        docMeta.entries[Self.contentHashMetadataKey] = contentHash
+        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
+            docMeta.entries["session_id"] = session.uuidString
+        }
+        return docMeta
+    }
+
+    /// Internal only because of the file split.
+    static func rememberDedupEmbeddingIdentity(
         from identity: EmbeddingIdentity?
     ) -> RememberDedupEmbeddingIdentity? {
         guard let identity else { return nil }

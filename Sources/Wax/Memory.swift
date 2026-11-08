@@ -186,6 +186,37 @@ public actor Memory {
         try await orchestrator.remember(text, metadata: metadata).frameId
     }
 
+    /// Persist many texts that share one metadata dictionary, embedding and writing
+    /// them in batches.
+    ///
+    /// - Returns: One frame ID per text, in input order: what calling
+    ///   ``save(_:metadata:)`` for each text in turn would return, including the
+    ///   existing ID for a text already stored, or repeated earlier in `texts`.
+    ///
+    /// Not atomic: if a save throws, texts before it may already be saved.
+    @discardableResult
+    public func save(
+        contentsOf texts: some Sequence<String>,
+        metadata: [String: String] = [:]
+    ) async throws -> [UInt64] {
+        try await save(contentsOf: texts.map { (text: $0, metadata: metadata) })
+    }
+
+    /// Persist many texts, each with its own metadata, embedding and writing them
+    /// in batches.
+    ///
+    /// - Returns: One frame ID per document, in input order: what calling
+    ///   ``save(_:metadata:)`` for each document in turn would return, including the
+    ///   existing ID for a document already stored, or repeated earlier in `documents`.
+    ///
+    /// Not atomic: if a save throws, documents before it may already be saved.
+    @discardableResult
+    public func save(
+        contentsOf documents: some Sequence<(text: String, metadata: [String: String])>
+    ) async throws -> [UInt64] {
+        try await orchestrator.remember(batch: Array(documents))
+    }
+
     /// Persist multiple texts in one call, in order.
     ///
     /// Not atomic: each text is saved separately. If one save throws, the texts
