@@ -363,9 +363,12 @@ struct PerfResult: Encodable {
 /// Engine `Memory` selects under the default `.auto` preference
 /// (Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift `resolveKind`): MetalANNS once the
 /// store holds `MetalANNSVectorEngine.autoThreshold` (10,000) vectors and Metal is available,
-/// otherwise the Accelerate exact scan. That choice is package-internal, so it is restated here.
+/// otherwise the Accelerate exact scan. From `MetalANNSVectorEngine.defaultQuantizedScanMinVectorCount`
+/// (50,000) the flat scan shortlists rows by sign code and rescores them exactly. Those choices are
+/// package-internal, so they are restated here.
 func expectedWaxVectorEngine(vectorCount: Int) -> String {
-    vectorCount >= 10_000 ? "metalANNS (searchMode .exact)" : "accelerate (exact)"
+    if vectorCount >= 50_000 { return "metalANNS (searchMode .exact, sign-code shortlist + exact rescore)" }
+    return vectorCount >= 10_000 ? "metalANNS (searchMode .exact)" : "accelerate (exact)"
 }
 
 // MARK: - Phases

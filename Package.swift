@@ -184,9 +184,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "WaxVectorSearchC",
+            dependencies: [],
+            path: "Sources/WaxVectorSearchC",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "WaxVectorSearch",
             dependencies: [
                 "WaxCore",
+                "WaxVectorSearchC",
                 .product(
                     name: "MetalANNS",
                     package: "MetalANNS",

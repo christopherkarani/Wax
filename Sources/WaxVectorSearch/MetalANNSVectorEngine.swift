@@ -8,6 +8,10 @@ import WaxCore
 
 package actor MetalANNSVectorEngine: VectorSearchEngine {
     package static let autoThreshold = 10_000
+    /// Store size from which flat searches shortlist rows by sign code and rescore them
+    /// exactly (see ``SignCodeIndex``) instead of scanning every Float32 row. Smaller
+    /// stores keep the full exact scan.
+    package static let defaultQuantizedScanMinVectorCount = 50_000
 
     /// Runs at the start of every graph build. Test seam for holding or failing a build.
     package typealias GraphBuildHook = @Sendable () async throws -> Void
@@ -20,9 +24,10 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     package let dimensions: Int
     private let configuration: IndexConfiguration
     private let graphBuildHook: GraphBuildHook?
+    private let quantizedScanMinVectorCount: Int
 
     /// Graph over `vectors`/`frameIds`, which are the source of truth. While it is `nil`,
-    /// searches scan `vectors` exactly, and a background build is scheduled when the graph
+    /// searches scan `vectors` (see `flatHits`), and a background build is scheduled when the graph
     /// would serve searches (see `graphServesSearches`).
     private var index: ReadyIndex?
     /// Bumped on every change to `vectors`/`frameIds`. A graph built from a snapshot is
@@ -46,6 +51,11 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private var frameIds: [UInt64] = []
     private var positions: [UInt64: Int] = [:]
     private var vectors: [Float] = []
+    /// Sign codes of `vectors`, row for row. Encoded by the first search that uses them,
+    /// then kept in step with every mutation; `nil` until then and after a reload.
+    private var signCodes: SignCodeIndex?
+    /// Searches answered by the sign-code shortlist plus exact rescore.
+    package private(set) var quantizedScanCount = 0
     private var dirty = false
     /// Rows dropped from the last loaded segment because they held non-finite values.
     package private(set) var droppedNonFiniteRowCount = 0
@@ -64,6 +74,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         searchMode: MetalANNS.SearchMode,
         degree: Int? = nil,
         exactSearchMaxVectorCount: Int? = nil,
+        quantizedScanMinVectorCount: Int? = nil,
         graphBuildHook: GraphBuildHook? = nil
     ) throws {
         guard dimensions > 0 else {
@@ -88,6 +99,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         }
         self.configuration = configuration
         self.graphBuildHook = graphBuildHook
+        self.quantizedScanMinVectorCount = max(1, quantizedScanMinVectorCount ?? Self.defaultQuantizedScanMinVectorCount)
     }
 
     /// Cancellation is advisory: a pending build stops before the MetalANNS build call, but
@@ -170,6 +182,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             positions[frameId] = frameIds.count
             frameIds.append(frameId)
             vectors.append(contentsOf: stored)
+            signCodes?.append(rows: stored)
             await insertIntoIndex([VectorRecord(id: frameId, vector: stored)])
         }
         dirty = true
@@ -198,6 +211,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 positions[frameId] = self.frameIds.count
                 self.frameIds.append(frameId)
                 self.vectors.append(contentsOf: stored)
+                signCodes?.append(rows: stored)
                 newRecords.append(VectorRecord(id: frameId, vector: stored))
             }
         }
@@ -225,6 +239,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         }
         frameIds.removeLast()
         vectors.removeLast(dimensions)
+        signCodes?.removeSwappingLast(row: indexToRemove)
         if !canBuildIndex {
             invalidateIndex()
         } else if let index {
@@ -243,7 +258,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let prepared = preparedVector(query)
         guard let index else {
             scheduleGraphBuildIfNeeded()
-            return exactHits(for: prepared, topK: topK)
+            return flatHits(for: prepared, topK: topK)
         }
         let results = try await index.search(query: prepared, topK: topK)
         return hits(from: results)
@@ -271,7 +286,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let indexStart = CFAbsoluteTimeGetCurrent()
         guard let index else {
             scheduleGraphBuildIfNeeded()
-            let mapped = exactHits(for: prepared, topK: topK)
+            let mapped = flatHits(for: prepared, topK: topK)
             let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
             let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1_000
             return (mapped, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: 0, totalMs: totalMs))
@@ -327,6 +342,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             }
             frameIds = decodedFrameIds
             vectors = decodedVectors
+            signCodes = nil
             positions.removeAll(keepingCapacity: true)
             positions.reserveCapacity(decodedFrameIds.count)
             for (index, frameId) in decodedFrameIds.enumerated() {
@@ -369,6 +385,53 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     /// built there would never be read; this engine scans `vectors` exactly instead.
     private var graphServesSearches: Bool {
         configuration.searchMode != .exact || frameIds.count > configuration.exactSearchMaxVectorCount
+    }
+
+    /// Flat search used while there is no current graph: the sign-code shortlist plus exact
+    /// rescore for large stores where it applies, else the full exact scan.
+    private func flatHits(for query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
+        guard let rows = shortlistRows(for: query, topK: topK) else {
+            return exactHits(for: query, topK: topK)
+        }
+        quantizedScanCount += 1
+        return rescoredHits(rows: rows, query: query, topK: topK)
+    }
+
+    /// Rows worth rescoring for `query`, or `nil` when the full exact scan should run: a
+    /// store below the threshold, L2 (sign codes estimate dot products), vectors too narrow
+    /// for a sign code to rank them, or a shortlist that would cover much of the store.
+    private func shortlistRows(for query: [Float], topK: Int) -> [Int]? {
+        let rowCount = frameIds.count
+        guard rowCount >= quantizedScanMinVectorCount,
+              metric != .l2,
+              dimensions >= SignCodeIndex.minDimensions
+        else { return nil }
+        let limit = SignCodeIndex.candidateCount(topK: topK)
+        guard limit <= rowCount / 4 else { return nil }
+        let codes = signCodes ?? SignCodeIndex(dimensions: dimensions, rows: vectors)
+        signCodes = codes
+        return codes.candidates(for: query, limit: limit)
+    }
+
+    /// Exact scores for `rows`, ranked like ``exactHits(for:topK:)``.
+    private func rescoredHits(rows: [Int], query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
+        var scores = [Float](repeating: 0, count: rows.count)
+        let length = vDSP_Length(dimensions)
+        vectors.withUnsafeBufferPointer { stored in
+            query.withUnsafeBufferPointer { queryBuffer in
+                scores.withUnsafeMutableBufferPointer { scoreBuffer in
+                    guard let storedBase = stored.baseAddress,
+                          let queryBase = queryBuffer.baseAddress,
+                          let scoreBase = scoreBuffer.baseAddress
+                    else { return }
+                    for (slot, row) in rows.enumerated() {
+                        vDSP_dotpr(storedBase + row * dimensions, 1, queryBase, 1, scoreBase + slot, length)
+                    }
+                }
+            }
+        }
+        let limit = min(max(topK, 1), rows.count)
+        return VectorTopK.select(frameIds: rows.map { frameIds[$0] }, scores: scores, limit: limit)
     }
 
     /// Exact scan used while there is no current graph (exact mode at or below the flat-scan
@@ -551,6 +614,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         for dim in 0..<dimensions {
             vectors[start + dim] = vector[dim]
         }
+        signCodes?.replace(row: index, with: vector)
     }
 
     private func overwriteVector(at index: Int, withSliceFrom sourceIndex: Int) {
