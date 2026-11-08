@@ -9,11 +9,20 @@ private func corpus(count: Int) -> [String] {
         "river", "stone", "harbor", "lantern", "meadow", "copper", "falcon", "orchard",
         "glacier", "thunder", "velvet", "canyon", "ember", "willow", "summit", "tide",
     ]
-    return (0..<count).map { index in
-        let length = 3 + index % 5
-        let picked = (0..<length).map { words[(index * 7 + $0 * (index % 3 + 1)) % words.count] }
+    // Explicit types: Swift 6.2 cannot type-check the inferred form in reasonable time.
+    return (0..<count).map { (index: Int) -> String in
         // Every 9th passage repeats an earlier one word for word, so BM25 ties are common.
-        return index % 9 == 0 && index > 0 ? "falcon over the river and the stone" : picked.joined(separator: " ")
+        if index % 9 == 0 && index > 0 {
+            return "falcon over the river and the stone"
+        }
+        let length: Int = 3 + index % 5
+        let stride: Int = index % 3 + 1
+        var picked: [String] = []
+        for position in 0..<length {
+            let wordIndex: Int = (index * 7 + position * stride) % words.count
+            picked.append(words[wordIndex])
+        }
+        return picked.joined(separator: " ")
     }
 }
 
