@@ -102,9 +102,11 @@ extension FTS5SearchEngine {
     }
 
     func fanOutMatchRows(matchQuery: String, limit: Int, partitions: Int) async throws -> [MatchRow] {
-        let readers = try await fanOutReaders()
+        // Opening a reader reads the file, so the first search opens them inside the gate too:
+        // an open racing a write on the writer connection failed it with a disk I/O error.
         await beginFanOutRead()
         defer { endFanOutRead() }
+        let readers = try await fanOutReaders()
         if let duringFanOutReadForTesting {
             await duringFanOutReadForTesting()
         }
