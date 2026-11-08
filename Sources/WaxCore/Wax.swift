@@ -585,7 +585,7 @@ package actor Wax {
         )
 
         if walReplayStateSnapshotEnabled {
-            try await persistReplaySnapshotOnSelectedHeaderPage(replaySnapshot)
+            try await persistReplaySnapshotOnNextHeaderPage(replaySnapshot)
         }
 
         try await io.run {
@@ -789,10 +789,15 @@ package actor Wax {
         }
     }
 
-    private func persistReplaySnapshotOnSelectedHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {
+    /// Writes the snapshot on the page this commit's header will overwrite, as the newest page.
+    /// The selected page is never rewritten in place, so it names the durable commit until the
+    /// next header is durable, and no older commit needs to stay intact for a torn page.
+    private func persistReplaySnapshotOnNextHeaderPage(_ snapshot: WaxHeaderPage.WALReplaySnapshot) async throws {
         var snapshotPage = header
         snapshotPage.walReplaySnapshot = snapshot
-        let offset = UInt64(selectedHeaderPageIndex) * Constants.headerPageSize
+        snapshotPage.headerPageGeneration &+= 1
+        let nextIndex = selectedHeaderPageIndex == 0 ? 1 : 0
+        let offset = UInt64(nextIndex) * Constants.headerPageSize
         let file = self.file
         let encoded = try snapshotPage.encodeWithChecksum()
         try await io.run {

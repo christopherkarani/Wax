@@ -8,19 +8,20 @@ import Foundation
 /// lowest free range that fits, and the file is truncated after the newest footer.
 ///
 /// Crash safety: a range is free only if no commit a recovery could select uses it (its
-/// frames, catalog segments, TOC and footer) and no pending WAL-logged payload does. Those
-/// commits are the durable one and the one the other header page names: open falls back to
-/// that page when the newest is torn. So the ranges a commit supersedes (replaced segments and
-/// its TOC) become free only once the next commit's header overwrites the page naming it, one
-/// commit after they were superseded. A crash before a commit's header is durable recovers
-/// the previous commit plus its WAL, none of which was overwritten. The TOC and footer are
-/// placed above every range the new TOC references, as `validateTocRanges` requires.
+/// frames, catalog segments, TOC and footer) and no pending WAL-logged payload does. A commit
+/// writes only the header page that names the older commit (its replay snapshot first, then
+/// its header), so a torn page write falls back to the durable commit, and the page naming it
+/// is never rewritten in place. The ranges a commit supersedes (replaced segments and the
+/// previous TOC) are therefore free as soon as its header is durable. A crash before then
+/// recovers the previous commit plus its WAL, none of which was overwritten. The TOC and
+/// footer are placed above every range the new TOC references, as `validateTocRanges` requires.
 struct DataSpaceState: Sendable {
     var free = FreeSpaceMap()
     /// TOC plus footer of the durable commit.
     var committedTocRange: Range<UInt64> = 0..<0
-    /// Ranges only the commit the other header page names uses. Freed when the next commit's
-    /// header overwrites that page.
+    /// Ranges only a header page's commit other than the durable one uses, reserved at open
+    /// (after a recovery, or without repair). Freed after the next durable commit when that
+    /// header overwrites the only page naming them.
     var retainedForOtherHeaderPage: [Range<UInt64>] = []
     /// Highest footer generation this handle knows may exist in the file, committed or not. A
     /// commit that fails after syncing its footer but before its header leaves a valid footer
@@ -142,16 +143,15 @@ extension Wax {
         return end
     }
 
-    /// After a commit is durable: its header overwrote the page naming the commit before the
-    /// previous one, so that commit's ranges are freed; what this commit superseded (the
-    /// previous commit's replaced segments and TOC) is kept while the other page names it.
-    /// Then truncates the file after the new footer when nothing above it is in use.
+    /// After a commit is durable: frees what it superseded (the previous commit's replaced
+    /// segments and TOC) and what open reserved for the page its header overwrote. Then
+    /// truncates the file after the new footer when nothing above it is in use.
     /// Internal only because of the file split; call only while holding `opLock` for writing.
     func reclaimAfterDurableCommitLocked(superseded: [Range<UInt64>], committedTocRange: Range<UInt64>) async {
-        for range in dataSpace.retainedForOtherHeaderPage {
+        for range in dataSpace.retainedForOtherHeaderPage + superseded + [dataSpace.committedTocRange] {
             dataSpace.free.release(range)
         }
-        dataSpace.retainedForOtherHeaderPage = superseded + [dataSpace.committedTocRange]
+        dataSpace.retainedForOtherHeaderPage = []
         dataSpace.committedTocRange = committedTocRange
         let newEnd = committedTocRange.upperBound
         guard newEnd < dataEnd else {

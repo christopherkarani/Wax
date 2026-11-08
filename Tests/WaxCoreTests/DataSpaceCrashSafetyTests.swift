@@ -102,47 +102,6 @@ private func crashCopy(of url: URL) throws -> URL {
     try await reopened.close()
 }
 
-@Test func tornNewestHeaderPageFallsBackToAnIntactCommit() async throws {
-    let url = TempFiles.uniqueURL()
-    var copy: URL?
-    defer {
-        try? FileManager.default.removeItem(at: url)
-        if let copy { try? FileManager.default.removeItem(at: copy) }
-    }
-    let lex1 = lexBlob(docCount: 20, round: 1)
-    let lex2 = lexBlob(docCount: 40, round: 2)
-
-    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
-    try await putFrames(wax, 0..<20)
-    try await wax.stageLexIndexForNextCommit(bytes: lex1, docCount: 20)
-    try await wax.commit()
-    try await putFrames(wax, 20..<40)
-    try await wax.stageLexIndexForNextCommit(bytes: lex2, docCount: 40)
-    try await wax.commit()
-    try await pushNewestFooterOutOfScanWindow(wax)
-    copy = try crashCopy(of: url)
-    try await wax.close()
-
-    // The page naming G2 is torn (an in-place header rewrite cut short), so open falls back
-    // to the other page, which names G1.
-    let crashed = try #require(copy)
-    let pages = try headerPages(crashed)
-    let selected = try #require(WaxHeaderPage.selectValidPage(
-        pageA: Data(pages.prefix(Int(Constants.headerPageSize))),
-        pageB: Data(pages.suffix(Int(Constants.headerPageSize)))
-    ))
-    let file = try FDFile.open(at: crashed)
-    try file.writeAll(Data(repeating: 0, count: 512), at: UInt64(selected.pageIndex) * Constants.headerPageSize)
-    try file.fsync()
-    try file.close()
-
-    let reopened = try await Wax.open(at: crashed)
-    #expect(await reopened.stats().frameCount == 20)
-    try await reopened.verify(deep: true)
-    #expect(try await reopened.readCommittedLexIndexBytes() == lex1)
-    try await reopened.close()
-}
-
 @Test func failedHeaderWriteKeepsTheSyncedCommitIntact() async throws {
     let url = TempFiles.uniqueURL()
     var copy: URL?
@@ -226,5 +185,74 @@ private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, foote
     #expect(await reopened.stats().frameCount == 21, "the header's commit wins the tie")
     #expect(await reopened.stats().generation == committed)
     try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
+@Test func aDurableCommitFreesWhatItSupersededAtOnce() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 20, round: 1), docCount: 20)
+    try await wax.commit()
+    let g1Lex = try #require(await wax.toc.segmentCatalog.entries.first { $0.kind == .lex })
+    let g1Toc = await wax.dataSpace.committedTocRange
+    try await putFrames(wax, 20..<40)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 40, round: 2), docCount: 40)
+    try await wax.commit()
+
+    // G2's header went to the page naming G1, and the page naming G2 is never rewritten in
+    // place, so no recovery can select G1 again: its index and TOC are free for reuse.
+    let free = await wax.dataSpace.free
+    #expect(free.isFree(g1Lex.bytesOffset..<(g1Lex.bytesOffset + g1Lex.bytesLength)))
+    #expect(free.isFree(g1Toc))
+    try await wax.close()
+}
+
+@Test func tornHeaderWriteDuringTheNextCommitFallsBackToTheNewestCommit() async throws {
+    let url = TempFiles.uniqueURL()
+    var copy: URL?
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        if let copy { try? FileManager.default.removeItem(at: copy) }
+    }
+    let lex2 = lexBlob(docCount: 40, round: 2)
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    // G1's index is the largest, so G3's fits in the space G1 leaves.
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 80, round: 1), docCount: 80)
+    try await wax.commit()
+    try await putFrames(wax, 20..<40)
+    try await wax.stageLexIndexForNextCommit(bytes: lex2, docCount: 40)
+    try await wax.commit()
+    let pagesAtG2 = try headerPages(url)
+    let g2Page = try #require(WaxHeaderPage.selectValidPage(
+        pageA: Data(pagesAtG2.prefix(Int(Constants.headerPageSize))),
+        pageB: Data(pagesAtG2.suffix(Int(Constants.headerPageSize)))
+    ))
+    // G3 reuses the space G1 used; its header page write is then cut short.
+    try await putFrames(wax, 40..<60)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 60, round: 3), docCount: 60)
+    try await wax.commit()
+    copy = try crashCopy(of: url)
+    try await wax.close()
+
+    let crashed = try #require(copy)
+    var pages = pagesAtG2
+    let writtenPage = (1 - g2Page.pageIndex) * Int(Constants.headerPageSize)
+    pages.replaceSubrange(writtenPage..<(writtenPage + 512), with: Data(repeating: 0, count: 512))
+    try writeHeaderPages(pages, to: crashed)
+    // Drop G3's TOC and footer so only the header pages can lead open to a commit.
+    let file = try FDFile.open(at: crashed)
+    let g2End = try #require(try FooterScanner.findFooter(at: g2Page.page.footerOffset, in: crashed))
+    try file.truncate(to: g2End.footerOffset + Constants.footerSize)
+    try file.fsync()
+    try file.close()
+
+    let reopened = try await Wax.open(at: crashed)
+    try await reopened.verify(deep: true)
+    #expect(try await reopened.readCommittedLexIndexBytes() == lex2)
+    #expect(await reopened.stats().frameCount == 40)
     try await reopened.close()
 }

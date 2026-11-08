@@ -120,9 +120,13 @@ import Testing
     }
 }
 
-@Test func openUsesPersistedReplaySnapshotWhenNewestHeaderPageIsMissing() async throws {
+@Test func openUsesPersistedReplaySnapshotWhenTheHeaderWriteIsLost() async throws {
     let url = TempFiles.uniqueURL()
-    defer { try? FileManager.default.removeItem(at: url) }
+    var crashed: URL?
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        if let crashed { try? FileManager.default.removeItem(at: crashed) }
+    }
 
     do {
         let wax = try await Wax.create(
@@ -139,29 +143,13 @@ import Testing
                 options: FrameMetaSubset(searchText: "payload-\(index)")
             )
         }
-        try await wax.commit()
+        crashed = try await commitLosingTheHeaderWrite(wax)
         try await wax.close()
-    }
-
-    // Simulate a missing latest header page and force selection of the older page.
-    do {
-        let file = try FDFile.open(at: url)
-        defer { try? file.close() }
-
-        let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
-        let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
-            Issue.record("Expected valid header pages")
-            return
-        }
-        let selectedOffset = UInt64(selected.pageIndex) * Constants.headerPageSize
-        try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
-        try file.fsync()
     }
 
     do {
         let reopened = try await Wax.open(
-            at: url,
+            at: try #require(crashed),
             options: WaxOptions(walReplayStateSnapshotEnabled: true)
         )
         let stats = await reopened.stats()
@@ -172,10 +160,28 @@ import Testing
     }
 }
 
-/// Builds a two-commit snapshot store and loses its newest header page: the surviving page points
-/// at the older footer, but its replay snapshot points at the newest one, which ends the file.
+/// Commits with the header page write failing after the footer synced (a crash between the
+/// two), and returns a copy of the file as that crash left it: the page the commit was about
+/// to overwrite holds its replay snapshot, which names the new footer.
+private func commitLosingTheHeaderWrite(_ wax: Wax) async throws -> URL {
+    // Snapshot page, TOC and footer go through (a full-length "short" write is a plain
+    // write); the header write fails.
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [
+        .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .eio,
+    ]))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    let copy = TempFiles.uniqueURL()
+    try FileManager.default.copyItem(at: await wax.fileURL(), to: copy)
+    return copy
+}
+
+/// Builds a two-commit snapshot store whose second header write was lost: the newest header
+/// page points at the older footer, but its replay snapshot points at the newest one, which
+/// ends the file.
 private func makeStoreWithLostNewestHeaderPage() async throws -> URL {
     let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
     let wax = try await Wax.create(
         at: url,
         walSize: 256 * 1024,
@@ -184,18 +190,9 @@ private func makeStoreWithLostNewestHeaderPage() async throws -> URL {
     _ = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
     try await wax.commit()
     _ = try await wax.put(Data("latest".utf8), options: FrameMetaSubset(searchText: "latest"))
-    try await wax.commit()
+    let crashed = try await commitLosingTheHeaderWrite(wax)
     try await wax.close()
-
-    let file = try FDFile.open(at: url)
-    defer { try? file.close() }
-    let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
-    let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-    let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
-    let selectedOffset = UInt64(selected.pageIndex) * Constants.headerPageSize
-    try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
-    try file.fsync()
-    return url
+    return crashed
 }
 
 private func fileSize(at url: URL) throws -> UInt64 {
