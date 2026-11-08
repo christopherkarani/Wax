@@ -59,6 +59,28 @@ extension Wax {
     }
 #endif
 
+    /// What the commit in progress changed in place, so its rollback undoes just that.
+    /// Internal only because of the file split.
+    struct CommitUndo {
+        /// Committed frames as they were before the commit first modified each, by index.
+        private(set) var committedFrameOriginals: [Int: FrameMeta] = [:]
+        /// Whether the commit dropped the encoded frame cache to encode every frame again.
+        private(set) var replacedFrameCache = false
+        private(set) var frameCacheBeforeCommit: Data?
+
+        mutating func recordOriginal(_ frame: FrameMeta, at index: Int) {
+            if committedFrameOriginals[index] == nil {
+                committedFrameOriginals[index] = frame
+            }
+        }
+
+        mutating func recordReplacedFrameCache(_ cache: Data?) {
+            guard !replacedFrameCache else { return }
+            replacedFrameCache = true
+            frameCacheBeforeCommit = cache
+        }
+    }
+
     /// Internal only because of the file split.
     struct AppliedPendingMutations {
         var maxSequence: UInt64
@@ -84,6 +106,7 @@ extension Wax {
             }
             if frameId < UInt64(committedCount) {
                 modifiedCommittedFrames = true
+                commitUndo?.recordOriginal(toc.frames[Int(frameId)], at: Int(frameId))
                 try update(&toc.frames[Int(frameId)])
             } else {
                 let index = Int(frameId - UInt64(committedCount))
@@ -174,6 +197,7 @@ extension Wax {
         invalidated: Bool
     ) throws -> Data {
         if invalidated {
+            commitUndo?.recordReplacedFrameCache(encodedCommittedFramePayloadCache)
             encodedCommittedFramePayloadCache = nil
         }
 

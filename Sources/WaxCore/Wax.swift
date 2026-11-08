@@ -35,6 +35,9 @@ package actor Wax {
     var pendingMutationSummary: PendingMutationSummary
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var encodedCommittedFramePayloadCache: Data?
+    /// What the commit in progress changed in place, for its rollback (Wax+Commit.swift).
+    /// Internal only because of the file split; use only under `opLock` for writing.
+    var commitUndo: CommitUndo?
     /// Built by the first remember dedup probe, then updated by every pending mutation and commit.
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var rememberDedupIndex: RememberDedupIndex?
@@ -637,6 +640,7 @@ package actor Wax {
         surrogateIndex = nil
         dirty = false
         generation = footer.generation
+        commitUndo = nil
         commitSucceeded = true
         await reclaimAfterDurableCommitLocked(
             superseded: supersededRanges,
@@ -644,14 +648,21 @@ package actor Wax {
         )
     }
 
+    /// The actor state a failed commit restores. It holds neither the frame list nor the
+    /// encoded frame cache: a capture sharing them would make the commit's appends copy the
+    /// whole array and cache. The restore truncates both to their captured lengths and puts
+    /// back what `commitUndo` recorded: the committed frames the commit changed in place, and
+    /// the cache if the commit replaced it.
     private struct CommitRollbackState {
         var header: WaxHeaderPage
         var selectedHeaderPageIndex: Int
-        var toc: WaxTOC
+        /// `toc` with an empty frame list.
+        var tocWithoutFrames: WaxTOC
+        var frameCount: Int
         var surrogateIndex: [UInt64: UInt64]?
         var pendingMutations: [PendingMutation]
         var pendingMutationSummary: PendingMutationSummary
-        var encodedCommittedFramePayloadCache: Data?
+        var encodedFrameCacheLength: Int?
         var stagedLexIndex: StagedLexIndex?
         var stagedVecIndex: StagedVecIndex?
         var stagedLexIndexStamp: UInt64?
@@ -664,14 +675,18 @@ package actor Wax {
         var dirty: Bool
 
         static func capture(from wax: isolated Wax) -> CommitRollbackState {
-            CommitRollbackState(
+            var tocWithoutFrames = wax.toc
+            tocWithoutFrames.frames = []
+            wax.commitUndo = CommitUndo()
+            return CommitRollbackState(
                 header: wax.header,
                 selectedHeaderPageIndex: wax.selectedHeaderPageIndex,
-                toc: wax.toc,
+                tocWithoutFrames: tocWithoutFrames,
+                frameCount: wax.toc.frames.count,
                 surrogateIndex: wax.surrogateIndex,
                 pendingMutations: wax.pendingMutations,
                 pendingMutationSummary: wax.pendingMutationSummary,
-                encodedCommittedFramePayloadCache: wax.encodedCommittedFramePayloadCache,
+                encodedFrameCacheLength: wax.encodedCommittedFramePayloadCache?.count,
                 stagedLexIndex: wax.stagedLexIndex,
                 stagedVecIndex: wax.stagedVecIndex,
                 stagedLexIndexStamp: wax.stagedLexIndexStamp,
@@ -684,13 +699,37 @@ package actor Wax {
         }
 
         func restore(into wax: isolated Wax) {
+            let undo = wax.commitUndo ?? CommitUndo()
+            wax.commitUndo = nil
+
+            var frames: [FrameMeta] = []
+            swap(&frames, &wax.toc.frames)
+            if frames.count > frameCount {
+                frames.removeLast(frames.count - frameCount)
+            }
+            for (index, original) in undo.committedFrameOriginals {
+                frames[index] = original
+            }
+            wax.toc = tocWithoutFrames
+            wax.toc.frames = frames
+
+            if undo.replacedFrameCache {
+                wax.encodedCommittedFramePayloadCache = undo.frameCacheBeforeCommit
+            } else if let encodedFrameCacheLength,
+                      let cacheCount = wax.encodedCommittedFramePayloadCache?.count {
+                if cacheCount > encodedFrameCacheLength {
+                    wax.encodedCommittedFramePayloadCache?.removeSubrange(encodedFrameCacheLength..<cacheCount)
+                }
+            } else {
+                // The commit built the cache from nothing; the next commit builds it again.
+                wax.encodedCommittedFramePayloadCache = nil
+            }
+
             wax.header = header
             wax.selectedHeaderPageIndex = selectedHeaderPageIndex
-            wax.toc = toc
             wax.surrogateIndex = surrogateIndex
             wax.pendingMutations = pendingMutations
             wax.pendingMutationSummary = pendingMutationSummary
-            wax.encodedCommittedFramePayloadCache = encodedCommittedFramePayloadCache
             wax.stagedLexIndex = stagedLexIndex
             wax.stagedVecIndex = stagedVecIndex
             wax.stagedLexIndexStamp = stagedLexIndexStamp
