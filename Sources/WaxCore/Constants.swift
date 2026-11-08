@@ -31,6 +31,9 @@ package enum Constants {
 
     /// Footer size: 64 bytes (v1 footer includes `wal_committed_seq`)
     package static let footerSize: UInt64 = 64
+    /// Footer generations a session may use: its recovery fence's ceiling lies this far above
+    /// its fence (see `WaxHeaderPage.RecoveryFence`).
+    static let generationsPerSession: UInt64 = 1 << 32
 
     /// WAL record header size: 48 bytes (fixed for Wax v1).
     package static let walRecordHeaderSize: UInt64 = 48

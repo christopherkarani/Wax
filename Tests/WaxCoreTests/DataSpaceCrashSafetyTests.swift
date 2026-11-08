@@ -263,3 +263,78 @@ private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, foote
     #expect(await reopened.stats().frameCount == 40)
     try await reopened.close()
 }
+
+/// A commit whose footer synced but whose header write failed leaves a valid footer in space
+/// the next session cannot see and reuses. A later footer scan must not select it.
+@Test func aFooterAnOpenPassedOverStaysDeadAfterItsSpaceIsReused() async throws {
+    let url = TempFiles.uniqueURL()
+    var copies: [URL] = []
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        for copy in copies { try? FileManager.default.removeItem(at: copy) }
+    }
+    let lex2 = lexBlob(docCount: 10, round: 2)
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 80, round: 1), docCount: 80)
+    try await wax.commit()
+    try await wax.stageLexIndexForNextCommit(bytes: lex2, docCount: 10)
+    try await wax.commit()
+    let g2 = await wax.stats().generation
+    // G3 lands in the space G1 freed, below G2's footer; its header write fails after the
+    // footer synced (a crash between the two leaves the same file).
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 79, round: 3), docCount: 79)
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [
+        .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .shortWrite(maxBytes: .max), .eio,
+    ]))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    copies.append(try crashCopy(of: url))
+    try? await wax.close()
+
+    // The file ends at G2's footer, so this open never sees G3. Its commit makes the fence
+    // durable and then fails before writing a footer, so no newer commit outranks G3; the
+    // next put reuses G3's bytes.
+    let second = try await Wax.open(at: copies[0])
+    #expect(await second.stats().generation == g2)
+    try await putFrames(second, 20..<21)
+    await second.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [.shortWrite(maxBytes: .max), .eio]))
+    await #expect(throws: (any Error).self) { try await second.commit() }
+    await second.installFileFaultPlanForTesting(nil)
+    #expect(await second.dataSpace.recoveryFenceDurable)
+    _ = try await second.put(Data(repeating: 0xEE, count: 1000))
+    _ = try await second.put(noise(byteCount: 200_000, seed: 7))
+    copies.append(try crashCopy(of: copies[0]))
+    try? await second.close()
+
+    // The file no longer ends at the durable footer, so this open scans and finds G3's footer.
+    let third = try await Wax.open(at: copies[1])
+    #expect(await third.stats().generation == g2)
+    #expect(try await third.readCommittedLexIndexBytes() == lex2)
+    try await third.verify(deep: true)
+    try await third.close()
+}
+
+/// Until a session's fence is durable it appends instead of reusing space, so a footer the
+/// open passed over keeps its bytes and a later recovery may still select it intact.
+@Test func anOpenThatHasNotCommittedLeavesFreeSpaceUntouched() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 80, round: 1), docCount: 80)
+    try await wax.commit()
+    try await wax.stageLexIndexForNextCommit(bytes: lexBlob(docCount: 10, round: 2), docCount: 10)
+    try await wax.commit()
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    let freeBefore = await reopened.dataSpace.free
+    #expect(freeBefore.freeBytes > 0, "G1's index is free space")
+    _ = try await reopened.put(Data(repeating: 0xEE, count: 1000))
+    #expect(await reopened.dataSpace.free == freeBefore)
+    try await reopened.commit()
+    #expect(await reopened.dataSpace.recoveryFenceDurable)
+    try await reopened.close()
+}

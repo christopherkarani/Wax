@@ -464,6 +464,7 @@ package actor Wax {
             }
         }
 
+        try await ensureRecoveryFenceLocked()
         let rollbackState = CommitRollbackState.capture(from: self)
         var commitSucceeded = false
         defer {
@@ -564,7 +565,7 @@ package actor Wax {
         let footer = WaxFooter(
             tocLen: tocLength,
             tocHash: Data(tocChecksum),
-            generation: nextFooterGenerationLocked(),
+            generation: try nextFooterGenerationLocked(),
             walCommittedSeq: appliedWalSeq
         )
         let wal = self.wal
@@ -803,6 +804,25 @@ package actor Wax {
         try await io.run {
             try file.writeAll(encoded, at: offset)
         }
+    }
+
+    /// Writes `page` to the page that is not selected and syncs it, returning that page's index.
+    /// The caller selects it only after this returns. Internal only because of the file split.
+    func writeOtherHeaderPageDurably(_ page: WaxHeaderPage) async throws -> Int {
+        let index = selectedHeaderPageIndex == 0 ? 1 : 0
+        let offset = UInt64(index) * Constants.headerPageSize
+        let file = self.file
+        let encoded = try page.encodeWithChecksum()
+        try await io.run {
+            try file.writeAll(encoded, at: offset)
+            try file.fsync()
+        }
+        return index
+    }
+
+    /// Internal only because of the file split.
+    func markHeaderPageSelected(_ index: Int) {
+        selectedHeaderPageIndex = index
     }
 
     private func writeHeaderPage(_ page: WaxHeaderPage) async throws {

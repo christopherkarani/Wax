@@ -32,12 +32,14 @@ extension Wax {
             if let snapshot = header.walReplaySnapshot {
                 snapshotFooter = try await io.run {
                     try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
+                }.flatMap {
+                    header.admitsRecovery(footerOffset: $0.footerOffset, generation: $0.footer.generation) ? $0 : nil
                 }
             } else {
                 snapshotFooter = nil
             }
             let scannedFooter = try await io.run {
-                try FooterScanner.findLastValidFooter(in: url)
+                try FooterScanner.findLastValidFooter(in: url, accepts: header.admitsRecovery)
             }
 
             var footerCandidates: [FooterSlice] = []

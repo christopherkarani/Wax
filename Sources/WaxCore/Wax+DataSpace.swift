@@ -29,6 +29,10 @@ struct DataSpaceState: Sendable {
     /// footers from earlier sessions can tie a later commit; `newerFooter` settles that tie in
     /// favour of the header's footer.
     var highestWrittenFooterGeneration: UInt64 = 0
+    /// Whether this session's recovery fence is durable. Until it is, free space is not reused:
+    /// it may hold a footer synced by a commit whose header never landed, which a later
+    /// recovery could still select.
+    var recoveryFenceDurable = false
 }
 
 extension Wax {
@@ -69,7 +73,8 @@ extension Wax {
             free: free,
             committedTocRange: committedTocRange,
             retainedForOtherHeaderPage: retained,
-            highestWrittenFooterGeneration: mayHoldUnreferencedFooter ? generation &+ 1 : generation
+            highestWrittenFooterGeneration: mayHoldUnreferencedFooter ? generation &+ 1 : generation,
+            recoveryFenceDurable: !mayHoldUnreferencedFooter
         )
     }
 
@@ -99,7 +104,8 @@ extension Wax {
     /// else the end of the file. Internal only because of the file split; call only while
     /// holding `opLock` for writing, after any commit the write may trigger.
     func allocateDataLocked(length: UInt64, notBelow minimumOffset: UInt64 = 0) -> UInt64 {
-        if let offset = dataSpace.free.takeFirstFit(length: length, notBelow: minimumOffset) {
+        if dataSpace.recoveryFenceDurable,
+           let offset = dataSpace.free.takeFirstFit(length: length, notBelow: minimumOffset) {
             return offset
         }
         // Referenced ranges end at or below `dataEnd`, so the floor never lies past it; if it
@@ -110,10 +116,40 @@ extension Wax {
     }
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
-    func nextFooterGenerationLocked() -> UInt64 {
+    func nextFooterGenerationLocked() throws -> UInt64 {
         let next = max(generation, dataSpace.highestWrittenFooterGeneration) &+ 1
+        if let ceiling = header.recoveryFence?.ceiling, next > ceiling {
+            throw WaxError.capacityExceeded(limit: ceiling, requested: next)
+        }
         dataSpace.highestWrittenFooterGeneration = next
         return next
+    }
+
+    /// Makes this session's recovery fence durable before it first reuses free space: no footer
+    /// at or below the previous session's ceiling counts unless a header page names it, and
+    /// this session's commits number above it. Writes the page the durable commit's page is
+    /// not, so a torn write falls back to an unchanged page; free space stays unused until the
+    /// fence is synced. Internal only because of the file split; call only while holding
+    /// `opLock` for writing, before a commit captures its rollback state.
+    func ensureRecoveryFenceLocked() async throws {
+        guard !dataSpace.recoveryFenceDurable else { return }
+        // A store written before fences existed records no ceiling; its sessions numbered
+        // failed commits one past the durable generation.
+        let previousCeiling = header.recoveryFence?.ceiling ?? (generation &+ Constants.generationsPerSession)
+        let fence = max(previousCeiling, generation, dataSpace.highestWrittenFooterGeneration)
+        let (ceiling, overflow) = fence.addingReportingOverflow(Constants.generationsPerSession)
+        guard !overflow else {
+            throw WaxError.capacityExceeded(limit: UInt64.max, requested: fence)
+        }
+        var page = header
+        page.recoveryFence = .init(generation: fence, ceiling: ceiling)
+        page.walReplaySnapshot = nil
+        page.headerPageGeneration &+= 1
+        let index = try await writeOtherHeaderPageDurably(page)
+        header = page
+        markHeaderPageSelected(index)
+        dataSpace.highestWrittenFooterGeneration = fence
+        dataSpace.recoveryFenceDurable = true
     }
 
     /// Removes catalog entries of `kind` (the segments a new one of that kind replaces) and

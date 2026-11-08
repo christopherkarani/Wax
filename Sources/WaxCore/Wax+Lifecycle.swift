@@ -177,6 +177,8 @@ extension Wax {
                 walWritePos: 0,
                 walCheckpointPos: 0,
                 walCommittedSeq: 0,
+                // A new file holds no footer but its own, so this session needs no fence.
+                recoveryFence: .init(generation: 0, ceiling: Constants.generationsPerSession),
                 tocChecksum: Data(tocChecksum)
             )
             let pageABytes = try headerA.encodeWithChecksum()
@@ -315,8 +317,9 @@ extension Wax {
             }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
-            // The other page names an older commit. Its footer can end the file when a crash
-            // came before the newest commit truncated the tail; it is read only when needed.
+            // The other page names an older commit, or the same one when the selected page only
+            // added a recovery fence. An older commit's footer can end the file when a crash came
+            // before the newest commit truncated the tail; it is read only when needed.
             let otherHeaderPageIndex = selected.pageIndex == 0 ? 1 : 0
             let otherHeaderPage = try? WaxHeaderPage.decodeWithChecksumValidation(
                 from: otherHeaderPageIndex == 0 ? pageA : pageB
@@ -335,7 +338,9 @@ extension Wax {
                let snapshot = header.walReplaySnapshot {
                 snapshotFooter = snapshot.footerOffset == header.footerOffset
                     ? fastFooter
-                    : try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
+                    : try FooterScanner.findFooter(at: snapshot.footerOffset, in: url).flatMap {
+                        header.admitsRecovery(footerOffset: $0.footerOffset, generation: $0.footer.generation) ? $0 : nil
+                    }
             } else {
                 snapshotFooter = nil
             }
@@ -375,7 +380,7 @@ extension Wax {
                 return false
             }()
             let scannedFooter = shouldScanForNewerFooter
-                ? try FooterScanner.findLastValidFooter(in: url)
+                ? try FooterScanner.findLastValidFooter(in: url, accepts: header.admitsRecovery)
                 : nil
             var footerCandidates: [FooterSlice] = []
             footerCandidates.reserveCapacity(3)

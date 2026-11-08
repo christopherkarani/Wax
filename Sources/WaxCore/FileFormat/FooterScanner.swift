@@ -69,8 +69,13 @@ package enum FooterScanner {
         return best
     }
 
-    /// Bounded scan over a file. Only the final `limits.maxFooterScanBytes` are searched.
-    package static func findLastValidFooter(in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+    /// Bounded scan over a file. Only the final `limits.maxFooterScanBytes` are searched, and
+    /// only footers `accepts(footerOffset, generation)` allows are candidates.
+    package static func findLastValidFooter(
+        in fileURL: URL,
+        limits: Limits = .init(),
+        accepts: (_ footerOffset: UInt64, _ generation: UInt64) -> Bool = { _, _ in true }
+    ) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 
@@ -82,7 +87,8 @@ package enum FooterScanner {
             in: file,
             fileSize: fileSize,
             scanStart: scanStart,
-            limits: limits
+            limits: limits,
+            accepts: accepts
         ) else {
             return nil
         }
@@ -130,7 +136,8 @@ package enum FooterScanner {
         in file: FDFile,
         fileSize: UInt64,
         scanStart: UInt64,
-        limits: Limits
+        limits: Limits,
+        accepts: (UInt64, UInt64) -> Bool
     ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
         let footerSize = UInt64(WaxFooter.size)
         let overlap = UInt64(WaxFooter.size - 1)
@@ -152,7 +159,8 @@ package enum FooterScanner {
                 windowBaseOffset: start,
                 file: file,
                 fileSize: fileSize,
-                limits: limits
+                limits: limits,
+                accepts: accepts
             ) {
                 if let current = best {
                     if candidate.footer.generation > current.footer.generation {
@@ -177,7 +185,8 @@ package enum FooterScanner {
         windowBaseOffset: UInt64,
         file: FDFile,
         fileSize: UInt64,
-        limits: Limits
+        limits: Limits,
+        accepts: (UInt64, UInt64) -> Bool
     ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
         let footerSize = WaxFooter.size
         guard window.count >= footerSize else { return nil }
@@ -204,6 +213,7 @@ package enum FooterScanner {
             let footerSize64 = UInt64(footerSize)
             guard footerOffset <= fileSize, footerSize64 <= fileSize - footerOffset else { continue }
             guard footerOffset >= footer.tocLen else { continue }
+            guard accepts(footerOffset, footer.generation) else { continue }
             let tocOffset = footerOffset - footer.tocLen
 
             guard try tocHashMatches(
