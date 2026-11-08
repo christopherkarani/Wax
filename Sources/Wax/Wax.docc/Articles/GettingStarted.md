@@ -73,6 +73,14 @@ func saveDocsExamples(memory: Memory) async throws {
 
 Wax chunks text, embeds when a provider is present, indexes BM25, and appends frames through the WAL. ``Memory/flush()`` forces durable writes; ``Memory/close()`` flushes automatically.
 
+To import many texts, ``Memory/save(contentsOf:metadata:)`` embeds and writes them in batches and returns one frame ID per text, in order. It is not atomic: if it throws, earlier texts may already be saved.
+
+```swift
+func importDocsExamples(memory: Memory, notes: [String]) async throws -> [UInt64] {
+    try await memory.save(contentsOf: notes, metadata: ["source": "import"])
+}
+```
+
 ## Search
 
 ```swift
