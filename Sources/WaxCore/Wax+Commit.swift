@@ -172,16 +172,15 @@ extension Wax {
         }
 
         if !newFrames.isEmpty {
-            let originalCount = toc.frames.count
-            // Validate after appending in place so commit does not clone the full frame array first.
+            // Open validated the committed frames; check only the new ones against them.
+            try committedFramePayloadRangesLocked(committedFrameCount: toc.frames.count).validateAppending(
+                newFrames,
+                segments: toc.segmentCatalog.entries,
+                dataStart: header.walOffset + header.walSize,
+                dataEnd: dataEnd
+            )
+            try Self.validateTocManifests(toc)
             toc.frames.append(contentsOf: newFrames)
-            let dataStart = header.walOffset + header.walSize
-            do {
-                try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: dataEnd)
-            } catch {
-                toc.frames.removeLast(toc.frames.count - originalCount)
-                throw error
-            }
         }
 
         return AppliedPendingMutations(

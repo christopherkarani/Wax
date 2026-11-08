@@ -38,6 +38,10 @@ package actor Wax {
     /// What the commit in progress changed in place, for its rollback (Wax+Commit.swift).
     /// Internal only because of the file split; use only under `opLock` for writing.
     var commitUndo: CommitUndo?
+    /// Payload ranges of the committed frames, built by the first commit that needs them and
+    /// extended by each durable commit (Wax+PayloadRanges.swift).
+    /// Internal only because of the file split; use only under `opLock` for writing.
+    var committedFramePayloadRanges: FramePayloadRangeIndex?
     /// Built by the first remember dedup probe, then updated by every pending mutation and commit.
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var rememberDedupIndex: RememberDedupIndex?
@@ -641,6 +645,7 @@ package actor Wax {
         dirty = false
         generation = footer.generation
         commitUndo = nil
+        committedFramePayloadRanges?.append(applied.appendedFrames)
         commitSucceeded = true
         await reclaimAfterDurableCommitLocked(
             superseded: supersededRanges,

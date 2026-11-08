@@ -141,7 +141,8 @@ extension Wax {
         }
     }
 
-    private struct DataRange {
+    /// Internal only because of the file split.
+    struct DataRange {
         /// What uses the range. Named only when an overlap is reported: formatting a label for
         /// every frame cost a string per frame on each commit and open.
         enum Owner {
@@ -163,10 +164,20 @@ extension Wax {
 
     /// Internal only because of the file split.
     static func validateTocRanges(_ toc: WaxTOC, dataStart: UInt64, dataEnd: UInt64) throws {
-        let frameRanges = try collectFramePayloadRanges(toc.frames, dataStart: dataStart, dataEnd: dataEnd)
+        let frameRanges = try collectFramePayloadRanges(
+            toc.frames[...],
+            firstFrameId: 0,
+            dataStart: dataStart,
+            dataEnd: dataEnd
+        )
         let segmentRanges = try collectSegmentRanges(toc.segmentCatalog.entries, dataStart: dataStart, dataEnd: dataEnd)
 
-        try validateNoOverlap(frameRanges + segmentRanges)
+        _ = try sortedNonOverlapping(frameRanges + segmentRanges)
+        try validateTocManifests(toc)
+    }
+
+    /// Internal only because of the file split.
+    static func validateTocManifests(_ toc: WaxTOC) throws {
         try validateSegmentCatalogMatchesManifests(
             segmentCatalog: toc.segmentCatalog,
             indexes: toc.indexes,
@@ -174,8 +185,12 @@ extension Wax {
         )
     }
 
-    private static func collectFramePayloadRanges(
-        _ frames: [FrameMeta],
+    /// Checks each frame and returns its payload range, if it has one. `frames` must carry
+    /// the dense ids `firstFrameId`, `firstFrameId + 1`, ...
+    /// Internal only because of the file split.
+    static func collectFramePayloadRanges(
+        _ frames: ArraySlice<FrameMeta>,
+        firstFrameId: UInt64,
         dataStart: UInt64,
         dataEnd: UInt64
     ) throws -> [DataRange] {
@@ -186,9 +201,10 @@ extension Wax {
         var ranges: [DataRange] = []
         ranges.reserveCapacity(frames.count)
 
-        for (index, frame) in frames.enumerated() {
-            guard frame.id == UInt64(index) else {
-                throw WaxError.invalidToc(reason: "frame id not dense: found \(frame.id), expected \(index)")
+        for (offset, frame) in frames.enumerated() {
+            let expected = firstFrameId + UInt64(offset)
+            guard frame.id == expected else {
+                throw WaxError.invalidToc(reason: "frame id not dense: found \(frame.id), expected \(expected)")
             }
             if frame.checksum.count != 32 {
                 throw WaxError.invalidToc(reason: "frame \(frame.id) checksum must be 32 bytes")
@@ -216,7 +232,8 @@ extension Wax {
         return ranges
     }
 
-    private static func collectSegmentRanges(
+    /// Internal only because of the file split.
+    static func collectSegmentRanges(
         _ entries: [SegmentCatalogEntry],
         dataStart: UInt64,
         dataEnd: UInt64
@@ -242,15 +259,23 @@ extension Wax {
         return ranges
     }
 
-    private static func validateNoOverlap(_ ranges: [DataRange]) throws {
+    /// `ranges` sorted by start, after checking that no two overlap.
+    /// Internal only because of the file split.
+    static func sortedNonOverlapping(_ ranges: [DataRange]) throws -> [DataRange] {
         let sorted = ranges.sorted { $0.start < $1.start }
         for idx in sorted.indices.dropFirst() {
             let prev = sorted[idx - 1]
             let next = sorted[idx]
             if prev.end > next.start {
-                throw WaxError.invalidToc(reason: "data overlap between \(prev.owner.label) and \(next.owner.label)")
+                throw overlapError(prev, next)
             }
         }
+        return sorted
+    }
+
+    /// Internal only because of the file split.
+    static func overlapError(_ first: DataRange, _ second: DataRange) -> WaxError {
+        WaxError.invalidToc(reason: "data overlap between \(first.owner.label) and \(second.owner.label)")
     }
 
     private static func validateSegmentCatalogMatchesManifests(
