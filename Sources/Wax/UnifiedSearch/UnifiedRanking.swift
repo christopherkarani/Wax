@@ -80,6 +80,11 @@ package enum UnifiedRanking {
         guard !queryTerms.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
         guard cappedWindow > 1 else { return results }
+        // Only text-lane hits are lifted, so a window without one (any vector-only search)
+        // comes back unchanged; skip tokenizing its previews.
+        guard results.prefix(cappedWindow).contains(where: { $0.sources.contains(.text) }) else {
+            return results
+        }
 
         let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
         struct Scored {
