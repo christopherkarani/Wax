@@ -126,7 +126,7 @@ package struct WaxTOC: Equatable, Sendable {
         var head = BinaryEncoder()
         head.encode(tocVersion)
 
-        if let cachedFramesPayload {
+        if cachedFramesPayload != nil {
             guard frames.count <= Int(UInt32.max) else {
                 throw WaxError.encodingError(reason: "frame count \(frames.count) exceeds UInt32.max")
             }
