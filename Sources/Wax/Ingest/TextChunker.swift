@@ -21,6 +21,11 @@ package enum TextChunker {
     private static func tokenCountChunk(text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
+        // Every cl100k token covers at least one UTF-8 byte, so text with no more bytes
+        // than the target fits without being encoded.
+        if text.utf8.count <= cappedTarget {
+            return [text]
+        }
 
         let counter: TokenCounter
         do {
