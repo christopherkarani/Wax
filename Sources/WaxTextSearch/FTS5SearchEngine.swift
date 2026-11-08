@@ -372,9 +372,15 @@ package actor FTS5SearchEngine {
             var removed = 0
 
             try dbQueue.write { db in
-                let deleteFramesStmt = try db.makeStatement(sql: """
-                    DELETE FROM frames_fts
-                    WHERE rowid IN (SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?)
+                let mappedRowStmt = try db.makeStatement(sql: """
+                    SELECT rowid_ref FROM frame_mapping WHERE frame_id = ?
+                    """)
+                // Deletes one row by rowid only once the mapping names it. A multi-row DELETE
+                // on frames_fts opens a statement savepoint, and FTS5 writes out its pending
+                // terms at every savepoint, so running one per new frame turned each insert
+                // into a segment flush plus merge work.
+                let deleteFrameStmt = try db.makeStatement(sql: """
+                    DELETE FROM frames_fts WHERE rowid = ?
                     """)
                 let deleteMappingStmt = try db.makeStatement(sql: """
                     DELETE FROM frame_mapping
@@ -387,24 +393,29 @@ package actor FTS5SearchEngine {
                     INSERT INTO frame_mapping(frame_id, rowid_ref) VALUES (?, ?)
                     """)
 
+                /// Removes the frame's row and mapping; returns whether it was indexed.
+                func removeIndexedFrame(_ frameId: Int64) throws -> Bool {
+                    guard let rowid = try Int64.fetchOne(mappedRowStmt, arguments: [frameId]) else {
+                        return false
+                    }
+                    try deleteFrameStmt.execute(arguments: [rowid])
+                    try deleteMappingStmt.execute(arguments: [frameId])
+                    return true
+                }
+
                 for frameIdValue in keys {
                     guard let op = ops[frameIdValue] else { continue }
 
                     switch op {
                     case .upsert(let text):
-                        try deleteFramesStmt.execute(arguments: [frameIdValue])
-                        try deleteMappingStmt.execute(arguments: [frameIdValue])
-                        let existed = db.changesCount > 0
-                        if !existed { added += 1 }
+                        if try !removeIndexedFrame(frameIdValue) { added += 1 }
 
                         try insertFrameStmt.execute(arguments: [text])
                         let rowid = db.lastInsertedRowID
                         try insertMappingStmt.execute(arguments: [frameIdValue, rowid])
 
                     case .delete:
-                        try deleteFramesStmt.execute(arguments: [frameIdValue])
-                        try deleteMappingStmt.execute(arguments: [frameIdValue])
-                        if db.changesCount > 0 { removed += 1 }
+                        if try removeIndexedFrame(frameIdValue) { removed += 1 }
                     }
                 }
             }
