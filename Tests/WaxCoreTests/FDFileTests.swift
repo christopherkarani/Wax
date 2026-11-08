@@ -225,3 +225,45 @@ import Testing
         #expect(decoded == payload)
     }
 }
+
+@Test func writeAllContentsOfWritesPartsBackToBackInOneWrite() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        let parts = [Data("head-".utf8), Data(), Data("frames-".utf8), Data("tail".utf8)]
+        file.installFaultPlan(FDFileFaultPlan(recordsOperations: true))
+        try file.writeAll(contentsOf: parts, at: 7)
+        #expect(file.recordedOperations() == [.pwrite(offset: 7, length: 16)])
+        #expect(try file.readExactly(length: 16, at: 7) == Data("head-frames-tail".utf8))
+    }
+}
+
+@Test func writeAllContentsOfResumesShortWritesAndEINTRAcrossParts() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url, ioChunkLimit: 4)
+        defer { try? file.close() }
+
+        let parts = [Data("abc".utf8), Data("defgh".utf8), Data("ij".utf8), Data("klmnopq".utf8)]
+        let joined = parts.reduce(Data(), +)
+        file.installFaultPlan(FDFileFaultPlan(
+            pwrite: [.shortWrite(maxBytes: 1), .eintr(retries: 2), .shortWrite(maxBytes: 3), .shortWrite(maxBytes: 2)]
+        ))
+        try file.writeAll(contentsOf: parts, at: 3)
+        #expect(try file.readExactly(length: joined.count, at: 3) == joined)
+        #expect(try file.size() == UInt64(3 + joined.count))
+    }
+}
+
+@Test func writeAllContentsOfThrowsInjectedEIO() throws {
+    try TempFiles.withTempFile { url in
+        let file = try FDFile.create(at: url)
+        defer { try? file.close() }
+
+        file.installFaultPlan(FDFileFaultPlan(pwrite: [.eio]))
+        #expect(throws: WaxError.self) {
+            try file.writeAll(contentsOf: [Data("a".utf8), Data("b".utf8)], at: 0)
+        }
+        #expect(try file.size() == 0)
+    }
+}

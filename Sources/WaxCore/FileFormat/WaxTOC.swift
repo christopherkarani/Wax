@@ -86,8 +86,36 @@ package struct WaxTOC: Equatable, Sendable {
         )
     }
 
+    /// The encoding as three parts that are written back to back: everything before the
+    /// frame payloads, the frame payloads, and the rest ending in the checksum.
+    package struct EncodedParts: Sendable {
+        package var head: Data
+        /// The cached frames payload passed to `encodeParts`, not a copy; empty without one
+        /// (the frames are then encoded into `head`).
+        package var frames: Data
+        package var tail: Data
+
+        package var byteCount: Int { head.count + frames.count + tail.count }
+        package var checksum: Data { Data(tail.suffix(32)) }
+        package var parts: [Data] { [head, frames, tail] }
+    }
+
     /// Throws when the encoding exceeds `maxBytes`, the size readers accept by default.
     package func encode(cachedFramesPayload: Data? = nil, maxBytes: UInt64 = Constants.maxTocBytes) throws -> Data {
+        let encoded = try encodeParts(cachedFramesPayload: cachedFramesPayload, maxBytes: maxBytes)
+        var data = Data(capacity: encoded.byteCount)
+        for part in encoded.parts {
+            data.append(part)
+        }
+        return data
+    }
+
+    /// The bytes `encode` returns, without copying `cachedFramesPayload` into them: a commit
+    /// writes the parts directly, and the checksum is hashed across them.
+    package func encodeParts(
+        cachedFramesPayload: Data? = nil,
+        maxBytes: UInt64 = Constants.maxTocBytes
+    ) throws -> EncodedParts {
         guard tocVersion == 1 else {
             throw WaxError.encodingError(reason: "unsupported toc_version \(tocVersion)")
         }
@@ -95,15 +123,14 @@ package struct WaxTOC: Equatable, Sendable {
             throw WaxError.encodingError(reason: "frame count \(frames.count) exceeds limit \(Constants.maxArrayCount)")
         }
 
-        var encoder = BinaryEncoder()
-        encoder.encode(tocVersion)
+        var head = BinaryEncoder()
+        head.encode(tocVersion)
 
         if let cachedFramesPayload {
             guard frames.count <= Int(UInt32.max) else {
                 throw WaxError.encodingError(reason: "frame count \(frames.count) exceeds UInt32.max")
             }
-            encoder.encode(UInt32(frames.count))
-            encoder.appendRawBytes(cachedFramesPayload)
+            head.encode(UInt32(frames.count))
         } else {
             for (index, frame) in frames.enumerated() {
                 let expected = UInt64(index)
@@ -111,12 +138,14 @@ package struct WaxTOC: Equatable, Sendable {
                     throw WaxError.encodingError(reason: "frame id not dense: found \(frame.id), expected \(expected)")
                 }
             }
-            try encoder.encode(frames) { encoder, frame in
+            try head.encode(frames) { encoder, frame in
                 var mutable = frame
                 try mutable.encode(to: &encoder)
             }
         }
+        let framesPayload = cachedFramesPayload ?? Data()
 
+        var encoder = BinaryEncoder()
         var indexes = indexes
         try indexes.encode(to: &encoder)
 
@@ -148,15 +177,20 @@ package struct WaxTOC: Equatable, Sendable {
             throw WaxError.encodingError(reason: "merkle_root must be 32 bytes (got \(merkleRoot.count))")
         }
         encoder.encodeFixedBytes(merkleRoot)
-        encoder.encodeFixedBytes(Data(repeating: 0, count: 32)) // toc_checksum placeholder
 
-        var data = encoder.data
-        guard UInt64(data.count) <= maxBytes else {
-            throw WaxError.capacityExceeded(limit: maxBytes, requested: UInt64(data.count))
+        let checksumPlaceholder = Data(repeating: 0, count: 32)
+        let byteCount = head.data.count + framesPayload.count + encoder.data.count + checksumPlaceholder.count
+        guard UInt64(byteCount) <= maxBytes else {
+            throw WaxError.capacityExceeded(limit: maxBytes, requested: UInt64(byteCount))
         }
-        let checksum = WaxTOC.computeChecksum(for: data)
-        data.replaceSubrange((data.count - 32)..<data.count, with: checksum)
-        return data
+        // The same digest `computeChecksum` takes over the joined bytes.
+        var hasher = SHA256Checksum()
+        hasher.update(head.data)
+        hasher.update(framesPayload)
+        hasher.update(encoder.data)
+        hasher.update(checksumPlaceholder)
+        encoder.encodeFixedBytes(hasher.finalize())
+        return EncodedParts(head: head.data, frames: framesPayload, tail: encoder.data)
     }
 
     package static func decode(from tocBytes: Data) throws -> WaxTOC {

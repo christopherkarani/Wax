@@ -559,11 +559,11 @@ package actor Wax {
             toc.segmentCatalog.entries.append(entry)
         }
 
-        let tocBytes = try toc.encode(cachedFramesPayload: cachedFramesPayload)
-        let tocChecksum = tocBytes.suffix(32)
+        let tocParts = try toc.encodeParts(cachedFramesPayload: cachedFramesPayload)
+        let tocChecksum = tocParts.checksum
         toc.tocChecksum = Data(tocChecksum)
 
-        let tocLength = UInt64(tocBytes.count)
+        let tocLength = UInt64(tocParts.byteCount)
         let tocOffset = allocateDataLocked(
             length: tocLength + Constants.footerSize,
             notBelow: try referencedDataEndLocked(appendedFrames: applied.appendedFrames)
@@ -597,7 +597,7 @@ package actor Wax {
         }
 
         try await io.run {
-            try file.writeAll(tocBytes, at: tocOffset)
+            try file.writeAll(contentsOf: tocParts.parts, at: tocOffset)
         }
         #if DEBUG
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
