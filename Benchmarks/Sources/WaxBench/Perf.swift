@@ -9,7 +9,8 @@ import Wax
 //
 // Phases (`--phase`):
 //   ingest  create a fresh store, save the first N passages one by one (calling flush()
-//           every --flush-every saves), flush, close.
+//           every --flush-every saves), flush, close. --save-batch N > 1 saves them
+//           through `save(contentsOf:)`, N passages per call.
 //   query   open the existing store (cold open + first search), then run the warm query
 //           loop for each mode and score recall@10 against exact brute force.
 //   all     ingest, then query (the query phase reopens the store in the same process).
@@ -31,6 +32,7 @@ struct PerfOptions {
     var topK = 10
     var modes: [String] = ["vector", "hybrid"]
     var flushEvery = 1_000
+    var saveBatch = 1
 
     static func parse(_ args: ArraySlice<String>) throws -> PerfOptions {
         var options = PerfOptions()
@@ -56,6 +58,7 @@ struct PerfOptions {
             case "--top-k": options.topK = max(1, try integer(flag))
             case "--modes": options.modes = try value(flag).split(separator: ",").map(String.init)
             case "--flush-every": options.flushEvery = try integer(flag)
+            case "--save-batch": options.saveBatch = max(1, try integer(flag))
             default: throw BenchError.usage("unknown flag \(flag)")
             }
         }
@@ -280,6 +283,8 @@ struct LatencySummary: Encodable {
 struct IngestResult: Encodable {
     let docs: Int
     let flushEvery: Int
+    /// Passages per save call: 1 calls `save(_:metadata:)`, more call `save(contentsOf:)`.
+    let saveBatch: Int
     /// Wall time of the save loop, including the periodic flushes.
     let saveSeconds: Double
     /// Part of `saveSeconds` spent in the periodic flush() calls.
@@ -288,8 +293,9 @@ struct IngestResult: Encodable {
     let flushSeconds: Double
     let closeSeconds: Double
     let docsPerSecond: Double
+    /// One sample per save call, so per batch when `saveBatch` > 1.
     let perSave: LatencySummary
-    /// Mean save latency per tenth of the ingest, to show whether a save gets slower as the store grows.
+    /// Mean save-call latency per tenth of the ingest, to show whether a save gets slower as the store grows.
     let perSaveMeanMsByDecile: [Double]
     let storeBytes: Int64
     let frameCount: UInt64
@@ -298,7 +304,7 @@ struct IngestResult: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case docs
-        case flushEvery = "flush_every", periodicFlushSeconds = "periodic_flush_seconds"
+        case flushEvery = "flush_every", saveBatch = "save_batch", periodicFlushSeconds = "periodic_flush_seconds"
         case saveSeconds = "save_seconds", flushSeconds = "flush_seconds", closeSeconds = "close_seconds"
         case docsPerSecond = "docs_per_second", perSave = "per_save"
         case perSaveMeanMsByDecile = "per_save_mean_ms_by_decile"
@@ -401,18 +407,24 @@ func runIngest(_ options: PerfOptions, dataset: PerfDataset, embedder: Precomput
     let progressStep = max(1, options.count / 10)
     var periodicFlushMs = 0.0
     let start = ContinuousClock.now
-    for (row, text) in dataset.corpusTexts.enumerated() {
+    let texts = dataset.corpusTexts
+    for lower in stride(from: 0, to: texts.count, by: options.saveBatch) {
+        let upper = min(lower + options.saveBatch, texts.count)
         let saveStart = ContinuousClock.now
-        try await memory.save(text, metadata: ["doc_id": String(row)])
+        if options.saveBatch == 1 {
+            try await memory.save(texts[lower], metadata: ["doc_id": String(lower)])
+        } else {
+            try await memory.save(contentsOf: (lower..<upper).map { (texts[$0], ["doc_id": String($0)]) })
+        }
         saveMs.append(elapsedMs(since: saveStart))
-        if options.flushEvery > 0, (row + 1) % options.flushEvery == 0, row + 1 < options.count {
+        if options.flushEvery > 0, upper / options.flushEvery > lower / options.flushEvery, upper < options.count {
             let flushStart = ContinuousClock.now
             try await memory.flush()
             periodicFlushMs += elapsedMs(since: flushStart)
         }
-        if (row + 1) % progressStep == 0 {
+        if upper / progressStep > lower / progressStep {
             let seconds = elapsedMs(since: start) / 1_000
-            perfLog("ingest \(row + 1)/\(options.count) (\(Int(Double(row + 1) / seconds)) docs/s)")
+            perfLog("ingest \(upper)/\(options.count) (\(Int(Double(upper) / seconds)) docs/s)")
         }
     }
     let saveSeconds = elapsedMs(since: start) / 1_000
@@ -432,6 +444,7 @@ func runIngest(_ options: PerfOptions, dataset: PerfDataset, embedder: Precomput
     return IngestResult(
         docs: options.count,
         flushEvery: options.flushEvery,
+        saveBatch: options.saveBatch,
         saveSeconds: saveSeconds,
         periodicFlushSeconds: periodicFlushMs / 1_000,
         flushSeconds: flushSeconds,
