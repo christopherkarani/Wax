@@ -86,12 +86,30 @@ package enum VectorSerializer {
 
         var encoder = BinaryEncoder()
         header.encode(to: &encoder)
-        var data = encoder.data
-        data.append(vectors.withUnsafeBufferPointer { Data(buffer: $0) })
+        let headerBytes = encoder.data
 
-        var frameIdBytesLE = UInt64(frameIdBytes).littleEndian
-        withUnsafeBytes(of: &frameIdBytesLE) { data.append(contentsOf: $0) }
-        data.append(frameIds.withUnsafeBufferPointer { Data(buffer: $0) })
+        // One exact-size buffer: every commit serializes the whole index, and growing a Data
+        // through appends copied the vectors up to three times.
+        let lengthFieldSize = MemoryLayout<UInt64>.size
+        var data = Data(count: headerBytes.count + vectorBytes + lengthFieldSize + frameIdBytes)
+        data.withUnsafeMutableBytes { (output: UnsafeMutableRawBufferPointer) in
+            var offset = 0
+            headerBytes.withUnsafeBytes { output.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+            offset += headerBytes.count
+            vectors.withUnsafeBytes { raw in
+                if let base = raw.baseAddress {
+                    (output.baseAddress! + offset).copyMemory(from: base, byteCount: vectorBytes)
+                }
+            }
+            offset += vectorBytes
+            output.storeBytes(of: UInt64(frameIdBytes).littleEndian, toByteOffset: offset, as: UInt64.self)
+            offset += lengthFieldSize
+            frameIds.withUnsafeBytes { raw in
+                if let base = raw.baseAddress {
+                    (output.baseAddress! + offset).copyMemory(from: base, byteCount: frameIdBytes)
+                }
+            }
+        }
         return data
     }
 
