@@ -8,18 +8,21 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 
 | Benchmark | Metric | Wax | Best reference | Before fixes |
 |---|---|---|---|---|
-| LoCoMo retrieval | R_all@5 / @10 | **0.537 / 0.618** (hybrid, Arctic) | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
+| LoCoMo retrieval | R_all@5 / @10 | **0.555 / 0.636** (hybrid, e5-small-v2, text weight 0.4); 0.537 / 0.618 with Arctic | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
 | LoCoMo QA | LLM judge J | **70.4%** (hybrid, Arctic, top 30); 64.9% with MiniLM | Contriever top 30: 62.4% | 56.3% (vector, top 30) |
-| LongMemEval-S retrieval | R_all@5 / NDCG@10 | 0.883 / 0.917 (hybrid, MiniLM) | **Contriever 0.902 / 0.927** | 0.742 / – |
-| LongMemEval-S QA | accuracy | 86.0% (hybrid, MiniLM, top 5) | **Contriever top 5: 87.8%** | 83.0% (vector, top 5) |
+| LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.905** / 0.926 (hybrid, e5-small-v2, text weight 0.4); 0.883 / 0.917 with MiniLM | Contriever 0.902 / **0.927** | 0.742 / – |
+| LongMemEval-S QA | accuracy, mean of 3 runs | 87.6% (hybrid, e5-small-v2, text weight 0.4, top 5); task-averaged **90.3%** | Contriever top 5: **87.7%**; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
 | Systems, 100k passages | disk | 395 MB | Chroma 408 MB (text + vectors) | 13.5 GB |
 | Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
 | Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
 
-Wax leads LoCoMo on retrieval and QA. On LongMemEval it is 1.9 points behind Contriever
-in retrieval and 1.8 points behind in QA, using a model one fifth the size (MiniLM-L6,
-22M parameters, against Contriever's 110M). With Contriever embeddings it ties bare
+Wax leads LoCoMo on retrieval and QA. On LongMemEval retrieval it leads Contriever by
+0.003 R_all@5 (about one question of 419) with the opt-in e5-small-v2 embedder (33M
+parameters, against Contriever's 110M), so read that as a tie. With the default MiniLM-L6
+(22M parameters) it is 1.9 points behind in retrieval and 1.8 points behind in QA. With
+e5, QA ties Contriever: over three reader and judge runs each, 87.6% against 87.7%
+accuracy and 90.3% against 90.0% task-averaged. With Contriever embeddings it ties bare
 Contriever on LongMemEval, and adds 8 points on LoCoMo (see
 [Same-model comparison](#same-model-comparison)).
 
@@ -44,9 +47,12 @@ Official protocol (LongMemEval `src/retrieval`, commit 9e0b455f), session level,
 
 | Retriever | R_all@5 | R_all@10 | NDCG@10 |
 |---|---|---|---|
-| Contriever | **0.902** | **0.971** | **0.927** |
-| Wax hybrid, e5-small-v2, text weight 0.4 | 0.900 | 0.967 | **0.927** |
-| Wax hybrid, e5-small-v2 | 0.885 | 0.957 | 0.924 |
+| Wax hybrid, e5-small-v2, text weight 0.4 | **0.905** | **0.976** | 0.926 |
+| Contriever | 0.902 | 0.971 | **0.927** |
+| Wax hybrid, e5-small-v2 | 0.893 | 0.969 | 0.925 |
+| Wax vector, e5-small-v2 | 0.885 | 0.952 | 0.893 |
+| Wax hybrid, e5-small-v2 without prefixes, text weight 0.4 | 0.900 | 0.967 | **0.927** |
+| Wax hybrid, e5-small-v2 without prefixes | 0.885 | 0.957 | 0.924 |
 | Wax hybrid, MiniLM | 0.883 | 0.950 | 0.917 |
 | Wax hybrid, Arctic | 0.878 | 0.940 | 0.899 |
 | Wax vector, MiniLM | 0.869 | 0.947 | 0.892 |
@@ -66,10 +72,15 @@ so the remaining gap comes from the embedder rather than from ranking.
 Small embedders were scored through Wax hybrid search before any was converted to Core
 ML. On LongMemEval R_all@5: MiniLM 0.883, gte-small 0.883, e5-small-v2 0.883, bge-small
 0.885, bge-base 0.888. None beat Contriever by default. e5-small-v2 with the text weight
-lowered to 0.4 (`.hybrid(alpha: 0.4)`) reaches 0.900, against Contriever's 0.902, and
-keeps the LoCoMo lead (0.503). It ships as the opt-in `E5Embeddings` trait
-(`7b1892861`); MiniLM stays the default. The e5 rows above come from the bundled Core ML
-model, whose embeddings match PyTorch to a cosine of at least 0.9996 on 215 texts.
+lowered to 0.4 (`.hybrid(alpha: 0.4)`) reached 0.900, against Contriever's 0.902. It ships
+as the opt-in `E5Embeddings` trait (`7b1892861`); MiniLM stays the default.
+
+e5 was trained with `"query: "` before queries and `"passage: "` before passages, and the
+first build embedded both bare. With the prefixes (`802f8ffa8`), hybrid at text weight 0.4
+goes from 0.900 to 0.905 on LongMemEval and from 0.503 to 0.555 on LoCoMo. Vector-only
+search drops slightly on LongMemEval (0.893 to 0.885) and rises on LoCoMo (0.448 to
+0.528). The e5 rows come from the bundled Core ML model, whose embeddings match PyTorch to
+a cosine of at least 0.9996 on 215 texts.
 
 A rule that picked the text weight from the corpus's median document length scored
 0.912 on LongMemEval but failed a held-out check (LongMemEval turn level), so it was not
@@ -82,10 +93,13 @@ the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the
 
 | Retriever | R_all@5 | R_all@10 | R_all@30 |
 |---|---|---|---|
-| Wax hybrid, Arctic | **0.537** | **0.618** | **0.725** |
+| Wax hybrid, e5-small-v2, text weight 0.4 | **0.555** | **0.636** | **0.744** |
+| Wax hybrid, e5-small-v2 | 0.545 | 0.623 | 0.734 |
+| Wax hybrid, Arctic | 0.537 | 0.618 | 0.725 |
+| Wax vector, e5-small-v2 | 0.528 | 0.612 | 0.726 |
 | Wax vector, Arctic | 0.509 | 0.586 | 0.717 |
-| Wax hybrid, e5-small-v2 | 0.509 | 0.579 | 0.687 |
-| Wax hybrid, e5-small-v2, text weight 0.4 | 0.503 | 0.583 | 0.690 |
+| Wax hybrid, e5-small-v2 without prefixes | 0.509 | 0.579 | 0.687 |
+| Wax hybrid, e5-small-v2 without prefixes, text weight 0.4 | 0.503 | 0.583 | 0.690 |
 | Wax hybrid, MiniLM | 0.466 | 0.550 | 0.665 |
 | Wax text | 0.429 | 0.495 | 0.586 |
 | Contriever | 0.407 | 0.494 | – |
@@ -123,11 +137,21 @@ bundled MiniLM and Arctic models are cosine models and are unaffected.
 | Context | Accuracy | Task-averaged |
 |---|---|---|
 | Oracle (evidence sessions only) | 93.4% | 95.9% |
-| Contriever top 5 | **87.8%** | **90.0%** |
+| Contriever top 5, mean of 3 runs (87.8 / 87.6 / 87.6) | **87.7%** | 90.0% |
+| Wax hybrid e5-small-v2, text weight 0.4, top 5, mean of 3 runs (87.6 / 87.4 / 87.8) | 87.6% | **90.3%** |
 | Wax hybrid MiniLM top 5 | 86.0% | 88.2% |
 | Wax vector MiniLM top 5, before fixes | 83.0% | 84.8% |
 
-Wax hybrid beats Contriever on knowledge-update (95.8% against 90.3%) and abstention
+Three runs each are needed to compare these: the reader and judge alone move accuracy by
+0.4 points between runs of the same context. With e5, Wax leads Contriever on
+knowledge-update (96.8% against 90.3%) and single-session user facts (98.4% against
+95.3%), and trails on multi-session (76.6% against 78.5%), single-session preference and
+abstention (both 3.3 points). The abstention gap is not retrieval: on the questions that
+flipped, both contexts held the right sessions and the answers differed in wording, and
+the oracle context scores 73.3% on abstention. On multi-session questions Wax has every
+evidence session in its top 5 more often than Contriever (86.8% against 85.1%).
+
+With MiniLM, Wax hybrid beats Contriever on knowledge-update (95.8% against 90.3%) and abstention
 (90.0% against 83.3%), ties on single-session user facts (95.3%), and is within 3.3 points
 on the other single-session and temporal types. It trails on multi-session (69.4%
 against 78.5%), which follows the retrieval gap above.
@@ -169,6 +193,40 @@ hybrid search (text and vector lanes fused) at 100k: p50 5.7 ms, p95 14.8 ms, p9
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
 sqlite-vec 1.9 GB at 330 ms. Wax was not run at 1M (see open issues).
+
+## memvid
+
+memvid (`memvid-sdk` 2.0.160, the Rust rewrite; the QR-video v1 is deprecated) is a
+single-file memory store with BM25 (Tantivy), HNSW vectors and a hybrid mode. Its local
+embedder is not built for macOS arm64, so every run below gives it the same precomputed
+all-MiniLM-L6-v2 vectors as the Wax MiniLM and bare MiniLM rows, through the same jobs
+files and scorers. Adapters: `Benchmarks/scripts/retrieve_memvid.py` and
+`perf_memvid.py`, which set `MEMVID_TELEMETRY=0`.
+
+| Benchmark | memvid, best mode | Wax hybrid, MiniLM | Bare MiniLM |
+|---|---|---|---|
+| LongMemEval-S R_all@5 / @10 / NDCG@10 | 0.809 / 0.885 / 0.838 (vector) | **0.883 / 0.950 / 0.917** | 0.852 / 0.938 / 0.878 |
+| LoCoMo R_all@5 / @10 | 0.332 / 0.405 | **0.466 / 0.550** | 0.326 / 0.406 |
+
+memvid's hybrid mode adds nothing over its vector mode with raw queries (LongMemEval
+0.742, LoCoMo 0.325): multi-word lexical queries behave as AND in 2.0.160, though the
+docs say OR, so most match nothing. The LoCoMo row is its better result with the query
+rewritten as OR terms at @5 and vector search at @10. On LongMemEval 24 questions have a
+gold session memvid never returns.
+
+The cause is a memvid bug that also blocks a systems row. Vectors written in a large
+`put_many` call are stored but cannot be found: of a 1,000-document batch, 495 never come
+back for their own vector, so 10k passages loaded in one call score recall@10 0.003. With
+10-document batches nothing is lost, which is how the retrieval runs above were loaded,
+but the 10k passages then exceed the free tier's 50 MB file cap. 1,000-document batches
+deadlocked on the second or third call. At 100k the cap rules it out. For reference, the
+one-call 10k load ran at 8.6 docs/s and 46.6 MB, with 100 ms cold open and first query.
+
+memvid publishes LoCoMo 85.65% (categories 1–4, 1,540 questions). That run uses GPT-4o
+as reader, gpt-4o-mini as a lenient judge, OpenAI text-embedding-3-large embeddings and
+60 retrieved items. Our runs use claude-haiku-5-5 as reader, claude-sonnet-5-5 as judge,
+on-device embedders and 30 items, so the figures cannot be compared. memvid publishes no
+retrieval recall and no LongMemEval results.
 
 ## What changed
 
