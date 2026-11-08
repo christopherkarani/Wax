@@ -90,8 +90,9 @@ extension FTS5SearchEngine {
     }
 
     /// Advances the watermark to the first indexable frame without postings (or past the last
-    /// frame) and writes it into the blob. `metas` must be in ascending id order, as
-    /// `Wax.frameMetasIncludingPending()` returns them. Call after pending ops are flushed.
+    /// frame) and writes it into the blob. `metas` must be in ascending id order and hold
+    /// every frame at or above the watermark, as `Wax.frameMetasIncludingPending()` and
+    /// `Wax.frameMetasForTextStaging(atOrAbove:)` return them. Call after pending ops are flushed.
     func recordCoverage(of metas: [FrameMeta]) async throws {
         let floor = coveredBelowFrameId
         let indexed = try await indexedFrameIds(atOrAbove: floor)

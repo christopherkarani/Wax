@@ -293,7 +293,9 @@ package actor FTS5SearchEngine {
     }
 
     package func stageForCommit(into wax: Wax, compact: Bool = false) async throws {
-        let metas = await wax.frameMetasIncludingPending()
+        // Both steps below read only inactive frames and frames at or above the watermark,
+        // which only `recordCoverage` moves, and only up.
+        let metas = await wax.frameMetasForTextStaging(atOrAbove: coveredBelowFrameId)
         try await removeInactiveFrames(metas)
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }

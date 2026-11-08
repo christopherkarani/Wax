@@ -189,6 +189,50 @@ extension Wax {
         }
     }
 
+    /// The entries of `frameMetasIncludingPending()` that staging the text index reads: every
+    /// frame at or above `floor` (its coverage watermark), and the inactive (deleted or
+    /// superseded) frames below it, in id order. Copies only those, not every frame.
+    package func frameMetasForTextStaging(atOrAbove floor: UInt64) async -> [FrameMeta] {
+        await withReadLock {
+            let committedCount = UInt64(toc.frames.count)
+            let scanEnd = Int(min(floor, committedCount))
+            var ids: [UInt64] = []
+            toc.frames.withUnsafeBufferPointer { frames in
+                for index in 0..<scanEnd where frames[index].status == .deleted || frames[index].supersededBy != nil {
+                    ids.append(UInt64(index))
+                }
+            }
+            // Pending mutations can change frames below the floor, and add frames past the
+            // committed ones.
+            var pendingIds: [UInt64] = []
+            for mutation in pendingMutations {
+                switch mutation.entry {
+                case .putFrame(let put):
+                    pendingIds.append(put.frameId)
+                case .deleteFrame(let delete):
+                    pendingIds.append(delete.frameId)
+                case .supersedeFrame(let supersede):
+                    pendingIds.append(supersede.supersededId)
+                    pendingIds.append(supersede.supersedingId)
+                case .putEmbedding:
+                    continue
+                }
+            }
+            if floor < committedCount {
+                ids.append(contentsOf: floor..<committedCount)
+            }
+            ids.append(contentsOf: pendingIds.filter { $0 < floor || $0 >= committedCount })
+            let candidates = Array(Set(ids)).sorted()
+
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: candidates)
+            return candidates.compactMap { frameId -> FrameMeta? in
+                guard let meta = metas[frameId] else { return nil }
+                guard frameId >= floor || meta.status == .deleted || meta.supersededBy != nil else { return nil }
+                return meta
+            }
+        }
+    }
+
     /// Committed frames with pending mutations applied, then pending puts, in id order.
     ///
     /// Same result as `frameMetasIncludingPendingUnlocked(frameIds:)` over every committed and
