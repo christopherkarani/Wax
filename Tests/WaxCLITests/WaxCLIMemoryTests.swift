@@ -722,9 +722,10 @@ struct WaxCLIMemoryTests {
             .appendingPathComponent("wxds-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("daemon.wax")
         let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        let hooksURL = tempRoot.appendingPathComponent("hooks", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
-        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hooksURL, withIntermediateDirectories: true)
 
         let cli = try builtProductPath(named: "wax-cli")
         let process = Process()
@@ -736,6 +737,7 @@ struct WaxCLIMemoryTests {
             "--socket-path", socketURL.path,
             "--idle-timeout-secs", "10",
         ]
+        process.environment = testEnvironment(["WAX_BROKER_TEST_HOOKS_DIR": hooksURL.path])
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         try process.run()
@@ -746,7 +748,7 @@ struct WaxCLIMemoryTests {
             }
         }
 
-        try await waitForSocket(atPath: socketURL.path, timeout: 5)
+        try await waitForListening(hooksDirectory: hooksURL, daemon: process, timeout: 5)
 
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
@@ -2026,15 +2028,24 @@ struct WaxCLIMemoryTests {
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
-    private func waitForSocket(atPath path: String, timeout: TimeInterval) async throws {
+    /// The socket file appears at `bind`, before `listen`, so a connect that only waits for the
+    /// file can be refused. The daemon's `listening` test marker is written once it accepts.
+    private func waitForListening(
+        hooksDirectory: URL,
+        daemon: Process,
+        timeout: TimeInterval
+    ) async throws {
+        let marker = hooksDirectory.appendingPathComponent("listening").path
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: path) {
-                return
+        while !FileManager.default.fileExists(atPath: marker) {
+            guard daemon.isRunning else {
+                throw CLIError("daemon exited (\(daemon.terminationStatus)) before listening")
             }
-            try await Task.sleep(for: .milliseconds(50))
+            guard Date() < deadline else {
+                throw CLIError("Timed out waiting for the daemon to listen")
+            }
+            try await Task.sleep(for: .milliseconds(20))
         }
-        throw CLIError("Timed out waiting for socket at \(path)")
     }
 
     private func connectUnixSocket(path: String) throws -> Int32 {
