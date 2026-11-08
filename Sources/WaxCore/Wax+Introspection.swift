@@ -129,3 +129,15 @@ extension Wax {
         }
     }
 }
+
+extension Wax {
+    /// The committed segment catalog. Tests only.
+    func segmentCatalogEntriesForTesting() async -> [SegmentCatalogEntry] {
+        await withReadLock { toc.segmentCatalog.entries }
+    }
+
+    /// Free ranges a commit may allocate from. Tests only.
+    func freeDataRangesForTesting() async -> [Range<UInt64>] {
+        await withReadLock { dataSpace.free.extents }
+    }
+}

@@ -23,12 +23,15 @@ private enum HarnessError: Error, CustomStringConvertible {
 }
 
 private enum CrashScenario: String, CaseIterable {
+    case segment
     case toc
     case footer
     case header
 
     var checkpoint: String {
         switch self {
+        case .segment:
+            return "after_vector_run_write_before_toc"
         case .toc:
             return "after_toc_write_before_footer"
         case .footer:
@@ -40,7 +43,7 @@ private enum CrashScenario: String, CaseIterable {
 
     var expectedCommittedFramesAfterRecovery: UInt64 {
         switch self {
-        case .toc:
+        case .segment, .toc:
             return 1
         case .footer, .header:
             return 2
@@ -121,6 +124,8 @@ struct WaxCrashHarness {
             throw HarnessError.invariantFailed("seed frame mismatch after recovery")
         }
 
+        try await checkVectors(recovered, scenario: scenario, seedFrameId: seedFrameId)
+
         if scenario.expectedCommittedFramesAfterRecovery >= 2 {
             // The child's frame is the next frame allocated after the seed frame.
             let second = try await recovered.frameContent(frameId: seedFrameId + 1)
@@ -132,11 +137,40 @@ struct WaxCrashHarness {
         try await recovered.close()
     }
 
-    /// Seeds the store with a single "seed" frame and returns its allocated frame ID.
+    private static func vector(_ frameId: UInt64) -> [Float] {
+        (0..<8).map { Float(frameId + 1) + Float($0) * 0.125 }
+    }
+
+    /// The seed's vector is committed. The child's vector is committed when its commit
+    /// survived, and replays as pending otherwise.
+    private static func checkVectors(_ wax: WaxCore.Wax, scenario: CrashScenario, seedFrameId: UInt64) async throws {
+        let childFrameId = seedFrameId + 1
+        let childCommitted = scenario.expectedCommittedFramesAfterRecovery >= 2
+        var expected: [UInt64: [Float]] = [seedFrameId: vector(seedFrameId)]
+        if childCommitted { expected[childFrameId] = vector(childFrameId) }
+        guard let committed = try await wax.readCommittedVectors() else {
+            throw HarnessError.invariantFailed("no committed vectors after \(scenario.rawValue)")
+        }
+        var found: [UInt64: [Float]] = [:]
+        for (row, frameId) in committed.frameIds.enumerated() {
+            found[frameId] = Array(committed.vectors[(row * 8)..<((row + 1) * 8)])
+        }
+        guard found == expected else {
+            throw HarnessError.invariantFailed("committed vectors mismatch after \(scenario.rawValue): \(found.keys.sorted())")
+        }
+        let pending = await wax.pendingEmbeddingMutations(since: nil).embeddings.map(\.frameId)
+        guard pending == (childCommitted ? [] : [childFrameId]) else {
+            throw HarnessError.invariantFailed("pending vectors mismatch after \(scenario.rawValue): \(pending)")
+        }
+    }
+
+    /// Seeds the store with a single "seed" frame and its vector, and returns its frame ID.
     @discardableResult
     private static func seedStore(at url: URL) async throws -> UInt64 {
         let wax = try await WaxCore.Wax.create(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         let seedFrameId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
+        try await wax.setVectorIndexConfiguration(dimension: 8, similarity: .cosine)
+        try await wax.putEmbedding(frameId: seedFrameId, vector: vector(seedFrameId))
         try await wax.commit()
         try await wax.close()
         return seedFrameId
@@ -171,10 +205,11 @@ struct WaxCrashHarness {
 
         let url = URL(fileURLWithPath: storePath)
         let wax = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
-        _ = try await wax.put(
+        let frameId = try await wax.put(
             Data("payload-\(scenario.rawValue)".utf8),
             options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")
         )
+        try await wax.putEmbedding(frameId: frameId, vector: vector(frameId))
         try await wax.commit()
         try await wax.close()
     }

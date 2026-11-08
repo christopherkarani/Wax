@@ -35,23 +35,23 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
     package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> AccelerateVectorEngine {
         try await load(
             from: wax,
-            segment: try await LoadedVectorSearchEngine.currentSegmentBytes(for: wax),
+            committed: try await wax.readCommittedVectors(),
             metric: metric,
             dimensions: dimensions
         )
     }
 
-    /// Loads `segment` (the bytes ``LoadedVectorSearchEngine/currentSegmentBytes(for:)``
-    /// returned) plus the store's pending embeddings.
+    /// Loads `committed` (what ``Wax/readCommittedVectors()`` returned) plus the store's
+    /// pending vector changes.
     package static func load(
         from wax: Wax,
-        segment: Data?,
+        committed: CommittedVectors?,
         metric: VectorMetric,
         dimensions: Int
     ) async throws -> AccelerateVectorEngine {
         let engine = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
-        if let segment {
-            try await engine.deserialize(segment)
+        if let committed {
+            try await engine.loadCommitted(committed)
         }
         let pending = await wax.pendingEmbeddingMutations(since: nil)
         if !pending.embeddings.isEmpty {
@@ -59,6 +59,9 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 frameIds: pending.embeddings.map(\.frameId),
                 vectors: pending.embeddings.map(\.vector)
             )
+        }
+        for frameId in pending.removedFrameIds {
+            try await engine.remove(frameId: frameId)
         }
         return engine
     }
@@ -174,61 +177,27 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
+    /// Records the index's dimension and similarity for the commit; the commit writes the
+    /// pending embeddings and removals themselves from the WAL.
     package func stageForCommit(into wax: Wax) async throws {
-        try await stageForCommit(into: wax, coverage: .latestPending)
-    }
-
-    package func stageForCommit(into wax: Wax, coverage: StagedVecIndexCoverage) async throws {
-        guard dirty else { return }
-        let blob = try VectorSerializer.serializeFlatVectors(
-            vectors,
-            frameIds: frameIds,
-            metric: metric,
-            dimensions: dimensions
-        )
-        try await wax.stageVecIndexForNextCommit(
-            bytes: blob,
-            vectorCount: UInt64(frameIds.count),
-            dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity(),
-            coverage: coverage
-        )
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
         dirty = false
     }
 
-    private func deserialize(_ data: Data) async throws {
-        let decoded = try VectorSerializer.decodeVecSegment(from: data)
-        switch decoded {
-        case .metal(let info, let decodedVectors, let decodedFrameIds):
-            guard info.dimension == UInt32(dimensions) else {
-                throw WaxError.invalidToc(reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)")
-            }
-            guard info.similarity == metric.toVecSimilarity() else {
-                throw WaxError.invalidToc(
-                    reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(info.similarity)"
-                )
-            }
-            guard decodedVectors.count == Int(info.vectorCount) * dimensions else {
-                throw WaxError.invalidToc(reason: "vec vector count mismatch")
-            }
-            guard decodedFrameIds.count == Int(info.vectorCount) else {
-                throw WaxError.invalidToc(reason: "vec frameId count mismatch")
-            }
-            frameIds = decodedFrameIds
-            vectors = decodedVectors
-            positions.removeAll(keepingCapacity: true)
-            positions.reserveCapacity(decodedFrameIds.count)
-            squaredNorms.removeAll(keepingCapacity: true)
-            squaredNorms.reserveCapacity(decodedFrameIds.count)
-            for (index, frameId) in decodedFrameIds.enumerated() {
-                positions[frameId] = index
-                let start = index * dimensions
-                squaredNorms.append(squaredNorm(ofSliceStartingAt: start))
-            }
-            droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
-            // Rewrite a clean segment on the next commit when rows were dropped.
-            dirty = info.droppedNonFiniteRowCount > 0
+    private func loadCommitted(_ committed: CommittedVectors) throws {
+        try VectorPreparation.validateCommitted(committed, dimensions: dimensions, metric: metric)
+        frameIds = committed.frameIds
+        vectors = VectorPreparation.preparedRows(committed.vectors, dimensions: dimensions, metric: metric)
+        positions.removeAll(keepingCapacity: true)
+        positions.reserveCapacity(frameIds.count)
+        squaredNorms.removeAll(keepingCapacity: true)
+        squaredNorms.reserveCapacity(frameIds.count)
+        for (index, frameId) in frameIds.enumerated() {
+            positions[frameId] = index
+            squaredNorms.append(squaredNorm(ofSliceStartingAt: index * dimensions))
         }
+        droppedNonFiniteRowCount = committed.droppedNonFiniteRowCount
+        dirty = false
     }
 
     private func preparedVector(_ vector: [Float]) -> [Float] {

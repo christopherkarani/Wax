@@ -6,6 +6,7 @@ enum WALEntryCodec {
         case deleteFrame = 0x02
         case supersedeFrame = 0x03
         case putEmbedding = 0x04
+        case removeEmbedding = 0x05
     }
 
     package static func encode(_ entry: WALEntry) throws -> Data {
@@ -51,6 +52,9 @@ enum WALEntryCodec {
                 Data(buffer: buf)
             }
             encoder.encodeFixedBytes(floatBytes)
+        case .removeEmbedding(let removal):
+            encoder.encode(OpCode.removeEmbedding.rawValue)
+            encoder.encode(removal.frameId)
         }
 
         return encoder.data
@@ -124,6 +128,10 @@ enum WALEntryCodec {
 
                 try decoder.finalize()
                 return .putEmbedding(PutEmbedding(frameId: frameId, dimension: dimension, vector: vector))
+            case .removeEmbedding:
+                let frameId = try decoder.decode(UInt64.self)
+                try decoder.finalize()
+                return .removeEmbedding(RemoveEmbedding(frameId: frameId))
             }
         } catch let error as WaxError {
             switch error {

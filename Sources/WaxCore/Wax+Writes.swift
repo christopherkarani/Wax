@@ -1,11 +1,17 @@
 import Foundation
 
+/// The vector changes pending in the WAL, reduced to each frame's last change.
 package struct PendingEmbeddingSnapshot: Equatable, Sendable {
+    /// The last embedding of each frame whose last change is an embedding, in WAL order.
     package let embeddings: [PutEmbedding]
+    /// Frames whose last change is a removal, ascending.
+    package let removedFrameIds: [UInt64]
+    /// Sequence of the newest pending vector change, whether or not it is in the window.
     package let latestSequence: UInt64?
 
-    package init(embeddings: [PutEmbedding], latestSequence: UInt64?) {
+    package init(embeddings: [PutEmbedding], removedFrameIds: [UInt64] = [], latestSequence: UInt64?) {
         self.embeddings = embeddings
+        self.removedFrameIds = removedFrameIds
         self.latestSequence = latestSequence
     }
 }
@@ -352,10 +358,10 @@ extension Wax {
                     )
                 }
             }
-            if let staged = stagedVecIndex {
-                guard staged.dimension == dimension else {
+            if let configured = vectorConfiguration {
+                guard configured.dimension == dimension else {
                     throw WaxError.invalidToc(
-                        reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                        reason: "embedding dimension mismatch vs vec index configuration: expected \(configured.dimension), got \(dimension)"
                     )
                 }
             }
@@ -420,10 +426,10 @@ extension Wax {
                     )
                 }
             }
-            if let staged = stagedVecIndex {
-                guard staged.dimension == dimension else {
+            if let configured = vectorConfiguration {
+                guard configured.dimension == dimension else {
                     throw WaxError.invalidToc(
-                        reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                        reason: "embedding dimension mismatch vs vec index configuration: expected \(configured.dimension), got \(dimension)"
                     )
                 }
             }
@@ -446,21 +452,56 @@ extension Wax {
         return snapshot.embeddings
     }
 
+    /// The pending vector changes with their WAL sequences, in WAL order.
+    /// Internal only because of the file split; use only under `opLock`.
+    func pendingVectorChangesLocked() -> [(sequence: UInt64, change: PendingVectorChange)] {
+        orderedPendingMutationsLocked().compactMap { mutation in
+            switch mutation.entry {
+            case .putEmbedding(let embedding): (mutation.sequence, .put(embedding))
+            case .removeEmbedding(let removal): (mutation.sequence, .remove(removal.frameId))
+            case .putFrame, .deleteFrame, .supersedeFrame: nil
+            }
+        }
+    }
+
+    /// The pending vector changes after `sequence` (all of them for `nil`), reduced to each
+    /// frame's last change in that window.
     package func pendingEmbeddingMutations(since sequence: UInt64?) async -> PendingEmbeddingSnapshot {
         await withReadLock {
-            guard pendingMutationSummary.hasPendingEmbedding else {
+            guard pendingMutationSummary.hasPendingVectorChange else {
                 return PendingEmbeddingSnapshot(embeddings: [], latestSequence: nil)
             }
-            var embeddings: [PutEmbedding] = []
-            embeddings.reserveCapacity(pendingMutations.count)
+            var changes: [PendingVectorChange] = []
             var latestSequence: UInt64?
-            for mutation in pendingMutations {
-                guard case .putEmbedding(let embedding) = mutation.entry else { continue }
-                latestSequence = mutation.sequence
-                if let sequence, mutation.sequence <= sequence { continue }
-                embeddings.append(embedding)
+            for (changeSequence, change) in pendingVectorChangesLocked() {
+                latestSequence = changeSequence
+                if let sequence, changeSequence <= sequence { continue }
+                changes.append(change)
             }
-            return PendingEmbeddingSnapshot(embeddings: embeddings, latestSequence: latestSequence)
+            let reduced = PendingVectorChange.lastChanges(changes)
+            return PendingEmbeddingSnapshot(
+                embeddings: reduced.embeddings,
+                removedFrameIds: reduced.removedFrameIds.sorted(),
+                latestSequence: latestSequence
+            )
+        }
+    }
+
+    /// Removes `frameId`'s vector at the next commit, and any embedding written for it before.
+    package func removeEmbedding(frameId: UInt64) async throws {
+        try await withEmbeddingWriteLock {
+            try validateKnownFrameForMutationLocked(frameId)
+            // Format 1.0 cannot read this record, so no 1.0 build may open the file after it.
+            try await ensureHeaderPagesCurrentLocked()
+            let entry = WALEntry.removeEmbedding(RemoveEmbedding(frameId: frameId))
+            let payload = try WALEntryCodec.encode(entry)
+            try await ensureWalCapacityLocked(payloadSize: payload.count)
+            let wal = self.wal
+            let seq = try await io.run {
+                try wal.append(payload: payload)
+            }
+            appendPendingMutation(sequence: seq, entry: entry)
+            dirty = true
         }
     }
 
@@ -539,6 +580,8 @@ extension Wax {
     struct PendingMutationSummary {
         var putFrameCount: UInt64 = 0
         var hasPendingEmbedding = false
+        /// An embedding or a removal is pending.
+        var hasPendingVectorChange = false
         var latestPendingEmbeddingSequence: UInt64?
         var pendingEmbeddingDimension: UInt32?
         var pendingEmbeddingHasMixedDimensions = false
@@ -557,12 +600,16 @@ extension Wax {
                 putFrameCount &+= 1
             case .putEmbedding(let embedding):
                 hasPendingEmbedding = true
+                hasPendingVectorChange = true
                 latestPendingEmbeddingSequence = mutation.sequence
                 if let pendingEmbeddingDimension, pendingEmbeddingDimension != embedding.dimension {
                     pendingEmbeddingHasMixedDimensions = true
                 } else {
                     pendingEmbeddingDimension = embedding.dimension
                 }
+            case .removeEmbedding:
+                hasPendingVectorChange = true
+                latestPendingEmbeddingSequence = mutation.sequence
             case .deleteFrame, .supersedeFrame:
                 break
             }

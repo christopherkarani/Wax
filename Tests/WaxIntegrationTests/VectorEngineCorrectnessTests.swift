@@ -66,6 +66,29 @@ private func makeTempDirectory() throws -> URL {
     return url
 }
 
+/// Puts frames `0...max(frameIds)` into a new store, so every id in `frameIds` names a frame.
+private func putFrames(_ wax: Wax, covering frameIds: [UInt64]) async throws {
+    let count = Int((frameIds.max() ?? 0) + 1)
+    _ = try await wax.putBatch(
+        Array(repeating: Data("v".utf8), count: count),
+        options: Array(repeating: FrameMetaSubset(), count: count)
+    )
+}
+
+/// Writes `vectors` for `frameIds` to a new store's WAL and commits them as its vector index.
+private func commitVectors(
+    _ wax: Wax,
+    frameIds: [UInt64],
+    vectors: [[Float]],
+    metric: VectorMetric,
+    dimensions: Int
+) async throws {
+    try await putFrames(wax, covering: frameIds)
+    try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: vectors)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
+    try await wax.commit()
+}
+
 // MARK: - MetalANNS returns similarity, best-first (finding 1)
 
 #if canImport(Metal) && canImport(MetalANNS)
@@ -138,9 +161,13 @@ func loadedVectorSearchEngineGpuOnlyRanksNearestFirst(count: Int) async throws {
     let dimensions = 8
     let dataset = makeDataset(count: count, dimensions: dimensions, seed: 42)
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("gpu-only.wax"))
-    let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
-    try await seed.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
-    try await seed.stageForCommit(into: wax)
+    try await commitVectors(
+        wax,
+        frameIds: dataset.frameIds,
+        vectors: dataset.vectors,
+        metric: .cosine,
+        dimensions: dimensions
+    )
 
     let gpu = try await LoadedVectorSearchEngine.load(
         from: wax,
@@ -499,22 +526,13 @@ func metalANNSCancelledLoadDoesNotBlockGraphBuild() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("cancelled-load.wax"))
-    // Segments store cosine vectors already normalized, as the engines write them.
-    let normalized = base.vectors.map { row in
-        let norm = sqrt(row.reduce(Float.zero) { $0 + $1 * $1 })
-        return row.map { $0 / norm }
-    }
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try VectorSerializer.serializeFlatVectors(
-            normalized.flatMap { $0 },
-            frameIds: base.frameIds,
-            metric: .cosine,
-            dimensions: dimensions
-        ),
-        vectorCount: UInt64(base.frameIds.count),
-        dimension: UInt32(dimensions),
-        similarity: .cosine,
-        coverage: .latestPending
+    // Committed vectors are stored as written; the engine normalizes cosine rows on load.
+    try await commitVectors(
+        wax,
+        frameIds: base.frameIds,
+        vectors: base.vectors,
+        metric: .cosine,
+        dimensions: dimensions
     )
 
     let engine = try await Task {
@@ -596,10 +614,17 @@ func metalANNSExactModeOpenSkipsGraphBuild() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("exact-open.wax"))
+    // Dense ids: every committed vector needs a frame, and the ids do not matter here.
+    let frameIds = (0..<count).map { UInt64($0) }
+    try await commitVectors(
+        wax,
+        frameIds: frameIds,
+        vectors: base.vectors,
+        metric: .cosine,
+        dimensions: dimensions
+    )
     let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
-    try await seed.addBatch(frameIds: base.frameIds, vectors: base.vectors)
-    try await seed.stageForCommit(into: wax)
-    try await wax.commit()
+    try await seed.addBatch(frameIds: frameIds, vectors: base.vectors)
 
     let engine = try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
     // MetalANNS answers exact searches at this size with a flat scan, so open builds no graph.
@@ -730,6 +755,28 @@ private func segmentWithNaNRow() throws -> Data {
     )
 }
 
+/// Commits, as a store's vector index, rows whose second (frameId 2) contains NaN, as stores
+/// written before inserts validated finiteness can hold. Inserts reject NaN, so the rows go
+/// in as a vector import.
+private func commitVectorsWithNaNRow(_ wax: Wax) async throws {
+    try await putFrames(wax, covering: [1, 2, 3])
+    try await wax.stageVectorImportForNextCommit(CommittedVectors(
+        dimension: 2,
+        similarity: .cosine,
+        frameIds: [1, 2, 3],
+        vectors: [1.0, 0.0, .nan, 1.0, 0.0, 1.0]
+    ))
+    try await wax.commit()
+}
+
+/// Expects `wax`'s committed vectors to leave out the NaN row of ``commitVectorsWithNaNRow(_:)``.
+private func expectNaNRowDropped(_ wax: Wax, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    let committed = try #require(try await wax.readCommittedVectors(), sourceLocation: sourceLocation)
+    #expect(committed.droppedNonFiniteRowCount == 1, sourceLocation: sourceLocation)
+    #expect(Set(committed.frameIds) == [1, 3], sourceLocation: sourceLocation)
+    #expect(committed.vectors.allSatisfy { $0.isFinite }, sourceLocation: sourceLocation)
+}
+
 @Test func vectorSerializerDropsNonFiniteRowsAndReportsCount() throws {
     let decoded = try VectorSerializer.decodeVecSegment(from: try segmentWithNaNRow())
     guard case .metal(let info, let vectors, let frameIds) = decoded else {
@@ -742,19 +789,17 @@ private func segmentWithNaNRow() throws -> Data {
     #expect(vectors == [1.0, 0.0, 0.0, 1.0])
 }
 
-@Test func accelerateEngineLoadsSegmentWithNonFiniteRowAndRewritesIt() async throws {
+@Test func accelerateEngineLoadsCommittedVectorsWithNonFiniteRowAndKeepsItOut() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row.wax"))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try segmentWithNaNRow(),
-        vectorCount: 3,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    let url = tempDir.appendingPathComponent("nan-row.wax")
+    let wax = try await Wax.create(at: url)
+    try await commitVectorsWithNaNRow(wax)
+    try await expectNaNRowDropped(wax)
 
-    #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 2)
+    // The manifest counts the rows as written; the engine loads only the finite ones.
+    #expect(await wax.committedVecIndexManifest()?.vectorCount == 3)
+    #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 3)
     let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
     #expect(await engine.droppedNonFiniteRowCount == 1)
 
@@ -762,17 +807,19 @@ private func segmentWithNaNRow() throws -> Data {
     #expect(hits.map(\.frameId) == [3, 1])
     #expect(hits.allSatisfy { $0.score.isFinite })
 
-    // The dropped row marks the engine dirty, so the next stage writes a clean segment.
+    // Staging and committing again never brings the NaN row back, before or after reopen.
     try await engine.stageForCommit(into: wax)
-    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
-    guard case .metal(let info, _, let frameIds) = try VectorSerializer.decodeVecSegment(from: restaged) else {
-        Issue.record("unexpected payload")
-        return
-    }
-    #expect(info.droppedNonFiniteRowCount == 0)
-    #expect(frameIds == [1, 3])
-
+    try await wax.commit()
+    try await expectNaNRowDropped(wax)
     try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    try await expectNaNRowDropped(reopened)
+    let reloaded = try await AccelerateVectorEngine.load(from: reopened, metric: .cosine, dimensions: 2)
+    let reloadedHits = try await reloaded.search(vector: [0.0, 1.0], topK: 10)
+    #expect(reloadedHits.map(\.frameId) == [3, 1])
+    #expect(reloadedHits.allSatisfy { $0.score.isFinite })
+    try await reopened.close()
 }
 
 #if canImport(Metal) && canImport(MetalANNS)
@@ -783,14 +830,9 @@ private func segmentWithNaNRow() throws -> Data {
 func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row-ann.wax"))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try segmentWithNaNRow(),
-        vectorCount: 3,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    let url = tempDir.appendingPathComponent("nan-row-ann.wax")
+    let wax = try await Wax.create(at: url)
+    try await commitVectorsWithNaNRow(wax)
 
     let engine = try await LoadedVectorSearchEngine.load(
         from: wax,
@@ -806,16 +848,15 @@ func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [3, 1])
 
+    // Staging and committing again never brings the NaN row back, before or after reopen.
     try await metalANNS.stageForCommit(into: wax)
-    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
-    guard case .metal(let info, _, _) = try VectorSerializer.decodeVecSegment(from: restaged) else {
-        Issue.record("unexpected payload")
-        return
-    }
-    #expect(info.droppedNonFiniteRowCount == 0)
-    #expect(info.vectorCount == 2)
-
+    try await wax.commit()
+    try await expectNaNRowDropped(wax)
     try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    try await expectNaNRowDropped(reopened)
+    try await reopened.close()
 }
 #endif
 

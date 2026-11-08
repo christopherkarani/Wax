@@ -7,16 +7,11 @@ import WaxVectorSearch
 /// similarity cannot use the stored vectors, because cosine stores keep only unit-length
 /// vectors and a dot-product ranking needs the original lengths.
 enum VectorSimilarityBinding {
-    /// The similarity of the staged vector index, else of the committed one; `nil` when the
-    /// store has no vector index yet (pending embeddings alone record no similarity).
+    /// The similarity of the committed vector index, else the one recorded for the first
+    /// commit; `nil` when the store has neither (pending embeddings alone record no similarity).
     static func storedMetric(in wax: Wax) async -> VectorMetric? {
-        if let staged = await wax.readStagedVecIndexBytes() {
-            return VectorMetric(vecSimilarity: staged.similarity)
-        }
-        if let manifest = await wax.committedVecIndexManifest() {
-            return VectorMetric(vecSimilarity: manifest.similarity)
-        }
-        return nil
+        guard let configuration = await wax.vectorIndexConfiguration() else { return nil }
+        return VectorMetric(vecSimilarity: configuration.similarity)
     }
 
     static func mismatchReason(stored: VectorMetric, declared: VectorMetric) -> String {

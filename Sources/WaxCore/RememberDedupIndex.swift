@@ -39,7 +39,7 @@ struct RememberDedupIndex {
             pendingRetiredIds.insert(delete.frameId)
         case .supersedeFrame(let supersede):
             pendingRetiredIds.insert(supersede.supersededId)
-        case .putEmbedding:
+        case .putEmbedding, .removeEmbedding:
             return
         }
     }

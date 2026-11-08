@@ -7,16 +7,15 @@ import WaxVectorSearch
 import WaxCore
 import WaxTextSearch
 
-// Byte-level proof that VideoRAG delete and re-ingest (supersede) remove segment
+// Proof that VideoRAG delete and re-ingest (supersede) remove segment
 // vectors from the committed vector index. Before the fix, VideoRAGOrchestrator only
 // deleted frames and left ghost keyframe vectors searchable.
 
-private func videoDeleteCommittedVecFrameIds(from bytes: Data) throws -> [UInt64] {
-    let decoded = try VectorSerializer.decodeVecSegment(from: bytes)
-    guard case .metal(_, _, let frameIds) = decoded else {
-        throw WaxError.io("unexpected vec payload (expected .metal/.flat decode)")
-    }
-    return frameIds
+/// The committed vector index's frame ids; `nil` when the store has none.
+private func videoDeleteCommittedVecFrameIds(of wax: Wax) async throws -> [UInt64]? {
+    guard let committed = try await wax.readCommittedVectors() else { return nil }
+    #expect(try await wax.committedVectorFrameIds() == Set(committed.frameIds))
+    return committed.frameIds
 }
 
 private func videoDeleteRootId(wax: Wax, superseded: Bool) async throws -> UInt64 {
@@ -63,18 +62,18 @@ func videoRAGDeleteRemovesSegmentVectorsFromCommittedVecBytes() async throws {
         let segmentIds = try await videoDeleteSegmentIds(wax: wax, underRoot: rootId)
         #expect(!segmentIds.isEmpty, "setup: ingest must produce segment frames")
 
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil, "setup: committed vec must exist after flush")
-        let beforeIds = try videoDeleteCommittedVecFrameIds(from: beforeBytes!)
+        let beforeVec = try await videoDeleteCommittedVecFrameIds(of: wax)
+        #expect(beforeVec != nil, "setup: committed vec must exist after flush")
+        let beforeIds = try #require(beforeVec)
         for segmentId in segmentIds {
             #expect(beforeIds.contains(segmentId), "setup: segment vector must be committed")
         }
 
         try await orchestrator.delete(videoID: VideoID(source: .file, id: "delete-me"))
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil, "committed vec bytes must be non-nil after delete")
-        let afterIds = try videoDeleteCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await videoDeleteCommittedVecFrameIds(of: wax)
+        #expect(afterVec != nil, "committed vec index must exist after delete")
+        let afterIds = try #require(afterVec)
         for segmentId in segmentIds {
             #expect(
                 !afterIds.contains(segmentId),
@@ -116,9 +115,9 @@ func videoRAGReingestRemovesSupersededSegmentVectorsFromCommittedVecBytes() asyn
         #expect(!newSegmentIds.isEmpty)
         #expect(Set(newSegmentIds).isDisjoint(with: oldSegmentIds))
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil)
-        let afterIds = try videoDeleteCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await videoDeleteCommittedVecFrameIds(of: wax)
+        #expect(afterVec != nil)
+        let afterIds = try #require(afterVec)
         for segmentId in oldSegmentIds {
             #expect(
                 !afterIds.contains(segmentId),
@@ -163,9 +162,9 @@ func videoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         // segment vector is still present in the committed index.
         try await wax.putEmbedding(frameId: ghostSegmentId, vector: [1, 0, 0, 0, 0, 0, 0, 0])
         try await orchestrator.flush()
-        let legacyBytes = try await wax.readCommittedVecIndexBytes()
+        let legacyVec = try await videoDeleteCommittedVecFrameIds(of: wax)
         #expect(
-            try videoDeleteCommittedVecFrameIds(from: legacyBytes!).contains(ghostSegmentId),
+            (legacyVec ?? []).contains(ghostSegmentId),
             "setup: injected legacy ghost must be committed"
         )
 
@@ -173,9 +172,9 @@ func videoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         try await orchestrator.ingest(files: [VideoFile(id: "sweep-trigger", url: mp4URL, captureDate: nil)])
         try await orchestrator.flush()
 
-        let sweptBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(sweptBytes != nil)
-        let sweptIds = try videoDeleteCommittedVecFrameIds(from: sweptBytes!)
+        let sweptVec = try await videoDeleteCommittedVecFrameIds(of: wax)
+        #expect(sweptVec != nil)
+        let sweptIds = try #require(sweptVec)
         #expect(!sweptIds.contains(ghostSegmentId), "legacy ghost vector survived the retired-tree sweep")
         for segmentId in newSegmentIds {
             #expect(sweptIds.contains(segmentId), "current segment vectors must survive the sweep")

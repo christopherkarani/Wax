@@ -55,12 +55,21 @@ package actor Wax {
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var committedVecIndexReads: UInt64 = 0
     private var stagedLexIndex: StagedLexIndex?
-    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
-    var stagedVecIndex: StagedVecIndex?
     private var stagedLexIndexStamp: UInt64?
-    private var stagedVecIndexStamp: UInt64?
     private var stagedLexIndexStampCounter: UInt64
-    private var stagedVecIndexStampCounter: UInt64
+    /// Dimension and similarity for the first commit that writes vectors (Wax+VectorRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var vectorConfiguration: VectorIndexConfiguration?
+    /// Frames with a committed vector, read from the runs' keys by the first commit that writes
+    /// vectors and kept by each durable commit (Wax+VectorRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var committedVectorKeys: Set<UInt64>?
+    /// Vectors the next commit writes as the store's first run (Wax+VectorRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var stagedVectorImport: CommittedVectors?
+    /// Whether a header page on disk is still format 1.0 (Wax+VectorRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var legacyHeaderPageOnDisk = false
 
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var dataEnd: UInt64
@@ -97,11 +106,8 @@ package actor Wax {
         pendingMutations: [PendingMutation],
         encodedCommittedFramePayloadCache: Data?,
         stagedLexIndex: StagedLexIndex?,
-        stagedVecIndex: StagedVecIndex?,
         stagedLexIndexStamp: UInt64?,
-        stagedVecIndexStamp: UInt64?,
         stagedLexIndexStampCounter: UInt64,
-        stagedVecIndexStampCounter: UInt64,
         dataEnd: UInt64,
         generation: UInt64,
         dirty: Bool,
@@ -126,11 +132,8 @@ package actor Wax {
         self.pendingMutationSummary = PendingMutationSummary.from(pendingMutations)
         self.encodedCommittedFramePayloadCache = encodedCommittedFramePayloadCache
         self.stagedLexIndex = stagedLexIndex
-        self.stagedVecIndex = stagedVecIndex
         self.stagedLexIndexStamp = stagedLexIndexStamp
-        self.stagedVecIndexStamp = stagedVecIndexStamp
         self.stagedLexIndexStampCounter = stagedLexIndexStampCounter
-        self.stagedVecIndexStampCounter = stagedVecIndexStampCounter
         self.dataEnd = dataEnd
         self.generation = generation
         self.dirty = dirty
@@ -195,7 +198,7 @@ package actor Wax {
     }
 
     private func canAutoCommitForWalPressureLocked() -> Bool {
-        !(pendingMutationSummary.hasPendingEmbedding && stagedVecIndex == nil)
+        !(pendingMutationSummary.hasPendingEmbedding && toc.indexes.vec == nil && vectorConfiguration == nil)
     }
 
     private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
@@ -339,118 +342,6 @@ package actor Wax {
         }
     }
 
-    package func stageVecIndexForNextCommit(
-        bytes: Data,
-        vectorCount: UInt64,
-        dimension: UInt32,
-        similarity: VecSimilarity,
-        coverage: StagedVecIndexCoverage
-    ) async throws {
-        try await withWriteLock {
-            guard !bytes.isEmpty else {
-                throw WaxError.io("vec index bytes must be non-empty")
-            }
-            let byteCount = bytes.count
-            guard byteCount <= Constants.maxBlobBytes else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxBlobBytes),
-                    requested: UInt64(byteCount)
-                )
-            }
-            guard dimension > 0 else {
-                throw WaxError.io("vec index dimension must be > 0")
-            }
-            guard dimension <= UInt32(Constants.maxEmbeddingDimensions) else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxEmbeddingDimensions),
-                    requested: UInt64(dimension)
-                )
-            }
-            try Self.validateVecIndexSegment(
-                bytes,
-                vectorCount: vectorCount,
-                dimension: dimension,
-                similarity: similarity
-            )
-
-            if let committed = toc.indexes.vec {
-                guard committed.dimension == dimension else {
-                    throw WaxError.invalidToc(
-                        reason: "staged vec dimension mismatch vs committed vec index: expected \(committed.dimension), got \(dimension)"
-                    )
-                }
-                guard committed.similarity == similarity else {
-                    throw WaxError.invalidToc(
-                        reason: "staged vec similarity mismatch vs committed vec index: expected \(committed.similarity), got \(similarity)"
-                    )
-                }
-            }
-
-            let pendingEmbeddingMaxSequence: UInt64?
-            switch coverage {
-            case .latestPending:
-                pendingEmbeddingMaxSequence = pendingMutationSummary.latestPendingEmbeddingSequence
-            case .syncedThrough(let sequence):
-                pendingEmbeddingMaxSequence = sequence
-            }
-            if pendingMutationSummary.hasPendingEmbedding {
-                let matchesDimension = !pendingMutationSummary.pendingEmbeddingHasMixedDimensions
-                    && pendingMutationSummary.pendingEmbeddingDimension == dimension
-                guard matchesDimension else {
-                    let actualDimension: String
-                    if pendingMutationSummary.pendingEmbeddingHasMixedDimensions {
-                        actualDimension = "mixed"
-                    } else if let pendingDimension = pendingMutationSummary.pendingEmbeddingDimension {
-                        actualDimension = String(pendingDimension)
-                    } else {
-                        actualDimension = "none"
-                    }
-                    throw WaxError.invalidToc(
-                        reason: "pending embedding dimension mismatch vs staged vec index: expected \(dimension), got \(actualDimension)"
-                    )
-                }
-            }
-
-            let checksum = SHA256Checksum.digest(bytes)
-            let bytesLength = UInt64(byteCount)
-
-            if let stagedVecIndex {
-                if stagedVecIndex.vectorCount == vectorCount,
-                   stagedVecIndex.dimension == dimension,
-                   stagedVecIndex.similarity == similarity,
-                   stagedVecIndex.pendingEmbeddingMaxSequence == pendingEmbeddingMaxSequence,
-                   UInt64(stagedVecIndex.bytes.count) == bytesLength,
-                   stagedVecIndex.checksum == checksum {
-                    return
-                }
-            }
-
-            if !pendingMutationSummary.hasPendingEmbedding,
-               let committed = toc.indexes.vec,
-               committed.vectorCount == vectorCount,
-               committed.dimension == dimension,
-               committed.similarity == similarity,
-               committed.bytesLength == bytesLength,
-               committed.checksum == checksum {
-                stagedVecIndex = nil
-                stagedVecIndexStamp = nil
-                return
-            }
-
-            stagedVecIndex = StagedVecIndex(
-                bytes: bytes,
-                vectorCount: vectorCount,
-                dimension: dimension,
-                similarity: similarity,
-                pendingEmbeddingMaxSequence: pendingEmbeddingMaxSequence,
-                checksum: checksum
-            )
-            stagedVecIndexStampCounter &+= 1
-            stagedVecIndexStamp = stagedVecIndexStampCounter
-            dirty = true
-        }
-    }
-
     package func commit() async throws {
         try await withWriteLock {
             try await commitLocked()
@@ -458,17 +349,12 @@ package actor Wax {
     }
 
     private func commitLocked() async throws {
-        guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
-
-        if stagedVecIndex == nil {
-            if pendingMutationSummary.hasPendingEmbedding {
-                throw WaxError.vectorIndexNotStaged
-            }
-        } else if let stagedVecIndex {
-            let latestPendingEmbeddingSequence = pendingMutationSummary.latestPendingEmbeddingSequence
-            if latestPendingEmbeddingSequence != stagedVecIndex.pendingEmbeddingMaxSequence {
-                throw WaxError.vectorIndexStale
-            }
+        guard dirty || stagedLexIndex != nil else { return }
+        // A frame whose last change is a removal needs no vector index.
+        if pendingMutationSummary.hasPendingEmbedding,
+           toc.indexes.vec == nil, vectorConfiguration == nil, stagedVectorImport == nil,
+           !PendingVectorChange.lastChanges(pendingVectorChangesLocked().map(\.change)).embeddings.isEmpty {
+            throw WaxError.vectorIndexNotStaged
         }
 
         try await ensureRecoveryFenceLocked()
@@ -523,40 +409,11 @@ package actor Wax {
             toc.segmentCatalog.entries.append(entry)
         }
 
-        if let staged = stagedVecIndex {
-            let byteCount = staged.bytes.count
-            guard byteCount <= Constants.maxBlobBytes else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxBlobBytes),
-                    requested: UInt64(byteCount)
-                )
-            }
-
-            let vecLength = UInt64(byteCount)
-            let vecOffset = allocateDataLocked(length: vecLength)
-            try await io.run {
-                try file.writeAll(staged.bytes, at: vecOffset)
-            }
-
-            toc.indexes.vec = VecIndexManifest(
-                vectorCount: staged.vectorCount,
-                dimension: staged.dimension,
-                bytesOffset: vecOffset,
-                bytesLength: vecLength,
-                checksum: staged.checksum,
-                similarity: staged.similarity
-            )
-            let segmentId = nextSegmentId()
-            supersededRanges += removeSupersededSegmentsLocked(kind: .vec)
-            let entry = SegmentCatalogEntry(
-                segmentId: segmentId,
-                bytesOffset: vecOffset,
-                bytesLength: vecLength,
-                checksum: staged.checksum,
-                compression: .none,
-                kind: .vec
-            )
-            toc.segmentCatalog.entries.append(entry)
+        let footerGeneration = try nextFooterGenerationLocked()
+        let vectorRuns = try await writeVectorRunsLocked(applied.vectorChanges, generation: footerGeneration)
+        supersededRanges += vectorRuns.supersededRanges
+        if vectorRuns.liveFrameIds != nil {
+            Self.maybeCrashAfterCheckpoint(.afterVectorRunWriteBeforeToc)
         }
 
         let tocParts = try toc.encodeParts(cachedFramesPayload: cachedFramesPayload)
@@ -572,7 +429,7 @@ package actor Wax {
         let footer = WaxFooter(
             tocLen: tocLength,
             tocHash: Data(tocChecksum),
-            generation: try nextFooterGenerationLocked(),
+            generation: footerGeneration,
             walCommittedSeq: appliedWalSeq
         )
         let wal = self.wal
@@ -638,9 +495,13 @@ package actor Wax {
         clearPendingMutations()
         rememberDedupIndex?.didCommit()
         stagedLexIndex = nil
-        stagedVecIndex = nil
         stagedLexIndexStamp = nil
-        stagedVecIndexStamp = nil
+        stagedVectorImport = nil
+        // This session's fence and this commit each wrote a header page.
+        legacyHeaderPageOnDisk = false
+        if let liveFrameIds = vectorRuns.liveFrameIds {
+            committedVectorKeys = liveFrameIds
+        }
         surrogateIndex = nil
         dirty = false
         generation = footer.generation
@@ -669,11 +530,8 @@ package actor Wax {
         var pendingMutationSummary: PendingMutationSummary
         var encodedFrameCacheLength: Int?
         var stagedLexIndex: StagedLexIndex?
-        var stagedVecIndex: StagedVecIndex?
         var stagedLexIndexStamp: UInt64?
-        var stagedVecIndexStamp: UInt64?
         var stagedLexIndexStampCounter: UInt64
-        var stagedVecIndexStampCounter: UInt64
         // No `dataEnd`: what a failed commit appended stays reserved, since a footer it synced
         // can still be recovered by a footer scan.
         var generation: UInt64
@@ -693,11 +551,8 @@ package actor Wax {
                 pendingMutationSummary: wax.pendingMutationSummary,
                 encodedFrameCacheLength: wax.encodedCommittedFramePayloadCache?.count,
                 stagedLexIndex: wax.stagedLexIndex,
-                stagedVecIndex: wax.stagedVecIndex,
                 stagedLexIndexStamp: wax.stagedLexIndexStamp,
-                stagedVecIndexStamp: wax.stagedVecIndexStamp,
                 stagedLexIndexStampCounter: wax.stagedLexIndexStampCounter,
-                stagedVecIndexStampCounter: wax.stagedVecIndexStampCounter,
                 generation: wax.generation,
                 dirty: wax.dirty
             )
@@ -736,11 +591,8 @@ package actor Wax {
             wax.pendingMutations = pendingMutations
             wax.pendingMutationSummary = pendingMutationSummary
             wax.stagedLexIndex = stagedLexIndex
-            wax.stagedVecIndex = stagedVecIndex
             wax.stagedLexIndexStamp = stagedLexIndexStamp
-            wax.stagedVecIndexStamp = stagedVecIndexStamp
             wax.stagedLexIndexStampCounter = stagedLexIndexStampCounter
-            wax.stagedVecIndexStampCounter = stagedVecIndexStampCounter
             wax.generation = generation
             wax.dirty = dirty
         }
@@ -758,11 +610,6 @@ package actor Wax {
         }
     }
 
-    package func stagedVecIndexStamp() async -> UInt64? {
-        await withReadLock {
-            stagedVecIndexStamp
-        }
-    }
 
     // MARK: - Introspection
 
@@ -804,7 +651,7 @@ package actor Wax {
     package func close() async throws {
         try await withWriteLock {
             var commitError: Error?
-            if dirty || stagedLexIndex != nil || stagedVecIndex != nil {
+            if dirty || stagedLexIndex != nil {
                 do {
                     try await commitLocked()
                 } catch {
@@ -879,7 +726,8 @@ package actor Wax {
         selectedHeaderPageIndex = nextIndex
     }
 
-    private func nextSegmentId() -> UInt64 {
+    /// Internal only because of the file split.
+    func nextSegmentId() -> UInt64 {
         if let maxId = toc.segmentCatalog.entries.map({ $0.segmentId }).max() {
             return maxId &+ 1
         }

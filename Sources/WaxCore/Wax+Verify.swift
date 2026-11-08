@@ -53,13 +53,15 @@ extension Wax {
             if let scannedFooter {
                 footerCandidates.append(scannedFooter)
             }
-            guard let firstFooterCandidate = footerCandidates.first else {
-                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            let candidates = footerCandidates
+            let (footerSlice, toc) = try await io.run {
+                try Self.newestWholeCommit(
+                    candidates,
+                    headerFooterOffset: header.footerOffset,
+                    headerGeneration: header.fileGeneration,
+                    file: file
+                )
             }
-            let footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate) { current, candidate in
-                Self.newerFooter(current, candidate, headerFooterOffset: header.footerOffset)
-            }
-            let toc = try WaxTOC.decode(from: footerSlice)
 
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
@@ -294,13 +296,22 @@ extension Wax {
             }
         }
         if let vec = indexes.vec {
-            guard segmentCatalog.entries.contains(where: { entry in
-                entry.kind == .vec
-                    && entry.bytesOffset == vec.bytesOffset
-                    && entry.bytesLength == vec.bytesLength
-                    && entry.checksum == vec.checksum
-            }) else {
-                throw WaxError.invalidToc(reason: "vec index manifest missing matching segment catalog entry")
+            for run in vec.runs {
+                guard segmentCatalog.entries.contains(where: { entry in
+                    entry.kind == .vec
+                        && entry.bytesOffset == run.bytesOffset
+                        && entry.bytesLength == run.bytesLength
+                        && entry.checksum == run.checksum
+                }) else {
+                    throw WaxError.invalidToc(reason: "vec run missing matching segment catalog entry")
+                }
+            }
+            guard segmentCatalog.entries.count(where: { $0.kind == .vec }) == vec.runs.count else {
+                throw WaxError.invalidToc(reason: "vec segment catalog entries do not match the vec runs")
+            }
+            let rowCount = vec.runs.reduce(UInt64(0)) { $0 &+ $1.rowCount }
+            guard vec.vectorCount <= rowCount else {
+                throw WaxError.invalidToc(reason: "vec vector count exceeds the rows of its runs")
             }
         }
         if let timeIndex {

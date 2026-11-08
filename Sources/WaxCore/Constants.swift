@@ -12,11 +12,16 @@ package enum Constants {
 
     // MARK: - Version
 
-    package static let specMajor: UInt8 = 1
+    package static let specMajor: UInt8 = 2
     package static let specMinor: UInt8 = 0
 
     /// Packed major/minor: `(major << 8) | minor` (little-endian on disk).
     package static let specVersion: UInt16 = (UInt16(specMajor) << 8) | UInt16(specMinor)
+
+    /// Header page versions this build opens: 1.0 (one whole-index vector blob) and 2.0
+    /// (vector runs). A 1.0 file's first commit here rewrites both header pages as 2.0, which
+    /// 1.0 builds refuse.
+    package static let supportedSpecVersions: Set<UInt16> = [0x0100, specVersion]
 
     // MARK: - Sizes
 

@@ -222,11 +222,8 @@ extension Wax {
             pendingMutations: [],
             encodedCommittedFramePayloadCache: Data(),
             stagedLexIndex: nil,
-            stagedVecIndex: nil,
             stagedLexIndexStamp: nil,
-            stagedVecIndexStamp: nil,
             stagedLexIndexStampCounter: 0,
-            stagedVecIndexStampCounter: 0,
             dataEnd: created.dataEnd,
             generation: 0,
             dirty: false,
@@ -294,7 +291,8 @@ extension Wax {
             dirty: Bool,
             replaySnapshotUsed: Bool,
             replayTruncated: Bool,
-            footerScanned: Bool
+            footerScanned: Bool,
+            legacyHeaderPageOnDisk: Bool
         ) in
             let lock = try FileLock.acquire(
                 at: url,
@@ -309,12 +307,19 @@ extension Wax {
                 throw WaxError.invalidHeader(reason: "no valid header pages")
             }
             var header = selected.page
+            // Every header page this session writes is the current version. A 1.0 file stays
+            // 1.0 on disk until the session's first commit, which writes both pages (the recovery
+            // fence and the commit), or until it first writes a WAL record 1.0 cannot read.
+            let legacyHeaderPageOnDisk = [pageA, pageB].contains {
+                guard let page = try? WaxHeaderPage.decodeWithChecksumValidation(from: $0) else { return false }
+                return page.formatVersion != Constants.specVersion
+            }
+            header.formatVersion = Constants.specVersion
+            header.specMajor = Constants.specMajor
+            header.specMinor = Constants.specMinor
             let selectedHeaderFileGeneration = header.fileGeneration
 
             let headerFooterOffset = header.footerOffset
-            func newerFooter(_ lhs: FooterSlice, _ rhs: FooterSlice) -> FooterSlice {
-                Self.newerFooter(lhs, rhs, headerFooterOffset: headerFooterOffset)
-            }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
             // The other page names an older commit, or the same one when the selected page only
@@ -346,7 +351,6 @@ extension Wax {
             }
             var fileSize = try file.size()
 
-            let footerSlice: FooterSlice
             let shouldScanForNewerFooter: Bool = {
                 // Each commit appends its footer past the previous one, so a valid footer that
                 // ends the file is the newest. The replay snapshot names that footer even when
@@ -393,12 +397,12 @@ extension Wax {
             if let scannedFooter {
                 footerCandidates.append(scannedFooter)
             }
-            guard let firstFooterCandidate = footerCandidates.first else {
-                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
-            }
-            footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate, newerFooter)
-
-            let toc = try WaxTOC.decode(from: footerSlice)
+            let (footerSlice, toc) = try Self.newestWholeCommit(
+                footerCandidates,
+                headerFooterOffset: headerFooterOffset,
+                headerGeneration: selectedHeaderFileGeneration,
+                file: file
+            )
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
             let recoveredCommittedSeq = footerSlice.footer.walCommittedSeq
@@ -590,7 +594,8 @@ extension Wax {
                 dirty: !pendingMutations.isEmpty,
                 replaySnapshotUsed: usedReplaySnapshot,
                 replayTruncated: replayTruncated,
-                footerScanned: shouldScanForNewerFooter
+                footerScanned: shouldScanForNewerFooter,
+                legacyHeaderPageOnDisk: legacyHeaderPageOnDisk
             )
         }
 
@@ -606,11 +611,8 @@ extension Wax {
             pendingMutations: opened.pendingMutations,
             encodedCommittedFramePayloadCache: nil,
             stagedLexIndex: nil,
-            stagedVecIndex: nil,
             stagedLexIndexStamp: nil,
-            stagedVecIndexStamp: nil,
             stagedLexIndexStampCounter: 0,
-            stagedVecIndexStampCounter: 0,
             dataEnd: opened.dataEnd,
             generation: opened.generation,
             dirty: opened.dirty,
@@ -639,6 +641,9 @@ extension Wax {
             releasesHeaderCommitsAfterNextCommit: opened.releasesHeaderCommitsAfterNextCommit,
             mayHoldUnreferencedFooter: true
         )
+        if opened.legacyHeaderPageOnDisk {
+            await wax.markLegacyHeaderPageOnDisk()
+        }
         do {
             try Self.applyDataProtectionIfSupported(at: url)
         } catch {

@@ -29,6 +29,7 @@ private func posixKill(_ pid: Int32, _ signal: Int32) -> Int32 {
 extension Wax {
     /// Internal only because of the file split.
     enum CrashInjectionCheckpoint: String {
+        case afterVectorRunWriteBeforeToc = "after_vector_run_write_before_toc"
         case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
         case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
         case afterFooterFsyncBeforeHeader = "after_footer_fsync_before_header"
@@ -86,6 +87,8 @@ extension Wax {
         var maxSequence: UInt64
         var appendedFrames: [FrameMeta]
         var modifiedCommittedFrames: Bool
+        /// The pending embeddings and removals, in WAL order.
+        var vectorChanges: [PendingVectorChange]
     }
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
@@ -93,9 +96,9 @@ extension Wax {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
-        let stagedVecDimension = stagedVecIndex?.dimension
         let ordered = orderedPendingMutationsLocked()
         var newFrames: [FrameMeta] = []
+        var vectorChanges: [PendingVectorChange] = []
         var modifiedCommittedFrames = false
 
         func withFrame(_ frameId: UInt64, _ update: (inout FrameMeta) throws -> Void) throws {
@@ -152,22 +155,21 @@ extension Wax {
                     }
                 }
             case .putEmbedding(let embedding):
-                guard let stagedVecDimension else {
-                    throw WaxError.invalidToc(reason: "putEmbedding pending without staged vec index")
-                }
-                guard embedding.dimension == stagedVecDimension else {
-                    throw WaxError.invalidToc(
-                        reason: "putEmbedding dimension \(embedding.dimension) != staged vec dimension \(stagedVecDimension)"
-                    )
-                }
-
                 let maxKnownFrameIdExclusive = UInt64(toc.frames.count + newFrames.count)
                 guard embedding.frameId < maxKnownFrameIdExclusive else {
                     throw WaxError.invalidToc(
                         reason: "putEmbedding references unknown frameId \(embedding.frameId) (known < \(maxKnownFrameIdExclusive))"
                     )
                 }
-                continue
+                vectorChanges.append(.put(embedding))
+            case .removeEmbedding(let removal):
+                let maxKnownFrameIdExclusive = UInt64(toc.frames.count + newFrames.count)
+                guard removal.frameId < maxKnownFrameIdExclusive else {
+                    throw WaxError.invalidToc(
+                        reason: "removeEmbedding references unknown frameId \(removal.frameId) (known < \(maxKnownFrameIdExclusive))"
+                    )
+                }
+                vectorChanges.append(.remove(removal.frameId))
             }
         }
 
@@ -186,7 +188,8 @@ extension Wax {
         return AppliedPendingMutations(
             maxSequence: maxSeq,
             appendedFrames: newFrames,
-            modifiedCommittedFrames: modifiedCommittedFrames
+            modifiedCommittedFrames: modifiedCommittedFrames,
+            vectorChanges: vectorChanges
         )
     }
 

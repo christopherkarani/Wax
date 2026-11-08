@@ -171,7 +171,7 @@ import WaxCore
                 return
             }
             let reason = error.errorDescription ?? ""
-            #expect(reason.contains("vector index must be staged before committing embeddings"))
+            #expect(reason.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
 
         await session.close()
@@ -184,7 +184,7 @@ import WaxCore
                 return
             }
             let reason = error.errorDescription ?? ""
-            #expect(reason.contains("vector index must be staged before committing embeddings"))
+            #expect(reason.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
     }
 }

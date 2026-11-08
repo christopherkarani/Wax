@@ -61,8 +61,6 @@ package actor WaxSession {
     /// when the engine loads late through `ensureVectorEngine(dimensions:metric:)`.
     private var vectorEngineMetric: VectorMetric
     private var lastPendingEmbeddingSequence: UInt64?
-    /// Frame IDs removed from the vector index that must be re-applied after syncing pending embeddings.
-    private var pendingRemovedFrameIds: Set<UInt64> = []
     private var writerLeaseId: UUID?
     private var isClosed = false
     private var commitCheckpointHook: (@Sendable (CommitCheckpoint) async -> Void)?
@@ -243,7 +241,7 @@ package actor WaxSession {
         guard config.enableVectorSearch else {
             throw WaxError.featureDisabled(feature: "vector search")
         }
-        pendingRemovedFrameIds.insert(frameId)
+        try await wax.removeEmbedding(frameId: frameId)
         guard let concreteVectorEngine else {
             return
         }
@@ -563,12 +561,10 @@ package actor WaxSession {
         lastPendingEmbeddingSequence = try await WaxVectorSearchSession.syncPendingEmbeddings(
             wax: wax,
             into: engine,
-            watermark: lastPendingEmbeddingSequence,
-            removedFrameIds: pendingRemovedFrameIds
+            watermark: lastPendingEmbeddingSequence
         )
         await reachCommitCheckpoint(.afterVectorSync)
-        try await engine.stageForCommit(into: wax, syncedThrough: lastPendingEmbeddingSequence)
-        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
+        try await engine.stageForCommit(into: wax)
     }
 
     private func vectorEngineForSearch(_ request: SearchRequest) async throws -> ConcreteVectorEngine? {
@@ -599,11 +595,8 @@ package actor WaxSession {
         if let configured = config.vectorDimensions {
             return configured
         }
-        if let staged = await wax.readStagedVecIndexBytes() {
-            return Int(staged.dimension)
-        }
-        if let manifest = await wax.committedVecIndexManifest() {
-            return Int(manifest.dimension)
+        if let configuration = await wax.vectorIndexConfiguration() {
+            return Int(configuration.dimension)
         }
         return nil
     }

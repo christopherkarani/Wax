@@ -13,10 +13,29 @@ import Testing
     let vec = VecIndexManifest(
         vectorCount: 42,
         dimension: 384,
-        bytesOffset: 3000,
-        bytesLength: 4000,
-        checksum: Data(repeating: 0xBB, count: 32),
-        similarity: .cosine
+        similarity: .cosine,
+        runs: [
+            VecRunManifest(
+                bytesOffset: 3000,
+                bytesLength: 4000,
+                checksum: Data(repeating: 0xBB, count: 32),
+                rowCount: 40,
+                tombstoneCount: 0,
+                level: 64,
+                addedGeneration: 0,
+                keysChecksum: nil
+            ),
+            VecRunManifest(
+                bytesOffset: 7000,
+                bytesLength: 100,
+                checksum: Data(repeating: 0xCC, count: 32),
+                rowCount: 2,
+                tombstoneCount: 1,
+                level: 0,
+                addedGeneration: 9,
+                keysChecksum: Data(repeating: 0xDD, count: 32)
+            ),
+        ]
     )
 
     var manifests = IndexManifests(lex: lex, vec: vec)

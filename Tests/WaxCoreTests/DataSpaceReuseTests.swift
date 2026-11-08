@@ -6,25 +6,13 @@ import Testing
 // previous versions held, so the file tracks the live data instead of growing by a full
 // index snapshot per commit.
 
-private func flatVecSegment(frameIds: [UInt64], dimension: Int, seed: Float) -> Data {
-    var data = Data([0x4D, 0x56, 0x32, 0x56])
-    var version = UInt16(1).littleEndian
-    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
-    data.append(3)
-    data.append(VecSimilarity.cosine.rawValue)
-    var dimensionLE = UInt32(dimension).littleEndian
-    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
-    var countLE = UInt64(frameIds.count).littleEndian
-    withUnsafeBytes(of: &countLE) { data.append(contentsOf: $0) }
-    let vectors = (0..<(frameIds.count * dimension)).map { Float($0 % 97) * 0.01 + seed }
-    var payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride).littleEndian
-    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
-    data.append(Data(repeating: 0, count: 8))
-    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
-    var idLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
-    withUnsafeBytes(of: &idLength) { data.append(contentsOf: $0) }
-    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
-    return data
+private func roundVector(frame: Int, dimension: Int, seed: Float) -> [Float] {
+    (0..<dimension).map { Float((frame * dimension + $0) % 97) * 0.01 + seed }
+}
+
+/// Bytes the committed vectors take as one run: header, rows, key count and keys.
+private func liveVectorBytes(count: Int, dimension: Int) -> Int {
+    36 + count * (dimension * MemoryLayout<Float>.stride + MemoryLayout<UInt64>.stride) + 8
 }
 
 private func lexBlob(docCount: Int, round: Int) -> Data {
@@ -40,39 +28,45 @@ private func fileSize(_ url: URL) throws -> UInt64 {
     return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
 }
 
-/// Runs `rounds` put-stage-commit cycles of `perRound` frames and returns the frames written.
+/// Runs `rounds` put-embed-commit cycles of `perRound` frames, each re-embedding every frame,
+/// and returns the last lex blob and the committed vectors.
 private func ingestRounds(
     _ wax: Wax,
     rounds: Range<Int>,
     perRound: Int,
     dimension: Int
-) async throws -> (lex: Data, vec: Data) {
+) async throws -> (lex: Data, vec: [UInt64: [Float]]) {
     var lastLex = Data()
-    var lastVec = Data()
+    var vectors: [UInt64: [Float]] = [:]
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(dimension), similarity: .cosine)
     for round in rounds {
         for offset in 0..<perRound {
             _ = try await wax.put(payload(round * perRound + offset), options: FrameMetaSubset(searchText: "doc \(round) \(offset)"))
         }
         let total = (round + 1) * perRound
         lastLex = lexBlob(docCount: total, round: round)
-        lastVec = flatVecSegment(frameIds: (0..<UInt64(total)).map { $0 }, dimension: dimension, seed: Float(round))
+        let frameIds = (0..<UInt64(total)).map { $0 }
+        let rows = frameIds.map { roundVector(frame: Int($0), dimension: dimension, seed: Float(round)) }
+        try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: rows)
+        vectors = Dictionary(uniqueKeysWithValues: zip(frameIds, rows))
         try await wax.stageLexIndexForNextCommit(bytes: lastLex, docCount: UInt64(total))
-        try await wax.stageVecIndexForNextCommit(
-            bytes: lastVec,
-            vectorCount: UInt64(total),
-            dimension: UInt32(dimension),
-            similarity: .cosine,
-            coverage: .latestPending
-        )
         try await wax.commit()
     }
-    return (lastLex, lastVec)
+    return (lastLex, vectors)
 }
 
-private func expectStoreIntact(_ wax: Wax, frameCount: Int, lex: Data, vec: Data) async throws {
+private func committedVectorMap(_ wax: Wax) async throws -> [UInt64: [Float]] {
+    guard let committed = try await wax.readCommittedVectors() else { return [:] }
+    let dimension = Int(committed.dimension)
+    return Dictionary(uniqueKeysWithValues: committed.frameIds.enumerated().map { row, frameId in
+        (frameId, Array(committed.vectors[(row * dimension)..<((row + 1) * dimension)]))
+    })
+}
+
+private func expectStoreIntact(_ wax: Wax, frameCount: Int, lex: Data, vec: [UInt64: [Float]]) async throws {
     try await wax.verify(deep: true)
     #expect(try await wax.readCommittedLexIndexBytes() == lex)
-    #expect(try await wax.readCommittedVecIndexBytes() == vec)
+    #expect(try await committedVectorMap(wax) == vec)
     #expect(await wax.stats().frameCount == UInt64(frameCount))
     for frameId in stride(from: 0, to: frameCount, by: 37) {
         #expect(try await wax.frameContent(frameId: UInt64(frameId)) == payload(frameId))
@@ -98,7 +92,8 @@ private func expectStoreIntact(_ wax: Wax, frameCount: Int, lex: Data, vec: Data
     let payloadBytes = (0..<frames).reduce(0) { $0 + payload($1).count }
     let reopened = try await Wax.open(at: url)
     let tocBytes = try #require(await reopened.committedTocByteCount())
-    let live = UInt64(payloadBytes + lex.count + vec.count) + tocBytes + Constants.footerSize
+    let live = UInt64(payloadBytes + lex.count + liveVectorBytes(count: vec.count, dimension: dimension))
+        + tocBytes + Constants.footerSize
     let dataBytes = try fileSize(url) - (Constants.headerRegionSize + walSize)
     #expect(dataBytes <= 3 * live, "data region \(dataBytes) B vs live \(live) B")
     try await expectStoreIntact(reopened, frameCount: frames, lex: lex, vec: vec)

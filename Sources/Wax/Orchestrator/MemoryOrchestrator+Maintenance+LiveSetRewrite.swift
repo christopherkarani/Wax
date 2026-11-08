@@ -89,9 +89,8 @@ package extension MemoryOrchestrator {
             )
         }
         let committedLexManifest = await wax.committedLexIndexManifest()
-        let committedVecManifest = await wax.committedVecIndexManifest()
         let committedLexBytes = try await wax.readCommittedLexIndexBytes()
-        let committedVecBytes = try await wax.readCommittedVecIndexBytes()
+        let committedVectors = try await wax.readCommittedVectors()
         let sourceMemoryBinding = await wax.memoryBinding()
 
         let rewritten = try await Wax.create(at: stagingURL, walSize: destinationWalSize)
@@ -162,15 +161,9 @@ package extension MemoryOrchestrator {
                 )
             }
 
-            if let manifest = committedVecManifest,
-               let bytes = committedVecBytes {
-                try await rewritten.stageVecIndexForNextCommit(
-                    bytes: bytes,
-                    vectorCount: manifest.vectorCount,
-                    dimension: manifest.dimension,
-                    similarity: manifest.similarity,
-                    coverage: .syncedThrough(nil)
-                )
+            if let committedVectors {
+                // One run holding the merged vectors: the rewrite drops the source's runs history.
+                try await rewritten.stageVectorImportForNextCommit(committedVectors)
             }
 
             try await rewritten.commit()
@@ -216,7 +209,7 @@ package extension MemoryOrchestrator {
             deletedFrameCount: deletedFrameCount,
             supersededFrameCount: supersededFrameCount,
             copiedLexIndex: committedLexManifest != nil && committedLexBytes != nil,
-            copiedVecIndex: committedVecManifest != nil && committedVecBytes != nil,
+            copiedVecIndex: committedVectors != nil,
             logicalBytesBefore: sourceSizes.logical,
             logicalBytesAfter: destinationSizes.logical,
             allocatedBytesBefore: sourceSizes.allocated,

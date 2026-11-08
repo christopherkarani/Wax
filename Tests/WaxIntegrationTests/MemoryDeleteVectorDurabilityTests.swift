@@ -17,12 +17,13 @@ private func durabilityOrchestratorConfig() -> OrchestratorConfig {
     return config
 }
 
-private func decodeCommittedVecFrameIds(from bytes: Data) throws -> (frameIds: [UInt64], vectorCount: UInt64) {
-    let decoded = try VectorSerializer.decodeVecSegment(from: bytes)
-    guard case .metal(let info, _, let frameIds) = decoded else {
-        throw WaxError.io("unexpected vec payload (expected .metal/.flat decode)")
-    }
-    return (frameIds, info.vectorCount)
+/// The committed vectors' frame ids and the manifest's live vector count; `nil` when the
+/// store has no committed vector index.
+private func committedVecFrameIds(of wax: Wax) async throws -> (frameIds: [UInt64], vectorCount: UInt64)? {
+    guard let committed = try await wax.readCommittedVectors() else { return nil }
+    let manifest = try #require(await wax.committedVecIndexManifest())
+    #expect(try await wax.committedVectorFrameIds() == Set(committed.frameIds))
+    return (committed.frameIds, manifest.vectorCount)
 }
 
 private func firstSearchableFrameId(from wax: Wax) async throws -> UInt64 {
@@ -54,9 +55,9 @@ func memoryDeleteRemovesFlushedChunkFromCommittedVecBytesBeforeClose() async thr
         let wax = await orchestrator.wax
         let chunkFrameId = try await firstSearchableFrameId(from: wax)
 
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil, "setup: committed vec must exist after flush")
-        let before = try decodeCommittedVecFrameIds(from: beforeBytes!)
+        let beforeVec = try await committedVecFrameIds(of: wax)
+        #expect(beforeVec != nil, "setup: committed vec must exist after flush")
+        let before = try #require(beforeVec)
         #expect(
             before.frameIds.contains(chunkFrameId),
             "setup: chunkFrameId must be present in committed vec before delete"
@@ -65,9 +66,9 @@ func memoryDeleteRemovesFlushedChunkFromCommittedVecBytesBeforeClose() async thr
         try await orchestrator.delete(frameId: chunkFrameId)
 
         // RED proof: same open store, no flush/close before assert.
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil, "committed vec bytes must be non-nil after delete")
-        let after = try decodeCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await committedVecFrameIds(of: wax)
+        #expect(afterVec != nil, "committed vec index must exist after delete")
+        let after = try #require(afterVec)
         #expect(
             !after.frameIds.contains(chunkFrameId),
             "deleted chunkFrameId still present in committed vec after delete without close"
@@ -93,17 +94,17 @@ func memoryDeleteLastVectorStagesEmptyCommittedVecBytes() async throws {
         let wax = await orchestrator.wax
         let chunkFrameId = try await firstSearchableFrameId(from: wax)
 
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil)
-        let before = try decodeCommittedVecFrameIds(from: beforeBytes!)
+        let beforeVec = try await committedVecFrameIds(of: wax)
+        #expect(beforeVec != nil)
+        let before = try #require(beforeVec)
         #expect(before.frameIds.contains(chunkFrameId))
         #expect(before.vectorCount >= 1)
 
         try await orchestrator.delete(frameId: chunkFrameId)
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil, "empty vec stage must leave non-nil header bytes")
-        let after = try decodeCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await committedVecFrameIds(of: wax)
+        #expect(afterVec != nil, "deleting the last vector must leave an empty committed vec index")
+        let after = try #require(afterVec)
         #expect(after.vectorCount == 0)
         #expect(!after.frameIds.contains(chunkFrameId))
 
@@ -132,9 +133,9 @@ func memoryDeletePendingEmbeddingDoesNotRestageGhostInCommittedVec() async throw
         // Commit inside delete must succeed (no "vector index must be staged" durability error).
         try await orchestrator.delete(frameId: chunkFrameId)
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil, "delete of pending-only embedding must stage committed vec bytes")
-        let after = try decodeCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await committedVecFrameIds(of: wax)
+        #expect(afterVec != nil, "delete of pending-only embedding must commit a vec index")
+        let after = try #require(afterVec)
         #expect(
             !after.frameIds.contains(chunkFrameId),
             "pending embedding re-inject left deleted chunkFrameId in committed vec"
@@ -161,17 +162,17 @@ func memoryDeleteSameIdTwiceDoesNotThrowAndKeepsVecClean() async throws {
 
         let wax = await orchestrator.wax
         let chunkFrameId = try await firstSearchableFrameId(from: wax)
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil)
-        let before = try decodeCommittedVecFrameIds(from: beforeBytes!)
+        let beforeVec = try await committedVecFrameIds(of: wax)
+        #expect(beforeVec != nil)
+        let before = try #require(beforeVec)
         #expect(before.frameIds.contains(chunkFrameId))
 
         try await orchestrator.delete(frameId: chunkFrameId)
         try await orchestrator.delete(frameId: chunkFrameId)
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil)
-        let after = try decodeCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await committedVecFrameIds(of: wax)
+        #expect(afterVec != nil)
+        let after = try #require(afterVec)
         #expect(!after.frameIds.contains(chunkFrameId))
 
         try await orchestrator.close()
@@ -235,16 +236,25 @@ func waxSessionRemoveVectorAfterPendingPutOmitsIdFromCommittedVec() async throws
         try await session.removeVector(frameId: frameId)
         try await session.commit()
 
-        let bytes = try await wax.readCommittedVecIndexBytes()
-        #expect(bytes != nil, "committed vec bytes must be non-nil after remove+commit")
-        let decoded = try decodeCommittedVecFrameIds(from: bytes!)
+        // The put and its removal cancel out before the commit, so the commit writes no
+        // vector run: the store has no vector to re-inject, now or after reopen.
+        #expect(await wax.pendingEmbeddingMutations(since: nil).embeddings.isEmpty)
+        #expect(await wax.committedVecIndexManifest() == nil)
         #expect(
-            !decoded.frameIds.contains(frameId),
+            !(try await wax.committedVectorFrameIds()).contains(frameId),
             "pending re-inject left frameId in committed vec after WaxSession removeVector+commit"
         )
 
         await session.close()
         try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        #expect(await reopened.pendingEmbeddingMutations(since: nil).embeddings.isEmpty)
+        #expect(!(try await reopened.committedVectorFrameIds()).contains(frameId))
+        let engine = try await AccelerateVectorEngine.load(from: reopened, metric: .cosine, dimensions: 2)
+        let hits = try await engine.search(vector: [1.0, 0.0], topK: 10)
+        #expect(!hits.contains(where: { $0.frameId == frameId }))
+        try await reopened.close()
     }
 }
 

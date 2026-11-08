@@ -660,7 +660,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 return
             }
             let message = error.errorDescription ?? ""
-            #expect(message.contains("vector index must be staged before committing embeddings"))
+            #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
     }
 }

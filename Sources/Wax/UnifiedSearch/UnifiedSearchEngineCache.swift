@@ -12,23 +12,14 @@ actor UnifiedSearchEngineCache {
         case staged(stamp: UInt64)
     }
 
-    /// The index a cached vector engine was loaded from. Pending embeddings are
-    /// not part of the key: they are applied to the cached engine incrementally
+    /// The index a cached vector engine was loaded from. Pending vector changes
+    /// are not part of the key: they are applied to the cached engine incrementally
     /// (see `CachedVector.syncedThrough`), so a write does not force a reload.
-    /// The commit generation is: a commit that leaves the vec index bytes (and so
-    /// the checksum) unchanged still starts a new pending window.
+    /// The commit generation is: every commit starts a new pending window.
     enum VectorSourceKey: Hashable, Sendable {
         case pendingOnly(generation: UInt64, dimensions: Int, engine: LoadedVectorSearchEngine.Kind)
-        case committed(
+        case indexed(
             generation: UInt64,
-            checksum: Data,
-            similarity: VecSimilarity,
-            dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind
-        )
-        case staged(
-            generation: UInt64,
-            stamp: UInt64,
             similarity: VecSimilarity,
             dimensions: Int,
             engine: LoadedVectorSearchEngine.Kind
@@ -155,6 +146,9 @@ actor UnifiedSearchEngineCache {
                         vectors: delta.embeddings.map(\.vector)
                     )
                 }
+                for frameId in delta.removedFrameIds {
+                    try await cached.engine.remove(frameId: frameId)
+                }
                 recordVectorSync(for: wax, key: descriptor.key, through: delta.latestSequence)
                 return cached.engine
             }
@@ -247,34 +241,17 @@ actor UnifiedSearchEngineCache {
             return nil
         }
 
-        if let stamp = await wax.stagedVecIndexStamp(),
-           let staged = await wax.readStagedVecIndexBytes(),
-           let metric = VectorMetric(vecSimilarity: staged.similarity) {
+        if let configuration = await wax.vectorIndexConfiguration(),
+           let metric = VectorMetric(vecSimilarity: configuration.similarity) {
             return (
-                .staged(
+                .indexed(
                     generation: generation,
-                    stamp: stamp,
-                    similarity: staged.similarity,
-                    dimensions: Int(staged.dimension),
+                    similarity: configuration.similarity,
+                    dimensions: Int(configuration.dimension),
                     engine: kind
                 ),
                 metric,
-                Int(staged.dimension)
-            )
-        }
-
-        if let manifest = await wax.committedVecIndexManifest(),
-           let metric = VectorMetric(vecSimilarity: manifest.similarity) {
-            return (
-                .committed(
-                    generation: generation,
-                    checksum: manifest.checksum,
-                    similarity: manifest.similarity,
-                    dimensions: Int(manifest.dimension),
-                    engine: kind
-                ),
-                metric,
-                Int(manifest.dimension)
+                Int(configuration.dimension)
             )
         }
 

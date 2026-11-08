@@ -338,3 +338,259 @@ private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, foote
     #expect(await reopened.dataSpace.recoveryFenceDurable)
     try await reopened.close()
 }
+
+// MARK: - Vector runs
+
+// A commit writes the vectors added since the last commit as a run in free space. A footer a
+// scan finds counts only when its runs are whole, and runs a merge superseded stay intact
+// until a header page names the merged commit.
+
+private let runDimension = 64
+
+private func runVector(_ frame: Int, version: Int = 0) -> [Float] {
+    (0..<runDimension).map { Float(frame + 1) * 0.01 + Float($0) * 0.001 + Float(version) }
+}
+
+private func committedVectorMap(_ wax: Wax) async throws -> [UInt64: [Float]] {
+    guard let committed = try await wax.readCommittedVectors() else { return [:] }
+    let dimension = Int(committed.dimension)
+    return Dictionary(uniqueKeysWithValues: committed.frameIds.enumerated().map { row, frameId in
+        (frameId, Array(committed.vectors[(row * dimension)..<((row + 1) * dimension)]))
+    })
+}
+
+/// Puts frames `range` with their vectors.
+private func putEmbeddedFrames(_ wax: Wax, _ range: Range<Int>) async throws {
+    try await putFrames(wax, range)
+    try await wax.putEmbeddingBatch(
+        frameIds: range.map(UInt64.init),
+        vectors: range.map { runVector($0) }
+    )
+}
+
+private func expectedVectors(_ range: Range<Int>) -> [UInt64: [Float]] {
+    Dictionary(uniqueKeysWithValues: range.map { (UInt64($0), runVector($0)) })
+}
+
+/// The runs the durable commit wrote.
+private func runsOfTheLastCommit(_ wax: Wax) async throws -> [VecRunManifest] {
+    let generation = await wax.stats().generation
+    let manifest = try #require(await wax.committedVecIndexManifest())
+    return manifest.runs.filter { $0.addedGeneration == generation }
+}
+
+private func flipByte(in run: VecRunManifest, of url: URL) throws {
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    let offset = run.bytesOffset + run.bytesLength / 2
+    var byte = try file.readExactly(length: 1, at: offset)
+    byte[0] ^= 0xFF
+    try file.writeAll(byte, at: offset)
+    try file.fsync()
+}
+
+/// The number of `pwrite`s a commit issues before it writes a header page.
+private func writesBeforeTheHeader(_ operations: [FDFileOperation]) -> Int {
+    var writes = 0
+    for operation in operations {
+        guard case .pwrite(let offset, _) = operation else { continue }
+        if offset < Constants.headerRegionSize { return writes }
+        writes += 1
+    }
+    return writes
+}
+
+/// G2's footer synced but its header write was lost, so only a footer scan finds G2. When a
+/// run G2 wrote is torn, open falls back to G1 and replays G2's records as pending.
+@Test(arguments: [false, true])
+func aFooterOnlyAScanFindsCountsOnlyWhenItsVectorRunsAreWhole(tornRun: Bool) async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(runDimension), similarity: .cosine)
+    try await putEmbeddedFrames(wax, 0..<20)
+    try await wax.commit()
+    try await wax.close()
+    let headersAtG1 = try headerPages(url)
+
+    let second = try await Wax.open(at: url)
+    try await putEmbeddedFrames(second, 20..<30)
+    try await second.putEmbedding(frameId: 3, vector: runVector(3, version: 1))
+    try await second.removeEmbedding(frameId: 4)
+    try await second.commit()
+    let g2Runs = try await runsOfTheLastCommit(second)
+    try #require(g2Runs.count == 1)
+    try await second.close()
+    try writeHeaderPages(headersAtG1, to: url)
+    if tornRun {
+        try flipByte(in: g2Runs[0], of: url)
+    }
+
+    var g2Vectors = expectedVectors(0..<30)
+    g2Vectors[3] = runVector(3, version: 1)
+    g2Vectors[4] = nil
+
+    let recovered = try await Wax.open(at: url)
+    if tornRun {
+        #expect(await recovered.stats().frameCount == 20, "the torn commit is passed over")
+        #expect(try await committedVectorMap(recovered) == expectedVectors(0..<20))
+        let pending = await recovered.pendingEmbeddingMutations(since: nil)
+        #expect(Set(pending.embeddings.map(\.frameId)) == Set((20..<30).map(UInt64.init) + [3]))
+        #expect(pending.removedFrameIds == [4])
+        try await recovered.commit()
+    } else {
+        #expect(await recovered.stats().frameCount == 30, "the scan recovers G2")
+    }
+    #expect(try await committedVectorMap(recovered) == g2Vectors)
+    try await recovered.verify(deep: true)
+    try await recovered.close()
+
+    let reopened = try await Wax.open(at: url)
+    #expect(try await committedVectorMap(reopened) == g2Vectors)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
+/// The single sync before the header write must cover the runs, so a commit writes them
+/// before its first sync.
+@Test func aCommitWritesItsVectorRunsBeforeTheSyncThatPrecedesItsHeader() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(runDimension), similarity: .cosine)
+    try await putEmbeddedFrames(wax, 0..<10)
+    try await wax.commit()
+    try await putEmbeddedFrames(wax, 10..<20)
+
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(recordsOperations: true))
+    try await wax.commit()
+    let operations = await wax.recordedFileOperationsForTesting()
+    await wax.installFileFaultPlanForTesting(nil)
+
+    let run = try #require(try await runsOfTheLastCommit(wax).first)
+    let runWrite = try #require(operations.firstIndex(of: .pwrite(offset: run.bytesOffset, length: Int(run.bytesLength))))
+    let firstSync = try #require(operations.firstIndex(of: .fsync))
+    let headerWrite = try #require(operations.firstIndex {
+        if case .pwrite(let offset, _) = $0 { return offset < Constants.headerRegionSize }
+        return false
+    })
+    #expect(runWrite < firstSync)
+    #expect(firstSync < headerWrite)
+    try await wax.close()
+}
+
+/// A commit that fails after writing its run leaves the run unreferenced: the committed
+/// vectors stay as they were, the same session commits the changes again, and a crash at
+/// that point recovers the previous commit with the changes pending.
+@Test func aCommitThatFailsAfterWritingItsVectorRunLeavesTheCommittedVectorsIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    var copy: URL?
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        if let copy { try? FileManager.default.removeItem(at: copy) }
+    }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(runDimension), similarity: .cosine)
+    try await putEmbeddedFrames(wax, 0..<10)
+    try await wax.commit()
+    let g1 = await wax.stats().generation
+    try await putEmbeddedFrames(wax, 10..<20)
+
+    // The run write goes through; the TOC write after it fails.
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [.shortWrite(maxBytes: .max), .eio]))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    #expect(await wax.stats().generation == g1)
+    #expect(try await committedVectorMap(wax) == expectedVectors(0..<10))
+    copy = try crashCopy(of: url)
+
+    try await wax.commit()
+    #expect(try await committedVectorMap(wax) == expectedVectors(0..<20))
+    try await wax.close()
+    let reopened = try await Wax.open(at: url)
+    #expect(try await committedVectorMap(reopened) == expectedVectors(0..<20))
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+
+    let crashed = try await Wax.open(at: try #require(copy))
+    #expect(await crashed.stats().generation == g1)
+    #expect(try await committedVectorMap(crashed) == expectedVectors(0..<10))
+    try await crashed.commit()
+    #expect(try await committedVectorMap(crashed) == expectedVectors(0..<20))
+    try await crashed.verify(deep: true)
+    try await crashed.close()
+}
+
+/// A merge commit whose header write fails after its footer synced: later writes in the
+/// session must land on neither the merged run (a scan can select its commit) nor the runs
+/// it superseded (the header's commit still names them, and open falls back to that commit
+/// when the merged run is torn).
+@Test func aMergeWhoseHeaderWriteFailsKeepsTheRunsItSupersededIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    var copies: [URL] = []
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        for copy in copies { try? FileManager.default.removeItem(at: copy) }
+    }
+    let runsBeforeMerge = Wax.vecRunMergeFanout - 1
+
+    /// Commits `runsBeforeMerge` one-frame runs, then puts the frame whose commit merges.
+    func prepare(_ wax: Wax) async throws {
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(runDimension), similarity: .cosine)
+        for frame in 0..<runsBeforeMerge {
+            try await putEmbeddedFrames(wax, frame..<(frame + 1))
+            try await wax.commit()
+        }
+        try await putEmbeddedFrames(wax, runsBeforeMerge..<(runsBeforeMerge + 1))
+    }
+
+    // Count the merge commit's writes before its header on a store built the same way.
+    let probeURL = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: probeURL) }
+    let probe = try await Wax.create(at: probeURL, walSize: 256 * 1024)
+    try await prepare(probe)
+    await probe.installFileFaultPlanForTesting(FDFileFaultPlan(recordsOperations: true))
+    try await probe.commit()
+    let writes = writesBeforeTheHeader(await probe.recordedFileOperationsForTesting())
+    #expect(try #require(await probe.committedVecIndexManifest()).runs.count == 1, "the commit merges")
+    try await probe.close()
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await prepare(wax)
+    let headerCommit = await wax.stats().generation
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(
+        pwrite: Array(repeating: .shortWrite(maxBytes: .max), count: writes) + [.eio]
+    ))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    // Small payloads, so they fit the holes a freed run would leave.
+    for index in 0..<64 {
+        _ = try await wax.put(noise(byteCount: 64 * runDimension / 16, seed: UInt64(index + 1)))
+    }
+    copies.append(try crashCopy(of: url))
+    copies.append(try crashCopy(of: url))
+    try? await wax.close()
+
+    // The scan selects the merge commit: its runs are whole.
+    let merged = try await Wax.open(at: copies[0])
+    #expect(await merged.stats().generation == headerCommit + 1)
+    #expect(try await committedVectorMap(merged) == expectedVectors(0..<(runsBeforeMerge + 1)))
+    let mergedRuns = try await runsOfTheLastCommit(merged)
+    try #require(!mergedRuns.isEmpty)
+    try await merged.verify(deep: true)
+    try await merged.close()
+
+    // With the merged run torn, open falls back to the header's commit, whose runs must
+    // still hold their vectors.
+    for run in mergedRuns {
+        try flipByte(in: run, of: copies[1])
+    }
+    let fallback = try await Wax.open(at: copies[1])
+    #expect(await fallback.stats().generation == headerCommit)
+    #expect(try await committedVectorMap(fallback) == expectedVectors(0..<runsBeforeMerge))
+    try await fallback.verify(deep: true)
+    try await fallback.commit()
+    #expect(try await committedVectorMap(fallback) == expectedVectors(0..<(runsBeforeMerge + 1)))
+    try await fallback.close()
+}

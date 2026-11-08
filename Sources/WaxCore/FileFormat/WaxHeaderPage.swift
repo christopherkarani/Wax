@@ -132,7 +132,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
         guard specMajor == unpackedMajor && specMinor == unpackedMinor else {
             throw WaxError.invalidHeader(reason: "spec_major/spec_minor mismatch format_version")
         }
-        guard formatVersion == Constants.specVersion else {
+        guard Constants.supportedSpecVersions.contains(formatVersion) else {
             throw WaxError.invalidHeader(reason: "unsupported format_version 0x\(String(format: "%04X", formatVersion))")
         }
         guard tocChecksum.count == 32 else {
@@ -247,7 +247,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
             throw WaxError.invalidHeader(reason: "spec_major/spec_minor mismatch format_version")
         }
 
-        guard formatVersion == Constants.specVersion else {
+        guard Constants.supportedSpecVersions.contains(formatVersion) else {
             throw WaxError.invalidHeader(reason: "unsupported format_version 0x\(String(format: "%04X", formatVersion))")
         }
 

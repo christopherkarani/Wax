@@ -438,15 +438,6 @@ extension MemoryOrchestrator {
         }
     }
 
-    /// Throws on a corrupt segment instead of returning an empty set, so a
-    /// decode failure is never mistaken for "no frame has a vector".
-    static func vecSegmentFrameIds(bytes: Data) throws -> Set<UInt64> {
-        switch try VectorSerializer.decodeVecSegment(from: bytes) {
-        case .metal(_, _, let frameIds):
-            return Set(frameIds)
-        }
-    }
-
     /// Internal only because of the file split.
     static func persistEnrichmentResult(
         _ result: EnrichmentResult,

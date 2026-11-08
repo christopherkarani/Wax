@@ -112,7 +112,7 @@ extension Wax {
                     if supersede.supersedingId < UInt64(visibleFrames.count) {
                         visibleFrames[Int(supersede.supersedingId)].supersedes = supersede.supersededId
                     }
-                case .putEmbedding:
+                case .putEmbedding, .removeEmbedding:
                     continue
                 }
             }
@@ -214,7 +214,7 @@ extension Wax {
                 case .supersedeFrame(let supersede):
                     pendingIds.append(supersede.supersededId)
                     pendingIds.append(supersede.supersedingId)
-                case .putEmbedding:
+                case .putEmbedding, .removeEmbedding:
                     continue
                 }
             }
@@ -276,7 +276,7 @@ extension Wax {
                         meta.supersedes = supersede.supersededId
                     }
                 }
-            case .putEmbedding:
+            case .putEmbedding, .removeEmbedding:
                 continue
             }
         }
@@ -361,7 +361,7 @@ extension Wax {
                     }
                 }
 
-            case .putEmbedding:
+            case .putEmbedding, .removeEmbedding:
                 continue
             }
         }
