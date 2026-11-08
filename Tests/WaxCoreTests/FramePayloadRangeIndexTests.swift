@@ -233,3 +233,40 @@ private func randomLayout(seed: UInt64) -> (committed: [FrameMeta], added: [Fram
     }
     try index.validateAppending([frame(5, offset: 3_010, length: 1_990)], segments: [], dataStart: dataStart, dataEnd: dataEnd)
 }
+
+/// End of the highest range `toc` references, by a pass over every frame and segment.
+private func scannedReferencedDataEnd(_ toc: WaxTOC) -> UInt64 {
+    let frameEnds = toc.frames.filter { $0.payloadLength > 0 }.map { $0.payloadOffset + $0.payloadLength }
+    let segmentEnds = toc.segmentCatalog.entries.filter { $0.bytesLength > 0 }.map { $0.bytesOffset + $0.bytesLength }
+    return (frameEnds + segmentEnds).max() ?? 0
+}
+
+@Test func referencedDataEndTracksFramesPlacedInReusedSpace() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    var frameCount = 0
+    for round in 0..<6 {
+        // A shrinking lex segment frees space each commit; later payloads reuse it.
+        let lex = Data(repeating: UInt8(round), count: 40_000 - round * 5_000)
+        for _ in 0..<(3 + round) {
+            _ = try await wax.put(Data(repeating: UInt8(frameCount % 251), count: 700 + frameCount * 37))
+            frameCount += 1
+        }
+        try await wax.stageLexIndexForNextCommit(bytes: lex, docCount: UInt64(frameCount))
+        try await wax.commit()
+        let toc = await wax.toc
+        #expect(try await wax.referencedDataEndLocked(appendedFrames: []) == scannedReferencedDataEnd(toc), "round \(round)")
+    }
+    let toc = await wax.toc
+    let committedRange = await wax.dataSpace.committedTocRange
+    #expect(committedRange.lowerBound >= scannedReferencedDataEnd(toc))
+    // Some payload went below an earlier one, into freed space.
+    let offsets = toc.frames.map(\.payloadOffset)
+    #expect(offsets != offsets.sorted())
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}

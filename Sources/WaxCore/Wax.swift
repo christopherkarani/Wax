@@ -566,7 +566,7 @@ package actor Wax {
         let tocLength = UInt64(tocBytes.count)
         let tocOffset = allocateDataLocked(
             length: tocLength + Constants.footerSize,
-            notBelow: Self.referencedDataEnd(of: toc)
+            notBelow: try referencedDataEndLocked(appendedFrames: applied.appendedFrames)
         )
         let footerOffset = tocOffset + tocLength
         let footer = WaxFooter(

@@ -167,10 +167,13 @@ extension Wax {
         return removed
     }
 
-    /// End of the highest range `toc` references; its TOC and footer must start at or above it.
-    static func referencedDataEnd(of toc: WaxTOC) -> UInt64 {
-        var end: UInt64 = 0
-        for frame in toc.frames where frame.payloadLength > 0 {
+    /// End of the highest range `toc` references, where its last `appendedFrames.count` frames
+    /// are the ones this commit appends; its TOC and footer must start at or above it.
+    /// Internal only because of the file split; call only while holding `opLock` for writing.
+    func referencedDataEndLocked(appendedFrames: [FrameMeta]) throws -> UInt64 {
+        let committedFrameCount = toc.frames.count - appendedFrames.count
+        var end = try committedFramePayloadRangesLocked(committedFrameCount: committedFrameCount).end
+        for frame in appendedFrames where frame.payloadLength > 0 {
             end = max(end, frame.payloadOffset + frame.payloadLength)
         }
         for entry in toc.segmentCatalog.entries where entry.bytesLength > 0 {
