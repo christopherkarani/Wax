@@ -91,7 +91,7 @@ extension Wax {
     /// Every range the commit ending at `footer` uses (frames, catalog segments, TOC and
     /// footer), or nil when its TOC does not decode, so no recovery can select it.
     static func commitRanges(of footer: FooterSlice) -> [Range<UInt64>]? {
-        guard let toc = try? WaxTOC.decode(from: footer.tocBytes) else { return nil }
+        guard let toc = try? WaxTOC.decode(from: footer) else { return nil }
         return referencedDataRanges(of: toc) + [footer.tocOffset..<(footer.footerOffset + Constants.footerSize)]
     }
 

@@ -57,7 +57,7 @@ extension Wax {
             let footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate) { current, candidate in
                 Self.newerFooter(current, candidate, headerFooterOffset: header.footerOffset)
             }
-            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
+            let toc = try WaxTOC.decode(from: footerSlice)
 
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)

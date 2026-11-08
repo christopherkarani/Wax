@@ -207,6 +207,13 @@ private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, foote
     #expect(free.isFree(g1Lex.bytesOffset..<(g1Lex.bytesOffset + g1Lex.bytesLength)))
     #expect(free.isFree(g1Toc))
     try await wax.close()
+
+    // Open does not hold G1 for the other header page either.
+    let reopened = try await Wax.open(at: url)
+    let reopenedFree = await reopened.dataSpace.free
+    #expect(reopenedFree.isFree(g1Lex.bytesOffset..<(g1Lex.bytesOffset + g1Lex.bytesLength)))
+    try await reopened.verify(deep: true)
+    try await reopened.close()
 }
 
 @Test func tornHeaderWriteDuringTheNextCommitFallsBackToTheNewestCommit() async throws {

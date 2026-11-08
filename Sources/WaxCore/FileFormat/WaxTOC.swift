@@ -168,7 +168,25 @@ package struct WaxTOC: Equatable, Sendable {
         guard storedChecksum == computed else {
             throw WaxError.invalidToc(reason: "toc_checksum mismatch")
         }
+        return try decodeBody(tocBytes)
+    }
 
+    /// Decodes TOC bytes of a ``FooterSlice``, whose footer hash already covered them (the
+    /// footer's `tocHash` is the TOC checksum), without hashing them again.
+    package static func decode(from footer: FooterSlice) throws -> WaxTOC {
+        guard footer.tocBytes.count >= 32 else {
+            throw WaxError.invalidToc(reason: "toc must be at least 32 bytes (got \(footer.tocBytes.count))")
+        }
+        guard UInt64(footer.tocBytes.count) <= Constants.maxTocBytes else {
+            throw WaxError.invalidToc(reason: "toc exceeds maxTocBytes (\(footer.tocBytes.count) > \(Constants.maxTocBytes))")
+        }
+        guard footer.tocBytes.suffix(32) == footer.footer.tocHash else {
+            throw WaxError.invalidToc(reason: "toc_checksum mismatch")
+        }
+        return try decodeBody(footer.tocBytes)
+    }
+
+    private static func decodeBody(_ tocBytes: Data) throws -> WaxTOC {
         var decoder = try BinaryDecoder(data: tocBytes)
         let tocVersion = try decoder.decode(UInt64.self)
         guard tocVersion == 1 else {
@@ -236,7 +254,7 @@ package struct WaxTOC: Equatable, Sendable {
         let tocChecksum = try decoder.decodeFixedBytes(count: 32)
         try decoder.finalize()
 
-        guard tocChecksum == storedChecksum else {
+        guard tocChecksum == tocBytes.suffix(32) else {
             throw WaxError.invalidToc(reason: "toc_checksum bytes mismatch")
         }
 

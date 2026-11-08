@@ -315,19 +315,27 @@ extension Wax {
             }
 
             let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
-            // The other page names an older commit that open falls back to when the newest
-            // page is torn; space reuse keeps it intact, and its footer may end the file.
+            // The other page names an older commit. Its footer can end the file when a crash
+            // came before the newest commit truncated the tail; it is read only when needed.
             let otherHeaderPageIndex = selected.pageIndex == 0 ? 1 : 0
             let otherHeaderPage = try? WaxHeaderPage.decodeWithChecksumValidation(
                 from: otherHeaderPageIndex == 0 ? pageA : pageB
             )
-            let otherPageFooter = otherHeaderPage.flatMap {
-                try? FooterScanner.findFooter(at: $0.footerOffset, in: url)
+            var otherPageFooterLookup: FooterSlice??
+            func otherPageFooter() -> FooterSlice? {
+                if let found = otherPageFooterLookup { return found }
+                let found = otherHeaderPage.flatMap {
+                    try? FooterScanner.findFooter(at: $0.footerOffset, in: url)
+                }
+                otherPageFooterLookup = .some(found)
+                return found
             }
             let snapshotFooter: FooterSlice?
             if options.walReplayStateSnapshotEnabled,
                let snapshot = header.walReplaySnapshot {
-                snapshotFooter = try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
+                snapshotFooter = snapshot.footerOffset == header.footerOffset
+                    ? fastFooter
+                    : try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
             } else {
                 snapshotFooter = nil
             }
@@ -351,11 +359,10 @@ extension Wax {
                 guard selectedHeaderFileGeneration == fastFooter.footer.generation else { return true }
                 guard header.tocChecksum == fastFooter.footer.tocHash else { return true }
                 let expectedEnd = fastFooter.footerOffset + Constants.footerSize
-                let otherPageFooterEndsFile = otherPageFooter.map {
+                guard fileSize == expectedEnd || otherPageFooter().map({
                     $0.footer.generation < fastFooter.footer.generation
                         && fileSize == $0.footerOffset + Constants.footerSize
-                } ?? false
-                guard fileSize == expectedEnd || otherPageFooterEndsFile else { return true }
+                }) == true else { return true }
                 if let snapshotFooter {
                     if snapshotFooter.footer.generation > fastFooter.footer.generation {
                         return true
@@ -386,7 +393,7 @@ extension Wax {
             }
             footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate, newerFooter)
 
-            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
+            let toc = try WaxTOC.decode(from: footerSlice)
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
             let recoveredCommittedSeq = footerSlice.footer.walCommittedSeq
@@ -525,7 +532,8 @@ extension Wax {
                 return ranges
             }
             if !selectedHeaderWasStale {
-                headerCommitRanges = commitRanges(otherPageFooter)
+                // The selected page names the durable commit and no write rewrites it in place:
+                // the next commit writes the other page, so a torn write falls back to this one.
                 releasesHeaderCommitsAfterNextCommit = true
             } else if repair {
                 // Neither page names the recovered commit. Name it on the other page now, so
@@ -547,7 +555,7 @@ extension Wax {
                 releasesHeaderCommitsAfterNextCommit = true
             } else {
                 // Without repair the pages stay as they are; keep both their commits until close.
-                headerCommitRanges = commitRanges(fastFooter) + commitRanges(otherPageFooter)
+                headerCommitRanges = commitRanges(fastFooter) + commitRanges(otherPageFooter())
                 releasesHeaderCommitsAfterNextCommit = false
             }
             for range in headerCommitRanges {

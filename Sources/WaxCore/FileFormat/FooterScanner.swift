@@ -1,5 +1,6 @@
 import Foundation
 
+/// A footer and its TOC bytes, which the scanner checked against the footer's `tocHash`.
 package struct FooterSlice: Equatable, Sendable {
     package let footerOffset: UInt64
     package let tocOffset: UInt64
@@ -114,14 +115,9 @@ package enum FooterScanner {
         guard footer.tocLen <= UInt64(Int.max) else { return nil }
 
         let tocOffset = footerOffset - footer.tocLen
-        guard try tocHashMatches(
-            file: file,
-            tocOffset: tocOffset,
-            tocLen: footer.tocLen,
-            expectedHash: footer.tocHash
-        ) else { return nil }
-
+        // Read the TOC once and check it in memory; the caller decodes these same bytes.
         let tocBytes = try file.readExactly(length: Int(footer.tocLen), at: tocOffset)
+        guard footer.hashMatches(tocBytes: tocBytes) else { return nil }
         return FooterSlice(
             footerOffset: footerOffset,
             tocOffset: tocOffset,
