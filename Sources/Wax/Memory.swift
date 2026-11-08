@@ -17,6 +17,9 @@ public actor Memory {
         public var requireOnDeviceProviders: Bool
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
+        /// Which reranker, if any, reorders each search's top candidates. Defaults to
+        /// ``RerankingSource/disabled``.
+        public var reranking: RerankingSource
 
         public init(
             enableTextSearch: Bool = true,
@@ -27,7 +30,8 @@ public actor Memory {
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
-            embedding: EmbeddingSource = .automatic
+            embedding: EmbeddingSource = .automatic,
+            reranking: RerankingSource = .disabled
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -38,6 +42,7 @@ public actor Memory {
             self.ingestBatchSize = ingestBatchSize
             self.requireOnDeviceProviders = requireOnDeviceProviders
             self.embedding = embedding
+            self.reranking = reranking
         }
 
         public static let `default` = Config()
@@ -156,9 +161,10 @@ public actor Memory {
         readiness: EmbeddingReadiness,
         readinessFactory: (@Sendable () async throws -> any EmbeddingProvider)?
     ) async throws {
+        let reranking = try await BuiltInRerankerCompiler.stage(for: config.reranking)
         self.orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
-            config: Self.makeOrchestratorConfig(config),
+            config: Self.makeOrchestratorConfig(config, reranking: reranking),
             request: Self.openRequest(for: config),
             readiness: readiness,
             factoryOverride: readinessFactory
@@ -389,7 +395,7 @@ public actor Memory {
         }
     }
 
-    private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {
+    private static func makeOrchestratorConfig(_ config: Config, reranking: RerankStage?) -> OrchestratorConfig {
         var resolved = OrchestratorConfig.default
         resolved.enableTextSearch = config.enableTextSearch
         resolved.enableVectorSearch = config.enableVectorSearch
@@ -400,6 +406,7 @@ public actor Memory {
         resolved.ingestBatchSize = config.ingestBatchSize
         resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
         resolved.catchUpTextIndexOnOpen = true
+        resolved.reranking = reranking
         return resolved
     }
 }

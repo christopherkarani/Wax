@@ -28,7 +28,7 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`), `reranking` (`.disabled`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
 
 ### Memory.EmbeddingSource
 
@@ -37,6 +37,16 @@ Source: `Sources/Wax/Memory.swift`
 - `.automatic` — open immediately while the built-in MiniLM provider loads; live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
 - `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is missing on this OS/build, or `BuiltInEmbeddingProviderError.timedOut` when compile exceeds `timeoutSeconds`.
 - `.custom(any EmbeddingProvider)` — bring your own embedder.
+
+### Memory.RerankingSource
+
+`public enum RerankingSource: Sendable` — selects the reranker, if any, that reorders each search's top candidates before context assembly (`config.reranking`):
+
+- `.disabled` (default) — results keep their retrieval order.
+- `.builtIn(BuiltInReranker, RerankingOptions = .default)` — a built-in reranker on the CPU; store creation throws `BuiltInRerankerError.unavailable` when its trait is not enabled or the OS is older than iOS 18/macOS 15.
+- `.custom(any RerankingProvider, RerankingOptions = .default)` — your own reranker, or one from `BuiltInRerankers.make(_:computeUnit:timeoutSeconds:)` to run a built-in one on another compute unit.
+
+The reranker scores the full frame text of the first `candidateCount` candidates (a chunk frame's chunk, otherwise the saved text). The search fetches at least `candidateCount` candidates even when `topK` is smaller, so reranking can promote a candidate into the results; candidates below the window keep their order after it. Item scores stay the retrieval scores (the order changes) and each reranked item gains a `rerank:` explanation. A reranker error, a score count that differs from the document count, or a non-finite score makes `search` throw.
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
@@ -104,6 +114,19 @@ Source: `Sources/Wax/BuiltInEmbeddings.swift`
 - `public struct BuiltInEmbeddingProviderOptions` (`batchSize`, `prewarmBatchSize`, `allowLowPrecisionGPU`, `timeoutSeconds`, `computeUnitsOrder`).
 - `public enum BuiltInEmbeddingComputeUnit { cpuOnly, cpuAndGPU, cpuAndNeuralEngine, all }`
 - `public enum BuiltInEmbeddingProviderError: LocalizedError { case unavailable(BuiltInEmbeddingProvider), timedOut(BuiltInEmbeddingProvider) }`
+
+## Built-in Reranking
+
+Source: `Sources/Wax/Reranking/Reranking.swift`
+
+- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0) on CoreML, 22 MB INT8 weights, FP32 compute; iOS 18/macOS 15+, `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
+- `public struct RerankingOptions` — `candidateCount` (20, clamped to `RerankingOptions.candidateCountRange`, `1...200`) and `fusion` (`.reciprocalRank(k: 10)`).
+- `public enum RerankingFusion { case rerankerOrder, reciprocalRank(k: Int) }` — order by reranker score alone, or fuse `1/(k + retrievalRank) + 1/(k + rerankerRank)`; ties keep the retrieval order.
+- `public enum BuiltInRerankers { public static func make(_:computeUnit:timeoutSeconds:) async throws -> any RerankingProvider }` — loads are cached per compute unit for the process.
+- `public enum BuiltInRerankerError: LocalizedError { case unavailable(BuiltInReranker), timedOut(BuiltInReranker) }`
+- `public protocol RerankingProvider: Sendable` (WaxVectorSearch, `Sources/WaxVectorSearch/Reranking/RerankingProvider.swift`) — `func scores(query: String, documents: [String]) async throws -> [Float]`: one finite score per document, higher is more relevant, comparable within one call.
+
+`Memory.search(_:strategy:reranker:options:)` and `ResultReranker` are a different hook: they reorder the finished `RAGContext` (its snippet text and `topK` items), after context assembly.
 
 ## Embedding Protocols (public, via WaxVectorSearch)
 

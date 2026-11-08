@@ -127,6 +127,11 @@ let package = Package(
             enabledTraits: []
         ),
         .init(
+            name: "MiniLMReranker",
+            description: "Includes the cross-encoder/ms-marco-MiniLM-L-6-v2 on-device reranker",
+            enabledTraits: []
+        ),
+        .init(
             name: "MCPServer",
             description: "Builds the WaxMCPServer executable with stdio and HTTP transports",
             enabledTraits: ["MiniLMEmbeddings"]
@@ -234,6 +239,18 @@ let package = Package(
             ]
         ),
         .target(
+            name: "WaxRerankerMiniLM",
+            dependencies: [
+                "WaxCore",
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/ms-marco-MiniLM-L-6-v2.mlmodelc"),
+                .copy("Resources/ms-marco-MiniLM-L-6-v2-LICENSE.txt"),
+            ]
+        ),
+        .target(
             name: "Wax",
             dependencies: [
                 "WaxCore",
@@ -251,12 +268,17 @@ let package = Package(
                     name: "WaxVectorSearchE5",
                     condition: .when(traits: ["E5Embeddings"])
                 ),
+                .target(
+                    name: "WaxRerankerMiniLM",
+                    condition: .when(traits: ["MiniLMReranker"])
+                ),
             ],
             resources: [.process("RAG/Resources")],
             swiftSettings: [
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
                 .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .executableTarget(
@@ -382,6 +404,15 @@ let package = Package(
             resources: [.process("Fixtures")]
         ),
         .testTarget(
+            name: "WaxRerankerMiniLMTests",
+            dependencies: [
+                "WaxRerankerMiniLM",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxRerankerMiniLMTests",
+            resources: [.process("Fixtures")]
+        ),
+        .testTarget(
             name: "wax-mcpTests",
             dependencies: [
                 "Wax",
@@ -426,6 +457,7 @@ let package = Package(
             path: "Tests/WaxTests",
             swiftSettings: [
                 .define("WaxRepo", .when(traits: ["WaxRepo"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .testTarget(
