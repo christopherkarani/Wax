@@ -14,18 +14,20 @@ extension E5Embeddings: @unchecked Sendable {}
 /// On-device `intfloat/e5-small-v2` embedder with batch support.
 ///
 /// e5-small-v2 uses the same bert-base-uncased WordPiece vocabulary as MiniLM and Arctic.
-/// Wax embeds queries and passages symmetrically, without e5's `"query: "` / `"passage: "`
-/// prefixes, so queries go through the default ``EmbeddingProvider/embedQuery(_:)``.
+/// The model was trained with input prefixes, so ``embedQuery(_:)`` prepends `"query: "` and
+/// the document paths, ``embed(_:)`` and ``embed(batch:)``, prepend `"passage: "`.
 /// The model's CoreML graph already includes masked mean pooling and L2 normalization.
 @available(macOS 15.0, iOS 18.0, *)
-package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider {
+package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAwareEmbeddingProvider {
     package nonisolated let dimensions: Int = 384
     /// L2 normalization is baked into the CoreML graph (mean pooling + L2 norm),
     /// so the caller (MemoryOrchestrator.embedOne) should NOT re-normalize.
     package nonisolated let normalize: Bool = false
     package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
         provider: "Wax",
-        model: "E5SmallV2",
+        // The suffix marks query/passage-prefixed vectors, so a store written by the earlier
+        // unprefixed e5 build refuses to open instead of mixing two embedding spaces.
+        model: "E5SmallV2-prefixed",
         dimensions: 384,
         normalized: true
     )
@@ -37,6 +39,11 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider {
     private static let maximumBatchSize = 256
     private static let maximumCoreMLPredictionBatchSize = 64
     private var batchInputBuffers: BatchInputBuffers?
+
+    /// The prefixes e5 was trained with: `"query: "` for retrieval queries and
+    /// `"passage: "` for the documents they search.
+    private static let queryPrefix = "query: "
+    private static let passagePrefix = "passage: "
 
     package struct Config {
         package var batchSize: Int
@@ -119,8 +126,21 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
+    /// Embed document text with the e5 `"passage: "` prefix.
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = try await model.encode(sentence: text) else {
+        try await encode(Self.passagePrefix + text)
+    }
+
+    // MARK: - QueryAwareEmbeddingProvider
+
+    /// Embed a retrieval query with the e5 `"query: "` prefix.
+    package func embedQuery(_ text: String) async throws -> [Float] {
+        try await encode(Self.queryPrefix + text)
+    }
+
+    /// Encodes text that already carries its prefix.
+    private func encode(_ prefixedText: String) async throws -> [Float] {
+        guard let vector = try await model.encode(sentence: prefixedText) else {
             throw WaxError.io("E5 embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
@@ -131,8 +151,10 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider {
 
     // MARK: - BatchEmbeddingProvider
 
+    /// Embed document texts, each with the e5 `"passage: "` prefix.
     package func embed(batch texts: [String]) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
+        let texts = texts.map { Self.passagePrefix + $0 }
         let plannedBatches = Self.planBatchSizes(for: texts.count, maxBatchSize: batchSize)
         var results = Array(repeating: [Float](), count: texts.count)
         var startIndex = 0
@@ -141,7 +163,7 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider {
             let batchEnd = batchStart + size
             let chunk = Array(texts[batchStart..<batchEnd])
             if size == 1 {
-                results[batchStart] = try await embed(chunk[0])
+                results[batchStart] = try await encode(chunk[0])
             } else {
                 let embeddings = try await embedBatchCoreML(texts: chunk)
                 for (offset, vector) in embeddings.enumerated() {

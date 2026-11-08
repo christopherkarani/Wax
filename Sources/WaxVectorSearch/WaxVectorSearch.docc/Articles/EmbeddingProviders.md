@@ -141,6 +141,6 @@ Two more on-device CoreML providers are opt-in package traits. Select them throu
 | Provider | Model | Trait | Pooling | License |
 |----------|-------|-------|---------|---------|
 | `.arctic` | Snowflake Arctic Embed Small | `ArcticEmbeddings` | CLS, query prefix | Apache-2.0 |
-| `.e5` | `intfloat/e5-small-v2` | `E5Embeddings` | Mean, no prefixes | MIT |
+| `.e5` | `intfloat/e5-small-v2` | `E5Embeddings` | Mean, query/passage prefixes | MIT |
 
-Both produce 384-dimensional unit vectors, run on the CPU by default, and require iOS 18/macOS 15 or later. The e5 provider embeds queries and passages without e5's `"query: "` / `"passage: "` prefixes, the same symmetric setup as MiniLM.
+Both produce 384-dimensional unit vectors, run on the CPU by default, and require iOS 18/macOS 15 or later. The e5 provider prepends `"query: "` to search queries and `"passage: "` to stored text, the prefixes the model was trained with.

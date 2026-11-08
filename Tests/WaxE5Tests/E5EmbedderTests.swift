@@ -11,6 +11,8 @@ import WaxVectorSearch
                  "Set WAX_TEST_E5=1 to run e5 embedder tests"))
 struct E5EmbedderTests {
     struct ReferenceRow: Decodable {
+        /// `query` rows are embedded with `embedQuery`, `passage` rows with `embed`.
+        let role: String
         let text: String
         let tokens: Int
         let embedding: [Float]
@@ -20,7 +22,8 @@ struct E5EmbedderTests {
         let rows: [ReferenceRow]
     }
 
-    /// PyTorch `intfloat/e5-small-v2` masked mean pooling + L2 norm, no prefixes.
+    /// PyTorch `intfloat/e5-small-v2` masked mean pooling + L2 norm of each row's text with its
+    /// role's prefix, `"query: "` or `"passage: "`.
     static func reference() throws -> Reference {
         let url = try #require(Bundle.module.url(forResource: "e5_reference_embeddings", withExtension: "json"))
         return try JSONDecoder().decode(Reference.self, from: Data(contentsOf: url))
@@ -55,11 +58,11 @@ struct E5EmbedderTests {
     }
 
     @Test
-    func identityNamesE5SmallV2() throws {
+    func identityNamesPrefixedE5SmallV2() throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let identity = try E5Embedder().identity
         #expect(identity?.provider == "Wax")
-        #expect(identity?.model == "E5SmallV2")
+        #expect(identity?.model == "E5SmallV2-prefixed")
         #expect(identity?.dimensions == 384)
         #expect(identity?.normalized == true)
     }
@@ -69,36 +72,61 @@ struct E5EmbedderTests {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try E5Embedder()
         let rows = try Self.reference().rows
-        #expect(rows.contains { $0.tokens == 512 }, "fixture must cover the 512-token maximum")
+        let passages = rows.filter { $0.role == "passage" }
+        #expect(passages.contains { $0.tokens == 512 }, "fixture must cover the 512-token maximum")
+        #expect(rows.contains { $0.role == "query" }, "fixture must cover the query prefix")
         for row in rows {
-            let vector = try await embedder.embed(row.text)
+            let vector = row.role == "query"
+                ? try await embedder.embedQuery(row.text)
+                : try await embedder.embed(row.text)
             let similarity = Self.cosine(vector, row.embedding)
-            #expect(similarity >= 0.999, "\(row.tokens)-token text: cosine \(similarity) to PyTorch")
+            #expect(similarity >= 0.999, "\(row.role), \(row.tokens) tokens: cosine \(similarity) to PyTorch")
         }
-        let batched = try await embedder.embed(batch: rows.map(\.text))
-        for (vector, row) in zip(batched, rows) {
+        let batched = try await embedder.embed(batch: passages.map(\.text))
+        for (vector, row) in zip(batched, passages) {
             let similarity = Self.cosine(vector, row.embedding)
             #expect(similarity >= 0.999, "padded batch, \(row.tokens)-token text: cosine \(similarity) to PyTorch")
         }
     }
 
     @Test
-    func embeddingIsDeterministicAndQueryUsesNoPrefix() async throws {
+    func embeddingIsDeterministic() async throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try E5Embedder()
         let text = "Swift is a programming language developed by Apple."
         let first = try await embedder.embed(text)
         let second = try await embedder.embed(text)
-        let query = try await embedder.embedQuery(text)
         #expect(first == second)
-        #expect(query == first)
+    }
+
+    /// e5 was trained with `"query: "` on queries and `"passage: "` on documents. Each embedder
+    /// path must feed the model exactly one of those prefixes, never both and never none.
+    @Test
+    func queriesUseQueryPrefixAndDocumentsUsePassagePrefix() async throws {
+        guard #available(macOS 15.0, iOS 18.0, *) else { return }
+        let model = try E5Embeddings()
+        let embedder = E5Embedder(model: model)
+        let text = "Swift is a programming language developed by Apple."
+        let other = "Wax keeps agent memory searchable in a single local file."
+
+        let expectedQuery = try #require(try await model.encode(sentence: "query: " + text))
+        let expectedPassage = try #require(try await model.encode(sentence: "passage: " + text))
+        let expectedBatch = try #require(
+            try await model.encode(batch: ["passage: " + text, "passage: " + other])
+        )
+
+        #expect(try await embedder.embedQuery(text) == expectedQuery)
+        #expect(try await embedder.embed(text) == expectedPassage)
+        #expect(try await embedder.embed(batch: [text]) == [expectedPassage])
+        #expect(try await embedder.embed(batch: [text, other]) == expectedBatch)
+        #expect(expectedQuery != expectedPassage)
     }
 
     @Test
     func relatedTextRanksAboveUnrelatedText() async throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         let embedder = try E5Embedder()
-        let query = try await embedder.embed("What degree did I graduate with?")
+        let query = try await embedder.embedQuery("What degree did I graduate with?")
         let related = try await embedder.embed(
             "I graduated with a Bachelor's degree in Business Administration from the state university."
         )

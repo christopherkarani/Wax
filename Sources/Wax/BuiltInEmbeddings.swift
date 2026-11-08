@@ -8,8 +8,8 @@ public enum BuiltInEmbeddingProvider: String, CaseIterable, Sendable, Equatable,
     case miniLM = "minilm"
     /// The Snowflake Arctic Embed Small CoreML embedding provider.
     case arctic
-    /// The `intfloat/e5-small-v2` CoreML embedding provider. Embeds queries and passages
-    /// without e5's `"query: "` / `"passage: "` prefixes.
+    /// The `intfloat/e5-small-v2` CoreML embedding provider. Prepends `"query: "` to search
+    /// queries and `"passage: "` to stored text, the prefixes the model was trained with.
     case e5
 
     package var commandLineChoice: String {

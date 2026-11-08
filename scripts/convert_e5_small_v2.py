@@ -7,8 +7,8 @@ Mirrors scripts/convert_arctic_embed.py so both opt-in embedders share one runti
     sequenceLengthBuckets in E5Embeddings.swift: [32, 64, 128, 256, 384, 512]
   - FP32 compute, INT8 per-channel symmetric weights (~32 MB)
   - Mean pooling over the attention mask + L2 normalization baked into the graph, matching
-    sentence-transformers' e5-small-v2 pooling. Wax feeds raw text with no "query: " /
-    "passage: " prefixes, the same symmetric setup as its other built-in embedders
+    sentence-transformers' e5-small-v2 pooling. The graph takes token ids; E5Embedder adds
+    the "query: " / "passage: " prefixes in Swift before tokenizing
   - Eager attention (not SDPA) for coremltools compatibility
   - Finite additive attention-mask fill `(1 - mask) * -1e4` instead of Hugging Face's
     `finfo(float32).min`, which becomes -inf in Float16 and turns padded rows into NaN
