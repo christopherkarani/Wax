@@ -106,8 +106,10 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
         let reopened = try await Wax.open(at: url)
         let map = try await committedMap(reopened)
         #expect(map.count == 101)
-        #expect(map[100] == vector(100))
-        #expect(map[0] == vector(0))
+        let last: [Float]? = map[100]
+        let first: [Float]? = map[0]
+        #expect(last == vector(100))
+        #expect(first == vector(0))
         try await reopened.close()
     }
 }

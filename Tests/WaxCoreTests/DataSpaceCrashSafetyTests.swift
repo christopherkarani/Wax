@@ -436,7 +436,10 @@ func aFooterOnlyAScanFindsCountsOnlyWhenItsVectorRunsAreWhole(tornRun: Bool) asy
         #expect(await recovered.stats().frameCount == 20, "the torn commit is passed over")
         #expect(try await committedVectorMap(recovered) == expectedVectors(0..<20))
         let pending = await recovered.pendingEmbeddingMutations(since: nil)
-        #expect(Set(pending.embeddings.map(\.frameId)) == Set((20..<30).map(UInt64.init) + [3]))
+        let pendingIds: Set<UInt64> = Set(pending.embeddings.map(\.frameId))
+        var expectedPending: Set<UInt64> = Set((20..<30).map { UInt64($0) })
+        expectedPending.insert(3)
+        #expect(pendingIds == expectedPending)
         #expect(pending.removedFrameIds == [4])
         try await recovered.commit()
     } else {
