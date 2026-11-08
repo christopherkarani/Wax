@@ -50,6 +50,11 @@ package actor FTS5SearchEngine {
     var writersWaiting = 0
     var fanOutReadersWaiting = 0
     var duringFanOutReadForTesting: (@Sendable () async -> Void)?
+    /// Inactive frames whose postings this engine deleted and has not indexed since. Deleted
+    /// and superseded frames stay inactive, so `removeInactiveFrames` skips them.
+    private var removedInactiveFrameIds: Set<Int64> = []
+    /// Inactive frames `removeInactiveFrames` has deleted postings for.
+    private(set) var inactiveFrameRemovalsForTesting = 0
 
     private init(
         dbQueue: DatabaseQueue,
@@ -175,7 +180,8 @@ package actor FTS5SearchEngine {
     package func removeInactiveFrames(_ metas: [FrameMeta]) async throws {
         let inactiveFrameIds = try metas.compactMap { meta -> Int64? in
             guard meta.status == .deleted || meta.supersededBy != nil else { return nil }
-            return try Self.toInt64(meta.id)
+            let frameId = try Self.toInt64(meta.id)
+            return removedInactiveFrameIds.contains(frameId) ? nil : frameId
         }
         guard !inactiveFrameIds.isEmpty else { return }
 
@@ -202,6 +208,11 @@ package actor FTS5SearchEngine {
                 return removed
             }
         }
+        // Ops queued while the delete ran are indexed by a later flush, which forgets them here.
+        for frameId in inactiveFrameIds where pendingOps[frameId] == nil {
+            removedInactiveFrameIds.insert(frameId)
+        }
+        inactiveFrameRemovalsForTesting += inactiveFrameIds.count
 
         if removedCount > 0 {
             let removedU = UInt64(removedCount)
@@ -320,6 +331,7 @@ package actor FTS5SearchEngine {
     }
 
     private func enqueuePendingOp(frameIdValue: Int64, op: PendingOp) {
+        removedInactiveFrameIds.remove(frameIdValue)
         if pendingOps[frameIdValue] == nil {
             pendingKeys.append(frameIdValue)
         }
