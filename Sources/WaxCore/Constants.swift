@@ -63,6 +63,7 @@ package enum Constants {
     package static let maxArrayCount: Int = 10_000_000
     package static let maxEmbeddingDimensions: Int = 1_000_000
 
-    package static let maxTocBytes: UInt64 = 64 * 1024 * 1024
+    /// About 560 bytes per frame, so roughly 950k frames. Commits refuse a larger TOC.
+    package static let maxTocBytes: UInt64 = 512 * 1024 * 1024
     package static let maxFooterScanBytes: UInt64 = 32 * 1024 * 1024
 }

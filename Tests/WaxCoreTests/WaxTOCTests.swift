@@ -191,3 +191,12 @@ private func restampTocChecksum(_ bytes: inout Data) {
 
     #expect(decoded == manifest)
 }
+
+/// Readers reject a TOC above `maxTocBytes`, so a commit must not write one: the store would
+/// then open on an older footer whose WAL was already checkpointed.
+@Test func tocEncodeRejectsATocReadersWouldReject() throws {
+    let toc = WaxTOC.emptyV1()
+    let size = try toc.encode().count
+    #expect(throws: WaxError.self) { try toc.encode(maxBytes: UInt64(size - 1)) }
+    #expect(try toc.encode(maxBytes: UInt64(size)).count == size)
+}

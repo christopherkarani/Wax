@@ -86,7 +86,8 @@ package struct WaxTOC: Equatable, Sendable {
         )
     }
 
-    package func encode(cachedFramesPayload: Data? = nil) throws -> Data {
+    /// Throws when the encoding exceeds `maxBytes`, the size readers accept by default.
+    package func encode(cachedFramesPayload: Data? = nil, maxBytes: UInt64 = Constants.maxTocBytes) throws -> Data {
         guard tocVersion == 1 else {
             throw WaxError.encodingError(reason: "unsupported toc_version \(tocVersion)")
         }
@@ -150,6 +151,9 @@ package struct WaxTOC: Equatable, Sendable {
         encoder.encodeFixedBytes(Data(repeating: 0, count: 32)) // toc_checksum placeholder
 
         var data = encoder.data
+        guard UInt64(data.count) <= maxBytes else {
+            throw WaxError.capacityExceeded(limit: maxBytes, requested: UInt64(data.count))
+        }
         let checksum = WaxTOC.computeChecksum(for: data)
         data.replaceSubrange((data.count - 32)..<data.count, with: checksum)
         return data
