@@ -10,6 +10,9 @@ import Wax
 // For each job, wax-bench creates a fresh store, saves every doc through the public
 // `Memory` API, runs the searches, and writes one line per query with the ranked doc ids:
 //   {"qid": "...", "ranked": ["doc-id", ...], "hits": [...], "ingest_ms": 0, "search_ms": 0, ...}
+//
+// `--rerank minilm` reranks each search's top candidates with the built-in cross-encoder
+// (`--rerank-candidates N`, `--rerank-fusion ce|rrf:<k>`, `--rerank-compute cpu|gpu|ane|all`).
 
 struct Job: Decodable {
     struct Doc: Decodable {
@@ -38,6 +41,8 @@ struct Hit: Encodable {
     let id: String
     let score: Float
     let sources: [String]
+    /// Reranker explanations ("rerank: score S, retrieval rank R"); omitted without reranking.
+    let explanations: [String]?
 }
 
 struct JobResult: Encodable {
@@ -73,6 +78,10 @@ struct Options {
     /// Set by `--embedder-similarity cosine|dot`; applies to the HTTP embedder only.
     var embedderSimilarity: VectorSimilarity = .cosine
     var concurrency = 4
+    /// Set by `--rerank minilm`: rerank with the built-in cross-encoder.
+    var reranker: BuiltInReranker?
+    var rerankOptions = RerankingOptions.default
+    var rerankComputeUnit: BuiltInEmbeddingComputeUnit = .cpuOnly
     var storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("wax-bench").path
 
     static func parse(_ args: ArraySlice<String>) throws -> Options {
@@ -100,6 +109,33 @@ struct Options {
                     throw BenchError.usage("unknown embedder \(raw); expected minilm, arctic, e5 or http://...")
                 }
                 options.embedder = provider
+            case "--rerank":
+                switch try value(flag) {
+                case "minilm": options.reranker = .msMarcoMiniLM
+                case "none": options.reranker = nil
+                case let other: throw BenchError.usage("rerank must be minilm or none, got \(other)")
+                }
+            case "--rerank-candidates":
+                let raw = try value(flag)
+                guard let count = Int(raw) else { throw BenchError.usage("bad --rerank-candidates \(raw)") }
+                options.rerankOptions.candidateCount = count
+            case "--rerank-fusion":
+                let raw = try value(flag)
+                if raw == "ce" {
+                    options.rerankOptions.fusion = .rerankerOrder
+                } else if raw.hasPrefix("rrf:"), let k = Int(raw.dropFirst("rrf:".count)) {
+                    options.rerankOptions.fusion = .reciprocalRank(k: k)
+                } else {
+                    throw BenchError.usage("rerank fusion must be ce or rrf:<k>, got \(raw)")
+                }
+            case "--rerank-compute":
+                switch try value(flag) {
+                case "cpu": options.rerankComputeUnit = .cpuOnly
+                case "gpu": options.rerankComputeUnit = .cpuAndGPU
+                case "ane": options.rerankComputeUnit = .cpuAndNeuralEngine
+                case "all": options.rerankComputeUnit = .all
+                case let other: throw BenchError.usage("rerank compute must be cpu, gpu, ane or all, got \(other)")
+                }
             case "--embedder-similarity":
                 switch try value(flag) {
                 case "cosine": options.embedderSimilarity = .cosine
@@ -149,7 +185,12 @@ func elapsedMs(since start: ContinuousClock.Instant) -> Double {
     return Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1e15
 }
 
-func runJob(_ job: Job, options: Options, embedder: any EmbeddingProvider) async throws -> [JobResult] {
+func runJob(
+    _ job: Job,
+    options: Options,
+    embedder: any EmbeddingProvider,
+    reranker: (any RerankingProvider)?
+) async throws -> [JobResult] {
     let storeURL = URL(fileURLWithPath: options.storeDir)
         .appendingPathComponent("\(UUID().uuidString).wax")
     defer { try? FileManager.default.removeItem(at: storeURL) }
@@ -157,6 +198,9 @@ func runJob(_ job: Job, options: Options, embedder: any EmbeddingProvider) async
     var config = Memory.Config.default
     config.embedding = .custom(embedder)
     config.enableVectorSearch = options.mode != .textOnly
+    if let reranker {
+        config.reranking = .custom(reranker, options.rerankOptions)
+    }
     let memory = try await Memory(at: storeURL, config: config)
 
     let ingestStart = ContinuousClock.now
@@ -201,7 +245,13 @@ func rankedResult(qid: String, results: Memory.Results, ingestMs: Double, search
             unmapped += 1
             continue
         }
-        hits.append(Hit(id: id, score: item.score, sources: item.sources.map { "\($0)" }))
+        let rerank = item.explanations.filter { $0.hasPrefix("rerank: ") }
+        hits.append(Hit(
+            id: id,
+            score: item.score,
+            sources: item.sources.map { "\($0)" },
+            explanations: rerank.isEmpty ? nil : rerank
+        ))
         if seen.insert(id).inserted {
             ranked.append(id)
         }
@@ -236,6 +286,11 @@ func retrieve(_ options: Options) async throws {
     } else {
         try await BuiltInEmbeddings.make(options.embedder)
     }
+    let reranker: (any RerankingProvider)? = if let choice = options.reranker {
+        try await BuiltInRerankers.make(choice, computeUnit: options.rerankComputeUnit)
+    } else {
+        nil
+    }
     FileManager.default.createFile(atPath: options.output, contents: nil)
     guard let out = FileHandle(forWritingAtPath: options.output) else {
         throw BenchError.failed("cannot open \(options.output)")
@@ -249,7 +304,7 @@ func retrieve(_ options: Options) async throws {
         var pending = jobs.makeIterator()
         for _ in 0..<options.concurrency {
             guard let job = pending.next() else { break }
-            group.addTask { try await runJob(job, options: options, embedder: embedder) }
+            group.addTask { try await runJob(job, options: options, embedder: embedder, reranker: reranker) }
         }
         while let results = try await group.next() {
             for result in results {
@@ -262,7 +317,7 @@ func retrieve(_ options: Options) async throws {
                 FileHandle.standardError.write(Data("retrieve: \(done)/\(jobs.count)\n".utf8))
             }
             if let job = pending.next() {
-                group.addTask { try await runJob(job, options: options, embedder: embedder) }
+                group.addTask { try await runJob(job, options: options, embedder: embedder, reranker: reranker) }
             }
         }
     }

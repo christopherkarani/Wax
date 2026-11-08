@@ -83,6 +83,17 @@ Contriever was trained for dot product, so pass `--embedder-similarity dot` (def
 `cosine`): Wax then keeps the server's unnormalized vectors and ranks by inner product, as
 the bare baseline does. It applies to `--embedder http://...` only.
 
+`--rerank minilm` turns on the built-in cross-encoder reranker (`MiniLMReranker` trait,
+enabled in this package). `--rerank-candidates N` (default 20) sets how many candidates it
+scores, `--rerank-fusion rrf:<k> | ce` (default `rrf:10`) how its order is fused with the
+retrieval order, and `--rerank-compute cpu | gpu | ane | all` (default `cpu`) where CoreML
+runs. Reranked hits carry a `rerank: score S, retrieval rank R` explanation in the output.
+
+```bash
+$BIN retrieve --input $RUNS/lme_s_session.jobs.jsonl --output $RUNS/wax-hybrid-e5-rerank.ranked.jsonl \
+  --mode hybrid:0.4 --embedder e5 --rerank minilm --rerank-candidates 20 --top-k 300 --concurrency 4
+```
+
 `--top-k 300` is deliberate: Wax returns chunks, and several chunks of one session collapse
 to one doc id, so a small top-k yields fewer than 50 distinct sessions. 419 of 500 questions
 are scored (30 abstention questions and 51 without user-side evidence are skipped, as in
