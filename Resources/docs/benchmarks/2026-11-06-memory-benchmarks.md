@@ -8,23 +8,25 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 
 | Benchmark | Metric | Wax | Best reference | Before fixes |
 |---|---|---|---|---|
-| LoCoMo retrieval | R_all@5 / @10 | **0.555 / 0.636** (hybrid, e5-small-v2, text weight 0.4); 0.537 / 0.618 with Arctic | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
+| LoCoMo retrieval | R_all@5 / @10 | **0.609 / 0.686** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.555 / 0.636 without the reranker | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
 | LoCoMo QA | LLM judge J | **70.4%** (hybrid, Arctic, top 30); 64.9% with MiniLM | Contriever top 30: 62.4% | 56.3% (vector, top 30) |
-| LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.905** / 0.926 (hybrid, e5-small-v2, text weight 0.4); 0.883 / 0.917 with MiniLM | Contriever 0.902 / **0.927** | 0.742 / – |
-| LongMemEval-S QA | accuracy, mean of 3 runs | 87.6% (hybrid, e5-small-v2, text weight 0.4, top 5); task-averaged **90.3%** | Contriever top 5: **87.7%**; task-averaged 90.0% | 83.0% (vector, top 5) |
+| LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.938 / 0.950** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.905 / 0.926 without the reranker | Contriever 0.902 / 0.927 | 0.742 / – |
+| LongMemEval-S QA | accuracy, mean of 3 runs | **89.4%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 5); task-averaged 90.2% | Contriever top 5: 87.7%; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
 | Systems, 100k passages | disk | 395 MB | Chroma 408 MB (text + vectors) | 13.5 GB |
 | Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
 | Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
 
-Wax leads LoCoMo on retrieval and QA. On LongMemEval retrieval it leads Contriever by
-0.003 R_all@5 (about one question of 419) with the opt-in e5-small-v2 embedder (33M
-parameters, against Contriever's 110M), so read that as a tie. With the default MiniLM-L6
-(22M parameters) it is 1.9 points behind in retrieval and 1.8 points behind in QA. With
-e5, QA ties Contriever: over three reader and judge runs each, 87.6% against 87.7%
-accuracy and 90.3% against 90.0% task-averaged. With Contriever embeddings it ties bare
-Contriever on LongMemEval, and adds 8 points on LoCoMo (see
-[Same-model comparison](#same-model-comparison)).
+Wax leads every retrieval and QA benchmark here. With the opt-in e5-small-v2 embedder
+(33M parameters, against Contriever's 110M) and the opt-in MiniLM cross-encoder reranker
+(22 MB, on device), LongMemEval-S retrieval reaches 0.938 R_all@5 against Contriever's 0.902,
+and QA accuracy 89.4% against 87.7% over three reader and judge runs each (the lowest
+reranked run, 89.0%, beats Contriever's highest, 87.8%). Task-averaged QA is a tie (90.2%
+against 90.0%). Without the reranker, LongMemEval ties Contriever (0.905 retrieval, 87.6%
+QA). With the default MiniLM-L6 embedder and no reranker it is 1.9 points behind in
+retrieval and 1.8 points behind in QA. With Contriever embeddings Wax ties bare Contriever
+on LongMemEval and adds 8 points on LoCoMo (see [Same-model comparison](#same-model-comparison)).
+LoCoMo QA (70.4%) was measured without the reranker.
 
 ## Setup
 
@@ -155,13 +157,20 @@ bundled MiniLM and Arctic models are cosine models and are unaffected.
 | Context | Accuracy | Task-averaged |
 |---|---|---|
 | Oracle (evidence sessions only) | 93.4% | 95.9% |
-| Contriever top 5, mean of 3 runs (87.8 / 87.6 / 87.6) | **87.7%** | 90.0% |
+| Wax hybrid e5-small-v2, text weight 0.4, MiniLM reranker (top 20, RRF k=10), top 5, mean of 3 runs (90.0 / 89.0 / 89.2) | **89.4%** | 90.2% |
+| Contriever top 5, mean of 3 runs (87.8 / 87.6 / 87.6) | 87.7% | 90.0% |
 | Wax hybrid e5-small-v2, text weight 0.4, top 5, mean of 3 runs (87.6 / 87.4 / 87.8) | 87.6% | **90.3%** |
 | Wax hybrid MiniLM top 5 | 86.0% | 88.2% |
 | Wax vector MiniLM top 5, before fixes | 83.0% | 84.8% |
 
 Three runs each are needed to compare these: the reader and judge alone move accuracy by
-0.4 points between runs of the same context. With e5, Wax leads Contriever on
+0.4 points between runs of the same context. With the reranker, the lowest of the three runs
+(89.0%) is 1.2 points above Contriever's highest (87.8%). The gain is mostly multi-session
+questions (82.1% against Contriever's 78.5% and 76.6% without the reranker); temporal
+reasoning is 86.9%, knowledge-update 96.3% and single-session user facts 99.0%.
+Task-averaged accuracy does not move (90.2% against 90.3% without it), because single-session
+preference (81.1%) and abstention (88.9%), 30 questions each, weigh as much as the larger
+types. With e5, Wax leads Contriever on
 knowledge-update (96.8% against 90.3%) and single-session user facts (98.4% against
 95.3%), and trails on multi-session (76.6% against 78.5%), single-session preference and
 abstention (both 3.3 points). The abstention gap is not retrieval: on the questions that
