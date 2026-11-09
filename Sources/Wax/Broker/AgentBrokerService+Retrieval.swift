@@ -168,7 +168,15 @@ extension AgentBrokerService {
             timeRange: nil
         )
         guard await longTermMemory.isQueryEmbedderReady() else { return }
-        _ = try? await longTermMemory.backfillUnembedded()
+        do {
+            _ = try await longTermMemory.backfillUnembedded()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "embedding backfill during broker prewarm",
+                fallback: "frames without vectors stay text-only until the next backfill"
+            )
+        }
     }
 
     /// Suspends while MiniLM (or the configured provider) is `.loading`, matching remember.

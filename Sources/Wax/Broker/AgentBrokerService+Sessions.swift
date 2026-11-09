@@ -379,7 +379,12 @@ extension AgentBrokerService {
         let retention = retentionSettings
         let scope = scopeContext
         return { state in
-            let events = (try? BrokerSessionPersistence.loadEvents(from: state.eventLogURL)) ?? []
+            let events: [BrokerSessionEvent]
+            do {
+                events = try BrokerSessionPersistence.loadEvents(from: state.eventLogURL)
+            } catch {
+                return Self.unreadableEventLogReport(error)
+            }
             return await SessionHarvest.run(
                 sessionMemory: state.memory,
                 longTermMemory: longTerm,
@@ -392,6 +397,12 @@ extension AgentBrokerService {
                 nowMs: BrokerClock.nowMs()
             )
         }
+    }
+
+    /// Recall counts come from the event log, so harvesting without it would
+    /// misjudge notes and record a clean harvest that makes the store reclaimable.
+    private static func unreadableEventLogReport(_ error: any Error) -> SessionHarvest.Report {
+        .failed("session event log unreadable: \(error.localizedDescription)")
     }
 
     private func loadHarvestReport(sessionID: UUID) -> SessionHarvest.Report {
@@ -416,21 +427,35 @@ extension AgentBrokerService {
     /// - Parameter rememberDrained: the caller already holds `rememberMutex`
     ///   (session teardown under `.rememberDrain`); otherwise it is taken here.
     private func harvestPersistedSession(sessionID: UUID, rememberDrained: Bool) async -> SessionHarvest.Report {
-        guard let manifest = try? BrokerSessionPersistence.loadManifest(
-            rootURL: sessionRootURL,
-            sessionID: sessionID
-        ) else {
+        let manifest: BrokerSessionManifest
+        do {
+            manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "session harvest manifest load",
+                fallback: "skip harvest; the session store is kept"
+            )
             return .skipped
         }
         if manifest.harvestedAtMs != nil, manifest.harvestError == nil {
             return loadHarvestReport(sessionID: sessionID)
         }
-        let events = (try? BrokerSessionPersistence.loadEvents(
-            from: URL(fileURLWithPath: manifest.eventLogPath)
-        )) ?? []
+        let events: [BrokerSessionEvent]
+        let eventLoadError: (any Error)?
+        do {
+            events = try BrokerSessionPersistence.loadEvents(from: URL(fileURLWithPath: manifest.eventLogPath))
+            eventLoadError = nil
+        } catch {
+            events = []
+            eventLoadError = error
+        }
         let storeURL = URL(fileURLWithPath: manifest.storePath)
+        let storeExists = FileManager.default.fileExists(atPath: storeURL.path)
         let report: SessionHarvest.Report
-        if FileManager.default.fileExists(atPath: storeURL.path) {
+        if storeExists, let eventLoadError {
+            report = Self.unreadableEventLogReport(eventLoadError)
+        } else if storeExists {
             do {
                 let longTerm = longTermMemory
                 let scope = scopeContext
@@ -492,11 +517,34 @@ extension AgentBrokerService {
     /// own end will harvest it. Run with rememberMutex held so no rebind is in flight.
     private func persistHarvestUnlessRebound(sessionID: UUID, report: SessionHarvest.Report) {
         guard activeSessions[sessionID] == nil else { return }
-        _ = try? virtualSessions.persistHarvestToDisk(
-            sessionID: sessionID,
-            report: report,
-            markEnded: true
-        )
+        do {
+            _ = try virtualSessions.persistHarvestToDisk(
+                sessionID: sessionID,
+                report: report,
+                markEnded: true
+            )
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "session harvest manifest save",
+                fallback: "manifest unchanged; the next maintain harvests the session again"
+            )
+        }
+    }
+
+    /// A listing error (one unreadable manifest fails the whole listing) leaves
+    /// this maintain pass without sessions; it is logged so zero counts are not mistaken for "nothing to do".
+    private func listSessionManifestsForMaintain() -> [BrokerSessionManifest] {
+        do {
+            return try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "session maintain manifest listing",
+                fallback: "skip session harvest and reclaim this pass"
+            )
+            return []
+        }
     }
 
     package func setPersistedHarvestHookForTesting(_ hook: (@Sendable (UUID) async -> Void)?) {
@@ -542,7 +590,7 @@ extension AgentBrokerService {
     ) async -> SessionStoreMaintainCounts {
         let now = BrokerClock.nowMs()
         let recentlyClosedMs = retentionSettings.recentlyClosedMs
-        let manifests = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
+        let manifests = listSessionManifestsForMaintain()
         let liveIDs = Set(activeSessions.keys)
         var zombiesToEnd = 0
         var harvests = 0
@@ -569,7 +617,7 @@ extension AgentBrokerService {
             }
         }
 
-        let afterZombies = (try? BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)) ?? []
+        let afterZombies = listSessionManifestsForMaintain()
         for manifest in afterZombies {
             if !zombieIDs.contains(manifest.sessionID),
                manifest.status == .ended,

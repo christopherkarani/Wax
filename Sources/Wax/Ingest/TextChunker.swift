@@ -115,7 +115,18 @@ package enum TextChunker {
         inputTokenLimit limit: Int,
         inputTokenCount: (String) -> Int
     ) async -> [String] {
-        guard limit > 0, let counter = try? await TokenCounter.shared() else { return chunks }
+        guard limit > 0 else { return chunks }
+        let counter: TokenCounter
+        do {
+            counter = try await TokenCounter.shared()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "text chunker token counter init for embedder input fit",
+                fallback: "unsplit chunks; the embedder may truncate long ones"
+            )
+            return chunks
+        }
         var fitted: [String] = []
         fitted.reserveCapacity(chunks.count)
         var pending = Array(chunks.reversed())

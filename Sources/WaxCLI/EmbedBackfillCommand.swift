@@ -125,7 +125,7 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
             _ = try await StoreRepairSupport.verifyDeep(at: destinationURL)
             try StoreRepairSupport.finalizePromotion(promotion)
         } catch {
-            try? StoreRepairSupport.rollbackPromotion(promotion)
+            StoreRepairSupport.rollbackPromotionReportingFailure(promotion)
             throw error
         }
 
