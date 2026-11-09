@@ -9,6 +9,31 @@ cd "$ROOT_DIR"
 GATE_LOG_DIR="${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wax-gate.XXXXXX")}"
 mkdir -p "$GATE_LOG_DIR"
 
+# Tests that started and never finished, in start order. A timed-out run otherwise shows
+# only its log tail, where a test that hung long before the timeout does not appear.
+# Handles swift-testing ("Test x() started." / "passed|failed after" / "skipped:") and
+# XCTest ("Test Case '-[S t]' started." / "passed|failed (").
+unfinished_tests() {
+  local log_file="$1"
+  sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g; s/\r$//' "$log_file" 2>/dev/null \
+    | sed -nE \
+      -e "/Test Case '/{
+            s/.*Test Case '(-\[[^]]+\])' started.*/START \1/p
+            s/.*Test Case '(-\[[^]]+\])' (passed|failed) .*/END \1/p
+            d
+          }" \
+      -e '/recorded an issue/d' \
+      -e '/Test run (started|with)/d' \
+      -e 's/.*Test (.+) started\.$/START \1/p' \
+      -e 's/.*Test (.+) (passed|failed) after .*/END \1/p' \
+      -e 's/.*Test (.+) skipped(:.*)?$/END \1/p' \
+    | awk '
+        $1 == "START" { name = substr($0, 7); if (!(name in open)) order[++n] = name; open[name] = 1 }
+        $1 == "END" { delete open[substr($0, 5)] }
+        END { for (i = 1; i <= n; i++) if (order[i] in open) print order[i] }
+      '
+}
+
 run_and_capture() {
   local log_file="$1"
   shift
@@ -51,6 +76,11 @@ run_and_capture() {
       echo "GATE_TIMEOUT ${timeout_secs}s: $*"
       last_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
       echo "GATE_TIMEOUT_LAST ${last_line}"
+      unfinished_tests "$log_file" | head -n 40 | sed 's/^/GATE_UNFINISHED_TEST /'
+      # Test-spawned processes still alive (daemons, CLI children) often explain a hang.
+      ps -axo pid,ppid,etime,command 2>/dev/null \
+        | grep -E "wax|xctest|swiftpm-testing-helper" | grep -v grep | head -n 40 \
+        | sed 's/^/GATE_LIVE_PROCESS /' || true
       kill "$cmd_pid" 2>/dev/null || true
       sleep 2
       kill -9 "$cmd_pid" 2>/dev/null || true

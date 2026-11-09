@@ -411,4 +411,35 @@ assert_stability_gate_sets_search_mode \
   "vector" \
   "vector"
 
+assert_lists_unfinished_tests() {
+  local log_file="$TMP_DIR/unfinished.log"
+  printf '%b\n' \
+    '\033[1;39m\xe2\x97\x87 Test run started.\033[0m\r' \
+    '\xe2\x97\x87 Test finishesFine() started.\r' \
+    '\xe2\x97\x87 Test hangsForever() started.' \
+    '\xe2\x97\x87 Test parameterized(value:) started.' \
+    '\xe2\x9c\x94 Test finishesFine() passed after 0.012 seconds.\r' \
+    '\xe2\x9c\x98 Test hangsForever() recorded an issue at A.swift:3:2: passed nothing' \
+    '\xe2\x9c\x98 Test parameterized(value:) failed after 1.0 seconds with 1 issue.' \
+    '\xe2\x97\x87 Test skippedOne() started.' \
+    '\xe2\x9e\x9c Test skippedOne() skipped: "needs a trait"' \
+    "Test Case '-[Suite stuckCase]' started." \
+    "Test Case '-[Suite doneCase]' started." \
+    "Test Case '-[Suite doneCase]' passed (0.100 seconds)." \
+    >"$log_file"
+
+  local captured
+  captured="$(unfinished_tests "$log_file")"
+  local expected
+  expected="$(printf '%s\n' 'hangsForever()' '-[Suite stuckCase]')"
+  if [[ "$captured" != "$expected" ]]; then
+    echo "FAIL: unfinished_tests listed the wrong tests" >&2
+    echo "Expected: $expected" >&2
+    echo "Captured: $captured" >&2
+    return 1
+  fi
+}
+
+assert_lists_unfinished_tests
+
 echo "production_readiness_gates_tests: ok"
