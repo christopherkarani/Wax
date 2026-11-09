@@ -13,12 +13,101 @@ import Testing
     #expect(closeRange.lowerBound < finalizeRange.lowerBound)
 }
 
-@Test func waxRepoFullReindexClearsOutputsWhenNoCommitsAreIndexed() throws {
+@Test func waxRepoFullReindexKeepsOutputsWhenNoCommitsAreIndexed() throws {
     let source = try WaxRepoSource.load("Commands/IndexCommand.swift")
 
-    let resetRange = try #require(source.range(of: "try resetFullReindexOutputsIfNeeded("))
-    let noCommitsRange = try #require(source.range(of: "print(\"No new commits to index.\")"))
-    #expect(resetRange.lowerBound < noCommitsRange.lowerBound)
+    // A full reindex that parsed nothing has nothing to swap in, so the
+    // empty-history branch must return before touching the existing store.
+    let guardRange = try #require(source.range(of: "guard !commits.isEmpty else {"))
+    let returnRange = try #require(source.range(of: "return", range: guardRange.upperBound..<source.endIndex))
+    let emptyBranch = source[guardRange.upperBound..<returnRange.lowerBound]
+    #expect(!emptyBranch.contains("storePath"))
+    #expect(!emptyBranch.contains("lastHashFile"))
+}
+
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoIndexKeepsCommitWhoseDiffIsNotUTF8() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-non-utf8")
+    defer { try? FileManager.default.removeItem(at: repo) }
+    // Latin-1 "café" plus a 0xFF byte: valid file content, invalid UTF-8.
+    try Data([0x63, 0x61, 0x66, 0xE9, 0x20, 0xFF, 0x0A])
+        .write(to: repo.appendingPathComponent("latin1.txt"))
+    _ = try await WaxRepoProcess.run(
+        executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["git", "add", "latin1.txt"],
+        currentDirectoryURL: repo
+    )
+    _ = try await WaxRepoProcess.run(
+        executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["git", "commit", "-m", "Latin1 searchable commit"],
+        currentDirectoryURL: repo
+    )
+
+    let index = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(index.status == 0, "index failed: \(index.stderr)")
+    #expect(index.stdout.contains("Found 1 commit to index."), "index output: \(index.stdout)")
+
+    let stats = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["stats", "--repo-path", repo.path],
+        timeout: 10
+    )
+    #expect(try frameCount(from: stats.stdout) >= 1)
+}
+
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoFullReindexWithNoCommitsKeepsExistingStore() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-full-empty")
+    defer { try? FileManager.default.removeItem(at: repo) }
+    try await WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "a.txt",
+        contents: "indexed content\n",
+        message: "Indexed commit"
+    )
+
+    let firstIndex = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(firstIndex.status == 0, "first index failed: \(firstIndex.stderr)")
+    let storePath = repo.appendingPathComponent(".wax-repo/store.wax").path
+    let hashPath = repo.appendingPathComponent(".wax-repo/last-indexed-hash").path
+    #expect(FileManager.default.fileExists(atPath: storePath))
+    #expect(FileManager.default.fileExists(atPath: hashPath))
+
+    // Move HEAD to history that git log -p --diff-filter reports as empty.
+    for arguments in [
+        ["git", "checkout", "-q", "--orphan", "empty-history"],
+        ["git", "rm", "-r", "-q", "--cached", "."],
+        ["git", "commit", "-q", "--allow-empty", "-m", "Empty commit"],
+    ] {
+        let step = try await WaxRepoProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: arguments,
+            currentDirectoryURL: repo
+        )
+        #expect(step.status == 0, "\(arguments) failed: \(step.stderr)")
+    }
+
+    let fullIndex = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only", "--full"],
+        timeout: 15
+    )
+    #expect(fullIndex.status == 0, "full index failed: \(fullIndex.stderr)")
+    #expect(!fullIndex.stdout.contains("Found"), "full index output: \(fullIndex.stdout)")
+    #expect(FileManager.default.fileExists(atPath: storePath), "full reindex with no commits deleted the store")
+    #expect(FileManager.default.fileExists(atPath: hashPath), "full reindex with no commits deleted the checkpoint")
 }
 
 @Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,

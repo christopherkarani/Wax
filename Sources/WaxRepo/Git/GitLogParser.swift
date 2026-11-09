@@ -114,7 +114,9 @@ enum GitLogParser {
                     return
                 }
 
-                let output = String(data: captured.stdout, encoding: .utf8) ?? ""
+                // Lossy: one non-UTF-8 byte in history (a Latin-1 file in an
+                // old diff) costs one replacement character, not the whole log.
+                let output = String(decoding: captured.stdout, as: UTF8.self)
                 continuation.resume(returning: output)
             }
         }
