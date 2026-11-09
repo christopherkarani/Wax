@@ -90,6 +90,26 @@ assert_rejects_summary \
   "xctest-wrapper-zero-without-swift-testing" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds'
 
+# A log with no test summary at all (a filter that matched nothing, or a
+# crashed runner) must not count as a pass.
+assert_rejects_summary \
+  "empty-log" \
+  ""
+
+assert_rejects_summary \
+  "no-test-summary" \
+  $'Building for debugging...\nBuild complete! (1.00s)'
+
+# `swift test --parallel` prints no XCTest summary; a positive Swift Testing
+# count still proves the run executed tests.
+assert_accepts_summary \
+  "parallel-swift-testing-without-xctest-summary" \
+  $'Build complete! (1.00s)\n􁁛  Test run with 12 tests in 3 suites passed after 1.000 seconds.'
+
+assert_rejects_summary \
+  "parallel-zero-swift-testing-without-xctest-summary" \
+  $'Build complete! (1.00s)\n􁁛  Test run with 0 tests in 0 suites passed after 0.001 seconds.'
+
 assert_rejects_skip_output \
   "swift-testing-suite-skipped" \
   "Suite FeatureFlaggedTests skipped: requires local fixture"
@@ -351,13 +371,33 @@ if ! grep -Fq "GATE_TIMEOUT" "$TIMEOUT_STDOUT"; then
 fi
 
 CAPTURED_COMMANDS="$TMP_DIR/captured-gate-commands.txt"
+STUB_LOG_CONTENT="Executed 1 test, with 0 failures"
 
 run_and_capture() {
   local log_file="$1"
   shift
   printf '%s\n' "$*" >>"$CAPTURED_COMMANDS"
-  : >"$log_file"
+  printf '%s\n' "$STUB_LOG_CONTENT" >"$log_file"
 }
+
+# Soak and burn steps must fail when their filtered XCTest run executed nothing.
+for smoke in run_soak_smoke run_burn_smoke; do
+  : >"$CAPTURED_COMMANDS"
+  STUB_LOG_CONTENT="Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds"
+  set +e
+  (set -e; "$smoke") >/dev/null 2>&1
+  smoke_status=$?
+  set -e
+  if [[ $smoke_status -eq 0 ]]; then
+    echo "FAIL: $smoke must fail when its filtered XCTest run executed zero tests" >&2
+    exit 1
+  fi
+  STUB_LOG_CONTENT="Executed 1 test, with 0 failures"
+  if ! (set -e; "$smoke") >/dev/null 2>&1; then
+    echo "FAIL: $smoke must pass when every filtered XCTest run executed tests" >&2
+    exit 1
+  fi
+done
 
 assert_no_skips() {
   local _log_file="$1"

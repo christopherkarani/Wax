@@ -12,6 +12,9 @@ fail() {
 
 PATTERN='(^(tasks|Tasks|task|Task)/|^marketing/|^spec/|^CONTEXT\.md$|^AUDIT_REPORT\.md$|^CLAUDE\.md$|^WAX_TECHNICAL_ANALYSIS\.md$|docs/plans/|docs/product/|docs/superpowers/|docs/framework-audit|Resources/docs/plans/|Resources/docs/wax-mcp-reliability-plan|Resources/skills/internal/|issue[0-9]+_|_snapshot\.md|screenshot|TECHNICAL_ANALYSIS|audit-.*ledger|lessons\.md|(^|/)todo\.md$|\.grok/|\.ryk/|\.skynex/|\.pi/|\.opencode/|waxmcp/dist/|(^|/)[^/]+\.tgz$|^website/node_modules/|^memvid(-main)?/)'
 
+command -v rg >/dev/null 2>&1 \
+  || fail "ripgrep (rg) is required to scan tracked paths; install it and rerun"
+
 hits="$(git ls-files | rg -i "$PATTERN" || true)"
 if [[ -n "$hits" ]]; then
   echo "$hits" >&2
