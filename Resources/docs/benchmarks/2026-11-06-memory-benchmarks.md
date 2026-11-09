@@ -47,11 +47,12 @@ Official protocol (LongMemEval `src/retrieval`, commit 9e0b455f), session level,
 
 | Retriever | R_all@5 | R_all@10 | NDCG@10 |
 |---|---|---|---|
-| Wax hybrid, e5-small-v2, text weight 0.4 | **0.905** | **0.976** | 0.926 |
-| Contriever | 0.902 | 0.971 | **0.927** |
+| Wax hybrid, e5-small-v2, text weight 0.4, MiniLM reranker (top 20, RRF k=10) | **0.938** | **0.981** | **0.950** |
+| Wax hybrid, e5-small-v2, text weight 0.4 | 0.905 | 0.976 | 0.926 |
+| Contriever | 0.902 | 0.971 | 0.927 |
 | Wax hybrid, e5-small-v2 | 0.893 | 0.969 | 0.925 |
 | Wax vector, e5-small-v2 | 0.885 | 0.952 | 0.893 |
-| Wax hybrid, e5-small-v2 without prefixes, text weight 0.4 | 0.900 | 0.967 | **0.927** |
+| Wax hybrid, e5-small-v2 without prefixes, text weight 0.4 | 0.900 | 0.967 | 0.927 |
 | Wax hybrid, e5-small-v2 without prefixes | 0.885 | 0.957 | 0.924 |
 | Wax hybrid, MiniLM | 0.883 | 0.950 | 0.917 |
 | Wax hybrid, Arctic | 0.878 | 0.940 | 0.899 |
@@ -86,6 +87,22 @@ A rule that picked the text weight from the corpus's median document length scor
 0.912 on LongMemEval but failed a held-out check (LongMemEval turn level), so it was not
 shipped.
 
+### Reranking
+
+`Memory.Config.reranking = .builtIn(.msMarcoMiniLM)` (opt-in, off by default) rescores the
+top candidates with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
+behind the `MiniLMReranker` trait. Each frame is scored as its best 288-token window, and
+the reranker order is fused with the retrieval order by reciprocal rank (k = 10). Scores
+match PyTorch to 0.015 logits on the reference pairs.
+
+The runs are paired: the reranked run's pre-rerank order matched the base run on all 500
+LongMemEval queries. On LongMemEval, reranking the top 20 takes R_all@5 from 0.905 to
+0.938 (17 questions gained, 3 lost; sign test p = 0.003). On LoCoMo, reranking the top 50
+takes it from 0.555 to 0.609 (102 gained, 19 lost). It costs about 300 ms per LongMemEval
+query and 90 ms per LoCoMo query on the CPU (M3 Max, `--rerank-compute cpu`, prediction
+batch 8). Reproduce with `wax-bench retrieve ... --rerank minilm --rerank-candidates 20
+--rerank-fusion rrf:10`.
+
 ## LoCoMo retrieval
 
 Mem0's evaluation protocol (commit aae5989e), categories 1–4: 1,540 questions, of which
@@ -93,7 +110,8 @@ the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the
 
 | Retriever | R_all@5 | R_all@10 | R_all@30 |
 |---|---|---|---|
-| Wax hybrid, e5-small-v2, text weight 0.4 | **0.555** | **0.636** | **0.744** |
+| Wax hybrid, e5-small-v2, text weight 0.4, MiniLM reranker (top 50, RRF k=10) | **0.609** | **0.686** | **0.767** |
+| Wax hybrid, e5-small-v2, text weight 0.4 | 0.555 | 0.636 | 0.744 |
 | Wax hybrid, e5-small-v2 | 0.545 | 0.623 | 0.734 |
 | Wax hybrid, Arctic | 0.537 | 0.618 | 0.725 |
 | Wax vector, e5-small-v2 | 0.528 | 0.612 | 0.726 |
