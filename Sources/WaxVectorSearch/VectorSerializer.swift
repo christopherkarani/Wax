@@ -129,9 +129,10 @@ package enum VectorSerializer {
             }
 
             // Offsets below are relative to data.startIndex (data may be a slice).
+            // Lengths come from untrusted bytes: compare them with the bytes remaining
+            // before adding them to an offset, so a crafted header cannot overflow Int.
             var offset = VecSegmentHeaderV1.encodedSize
-            let frameIdLengthOffset = offset + vectorLength
-            guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
+            guard vectorLength <= data.count - offset - MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
@@ -149,9 +150,10 @@ package enum VectorSerializer {
             guard frameIdLength == expectedFrameIdBytes else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }
-            let expectedTotal = offset + Int(frameIdLength)
-            guard data.count == expectedTotal else {
-                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
+            guard Int(frameIdLength) == data.count - offset else {
+                throw WaxError.invalidToc(
+                    reason: "vec segment length mismatch: expected \(frameIdLength) frameId bytes, got \(data.count - offset)"
+                )
             }
 
             var vectors: [Float] = copyUnaligned(

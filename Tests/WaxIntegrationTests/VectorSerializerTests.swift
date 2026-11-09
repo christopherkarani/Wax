@@ -114,6 +114,33 @@ import WaxCore
     }
 }
 
+@Test func flatSegmentDecodeRejectsPayloadLengthPastEndWithoutOverflow() throws {
+    // 4 * (2^61 - 1) = 2^63 - 4 fits in Int, but header size + payload length does not.
+    let vectorCount: UInt64 = (1 << 61) - 1
+    let data = buildFlatHeaderOnlySegment(
+        dimension: 1,
+        vectorCount: vectorCount,
+        payloadLength: vectorCount * 4
+    )
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
+@Test func flatSegmentDecodeRejectsFrameIdLengthPastEndWithoutOverflow() throws {
+    // Zero-width vectors with 8 * (2^60 - 1) = 2^63 - 8 frameId bytes: the frameId length
+    // matches the header, but offset + frameId length does not fit in Int.
+    let vectorCount: UInt64 = (1 << 60) - 1
+    var data = buildFlatHeaderOnlySegment(dimension: 0, vectorCount: vectorCount, payloadLength: 0)
+    var frameIdLength = (vectorCount * 8).littleEndian
+    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
+
+    #expect(throws: WaxError.self) {
+        _ = try VectorSerializer.decodeVecSegment(from: data)
+    }
+}
+
 @Test func flatVectorSerializationRejectsDuplicateFrameIds() throws {
     #expect(throws: WaxError.self) {
         _ = try VectorSerializer.serializeFlatVectors(
