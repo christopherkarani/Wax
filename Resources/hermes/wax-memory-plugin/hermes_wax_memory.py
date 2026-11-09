@@ -111,6 +111,20 @@ def _truthy(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Broker codes for a session_id that can no longer be written to (same set the
+# MCP server treats as a stale binding in WaxMCPTools.shouldRetryInactiveBinding).
+_SESSION_GONE_CODES = {"session_ended", "session_unknown", "session_not_live"}
+
+
+def _failure_code(text: Any) -> str:
+    try:
+        payload = json.loads(text) if text else {}
+    except (TypeError, ValueError):
+        return ""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    return code if isinstance(code, str) else ""
+
+
 def _yaml_section_scalars(text: str, section: str) -> Dict[str, Any]:
     """Read scalar keys under a top-level YAML mapping such as ``wax_memory:``."""
     values: Dict[str, Any] = {}
@@ -866,13 +880,21 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _sync() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax sync_turn failed: %s", exc)
+            self._spawn(lambda: self._remember_in_background("sync_turn", arguments))
 
-            self._spawn(_sync)
+    def _remember_in_background(self, hook: str, arguments: Dict[str, Any]) -> None:
+        try:
+            result = self._client.call_tool("remember", arguments)
+        except Exception as exc:
+            logger.warning("Wax %s remember failed: %s", hook, exc)
+            return
+        if result.get("ok"):
+            return
+        # Log only the broker's failure code: the error text may echo memory content.
+        code = _failure_code(result.get("text"))
+        logger.warning("Wax %s remember failed: code=%s", hook, code or "unknown")
+        if code in _SESSION_GONE_CODES:
+            self._lifecycle.invalidate_session(arguments.get("session_id"))
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         names = set(CORE_TOOL_NAMES)
@@ -987,13 +1009,7 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _write() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax on_delegation failed: %s", exc)
-
-            self._spawn(_write)
+            self._spawn(lambda: self._remember_in_background("on_delegation", arguments))
 
     def on_memory_write(
         self,
@@ -1024,13 +1040,7 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _write() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax on_memory_write failed: %s", exc)
-
-            self._spawn(_write)
+            self._spawn(lambda: self._remember_in_background("on_memory_write", arguments))
 
     def backup_paths(self) -> List[str]:
         candidates = [
