@@ -66,22 +66,24 @@ extension Wax {
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
 
-        let payloadOffset = dataEnd
-        let entry = WALEntry.putFrame(
-            PutFrame(
-                frameId: frameId,
-                timestampMs: timestampMs ?? currentTimestampMs(),
-                options: options,
-                payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
-                canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
-                canonicalChecksum: canonicalChecksum,
-                storedChecksum: storedChecksum
-            )
+        var putFrame = PutFrame(
+            frameId: frameId,
+            timestampMs: timestampMs ?? currentTimestampMs(),
+            options: options,
+            payloadOffset: 0,
+            payloadLength: UInt64(storedBytes.count),
+            canonicalEncoding: canonicalEncoding,
+            canonicalLength: UInt64(content.count),
+            canonicalChecksum: canonicalChecksum,
+            storedChecksum: storedChecksum
         )
+        let walPayloadSize = try WALEntryCodec.encode(.putFrame(putFrame)).count
+        // May auto-commit, which writes indexes, TOC and footer at `dataEnd` and moves it.
+        try await ensureWalCapacityLocked(payloadSize: walPayloadSize)
+        let payloadOffset = dataEnd
+        putFrame.payloadOffset = payloadOffset
+        let entry = WALEntry.putFrame(putFrame)
         let payload = try WALEntryCodec.encode(entry)
-        try await ensureWalCapacityLocked(payloadSize: payload.count)
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
