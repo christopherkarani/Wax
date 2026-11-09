@@ -126,6 +126,16 @@ package actor TokenCounter {
         tokenizer.decode(tokens)
     }
 
+    /// The first index at or after `index` where a cut in `tokens` falls on a Unicode scalar
+    /// boundary; `tokens.count` when there is none.
+    package func scalarBoundary(atOrAfter index: Int, in tokens: [UInt32]) -> Int {
+        var boundary = index
+        while boundary < tokens.count, tokenizer.beginsInsideScalar(tokens[boundary]) {
+            boundary += 1
+        }
+        return boundary
+    }
+
     // MARK: - Batch Operations (Optimized)
 
     /// Thread-safe encoding using nonisolated access to the tokenizer.

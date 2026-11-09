@@ -38,10 +38,10 @@ package enum TextChunker {
             return [text]
         }
 
-        let ranges = tokenCountChunkRanges(
-            tokenCount: tokens.count,
-            targetTokens: cappedTarget,
-            overlapTokens: cappedOverlap
+        let ranges = await scalarAligned(
+            tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
+            in: tokens,
+            counter: counter
         )
         var chunks: [String] = []
         chunks.reserveCapacity(ranges.count)
@@ -88,10 +88,10 @@ package enum TextChunker {
                     return
                 }
 
-                let ranges = tokenCountChunkRanges(
-                    tokenCount: tokens.count,
-                    targetTokens: cappedTarget,
-                    overlapTokens: cappedOverlap
+                let ranges = await scalarAligned(
+                    tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
+                    in: tokens,
+                    counter: counter
                 )
 
                 for range in ranges {
@@ -109,7 +109,7 @@ package enum TextChunker {
     /// Re-splits every chunk whose `inputTokenCount` exceeds `limit` until each piece fits, so an
     /// embedder that truncates its input at `limit` tokens still sees all of the text. Pieces of a
     /// split chunk do not overlap; they concatenate back to that chunk. A chunk that cannot be
-    /// split further (a single cl100k token) is kept as is.
+    /// split further (a single cl100k token or character) is kept as is.
     package static func fit(
         _ chunks: [String],
         inputTokenLimit limit: Int,
@@ -128,7 +128,16 @@ package enum TextChunker {
             }
             // Size pieces by the observed token ratio; every piece is strictly shorter, so this ends.
             let target = max(1, min(tokens.count - 1, tokens.count * limit / count))
-            let ranges = tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: target, overlapTokens: 0)
+            let ranges = await scalarAligned(
+                tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: target, overlapTokens: 0),
+                in: tokens,
+                counter: counter
+            )
+            // One multi-token character has no inner scalar boundary to cut at.
+            guard ranges.count > 1 else {
+                fitted.append(chunk)
+                continue
+            }
             var pieces: [String] = []
             for range in ranges {
                 pieces.append(await counter.decode(Array(tokens[range])))
@@ -137,6 +146,27 @@ package enum TextChunker {
         }
         let nonEmpty = fitted.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return nonEmpty.isEmpty ? chunks : nonEmpty
+    }
+
+    /// Moves each range bound forward to the next token that starts a Unicode scalar, so no
+    /// piece begins or ends inside a multi-byte character (byte-level BPE splits CJK and emoji
+    /// across tokens). Bounds already on scalar boundaries do not move, adjacent ranges stay
+    /// adjacent, and ranges that collapse or repeat the previous one are dropped.
+    private static func scalarAligned(
+        _ ranges: [Range<Int>],
+        in tokens: [UInt32],
+        counter: TokenCounter
+    ) async -> [Range<Int>] {
+        var aligned: [Range<Int>] = []
+        aligned.reserveCapacity(ranges.count)
+        for range in ranges {
+            let start = await counter.scalarBoundary(atOrAfter: range.lowerBound, in: tokens)
+            let end = await counter.scalarBoundary(atOrAfter: range.upperBound, in: tokens)
+            if start < end, aligned.last != start..<end {
+                aligned.append(start..<end)
+            }
+        }
+        return aligned
     }
 
     private static func tokenCountChunkRanges(

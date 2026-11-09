@@ -98,6 +98,13 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// `true` when `token`'s bytes start with a UTF-8 continuation byte, so a cut just before
+    /// it would split a multi-byte scalar.
+    package func beginsInsideScalar(_ token: UInt32) -> Bool {
+        guard let first = decoder[token]?.first else { return false }
+        return first & 0b1100_0000 == 0b1000_0000
+    }
+
     /// Length (0...3) of a trailing UTF-8 sequence whose lead byte promises
     /// more continuation bytes than are present.
     static func incompleteUTF8SuffixLength(_ data: Data) -> Int {
