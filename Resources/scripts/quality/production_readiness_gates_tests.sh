@@ -124,6 +124,10 @@ assert_accepts_expected_skip \
   'Suite E5EmbedderTests skipped: "Set WAX_TEST_E5=1 to run e5 embedder tests"'
 
 assert_accepts_expected_skip \
+  "reranker-env-gated" \
+  'Suite MiniLMRerankerInferenceTests skipped: "Set WAX_TEST_RERANKER=1 to run MiniLM reranker inference tests"'
+
+assert_accepts_expected_skip \
   "minilm-env-gated" \
   'Test miniLMEmbedderProducesExpectedDimensions() skipped: "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"'
 
