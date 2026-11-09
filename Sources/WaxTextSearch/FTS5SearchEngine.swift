@@ -50,6 +50,12 @@ package actor FTS5SearchEngine {
     var writersWaiting = 0
     var fanOutReadersWaiting = 0
     var duringFanOutReadForTesting: (@Sendable () async -> Void)?
+    /// Holds on `search` (FTS5SearchEngine+SearchHold.swift): searches wait while any is
+    /// held, and a hold waits for the searches already running.
+    var searchHolds = 0
+    var searchesInFlight = 0
+    var searchHoldReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    var searchDrainWaiters: [CheckedContinuation<Void, Never>] = []
     /// Inactive frames whose postings this engine deleted and has not indexed since. Deleted
     /// and superseded frames stay inactive, so `removeInactiveFrames` skips them.
     private var removedInactiveFrameIds: Set<Int64> = []
@@ -222,6 +228,8 @@ package actor FTS5SearchEngine {
     }
 
     package func search(matchQuery: String, topK: Int) async throws -> [TextSearchResult] {
+        await beginSearch()
+        defer { endSearch() }
         try await flushPendingOpsIfNeeded()
         let trimmed = matchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }

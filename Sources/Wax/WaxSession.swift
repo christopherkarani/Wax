@@ -64,6 +64,12 @@ package actor WaxSession {
     private var writerLeaseId: UUID?
     private var isClosed = false
     private var commitCheckpointHook: (@Sendable (CommitCheckpoint) async -> Void)?
+    /// Runs in `commitFrameImport` once the text index is staged, before the store commit.
+    private var frameImportCommitHookForTesting: (@Sendable () async -> Void)?
+    /// Thrown instead of loading a committed import's vectors into the engine, once.
+    private var frameImportVectorLoadFaultForTesting: (any Error)?
+    /// `concreteVectorEngine` misses committed vectors: a frame import's failed to load.
+    private var vectorEngineNeedsReload = false
 
     /// Points inside `stage` and `commit` where a test can interleave concurrent writes.
     package enum CommitCheckpoint: Sendable, Equatable {
@@ -493,15 +499,56 @@ package actor WaxSession {
     /// stages the text index and, when `hasVectors`, the vector index configuration, commits,
     /// then adds the committed vectors to the vector engine. If a step throws, `texts` leave
     /// the text index again and the import stays open for the caller to abandon.
+    ///
+    /// Text searches wait from the indexing to the end of the store commit, so none ranks a
+    /// frame readers cannot see yet. If loading the vectors into the engine fails after the
+    /// commit, the next vector search reloads the engine from the store.
     package func commitFrameImport(
         texts: [(frameId: UInt64, text: String)],
         hasVectors: Bool,
         memoryBinding: MemoryBinding?
     ) async throws {
         try ensureWritable()
+        await textEngine?.holdSearches()
+        let embeddings: [PutEmbedding]
+        do {
+            embeddings = try await commitFrameImportHoldingSearches(
+                texts: texts,
+                hasVectors: hasVectors,
+                memoryBinding: memoryBinding
+            )
+        } catch {
+            await textEngine?.releaseSearches()
+            throw error
+        }
+        await textEngine?.releaseSearches()
+        guard !embeddings.isEmpty, let concreteVectorEngine else { return }
+        do {
+            if let fault = frameImportVectorLoadFaultForTesting {
+                frameImportVectorLoadFaultForTesting = nil
+                throw fault
+            }
+            try await concreteVectorEngine.addBatch(
+                frameIds: embeddings.map(\.frameId),
+                vectors: embeddings.map(\.vector)
+            )
+        } catch {
+            vectorEngineNeedsReload = true
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "frame import vector engine load",
+                fallback: "the next vector search reloads the engine from the committed vectors"
+            )
+        }
+    }
+
+    private func commitFrameImportHoldingSearches(
+        texts: [(frameId: UInt64, text: String)],
+        hasVectors: Bool,
+        memoryBinding: MemoryBinding?
+    ) async throws -> [PutEmbedding] {
         let indexesTexts = config.enableTextSearch && !texts.isEmpty
         let coverage = await textEngine?.coverageWatermark()
-        let embeddings: [PutEmbedding]
         do {
             if indexesTexts, let textEngine {
                 try await textEngine.indexBatch(frameIds: texts.map(\.frameId), texts: texts.map(\.text))
@@ -513,7 +560,8 @@ package actor WaxSession {
                 }
                 try await concreteVectorEngine.stageForCommit(into: wax)
             }
-            embeddings = try await wax.commitFrameImport(memoryBinding: memoryBinding)
+            await frameImportCommitHookForTesting?()
+            return try await wax.commitFrameImport(memoryBinding: memoryBinding)
         } catch {
             if let textEngine {
                 if indexesTexts {
@@ -525,19 +573,14 @@ package actor WaxSession {
             }
             throw error
         }
-        guard !embeddings.isEmpty, let concreteVectorEngine else { return }
-        do {
-            try await concreteVectorEngine.addBatch(
-                frameIds: embeddings.map(\.frameId),
-                vectors: embeddings.map(\.vector)
-            )
-        } catch {
-            WaxDiagnostics.logSwallowed(
-                error,
-                context: "frame import vector engine load",
-                fallback: "the committed vectors load into the engine on the next open"
-            )
-        }
+    }
+
+    package func setFrameImportCommitHookForTesting(_ hook: (@Sendable () async -> Void)?) {
+        frameImportCommitHookForTesting = hook
+    }
+
+    package func failNextFrameImportVectorLoadForTesting(_ error: any Error) {
+        frameImportVectorLoadFaultForTesting = error
     }
 
     private static func unindex(_ frameIds: [UInt64], from textEngine: FTS5SearchEngine) async {
@@ -644,6 +687,10 @@ package actor WaxSession {
             break
         }
 
+        if vectorEngineNeedsReload {
+            return try await reloadVectorEngine(concreteVectorEngine)
+        }
+
         guard case .readWrite = mode else {
             return concreteVectorEngine
         }
@@ -654,6 +701,20 @@ package actor WaxSession {
             watermark: lastPendingEmbeddingSequence
         )
         return concreteVectorEngine
+    }
+
+    /// Replaces `stale` with an engine loaded from the store's committed and pending vectors.
+    private func reloadVectorEngine(_ stale: ConcreteVectorEngine) async throws -> ConcreteVectorEngine {
+        let reloaded = try await Self.loadVectorEngine(
+            wax: wax,
+            metric: vectorEngineMetric,
+            dimensions: stale.erased.dimensions,
+            preference: config.vectorEnginePreference
+        )
+        concreteVectorEngine = reloaded
+        lastPendingEmbeddingSequence = await wax.pendingEmbeddingMutations(since: nil).latestSequence
+        vectorEngineNeedsReload = false
+        return reloaded
     }
 
     private static func resolveVectorDimensions(for wax: Wax, config: Config) async throws -> Int? {
