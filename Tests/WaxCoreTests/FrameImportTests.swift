@@ -224,3 +224,181 @@ private func importRange(_ range: Range<Int>, into wax: Wax) async throws -> [UI
         try await wax.close()
     }
 }
+
+private func noisePayload(_ seed: Int, byteCount: Int = 4_096) -> Data {
+    var state = UInt64(truncatingIfNeeded: seed) &* 0x9E37_79B9_7F4A_7C15 | 1
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(byteCount)
+    for _ in 0..<byteCount {
+        state ^= state << 13
+        state ^= state >> 7
+        state ^= state << 17
+        bytes.append(UInt8(truncatingIfNeeded: state))
+    }
+    return Data(bytes)
+}
+
+private func freeBytes(_ wax: Wax) async -> UInt64 {
+    await wax.freeDataRangesForTesting().reduce(UInt64(0)) { (total: UInt64, range: Range<UInt64>) -> UInt64 in
+        total + UInt64(range.count)
+    }
+}
+
+@Test func failedPayloadWriteReleasesTheSpaceItAllocated() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await seededStore(url)
+        #expect(try await wax.beginFrameImport())
+        _ = try await importRange(0..<10, into: wax)
+        let freeBefore = await freeBytes(wax)
+
+        await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [.eio]))
+        await #expect(throws: (any Error).self) {
+            _ = try await wax.importFrames((10..<210).map(importPayload), options: importOptions(10..<210))
+        }
+        await wax.installFileFaultPlanForTesting(nil)
+
+        #expect(await freeBytes(wax) >= freeBefore + 200 * 300, "the failed batch's space is free again")
+        #expect(await wax.frameImportPayloadRangesForTesting().count == 1)
+
+        // The import goes on from where it was.
+        let ids = try await importRange(10..<20, into: wax)
+        #expect(ids == (11...20).map { UInt64($0) })
+        try await wax.commitFrameImport()
+        try await wax.close()
+        let reopened = try await Wax.open(at: url)
+        try await reopened.verify(deep: true)
+        #expect(await reopened.stats().frameCount == 21)
+        try await reopened.close()
+    }
+}
+
+/// How many `pwrite`s an import commit of `range` into a fresh seeded store makes before its
+/// header write, counted on a probe store.
+private func pwritesBeforeImportCommitHeader(_ range: Range<Int>) async throws -> Int {
+    try await TempFiles.withTempFile { probeURL in
+        let probe = try await seededStore(probeURL)
+        #expect(try await probe.beginFrameImport())
+        _ = try await importRange(range, into: probe)
+        await probe.installFileFaultPlanForTesting(FDFileFaultPlan(recordsOperations: true))
+        try await probe.commitFrameImport()
+        let operations = await probe.recordedFileOperationsForTesting()
+        await probe.installFileFaultPlanForTesting(nil)
+        try await probe.close()
+        let writes: [UInt64] = operations.compactMap { (operation: FDFileOperation) -> UInt64? in
+            if case .pwrite(let offset, _) = operation { return offset }
+            return nil
+        }
+        return try #require(writes.lastIndex { (offset: UInt64) -> Bool in offset < Constants.headerRegionSize })
+    }
+}
+
+@Test func importCommitFailingAfterItsFooterSyncedLeavesTheOutcomeToTheNextOpen() async throws {
+    let range = 0..<200
+    let writesBeforeHeader = try await pwritesBeforeImportCommitHeader(range)
+    try await TempFiles.withTempFile { url in
+        let wax = try await seededStore(url)
+        #expect(try await wax.beginFrameImport())
+        _ = try await importRange(range, into: wax)
+        let importedRanges = await wax.frameImportPayloadRangesForTesting()
+        #expect(!importedRanges.isEmpty)
+
+        // Every write up to the header goes through (a full-length "short" write is a plain
+        // write); the header write fails after the footer synced.
+        let faults: [FDFileWriteFault] = Array(repeating: .shortWrite(maxBytes: .max), count: writesBeforeHeader) + [.eio]
+        await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: faults))
+        await #expect(throws: (any Error).self) { try await wax.commitFrameImport() }
+        await wax.installFileFaultPlanForTesting(nil)
+        let freeBefore = await freeBytes(wax)
+        await wax.abandonFrameImport()
+
+        // A footer scan may recover the failed commit: its payloads stay reserved, and writes
+        // that would reuse its frame ids are refused until the store is reopened.
+        #expect(await freeBytes(wax) == freeBefore)
+        await #expect(throws: (any Error).self) {
+            _ = try await wax.put(noisePayload(0), options: FrameMetaSubset(role: .document))
+        }
+        await #expect(throws: (any Error).self) {
+            try await wax.putEmbedding(frameId: 0, vector: importVector(0))
+        }
+        await #expect(throws: (any Error).self) { try await wax.commit() }
+        #expect(await wax.frameMetas().count == 1, "reads still see the last commit")
+        let crashed = TempFiles.uniqueURL()
+        defer { try? FileManager.default.removeItem(at: crashed) }
+        try FileManager.default.copyItem(at: url, to: crashed)
+        try await wax.close()
+        #expect(try Data(contentsOf: url) == Data(contentsOf: crashed), "close wrote nothing")
+
+        let reopened = try await Wax.open(at: url)
+        try await reopened.verify(deep: true)
+        let frameCount = await reopened.stats().frameCount
+        #expect(frameCount == 1 || frameCount == UInt64(range.count + 1))
+        if frameCount > 1 {
+            #expect(try await reopened.frameContent(frameId: 1) == importPayload(0))
+            #expect(try await reopened.frameContent(frameId: UInt64(range.count)) == importPayload(range.count - 1))
+        }
+        let later = try await reopened.put(noisePayload(1), options: FrameMetaSubset(role: .document))
+        #expect(later == frameCount)
+        try await reopened.commit()
+        try await reopened.close()
+        let again = try await Wax.open(at: url)
+        try await again.verify(deep: true)
+        #expect(await again.stats().frameCount == frameCount + 1)
+        try await again.close()
+    }
+}
+
+@Test func memoryBindingWritesWaitForAnOpenFrameImport() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await seededStore(url)
+        #expect(try await wax.beginFrameImport())
+        _ = try await importRange(0..<5, into: wax)
+
+        let binding = MemoryBinding(embeddingProvider: "Test", embeddingModel: "Import", embeddingDimensions: 8)
+        let setBinding = Task { () async throws -> Void in
+            try await wax.setMemoryBindingIfMissing(binding)
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await wax.frameImportWaiterCountForTesting() < 1, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await wax.frameImportWaiterCountForTesting() == 1, "the binding write waits for the import")
+        #expect(await wax.memoryBinding() == nil)
+
+        try await wax.commitFrameImport()
+        try await setBinding.value
+        #expect(await wax.memoryBinding() == binding)
+        try await wax.commit()
+        try await wax.close()
+    }
+}
+
+@Test func frameImportRefusesABatchThatCannotFitTheCommit() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await seededStore(url)
+        #expect(try await wax.beginFrameImport())
+        _ = try await importRange(0..<10, into: wax)
+        let rangesBefore = await wax.frameImportPayloadRangesForTesting()
+
+        // Each frame's text alone is more than 15 bytes: 100 of them fit neither 1,000 bytes
+        // of text index nor a TOC with room for 1,000 bytes more.
+        await wax.setFrameImportLimitsForTesting(tocBytes: .max, lexBytes: 1_000)
+        await #expect(throws: (any Error).self) {
+            _ = try await wax.importFrames((10..<110).map(importPayload), options: importOptions(10..<110))
+        }
+        #expect(await wax.frameImportPayloadRangesForTesting() == rangesBefore, "nothing of the batch was written")
+
+        let tocBytes = await wax.frameImportTocBytesLowerBoundForTesting()
+        await wax.setFrameImportLimitsForTesting(tocBytes: tocBytes + 1_000, lexBytes: .max)
+        await #expect(throws: (any Error).self) {
+            _ = try await wax.importFrames((10..<110).map(importPayload), options: importOptions(10..<110))
+        }
+        #expect(await wax.frameImportPayloadRangesForTesting() == rangesBefore)
+
+        await wax.setFrameImportLimitsForTesting(tocBytes: .max, lexBytes: .max)
+        let ids = try await importRange(10..<20, into: wax)
+        #expect(ids.first == 11)
+        try await wax.commitFrameImport()
+        #expect(await wax.stats().frameCount == 21)
+        try await wax.close()
+    }
+}

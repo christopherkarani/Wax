@@ -22,6 +22,20 @@ extension Wax {
         var embeddings: [PutEmbedding] = []
         /// Data-region ranges holding the imported payloads.
         var payloadRanges: [Range<UInt64>] = []
+        /// What the commit may grow to; `importFrames` refuses a batch that cannot fit.
+        var limits = Limits()
+        /// Bytes the imported frames add at least to the TOC, and to the text index blob.
+        var tocBytesLowerBound: UInt64 = 0
+        var lexBytesLowerBound: UInt64 = 0
+        /// Set by `commitLocked` before it writes the import's footer. A footer scan can then
+        /// recover that commit even if it fails, so an abandon keeps the payloads reserved and
+        /// leaves them to the next open.
+        var payloadsMayBeCommitted = false
+
+        struct Limits {
+            var tocBytes = Constants.maxTocBytes
+            var lexBytes = UInt64(Constants.maxBlobBytes)
+        }
 
         var nextFrameId: UInt64 { firstFrameId + UInt64(frames.count) }
     }
@@ -45,6 +59,7 @@ extension Wax {
         guard !contents.isEmpty else { return [] }
         return try await withWriteLock {
             guard var current = frameImport else { throw Self.noFrameImport }
+            try reserveCommitCapacityLocked(for: options, in: &current)
             let timestampMs = Int64(Date().timeIntervalSince1970 * 1000)
             let totalBytes = contents.reduce(UInt64(0)) { $0 + UInt64($1.count) }
             let startOffset = allocateDataLocked(length: totalBytes)
@@ -68,14 +83,20 @@ extension Wax {
             }
             if totalBytes > 0 {
                 let file = self.file
-                try await io.run {
-                    var offset = startOffset
-                    for content in contents {
-                        try file.writeAll(content, at: offset)
-                        offset += UInt64(content.count)
+                let range = startOffset..<(startOffset + totalBytes)
+                do {
+                    try await io.run {
+                        var offset = startOffset
+                        for content in contents {
+                            try file.writeAll(content, at: offset)
+                            offset += UInt64(content.count)
+                        }
                     }
+                } catch {
+                    dataSpace.free.release(range)
+                    throw error
                 }
-                current.payloadRanges.append(startOffset..<(startOffset + totalBytes))
+                current.payloadRanges.append(range)
             }
             current.frames += frames
             dirty = true
@@ -148,11 +169,20 @@ extension Wax {
 
     /// Drops the open import, if any, and the text index staged for it. Its payload ranges
     /// become free space again.
+    ///
+    /// Unless a failed commit of the import wrote its footer: a footer scan on the next open
+    /// can still recover that commit. Then the payloads stay reserved and this handle takes no
+    /// more writes (they throw), since they would reuse the import's frame ids; reads and
+    /// `close` still work, and reopening the store keeps or drops the commit.
     package func abandonFrameImport() async {
         await withWriteLock {
             guard let current = frameImport else { return }
-            for range in current.payloadRanges {
-                dataSpace.free.release(range)
+            if current.payloadsMayBeCommitted {
+                unresolvedImportCommit = true
+            } else {
+                for range in current.payloadRanges {
+                    dataSpace.free.release(range)
+                }
             }
             discardStagedLexIndexLocked()
             endFrameImportLocked()
@@ -167,6 +197,52 @@ extension Wax {
     /// Writes parked until the open import ends. Tests only.
     package func frameImportWaiterCountForTesting() -> Int {
         frameImportEndWaiters.count
+    }
+
+    /// Data-region ranges the open import wrote payloads to. Tests only.
+    func frameImportPayloadRangesForTesting() -> [Range<UInt64>] {
+        frameImport?.payloadRanges ?? []
+    }
+
+    /// The open import's lower bound on the TOC size its commit writes. Tests only.
+    func frameImportTocBytesLowerBoundForTesting() -> UInt64 {
+        committedFrameRecordBytesLocked + (frameImport?.tocBytesLowerBound ?? 0)
+    }
+
+    /// Lowers the size limits the open import checks each batch against. Tests only.
+    func setFrameImportLimitsForTesting(tocBytes: UInt64, lexBytes: UInt64) {
+        frameImport?.limits = FrameImport.Limits(tocBytes: tocBytes, lexBytes: lexBytes)
+    }
+
+    /// Refuses a batch whose frames cannot fit the import's commit, before anything of it is
+    /// written: the TOC must hold every frame record, and the text index blob every frame's
+    /// text. Both checks use sizes the encoded records and blob are at least.
+    private func reserveCommitCapacityLocked(for options: [FrameMetaSubset], in current: inout FrameImport) throws {
+        var tocBytes: UInt64 = 0
+        var lexBytes: UInt64 = 0
+        for option in options {
+            let textBytes = UInt64(option.searchText?.utf8.count ?? 0)
+            lexBytes += textBytes
+            tocBytes += textBytes
+            for (key, value) in option.metadata?.entries ?? [:] {
+                tocBytes += UInt64(key.utf8.count + value.utf8.count)
+            }
+        }
+        let lexTotal = current.lexBytesLowerBound + lexBytes
+        guard lexTotal <= current.limits.lexBytes else {
+            throw WaxError.capacityExceeded(limit: current.limits.lexBytes, requested: lexTotal)
+        }
+        let tocTotal = committedFrameRecordBytesLocked + current.tocBytesLowerBound + tocBytes
+        guard tocTotal <= current.limits.tocBytes else {
+            throw WaxError.capacityExceeded(limit: current.limits.tocBytes, requested: tocTotal)
+        }
+        current.lexBytesLowerBound = lexTotal
+        current.tocBytesLowerBound += tocBytes
+    }
+
+    /// Encoded size of the committed frame records, when the commit cache holds them.
+    private var committedFrameRecordBytesLocked: UInt64 {
+        UInt64(encodedCommittedFramePayloadCache?.count ?? 0)
     }
 
     private static var noFrameImport: WaxError {
