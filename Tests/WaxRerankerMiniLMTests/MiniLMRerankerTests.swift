@@ -73,7 +73,11 @@ struct CrossEncoderWindowingTests {
         let wide = CrossEncoderWindowing(maxLength: 8, stride: 50, maxQueryTokens: 1, maxWindowsPerDocument: 16)
         let rows = wide.windows(queryTokens: [7], documentTokens: [Array(0..<9)], clsToken: 101, sepToken: 102)
         // 8 - 1 - 3 = 4 tokens per window, no overlap.
-        #expect(rows.map { $0.inputIds.dropFirst(3).dropLast().map(Int.init) } == [[0, 1, 2, 3], [4, 5, 6, 7], [8]])
+        let documentTokens: [[Int]] = rows.map { (row: CrossEncoderWindow) -> [Int] in
+            row.inputIds.dropFirst(3).dropLast().map { Int($0) }
+        }
+        let expected: [[Int]] = [[0, 1, 2, 3], [4, 5, 6, 7], [8]]
+        #expect(documentTokens == expected)
     }
 
     @available(macOS 15.0, iOS 18.0, *)
