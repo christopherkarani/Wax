@@ -326,6 +326,28 @@ struct UnifiedRankingTests {
         #expect(ranked.first?.frameId == 1)
     }
 
+    @Test
+    func rerankersDoNotTrapOnMinimumCreatedAt() {
+        let extreme = noteResult(frameId: 1, createdAtMs: Int64.min)
+        let fresh = noteResult(frameId: 2, createdAtMs: Self.nowMs - Self.dayMs)
+
+        let semantic = UnifiedRanking.semanticMemoryRerank(
+            results: [extreme, fresh],
+            scopeContext: nil,
+            nowMs: Self.nowMs,
+            maxWindow: 10
+        )
+        #expect(semantic.map(\.frameId) == [2, 1])
+
+        let distinctive = UnifiedRanking.distinctiveTokenRerank(
+            results: [extreme, fresh],
+            query: "anything distinctive",
+            nowMs: Self.nowMs,
+            maxWindow: 10
+        )
+        #expect(distinctive.count == 2)
+    }
+
     private func textResult(frameId: UInt64, score: Float, preview: String) -> SearchResponse.Result {
         SearchResponse.Result(
             frameId: frameId,

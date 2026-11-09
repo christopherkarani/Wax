@@ -37,7 +37,8 @@ package struct MemoryRetentionSettings: Sendable, Equatable {
             guard let raw = environment[key], let seconds = Int64(raw) else {
                 return defaultMs
             }
-            return max(0, seconds) * 1000
+            let (ms, overflow) = max(0, seconds).multipliedReportingOverflow(by: 1000)
+            return overflow ? Int64.max : ms
         }
         let threshold = environment["WAX_KEEP_COLD_THRESHOLD"].flatMap(Float.init)
         return MemoryRetentionSettings(
@@ -159,7 +160,7 @@ package enum MemoryRetention {
             return true
         }
         guard let createdAtMs = info.createdAtMs else { return false }
-        let ageMs = max(0, nowMs - createdAtMs)
+        let ageMs = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs)
         guard ageMs > settings.coldMinAgeMs else { return false }
         let keep = keepScore(
             type: info.type,
@@ -210,7 +211,7 @@ package enum MemoryRetention {
             return true
         }
         guard let createdAtMs = info.createdAtMs else { return false }
-        let ageMs = max(0, nowMs - createdAtMs)
+        let ageMs = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs)
         if ageMs > settings.workingQuarantineMs,
            info.durability == .working || info.durability == .ephemeral {
             return true

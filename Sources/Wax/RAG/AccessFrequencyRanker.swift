@@ -125,7 +125,7 @@ package enum AccessFrequencyRanker {
         guard let stats else { return 0 }
         let rankingCount = stats.engagementCount
         let rankingLast = stats.lastEngagementMs > 0 ? stats.lastEngagementMs : stats.firstAccessMs
-        let hoursSinceAccess = Float(max(0, nowMs - rankingLast)) / (1000 * 60 * 60)
+        let hoursSinceAccess = Float(TimestampAge.elapsedMs(since: rankingLast, nowMs: nowMs)) / (1000 * 60 * 60)
         let frequency = min(
             1,
             log(Float(min(rankingCount, countSaturation)) + 1)

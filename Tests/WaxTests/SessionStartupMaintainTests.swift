@@ -249,6 +249,39 @@ struct SessionStartupMaintainTests {
             }
         }
     }
+
+    // Startup maintenance runs the quarantine scan over every stored document.
+    // A stored extreme `wax.created_at_ms` must not trap the broker on open.
+    @Test
+    func brokerInitSurvivesStoredMinimumCreatedAt() async throws {
+        try await withStartupGCRoots { storeURL, sessionRootURL in
+            try await withStartupBroker(storePath: storeURL.path, sessionRootPath: sessionRootURL.path) { service in
+                // Written straight to the store, as an older broker would have kept it.
+                _ = try await service.longTermMemory.remember(
+                    "Working note stored with a forged creation time.",
+                    metadata: [
+                        MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                        MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                        MemoryMetadataKeys.createdAtMs: String(Int64.min),
+                    ]
+                )
+                let remembered = await service.handle(.init(command: "remember", arguments: [
+                    "content": .string("Client note with a forged creation time."),
+                    "metadata": .object([MemoryMetadataKeys.createdAtMs: .string(String(Int64.min))]),
+                ]))
+                #expect(remembered.ok)
+                let documents = try await service.longTermMemory.corpusSourceDocuments()
+                let clientDocument = try #require(documents.first { $0.text.hasPrefix("Client note") })
+                let stamped = try #require(clientDocument.metadata[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init))
+                #expect(stamped > 0)
+            }
+
+            try await withStartupBroker(storePath: storeURL.path, sessionRootPath: sessionRootURL.path) { service in
+                let health = await service.handle(.init(command: "memory_health"))
+                #expect(health.ok)
+            }
+        }
+    }
 }
 
 func withStartupGCRoots(

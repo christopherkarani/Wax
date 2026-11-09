@@ -312,7 +312,7 @@ package enum BrokerMemoryInsights {
                 expired.append(document.frameId)
             }
             if let createdAtMs = info.createdAtMs {
-                let ageDays = max(0, nowMs - createdAtMs) / (1000 * 60 * 60 * 24)
+                let ageDays = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs) / (1000 * 60 * 60 * 24)
                 if ageDays > 30, info.durability == .working || info.durability == .ephemeral {
                     stale.append(document.frameId)
                 }

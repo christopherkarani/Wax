@@ -60,7 +60,7 @@ package struct SurrogateTierSelector: Sendable {
     }
     
     private func selectByAge(context: TierSelectionContext, thresholds: AgeThresholds) -> SurrogateTier {
-        let ageMs = context.nowMs - context.frameTimestamp
+        let ageMs = TimestampAge.elapsedMs(since: context.frameTimestamp, nowMs: context.nowMs)
         
         if ageMs < thresholds.recentMs {
             return .full
