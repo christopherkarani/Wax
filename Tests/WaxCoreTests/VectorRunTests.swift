@@ -356,7 +356,7 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
 
 // MARK: - Format version
 
-@Test func headerPagesAcceptFormatVersionOneAndTwoAndWriteTwo() throws {
+@Test func headerPagesAcceptFormatVersionsOneTwoAndThreeAndWriteThree() throws {
     var header = WaxHeaderPage(
         headerPageGeneration: 1,
         fileGeneration: 1,
@@ -368,9 +368,9 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
         walCommittedSeq: 0,
         tocChecksum: Data(repeating: 0, count: 32)
     )
-    #expect(Constants.specVersion == 0x0200)
+    #expect(Constants.specVersion == 0x0300)
     let current = try header.encodeWithChecksum()
-    #expect(try WaxHeaderPage.decodeWithChecksumValidation(from: current).formatVersion == 0x0200)
+    #expect(try WaxHeaderPage.decodeWithChecksumValidation(from: current).formatVersion == 0x0300)
 
     header.formatVersion = 0x0100
     header.specMajor = 1
@@ -378,18 +378,23 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
     let legacy = try header.encodeWithChecksum()
     #expect(try WaxHeaderPage.decodeWithChecksumValidation(from: legacy).formatVersion == 0x0100)
 
-    header.formatVersion = 0x0300
-    header.specMajor = 3
+    header.formatVersion = 0x0200
+    header.specMajor = 2
+    let vectorRuns = try header.encodeWithChecksum()
+    #expect(try WaxHeaderPage.decodeWithChecksumValidation(from: vectorRuns).formatVersion == 0x0200)
+
+    header.formatVersion = 0x0400
+    header.specMajor = 4
     #expect(throws: WaxError.self) {
         try WaxHeaderPage.decodeWithChecksumValidation(from: try header.encodeWithChecksum())
     }
 }
 
-@Test func aNewStoreWritesFormatVersionTwo() async throws {
+@Test func aNewStoreWritesFormatVersionThree() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
         try await wax.close()
-        #expect(try headerFormatVersions(url) == [0x0200, 0x0200])
+        #expect(try headerFormatVersions(url) == [0x0300, 0x0300])
     }
 }
 
@@ -437,8 +442,8 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
     #expect(try await committedMap(wax) == expected)
     #expect(try await wax.frameContent(frameId: 40) == Data("v1-frame-40".utf8))
     try await wax.close()
-    // Both header pages are v2 now, so a v1 build refuses the file.
-    #expect(try headerFormatVersions(url) == [0x0200, 0x0200])
+    // Both header pages are current now, so a v1 build refuses the file.
+    #expect(try headerFormatVersions(url) == [0x0300, 0x0300])
 
     let reopened = try await Wax.open(at: url)
     #expect(try await committedMap(reopened) == expected)
@@ -449,14 +454,14 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
 
 /// A 1.0 build cannot read a removal record in the WAL, so the first removal on a 1.0 file
 /// rewrites both header pages first, before any commit.
-@Test func theFirstRemovalOnAV1StoreMakesBothHeaderPagesV2BeforeItIsLogged() async throws {
+@Test func theFirstRemovalOnAV1StoreMakesBothHeaderPagesCurrentBeforeItIsLogged() async throws {
     let url = try await copyMigrationFixture(named: "migration-v1-vectors")
     defer { try? FileManager.default.removeItem(at: url) }
 
     let wax = try await Wax.open(at: url)
     #expect(try headerFormatVersions(url) == [0x0100, 0x0100])
     try await wax.removeEmbedding(frameId: 3)
-    #expect(try headerFormatVersions(url) == [0x0200, 0x0200])
+    #expect(try headerFormatVersions(url) == [0x0300, 0x0300])
 
     // A crash here: the copy reopens with the removal pending and the v1 commit intact.
     let crashed = TempFiles.uniqueURL()

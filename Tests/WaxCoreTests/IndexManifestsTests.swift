@@ -5,10 +5,17 @@ import Testing
 @Test func indexManifestsRoundtrip() throws {
     let lex = LexIndexManifest(
         docCount: 10,
-        bytesOffset: 1000,
-        bytesLength: 2000,
-        checksum: Data(repeating: 0xAA, count: 32),
-        version: 1
+        version: 1,
+        pageSize: 4096,
+        runs: [
+            LexRunManifest(
+                bytesOffset: 1000,
+                bytesLength: 2000,
+                checksum: Data(repeating: 0xAA, count: 32),
+                addedGeneration: 1,
+                imageLength: 2000
+            ),
+        ]
     )
     let vec = VecIndexManifest(
         vectorCount: 42,

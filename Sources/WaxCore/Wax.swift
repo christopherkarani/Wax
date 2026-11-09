@@ -54,9 +54,20 @@ package actor Wax {
     /// Verified reads of the committed vector segment since open, for tests.
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var committedVecIndexReads: UInt64 = 0
-    private var stagedLexIndex: StagedLexIndex?
-    private var stagedLexIndexStamp: UInt64?
-    private var stagedLexIndexStampCounter: UInt64
+    /// The lex run the next commit writes (Wax+LexRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var stagedLexIndex: StagedLexIndex?
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var stagedLexIndexStamp: UInt64?
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var stagedLexIndexStampCounter: UInt64
+    /// Page fingerprints of the committed lex image, computed when it is first read or staged
+    /// against and replaced by each durable commit that writes a lex run (Wax+LexRuns.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var committedLexFingerprints: LexPageFingerprints?
+    /// Seed of this handle's page fingerprints (Wax+LexRuns.swift).
+    /// Internal only because of the file split; immutable after init.
+    let lexFingerprintSeed = UInt64.random(in: UInt64.min...UInt64.max)
     /// Dimension and similarity for the first commit that writes vectors (Wax+VectorRuns.swift).
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var vectorConfiguration: VectorIndexConfiguration?
@@ -300,56 +311,6 @@ package actor Wax {
         await embeddingWriteGate.waiterCount
     }
 
-    package func stageLexIndexForNextCommit(bytes: Data, docCount: UInt64, version: UInt32 = 1) async throws {
-        try await withWriteLock {
-            guard version == 1 else {
-                throw WaxError.invalidToc(reason: "unsupported lex index version \(version)")
-            }
-            guard !bytes.isEmpty else {
-                throw WaxError.io("lex index bytes must be non-empty (expected sqlite3_serialize output)")
-            }
-            let byteCount = bytes.count
-            guard byteCount <= Constants.maxBlobBytes else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxBlobBytes),
-                    requested: UInt64(byteCount)
-                )
-            }
-
-            let checksum = SHA256Checksum.digest(bytes)
-            let bytesLength = UInt64(byteCount)
-
-            if let stagedLexIndex {
-                if stagedLexIndex.docCount == docCount,
-                   stagedLexIndex.version == version,
-                   UInt64(stagedLexIndex.bytes.count) == bytesLength,
-                   stagedLexIndex.checksum == checksum {
-                    return
-                }
-            }
-
-            if let committed = toc.indexes.lex,
-               committed.docCount == docCount,
-               committed.version == version,
-               committed.bytesLength == bytesLength,
-               committed.checksum == checksum {
-                stagedLexIndex = nil
-                stagedLexIndexStamp = nil
-                return
-            }
-
-            stagedLexIndex = StagedLexIndex(
-                bytes: bytes,
-                docCount: docCount,
-                version: version,
-                checksum: checksum
-            )
-            stagedLexIndexStampCounter &+= 1
-            stagedLexIndexStamp = stagedLexIndexStampCounter
-            dirty = true
-        }
-    }
-
     package func commit() async throws {
         try await withWriteLock {
             try await commitLocked()
@@ -380,46 +341,14 @@ package actor Wax {
         )
 
         let file = self.file
-        var supersededRanges: [Range<UInt64>] = []
-        if let staged = stagedLexIndex {
-            let byteCount = staged.bytes.count
-            guard byteCount <= Constants.maxBlobBytes else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxBlobBytes),
-                    requested: UInt64(byteCount)
-                )
-            }
-            let lexLength = UInt64(byteCount)
-            let lexOffset = allocateDataLocked(length: lexLength)
-            try await io.run {
-                try file.writeAll(staged.bytes, at: lexOffset)
-            }
-
-            toc.indexes.lex = LexIndexManifest(
-                docCount: staged.docCount,
-                bytesOffset: lexOffset,
-                bytesLength: lexLength,
-                checksum: staged.checksum,
-                version: staged.version
-            )
-            let segmentId = nextSegmentId()
-            supersededRanges += removeSupersededSegmentsLocked(kind: .lex)
-            let entry = SegmentCatalogEntry(
-                segmentId: segmentId,
-                bytesOffset: lexOffset,
-                bytesLength: lexLength,
-                checksum: staged.checksum,
-                compression: .none,
-                kind: .lex
-            )
-            toc.segmentCatalog.entries.append(entry)
-        }
-
         let footerGeneration = try nextFooterGenerationLocked()
+        let lexRuns = try await writeLexRunsLocked(generation: footerGeneration)
+        var supersededRanges = lexRuns.supersededRanges
+        supersededRanges += removeUnreferencedLexSegmentsLocked()
         let vectorRuns = try await writeVectorRunsLocked(applied.vectorChanges, generation: footerGeneration)
         supersededRanges += vectorRuns.supersededRanges
         supersededRanges += removeUnreferencedVecSegmentsLocked()
-        if vectorRuns.liveFrameIds != nil {
+        if vectorRuns.liveFrameIds != nil || lexRuns.fingerprints != nil {
             Self.maybeCrashAfterCheckpoint(.afterVectorRunWriteBeforeToc)
         }
 
@@ -508,6 +437,9 @@ package actor Wax {
         legacyHeaderPageOnDisk = false
         if let liveFrameIds = vectorRuns.liveFrameIds {
             committedVectorKeys = liveFrameIds
+        }
+        if let fingerprints = lexRuns.fingerprints {
+            committedLexFingerprints = fingerprints
         }
         surrogateIndex = nil
         dirty = false
@@ -602,12 +534,6 @@ package actor Wax {
             wax.stagedLexIndexStampCounter = stagedLexIndexStampCounter
             wax.generation = generation
             wax.dirty = dirty
-        }
-    }
-
-    package func readStagedLexIndexBytes() async -> Data? {
-        await withReadLock {
-            stagedLexIndex?.bytes
         }
     }
 

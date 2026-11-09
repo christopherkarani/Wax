@@ -615,10 +615,10 @@ extension Wax {
     /// The newest of `candidates` (by ``newerFooter(_:_:headerFooterOffset:)``) whose commit is
     /// whole, with its TOC. A header page is written only after its commit is synced, so the
     /// commit it names is whole. A footer only a scan or a replay snapshot found may have been
-    /// synced while the vector runs its commit wrote were not, so it counts only when those runs
-    /// (`addedGeneration` equal to its generation) match their checksums; otherwise the next
-    /// newest candidate is taken, and that commit's WAL records replay as pending. Runs of
-    /// older generations were synced by their own commits.
+    /// synced while the vector and lex runs its commit wrote were not, so it counts only when
+    /// those runs (`addedGeneration` equal to its generation) match their checksums; otherwise
+    /// the next newest candidate is taken, and that commit's WAL records replay as pending. Runs
+    /// of older generations were synced by their own commits.
     /// Internal only because of the file split; call from `open` and `verify` only.
     static func newestWholeCommit(
         _ candidates: [FooterSlice],
@@ -634,7 +634,7 @@ extension Wax {
             let toc = try WaxTOC.decode(from: newest)
             let namedByHeader = newest.footerOffset == headerFooterOffset
                 && newest.footer.generation == headerGeneration
-            if namedByHeader || vectorRunsWritten(by: newest.footer.generation, in: toc, file: file) {
+            if namedByHeader || indexRunsWritten(by: newest.footer.generation, in: toc, file: file) {
                 return (newest, toc)
             }
             remaining.removeAll { $0.footerOffset == newest.footerOffset }
@@ -642,12 +642,18 @@ extension Wax {
         throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
     }
 
-    /// Whether every run `generation` wrote matches its checksum.
-    private static func vectorRunsWritten(by generation: UInt64, in toc: WaxTOC, file: FDFile) -> Bool {
-        guard let runs = toc.indexes.vec?.runs else { return true }
-        for run in runs where run.addedGeneration == generation {
-            guard run.bytesLength <= UInt64(Int.max),
-                  let bytes = try? file.readExactly(length: Int(run.bytesLength), at: run.bytesOffset),
+    /// Whether every vector and lex run `generation` wrote matches its checksum.
+    private static func indexRunsWritten(by generation: UInt64, in toc: WaxTOC, file: FDFile) -> Bool {
+        var written: [(offset: UInt64, length: UInt64, checksum: Data)] = []
+        for run in toc.indexes.vec?.runs ?? [] where run.addedGeneration == generation {
+            written.append((run.bytesOffset, run.bytesLength, run.checksum))
+        }
+        for run in toc.indexes.lex?.runs ?? [] where run.addedGeneration == generation {
+            written.append((run.bytesOffset, run.bytesLength, run.checksum))
+        }
+        for run in written {
+            guard run.length <= UInt64(Int.max),
+                  let bytes = try? file.readExactly(length: Int(run.length), at: run.offset),
                   SHA256Checksum.digest(bytes) == run.checksum
             else { return false }
         }

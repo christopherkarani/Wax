@@ -140,6 +140,15 @@ extension Wax {
                     await Task.yield()
                 }
             }
+
+            // Each run's checksum is checked above; rebuilding the image also checks that the
+            // deltas decode and fit the base and each other.
+            if let lex = toc.indexes.lex {
+                let dataEnd = footerSlice.footerOffset
+                _ = try await io.run {
+                    try Self.reconstructLexImage(lex, file: file, dataStart: dataStart, dataEnd: dataEnd)
+                }
+            }
         }
     }
 
@@ -286,13 +295,30 @@ extension Wax {
         timeIndex: TimeIndexManifest?
     ) throws {
         if let lex = indexes.lex {
-            guard segmentCatalog.entries.contains(where: { entry in
-                entry.kind == .lex
-                    && entry.bytesOffset == lex.bytesOffset
-                    && entry.bytesLength == lex.bytesLength
-                    && entry.checksum == lex.checksum
-            }) else {
-                throw WaxError.invalidToc(reason: "lex index manifest missing matching segment catalog entry")
+            for run in lex.runs {
+                guard segmentCatalog.entries.contains(where: { entry in
+                    entry.kind == .lex
+                        && entry.bytesOffset == run.bytesOffset
+                        && entry.bytesLength == run.bytesLength
+                        && entry.checksum == run.checksum
+                }) else {
+                    throw WaxError.invalidToc(reason: "lex index manifest missing matching segment catalog entry")
+                }
+            }
+            guard let base = lex.runs.first, base.imageLength == base.bytesLength else {
+                throw WaxError.invalidToc(reason: "lex base run length differs from its image length")
+            }
+            // An adopted v2 blob (no page size yet) may sit beside catalog entries a released
+            // build left; the first commit drops them.
+            let adoptedLegacyBlob = lex.runs.count == 1 && lex.pageSize == 0
+            guard adoptedLegacyBlob || segmentCatalog.entries.count(where: { $0.kind == .lex }) == lex.runs.count else {
+                throw WaxError.invalidToc(reason: "lex segment catalog entries do not match the lex runs")
+            }
+            if lex.runs.count > 1 {
+                let pageSize = Int(lex.pageSize)
+                guard LexRunCodec.pageSizes.contains(pageSize), pageSize & (pageSize - 1) == 0 else {
+                    throw WaxError.invalidToc(reason: "lex page size \(lex.pageSize) invalid")
+                }
             }
         }
         if let vec = indexes.vec {

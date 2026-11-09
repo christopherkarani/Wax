@@ -8,7 +8,8 @@ actor UnifiedSearchEngineCache {
 
     enum TextSourceKey: Hashable, Sendable {
         case empty
-        case committed(checksum: Data)
+        /// The checksums of the committed lex runs, which together name one image.
+        case committed(runChecksums: [Data])
         case staged(stamp: UInt64)
     }
 
@@ -75,11 +76,11 @@ actor UnifiedSearchEngineCache {
 
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
         if let stamp = await wax.stagedLexIndexStamp() {
-            let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
             if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }
+            let stagedBytes = try await wax.readStagedLexIndexBytes()
             guard let bytes = stagedBytes else {
                 let engine = try FTS5SearchEngine.inMemory()
                 storeText(CachedText(owner: wax, key: .empty, engine: engine), for: wax)
@@ -92,7 +93,7 @@ actor UnifiedSearchEngineCache {
         }
 
         if let manifest = await wax.committedLexIndexManifest() {
-            let key: TextSourceKey = .committed(checksum: manifest.checksum)
+            let key: TextSourceKey = .committed(runChecksums: manifest.runs.map(\.checksum))
             if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }

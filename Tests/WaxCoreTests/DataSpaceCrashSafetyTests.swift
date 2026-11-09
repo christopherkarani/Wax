@@ -597,3 +597,209 @@ func aFooterOnlyAScanFindsCountsOnlyWhenItsVectorRunsAreWhole(tornRun: Bool) asy
     #expect(try await committedVectorMap(fallback) == expectedVectors(0..<(runsBeforeMerge + 1)))
     try await fallback.close()
 }
+
+// MARK: - Lex runs
+
+// A commit writes the lex pages changed since the last commit as a run in free space, with the
+// same rules as vector runs: a footer a scan finds counts only when its lex runs are whole, and
+// runs a fresh base replaced stay intact until a header page names the replacing commit.
+
+private let lexPageSize = 4096
+
+/// A lex image of `pages` pages; page `index` holds bytes derived from `index` and `versions[index]`.
+private func lexImage(pages: Int, versions: [Int: Int] = [:]) -> Data {
+    var data = Data()
+    data.reserveCapacity(pages * lexPageSize)
+    for index in 0..<pages {
+        let version = versions[index] ?? 0
+        data.append(contentsOf: (0..<lexPageSize).map { (offset: Int) -> UInt8 in
+            UInt8(truncatingIfNeeded: index &* 31 &+ offset &* 7 &+ version &* 101)
+        })
+    }
+    return data
+}
+
+/// The lex runs the durable commit wrote.
+private func lexRunsOfTheLastCommit(_ wax: Wax) async throws -> [LexRunManifest] {
+    let generation = await wax.stats().generation
+    let manifest = try #require(await wax.committedLexIndexManifest())
+    return manifest.runs.filter { $0.addedGeneration == generation }
+}
+
+private func flipByte(in run: LexRunManifest, of url: URL) throws {
+    let file = try FDFile.open(at: url)
+    defer { try? file.close() }
+    let offset = run.bytesOffset + run.bytesLength / 2
+    var byte = try file.readExactly(length: 1, at: offset)
+    byte[0] ^= 0xFF
+    try file.writeAll(byte, at: offset)
+    try file.fsync()
+}
+
+/// G2's footer synced but its header write was lost, so only a footer scan finds G2. When the
+/// lex delta G2 wrote is torn, open falls back to G1 and its lex image.
+@Test(arguments: [false, true])
+func aFooterOnlyAScanFindsCountsOnlyWhenItsLexRunsAreWhole(tornRun: Bool) async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let g1Image = lexImage(pages: 32)
+    let g2Image = lexImage(pages: 33, versions: [4: 1])
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: g1Image, docCount: 20)
+    try await wax.commit()
+    try await wax.close()
+    let headersAtG1 = try headerPages(url)
+
+    let second = try await Wax.open(at: url)
+    try await putFrames(second, 20..<30)
+    try await second.stageLexIndexForNextCommit(bytes: g2Image, docCount: 30)
+    try await second.commit()
+    let g2Runs = try await lexRunsOfTheLastCommit(second)
+    try #require(g2Runs.count == 1)
+    #expect(try #require(await second.committedLexIndexManifest()).runs.count == 2, "G2 wrote a delta")
+    try await second.close()
+    try writeHeaderPages(headersAtG1, to: url)
+    if tornRun {
+        try flipByte(in: g2Runs[0], of: url)
+    }
+
+    let recovered = try await Wax.open(at: url)
+    if tornRun {
+        #expect(await recovered.stats().frameCount == 20, "the torn commit is passed over")
+        #expect(await recovered.stats().pendingFrames == 10)
+        #expect(try await recovered.readCommittedLexIndexBytes() == g1Image)
+        try await recovered.stageLexIndexForNextCommit(bytes: g2Image, docCount: 30)
+        try await recovered.commit()
+    } else {
+        #expect(await recovered.stats().frameCount == 30, "the scan recovers G2")
+    }
+    #expect(try await recovered.readCommittedLexIndexBytes() == g2Image)
+    try await recovered.verify(deep: true)
+    try await recovered.close()
+
+    let reopened = try await Wax.open(at: url)
+    #expect(try await reopened.readCommittedLexIndexBytes() == g2Image)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
+/// A commit that fails after writing its lex delta leaves the run unreferenced: the committed
+/// image stays as it was, the same session commits the staged image again, and a crash at that
+/// point recovers the previous commit.
+@Test func aCommitThatFailsAfterWritingItsLexRunLeavesTheCommittedImageIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    var copy: URL?
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        if let copy { try? FileManager.default.removeItem(at: copy) }
+    }
+    let g1Image = lexImage(pages: 32)
+    let g2Image = lexImage(pages: 32, versions: [7: 1, 8: 1])
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await putFrames(wax, 0..<10)
+    try await wax.stageLexIndexForNextCommit(bytes: g1Image, docCount: 10)
+    try await wax.commit()
+    let g1 = await wax.stats().generation
+    try await putFrames(wax, 10..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: g2Image, docCount: 20)
+
+    // The run write goes through; the TOC write after it fails.
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(pwrite: [.shortWrite(maxBytes: .max), .eio]))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    #expect(await wax.stats().generation == g1)
+    #expect(try await wax.readCommittedLexIndexBytes() == g1Image)
+    copy = try crashCopy(of: url)
+
+    try await wax.commit()
+    #expect(try await wax.readCommittedLexIndexBytes() == g2Image)
+    #expect(try #require(await wax.committedLexIndexManifest()).runs.count == 2)
+    try await wax.close()
+    let reopened = try await Wax.open(at: url)
+    #expect(try await reopened.readCommittedLexIndexBytes() == g2Image)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+
+    let crashed = try await Wax.open(at: try #require(copy))
+    #expect(await crashed.stats().generation == g1)
+    #expect(try await crashed.readCommittedLexIndexBytes() == g1Image)
+    try await crashed.verify(deep: true)
+    try await crashed.close()
+}
+
+/// A rebase commit whose header write fails after its footer synced: later writes in the
+/// session must land on neither the new base (a scan can select its commit) nor the runs it
+/// replaced (the header's commit still names them, and open falls back to that commit when
+/// the new base is torn).
+@Test func aLexRebaseWhoseHeaderWriteFailsKeepsTheRunsItReplacedIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    var copies: [URL] = []
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        for copy in copies { try? FileManager.default.removeItem(at: copy) }
+    }
+    let pages = 16
+    let headerImage = lexImage(pages: pages, versions: [1: 1])
+    // Every page changes, so the commit writes a fresh base.
+    let rebasedImage = lexImage(pages: pages, versions: Dictionary(uniqueKeysWithValues: (0..<pages).map { ($0, 2) }))
+
+    /// Commits a base and one delta, then stages the image whose commit rebases.
+    func prepare(_ wax: Wax) async throws {
+        try await putFrames(wax, 0..<2)
+        try await wax.stageLexIndexForNextCommit(bytes: lexImage(pages: pages), docCount: 2)
+        try await wax.commit()
+        try await putFrames(wax, 2..<4)
+        try await wax.stageLexIndexForNextCommit(bytes: headerImage, docCount: 4)
+        try await wax.commit()
+        try await putFrames(wax, 4..<6)
+        try await wax.stageLexIndexForNextCommit(bytes: rebasedImage, docCount: 6)
+    }
+
+    // Count the rebase commit's writes before its header on a store built the same way.
+    let probeURL = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: probeURL) }
+    let probe = try await Wax.create(at: probeURL, walSize: 256 * 1024)
+    try await prepare(probe)
+    #expect(try #require(await probe.committedLexIndexManifest()).runs.count == 2)
+    await probe.installFileFaultPlanForTesting(FDFileFaultPlan(recordsOperations: true))
+    try await probe.commit()
+    let writes = writesBeforeTheHeader(await probe.recordedFileOperationsForTesting())
+    #expect(try #require(await probe.committedLexIndexManifest()).runs.count == 1, "the commit rebases")
+    try await probe.close()
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await prepare(wax)
+    let headerCommit = await wax.stats().generation
+    await wax.installFileFaultPlanForTesting(FDFileFaultPlan(
+        pwrite: Array(repeating: .shortWrite(maxBytes: .max), count: writes) + [.eio]
+    ))
+    await #expect(throws: (any Error).self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+    // Small payloads, so they fit the holes freed runs would leave.
+    for index in 0..<64 {
+        _ = try await wax.put(noise(byteCount: 1024, seed: UInt64(index + 1)))
+    }
+    copies.append(try crashCopy(of: url))
+    copies.append(try crashCopy(of: url))
+    try? await wax.close()
+
+    // The scan selects the rebase commit: its base is whole.
+    let rebased = try await Wax.open(at: copies[0])
+    #expect(await rebased.stats().generation == headerCommit + 1)
+    #expect(try await rebased.readCommittedLexIndexBytes() == rebasedImage)
+    let newRuns = try await lexRunsOfTheLastCommit(rebased)
+    try #require(newRuns.count == 1)
+    try await rebased.verify(deep: true)
+    try await rebased.close()
+
+    // With the new base torn, open falls back to the header's commit, whose runs must still
+    // hold its image.
+    try flipByte(in: newRuns[0], of: copies[1])
+    let fallback = try await Wax.open(at: copies[1])
+    #expect(await fallback.stats().generation == headerCommit)
+    #expect(try await fallback.readCommittedLexIndexBytes() == headerImage)
+    try await fallback.verify(deep: true)
+    try await fallback.close()
+}

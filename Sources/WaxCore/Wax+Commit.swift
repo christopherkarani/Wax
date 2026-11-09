@@ -29,6 +29,7 @@ private func posixKill(_ pid: Int32, _ signal: Int32) -> Int32 {
 extension Wax {
     /// Internal only because of the file split.
     enum CrashInjectionCheckpoint: String {
+        /// After the commit wrote its vector or lex runs.
         case afterVectorRunWriteBeforeToc = "after_vector_run_write_before_toc"
         case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
         case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"

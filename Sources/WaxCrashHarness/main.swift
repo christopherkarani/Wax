@@ -125,6 +125,8 @@ struct WaxCrashHarness {
         }
 
         try await checkVectors(recovered, scenario: scenario, seedFrameId: seedFrameId)
+        try await checkLexImage(recovered, scenario: scenario)
+        try await recovered.verify(deep: true)
 
         if scenario.expectedCommittedFramesAfterRecovery >= 2 {
             // The child's frame is the next frame allocated after the seed frame.
@@ -164,6 +166,24 @@ struct WaxCrashHarness {
         }
     }
 
+    /// A 16-page lex image; the child's differs from the seed's in one page, so its commit
+    /// writes a delta run.
+    private static func lexImage(child: Bool) -> Data {
+        var image = Data((0..<(16 * 4096)).map { (offset: Int) -> UInt8 in UInt8(truncatingIfNeeded: offset &* 7) })
+        if child {
+            image[5 * 4096 + 17] ^= 0xFF
+        }
+        return image
+    }
+
+    /// The committed lex image is the child's when its commit survived, else the seed's.
+    private static func checkLexImage(_ wax: WaxCore.Wax, scenario: CrashScenario) async throws {
+        let childCommitted = scenario.expectedCommittedFramesAfterRecovery >= 2
+        guard try await wax.readCommittedLexIndexBytes() == lexImage(child: childCommitted) else {
+            throw HarnessError.invariantFailed("committed lex image mismatch after \(scenario.rawValue)")
+        }
+    }
+
     /// Seeds the store with a single "seed" frame and its vector, and returns its frame ID.
     @discardableResult
     private static func seedStore(at url: URL) async throws -> UInt64 {
@@ -171,6 +191,7 @@ struct WaxCrashHarness {
         let seedFrameId = try await wax.put(Data("seed".utf8), options: FrameMetaSubset(searchText: "seed"))
         try await wax.setVectorIndexConfiguration(dimension: 8, similarity: .cosine)
         try await wax.putEmbedding(frameId: seedFrameId, vector: vector(seedFrameId))
+        try await wax.stageLexIndexForNextCommit(bytes: lexImage(child: false), docCount: 1)
         try await wax.commit()
         try await wax.close()
         return seedFrameId
@@ -210,6 +231,7 @@ struct WaxCrashHarness {
             options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")
         )
         try await wax.putEmbedding(frameId: frameId, vector: vector(frameId))
+        try await wax.stageLexIndexForNextCommit(bytes: lexImage(child: true), docCount: 2)
         try await wax.commit()
         try await wax.close()
     }
