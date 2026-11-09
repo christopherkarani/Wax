@@ -24,6 +24,8 @@ unfinished_tests() {
           }" \
       -e '/recorded an issue/d' \
       -e '/Test run (started|with)/d' \
+      -e '/Test case passing /d' \
+      -e 's/ with [0-9]+ test cases? (passed|failed) after / \1 after /' \
       -e 's/.*Test (.+) started\.$/START \1/p' \
       -e 's/.*Test (.+) (passed|failed) after .*/END \1/p' \
       -e 's/.*Test (.+) skipped(:.*)?$/END \1/p' \
@@ -32,6 +34,14 @@ unfinished_tests() {
         $1 == "END" { delete open[substr($0, 5)] }
         END { for (i = 1; i <= n; i++) if (order[i] in open) print order[i] }
       '
+}
+
+descendant_pids() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    echo "$child"
+    descendant_pids "$child"
+  done
 }
 
 run_and_capture() {
@@ -81,6 +91,14 @@ run_and_capture() {
       ps -axo pid,ppid,etime,command 2>/dev/null \
         | grep -E "wax|xctest|swiftpm-testing-helper" | grep -v grep | head -n 40 \
         | sed 's/^/GATE_LIVE_PROCESS /' || true
+      # Every thread's stack in a hung test process says where it is stuck (macOS only).
+      if command -v sample >/dev/null 2>&1; then
+        local test_pid
+        for test_pid in $(descendant_pids "$cmd_pid"); do
+          ps -o command= -p "$test_pid" 2>/dev/null | grep -qE "swiftpm-testing-helper|xctest" || continue
+          sample "$test_pid" 3 2>/dev/null | head -n 600 | sed "s/^/GATE_STACK ${test_pid} /" || true
+        done
+      fi
       kill "$cmd_pid" 2>/dev/null || true
       sleep 2
       kill -9 "$cmd_pid" 2>/dev/null || true

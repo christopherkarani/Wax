@@ -423,6 +423,11 @@ assert_lists_unfinished_tests() {
     '\xe2\x9c\x98 Test parameterized(value:) failed after 1.0 seconds with 1 issue.' \
     '\xe2\x97\x87 Test skippedOne() started.' \
     '\xe2\x9e\x9c Test skippedOne() skipped: "needs a trait"' \
+    '\xe2\x97\x87 Test "Display name" started.' \
+    '\xe2\x97\x87 Test case passing 1 argument value \xe2\x86\x92 nan to "Display name" started.' \
+    '\xe2\x9c\x94 Test "Display name" with 3 test cases passed after 0.5 seconds.' \
+    '\xe2\x97\x87 Test oneCase(x:) started.' \
+    '\xe2\x9c\x98 Test oneCase(x:) with 1 test case failed after 0.5 seconds with 1 issue.' \
     "Test Case '-[Suite stuckCase]' started." \
     "Test Case '-[Suite doneCase]' started." \
     "Test Case '-[Suite doneCase]' passed (0.100 seconds)." \
