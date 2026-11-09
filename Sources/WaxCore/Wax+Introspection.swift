@@ -140,4 +140,14 @@ extension Wax {
     func freeDataRangesForTesting() async -> [Range<UInt64>] {
         await withReadLock { dataSpace.free.extents }
     }
+
+    /// Whole committed lex images this handle hashed. Tests only.
+    func lexFingerprintBuildsForTesting() async -> UInt64 {
+        await withReadLock { lexFingerprintBuilds }
+    }
+
+    /// Stages that could not read the committed lex runs. Tests only.
+    func committedLexReadFailuresForTesting() async -> UInt64 {
+        await withReadLock { committedLexReadFailures }
+    }
 }

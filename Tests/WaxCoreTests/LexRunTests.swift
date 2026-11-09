@@ -314,6 +314,121 @@ private func deltaLength(pages: Int) -> UInt64 {
     }
 }
 
+/// A stage that cannot read the committed runs writes a fresh base, which replaces them, and
+/// records that it could not: a corrupt chain heals, but not silently.
+@Test func aStageThatCannotReadACorruptBaseRecordsItAndWritesABase() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        try await wax.stageLexIndexForNextCommit(bytes: image(pages: 16), docCount: 0)
+        try await wax.commit()
+        try await wax.stageLexIndexForNextCommit(bytes: image(pages: 16, versions: [5: 1]), docCount: 1)
+        try await wax.commit()
+        let base = try #require(await wax.committedLexIndexManifest()?.runs.first)
+        try await wax.close()
+
+        try flipByte(at: base.bytesOffset + 10, of: url)
+        let reopened = try await Wax.open(at: url)
+        await #expect(throws: WaxError.self) { try await reopened.verify(deep: true) }
+        #expect(await reopened.committedLexReadFailuresForTesting() == 0)
+        let healed = image(pages: 16, versions: [5: 2])
+        try await reopened.stageLexIndexForNextCommit(bytes: healed, docCount: 2)
+        #expect(await reopened.committedLexReadFailuresForTesting() == 1)
+        try await reopened.commit()
+        #expect(try #require(await reopened.committedLexIndexManifest()).runs.count == 1)
+        #expect(try await reopened.readCommittedLexIndexBytes() == healed)
+        try await reopened.verify(deep: true)
+        try await reopened.close()
+    }
+}
+
+/// Reading the committed image hashes its pages only when this handle has no fingerprints
+/// for its runs; a commit hands over the fingerprints of the image it made committed.
+@Test func readingTheCommittedImageHashesItOnlyForRunsItHasNotSeen() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        try await wax.stageLexIndexForNextCommit(bytes: image(pages: 16), docCount: 0)
+        try await wax.commit()
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        _ = try await reopened.readCommittedLexIndexBytes()
+        _ = try await reopened.readCommittedLexIndexBytes()
+        #expect(await reopened.lexFingerprintBuildsForTesting() == 1)
+        let next = image(pages: 16, versions: [2: 1])
+        try await reopened.stageLexIndexForNextCommit(bytes: next, docCount: 1)
+        try await reopened.commit()
+        #expect(try await reopened.readCommittedLexIndexBytes() == next)
+        #expect(await reopened.lexFingerprintBuildsForTesting() == 1)
+        try await reopened.close()
+    }
+}
+
+/// The first delta on a base may change the page size (a v2 blob adopted without one, or a
+/// base staged without a SQLite header); later deltas keep it, and an image with another
+/// page size then needs a base.
+@Test func theFirstDeltaOnABaseMayChangeThePageSize() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let base = image(pages: 32)
+        var next = base
+        next.replaceSubrange(0..<16, with: Data("SQLite format 3\u{0}".utf8))
+        next.replaceSubrange(16..<18, with: [0x20, 0x00])
+        next[5 * 8192 + 3] ^= 0xFF
+        try await wax.stageLexIndexForNextCommit(bytes: base, docCount: 0)
+        try await wax.commit()
+        try await wax.stageLexIndexForNextCommit(bytes: next, docCount: 1)
+        try await wax.commit()
+        let manifest = try #require(await wax.committedLexIndexManifest())
+        #expect(manifest.runs.count == 2)
+        #expect(manifest.pageSize == 8192)
+        #expect(manifest.runs[1].bytesLength == UInt64(LexRunCodec.headerSize + 2 * (4 + 8192)), "pages 0 and 5 of 8 KiB")
+        #expect(try await wax.readCommittedLexIndexBytes() == next)
+        try await wax.verify(deep: true)
+
+        var third = next
+        third[9 * 8192] ^= 0x01
+        try await wax.stageLexIndexForNextCommit(bytes: third, docCount: 2)
+        try await wax.commit()
+        #expect(try #require(await wax.committedLexIndexManifest()).runs.count == 3)
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        #expect(try await reopened.readCommittedLexIndexBytes() == third)
+        try await reopened.verify(deep: true)
+        try await reopened.stageLexIndexForNextCommit(bytes: base, docCount: 3)
+        try await reopened.commit()
+        let rebased = try #require(await reopened.committedLexIndexManifest())
+        #expect(rebased.runs.count == 1)
+        #expect(rebased.pageSize == 4096)
+        #expect(try await reopened.readCommittedLexIndexBytes() == base)
+        try await reopened.close()
+    }
+}
+
+/// An image that loses whole pages from its end commits a delta of no pages, which only
+/// truncates the image.
+@Test func anImageThatShrinksToAPageBoundaryCommitsATruncatingDelta() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        try await wax.stageLexIndexForNextCommit(bytes: image(pages: 40), docCount: 0)
+        try await wax.commit()
+        let shrunk = image(pages: 32)
+        try await wax.stageLexIndexForNextCommit(bytes: shrunk, docCount: 1)
+        try await wax.commit()
+        let manifest = try #require(await wax.committedLexIndexManifest())
+        #expect(manifest.runs.count == 2)
+        #expect(manifest.runs[1].bytesLength == UInt64(LexRunCodec.headerSize))
+        #expect(manifest.imageLength == UInt64(32 * pageSize))
+        #expect(try await wax.readCommittedLexIndexBytes() == shrunk)
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        #expect(try await reopened.readCommittedLexIndexBytes() == shrunk)
+        try await reopened.verify(deep: true)
+        try await reopened.close()
+    }
+}
+
 // MARK: - Format version
 
 @Test func aCommitMakesAV2StoreFormatThree() async throws {

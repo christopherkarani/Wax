@@ -68,6 +68,12 @@ package actor Wax {
     /// Seed of this handle's page fingerprints (Wax+LexRuns.swift).
     /// Internal only because of the file split; immutable after init.
     let lexFingerprintSeed = UInt64.random(in: UInt64.min...UInt64.max)
+    /// Whole committed lex images this handle hashed (Wax+LexRuns.swift).
+    /// Internal only because of the file split; use only under `opLock`.
+    var lexFingerprintBuilds: UInt64 = 0
+    /// Stages that could not read the committed lex runs and wrote a base (Wax+LexRuns.swift).
+    /// Internal only because of the file split; use only under `opLock`.
+    var committedLexReadFailures: UInt64 = 0
     /// Dimension and similarity for the first commit that writes vectors (Wax+VectorRuns.swift).
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var vectorConfiguration: VectorIndexConfiguration?

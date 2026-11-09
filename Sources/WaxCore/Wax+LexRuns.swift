@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(os)
+import os
+#endif
 
 /// Lex runs: a commit writes the pages of the text index image that differ from the committed
 /// image, instead of the whole image.
@@ -133,14 +136,23 @@ extension Wax {
 
     /// Fingerprints of the committed image with pages of `pageSize`; read from the runs when
     /// this handle has none for them. `nil` without a committed image, or when its runs do not
-    /// read back whole: the commit then writes a base, which replaces every run.
+    /// read back whole: the commit then writes a base, which replaces every run. That failure
+    /// is logged and counted; `verify(deep: true)` reports the same runs as corrupt.
     private func committedLexFingerprintsLocked(pageSize: Int) async -> LexPageFingerprints? {
         guard let manifest = toc.indexes.lex else { return nil }
         let identity = manifest.runs.map(\.checksum)
         if let cached = committedLexFingerprints, cached.runChecksums == identity, cached.pageSize == pageSize {
             return cached
         }
-        guard let image = try? await readCommittedLexImageLocked(manifest) else { return nil }
+        let image: Data
+        do {
+            image = try await readCommittedLexImageLocked(manifest)
+        } catch {
+            committedLexReadFailures &+= 1
+            Self.logUnreadableCommittedLexRuns(error)
+            return nil
+        }
+        lexFingerprintBuilds &+= 1
         let seed = lexFingerprintSeed
         let hashes = image.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             LexPageFingerprint.fingerprints(of: raw, pageSize: pageSize, seed: seed)
@@ -155,11 +167,23 @@ extension Wax {
         return fingerprints
     }
 
+    private static func logUnreadableCommittedLexRuns(_ error: any Error) {
+        let message = "committed lex runs unreadable, the next commit writes a fresh base"
+        #if canImport(os)
+        Logger(subsystem: "com.wax.core", category: "lex-runs")
+            .error("\(message, privacy: .public): \(String(describing: error), privacy: .public)")
+        #else
+        FileHandle.standardError.write(Data("wax: \(message): \(error)\n".utf8))
+        #endif
+    }
+
     /// Records the fingerprints of `image`, the committed image `manifest` names, so the next
-    /// stage need not read it again. Safe under the read lock: the manifest changes only
-    /// under the write lock.
+    /// stage need not read it again; does nothing when this handle has them already. Safe
+    /// under the read lock: the manifest changes only under the write lock.
     func recordCommittedLexFingerprintsLocked(of image: Data, manifest: LexIndexManifest) {
         let identity = manifest.runs.map(\.checksum)
+        guard committedLexFingerprints?.runChecksums != identity else { return }
+        lexFingerprintBuilds &+= 1
         let seed = lexFingerprintSeed
         let fingerprints = image.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> LexPageFingerprints in
             let pageSize = LexRunCodec.pageSize(of: raw, fallback: Self.defaultLexPageSize)
