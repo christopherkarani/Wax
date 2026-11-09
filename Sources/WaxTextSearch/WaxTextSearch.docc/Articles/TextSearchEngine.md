@@ -101,6 +101,8 @@ try await engine.stageForCommit(into: waxStore, compact: false)
 
 The `compact` flag runs `VACUUM` to reclaim unused space before serialization.
 
+`stageForCommit` hands the store the database image, without a copy for an in-memory engine. The store compares it page by page with the committed image and commits only the changed pages, as a delta run after the committed ones. When the deltas would hold more than a quarter of the image, or number 32, the commit writes the whole image as a new base instead.
+
 ## Schema
 
 The engine uses the following SQLite tables:
