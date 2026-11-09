@@ -412,9 +412,7 @@ extension ProcessRunner {
             }
 
             func appendStderr(_ data: Data) {
-                lock.lock()
-                stderrAll.append(data)
-                lock.unlock()
+                lock.withLock { stderrAll.append(data) }
             }
 
             func snapshot() -> (stdout: Data, stderr: Data, toolsListResponse: String?, missingExpectedTools: [String]) {

@@ -34,16 +34,15 @@ enum MCPDeadline {
         private var continuation: CheckedContinuation<T, Never>?
 
         func install(_ continuation: CheckedContinuation<T, Never>) {
-            lock.lock()
-            self.continuation = continuation
-            lock.unlock()
+            lock.withLock { self.continuation = continuation }
         }
 
         func finish(_ value: T) {
-            lock.lock()
-            let pending = continuation
-            continuation = nil
-            lock.unlock()
+            let pending: CheckedContinuation<T, Never>? = lock.withLock {
+                let installed = continuation
+                continuation = nil
+                return installed
+            }
             pending?.resume(returning: value)
         }
     }
