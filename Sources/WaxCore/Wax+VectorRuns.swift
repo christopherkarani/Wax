@@ -467,6 +467,19 @@ extension Wax {
 
     // MARK: - Reading runs
 
+    /// Whether `frameId` has a vector for a removal to drop: a committed one, or one a
+    /// pending embedding or a staged import would commit.
+    func hasVectorToRemoveLocked(frameId: UInt64) async throws -> Bool {
+        if stagedVectorImport?.frameIds.contains(frameId) == true { return true }
+        if pendingMutationSummary.hasPendingEmbedding,
+           pendingVectorChangesLocked().contains(where: { entry in
+               if case .put(let embedding) = entry.change { embedding.frameId == frameId } else { false }
+           }) {
+            return true
+        }
+        return try await committedVectorKeysLocked().contains(frameId)
+    }
+
     /// The frames with a committed vector, loaded once and then kept by each commit.
     private func committedVectorKeysLocked() async throws -> Set<UInt64> {
         if let committedVectorKeys { return committedVectorKeys }

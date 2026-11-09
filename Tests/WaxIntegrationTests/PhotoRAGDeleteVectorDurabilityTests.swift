@@ -164,4 +164,35 @@ func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         try await orchestrator.flush()
     }
 }
+
+/// Every index rebuild sweeps the retired trees. Their vectors went at retirement, so a
+/// rebuild that finds them gone must not append a removal record per frame each time.
+@Test
+func photoRAGRebuildDoesNotGrowTheWALForRetiredFramesWithoutVectors() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-rebuild-wal-photo-\(UUID().uuidString).png")
+        try photoDeleteTinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let file = PhotoFile(id: "retire-me", url: imageURL, captureDate: Date(timeIntervalSince1970: 1_700_000_000))
+        let orchestrator = try await photoDeleteMakeOrchestrator(storeURL: storeURL)
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+        let oldRootId = try await photoDeleteRootId(wax: await orchestrator.wax, assetID: "retire-me", superseded: false)
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.close()
+
+        for _ in 0..<2 {
+            let reopened = try await photoDeleteMakeOrchestrator(storeURL: storeURL)
+            let wax = await reopened.wax
+            #expect(try await photoDeleteRootId(wax: wax, assetID: "retire-me", superseded: true) == oldRootId)
+            #expect(try await !wax.committedVectorFrameIds().contains(oldRootId))
+            let wal: WaxWALStats = await wax.walStats()
+            #expect(wal.pendingBytes == 0, "the rebuild at open appended WAL records for retired frames")
+            #expect(await wax.pendingEmbeddingMutations(since: nil).removedFrameIds.isEmpty)
+            try await reopened.close()
+        }
+    }
+}
 #endif

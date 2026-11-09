@@ -543,6 +543,43 @@ func aV1StoreWithStaleVecCatalogEntriesOpensAndFreesThemAtItsFirstCommit(firstCo
     try await reopened.close()
 }
 
+/// Photo and video stores remove the vector of every retired frame at each index rebuild,
+/// so removing a vector a frame does not have must write nothing: no WAL record, and no
+/// header upgrade that would lock released builds out of a store they could still read.
+@Test
+func removingAVectorAFrameDoesNotHaveWritesNothing() async throws {
+    let url = try await copyMigrationFixture(named: "migration-v1-stale-vec-entries")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.open(at: url)
+    let before: WaxWALStats = await wax.walStats()
+    for _ in 0..<3 {
+        for frameId: UInt64 in 32..<35 {
+            try await wax.removeEmbedding(frameId: frameId)
+        }
+    }
+    let after: WaxWALStats = await wax.walStats()
+    #expect(after.writePos == before.writePos)
+    #expect(after.pendingBytes == 0)
+    #expect(await wax.pendingEmbeddingMutations(since: nil).removedFrameIds.isEmpty)
+    #expect(try headerFormatVersions(url) == [0x0100, 0x0100], "a no-op removal upgraded the header")
+    try await wax.close()
+    #expect(try headerFormatVersions(url) == [0x0100, 0x0100])
+
+    // A pending embedding, or a committed vector, still needs its removal record.
+    let reopened = try await Wax.open(at: url)
+    try await reopened.putEmbedding(frameId: 33, vector: staleFixtureVector(33))
+    try await reopened.removeEmbedding(frameId: 33)
+    try await reopened.removeEmbedding(frameId: 3)
+    #expect(await reopened.pendingEmbeddingMutations(since: nil).removedFrameIds == [3, 33])
+    try await reopened.commit()
+    var expected = staleFixtureVectors()
+    expected[3] = nil
+    #expect(try await committedMap(reopened) == expected)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
 // MARK: - RNG
 
 private struct RunTestRandom {

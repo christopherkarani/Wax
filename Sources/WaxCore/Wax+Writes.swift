@@ -488,9 +488,12 @@ extension Wax {
     }
 
     /// Removes `frameId`'s vector at the next commit, and any embedding written for it before.
+    /// A frame with neither writes nothing.
     package func removeEmbedding(frameId: UInt64) async throws {
         try await withEmbeddingWriteLock {
             try validateKnownFrameForMutationLocked(frameId)
+            // Photo and video rebuilds remove every retired frame's vector each time.
+            guard try await hasVectorToRemoveLocked(frameId: frameId) else { return }
             // Format 1.0 cannot read this record, so no 1.0 build may open the file after it.
             try await ensureHeaderPagesCurrentLocked()
             let entry = WALEntry.removeEmbedding(RemoveEmbedding(frameId: frameId))

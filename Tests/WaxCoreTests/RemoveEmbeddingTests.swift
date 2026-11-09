@@ -23,7 +23,8 @@ import Testing
 
         let snapshot = await wax.pendingEmbeddingMutations(since: nil)
         #expect(snapshot.embeddings.map(\.frameId) == [0, 2])
-        #expect(snapshot.removedFrameIds == [1, 3])
+        // Frame 3 never had a vector, so removing it wrote nothing.
+        #expect(snapshot.removedFrameIds == [1])
         let latest = try #require(snapshot.latestSequence)
 
         // A window after the watermark holds only the changes since.
