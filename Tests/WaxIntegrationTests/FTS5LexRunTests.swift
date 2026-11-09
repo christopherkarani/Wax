@@ -82,6 +82,49 @@ private enum LexRunFixture {
     }
 }
 
+/// A compacting stage shrinks the SQLite image to fewer whole pages; the committed runs must
+/// rebuild exactly that image, and later deltas must apply to it.
+@Test func aCompactedImageThatShrinksReopensToTheSameIndex() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let engine = try FTS5SearchEngine.inMemory()
+        for index in 0..<400 {
+            try await engine.index(frameId: UInt64(index), text: LexRunFixture.text(index))
+        }
+        try await engine.stageForCommit(into: wax)
+        try await wax.commit()
+        let before = try #require(await wax.committedLexIndexManifest())
+
+        for index in 100..<400 {
+            try await engine.remove(frameId: UInt64(index))
+        }
+        try await engine.stageForCommit(into: wax, compact: true)
+        try await wax.commit()
+        let shrunk = try #require(await wax.committedLexIndexManifest())
+        #expect(shrunk.imageLength < before.imageLength)
+        #expect(shrunk.imageLength % UInt64(shrunk.pageSize) == 0)
+        #expect(try await wax.readCommittedLexIndexBytes() == (try await engine.serialize()))
+
+        try await engine.index(frameId: 500, text: LexRunFixture.text(500))
+        try await engine.stageForCommit(into: wax)
+        try await wax.commit()
+        #expect(try await wax.readCommittedLexIndexBytes() == (try await engine.serialize()))
+        try await wax.verify(deep: true)
+        try await wax.close()
+
+        let reopened = try await Wax.open(at: url)
+        let bytes = try #require(try await reopened.readCommittedLexIndexBytes())
+        let fresh = try FTS5SearchEngine.deserialize(from: bytes)
+        let amber = try await fresh.search(matchQuery: "amber", topK: 100)
+            .map { (hit: TextSearchResult) -> UInt64 in hit.frameId }
+            .sorted()
+        #expect(amber == LexRunFixture.amberFrames(below: 100))
+        #expect(try await fresh.search(matchQuery: "number500", topK: 10).map { (hit: TextSearchResult) -> UInt64 in hit.frameId } == [500])
+        #expect(try await fresh.search(matchQuery: "number250", topK: 10).isEmpty)
+        try await reopened.close()
+    }
+}
+
 @Test func anInMemoryTextEngineStagesItsImageWithoutCopyingIt() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

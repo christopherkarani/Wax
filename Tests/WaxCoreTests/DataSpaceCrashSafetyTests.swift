@@ -685,6 +685,46 @@ func aFooterOnlyAScanFindsCountsOnlyWhenItsLexRunsAreWhole(tornRun: Bool) async 
     try await reopened.close()
 }
 
+/// The footer check covers lex runs on their own: G2 wrote a whole vector run and a torn lex
+/// delta, and a scan that finds only G2's footer still falls back to G1.
+@Test func aFooterOnlyAScanFindsIsPassedOverForATornLexDeltaBesideAWholeVectorRun() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let g1Image = lexImage(pages: 32)
+    let g2Image = lexImage(pages: 32, versions: [9: 1])
+
+    let wax = try await Wax.create(at: url, walSize: 256 * 1024)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(runDimension), similarity: .cosine)
+    try await putEmbeddedFrames(wax, 0..<20)
+    try await wax.stageLexIndexForNextCommit(bytes: g1Image, docCount: 20)
+    try await wax.commit()
+    try await wax.close()
+    let headersAtG1 = try headerPages(url)
+
+    let second = try await Wax.open(at: url)
+    try await putEmbeddedFrames(second, 20..<30)
+    try await second.stageLexIndexForNextCommit(bytes: g2Image, docCount: 30)
+    try await second.commit()
+    let g2VectorRuns = try await runsOfTheLastCommit(second)
+    let g2LexRuns = try await lexRunsOfTheLastCommit(second)
+    try #require(g2VectorRuns.count == 1)
+    try #require(g2LexRuns.count == 1)
+    #expect(try #require(await second.committedLexIndexManifest()).runs.count == 2, "G2 wrote a delta")
+    try await second.close()
+    try writeHeaderPages(headersAtG1, to: url)
+    try flipByte(in: g2LexRuns[0], of: url)
+
+    let recovered = try await Wax.open(at: url)
+    #expect(await recovered.stats().frameCount == 20, "the torn commit is passed over")
+    #expect(try await recovered.readCommittedLexIndexBytes() == g1Image)
+    #expect(try await committedVectorMap(recovered) == expectedVectors(0..<20))
+    let pending = await recovered.pendingEmbeddingMutations(since: nil)
+    #expect(Set(pending.embeddings.map { (embedding: PutEmbedding) -> UInt64 in embedding.frameId })
+        == Set((20..<30).map { (frame: Int) -> UInt64 in UInt64(frame) }))
+    try await recovered.verify(deep: true)
+    try await recovered.close()
+}
+
 /// A commit that fails after writing its lex delta leaves the run unreferenced: the committed
 /// image stays as it was, the same session commits the staged image again, and a crash at that
 /// point recovers the previous commit.
