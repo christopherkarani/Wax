@@ -208,6 +208,8 @@ extension Wax {
                   let structuredEngine
             else { return [] }
 
+            // Without any entity alias no candidate can resolve; skip the per-token queries.
+            guard try await structuredEngine.hasEntityAliases() else { return [] }
             let candidates = try await Self.structuredEntityCandidates(
                 query: trimmedQuery,
                 engine: structuredEngine,
