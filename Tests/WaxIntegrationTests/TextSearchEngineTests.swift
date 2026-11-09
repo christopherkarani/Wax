@@ -288,6 +288,19 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [42])
 }
 
+@Test func searchWithControlCharacterInQueryDoesNotThrow() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 9, text: "abc def")
+
+    let plan = try #require(MatchPlan.plan(query: "abc\u{0}def"))
+    let primary = try await engine.search(matchQuery: plan.primaryMatch, topK: 10)
+    #expect(primary.map(\.frameId) == [9])
+    if let fallback = plan.fallbackMatch {
+        let results = try await engine.search(matchQuery: fallback, topK: 10)
+        #expect(results.map(\.frameId) == [9])
+    }
+}
+
 @Test func searchRejectsNonPositiveTopK() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 7, text: "topK validation")
