@@ -241,8 +241,16 @@ public actor Memory {
     /// before the call, and the space the import wrote is reused by later writes.
     ///
     /// It first commits pending saves, as ``flush()`` would. While it runs, other saves,
-    /// deletes and flushes on this store wait and then run after it; searches do not wait
-    /// and see the store as it was before the import.
+    /// deletes and flushes on this store wait and then run after it. Searches see the store as
+    /// it was before the import; text and hybrid searches wait while the final commit runs.
+    ///
+    /// Memory: until the commit, it holds every new frame's record (with its text and
+    /// metadata) and every vector, about `4 × dimensions` bytes per searchable frame. For
+    /// 100,000 MS MARCO passages with 384-dimension vectors the benchmark process peaked at
+    /// 1.4 GB, its own copy of the dataset included. Split a corpus too large for that into
+    /// several calls; each one is atomic on its own. A call whose frames cannot fit one
+    /// commit's TOC or text index throws `capacityExceeded` at the first batch that does not
+    /// fit, before the commit.
     @discardableResult
     public func importDocuments(
         _ documents: some Sequence<(text: String, metadata: [String: String])>

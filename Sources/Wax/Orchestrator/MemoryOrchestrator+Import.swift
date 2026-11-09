@@ -22,8 +22,10 @@ extension MemoryOrchestrator {
 
     /// Everything an import adds, gathered across its windows.
     private struct ImportAdditions {
+        /// Text of the new searchable frames: indexed at the commit, then enriched.
         var texts: [(frameId: UInt64, text: String)] = []
-        var enrichment: [(frameId: UInt64, text: String)] = []
+        /// Text of stored documents the import indexes because their index entry is missing.
+        var repairTexts: [(frameId: UInt64, text: String)] = []
         var hasVectors = false
         var wroteTextOnly = false
     }
@@ -73,7 +75,7 @@ extension MemoryOrchestrator {
                 }
             }
             try await session.commitFrameImport(
-                texts: additions.texts,
+                texts: additions.repairTexts + additions.texts,
                 hasVectors: additions.hasVectors,
                 memoryBinding: binding
             )
@@ -89,7 +91,7 @@ extension MemoryOrchestrator {
         }
         if let enrichmentPipeline {
             do {
-                for item in additions.enrichment {
+                for item in additions.texts {
                     try await enrichmentPipeline.enqueue(EnrichmentTask(frameId: item.frameId, text: item.text))
                 }
             } catch {
@@ -186,7 +188,7 @@ extension MemoryOrchestrator {
             if let text = chunks.count == 1 ? chunks[0] : existing.singleChunkText {
                 let repair = await singleChunkDocumentRepair(documentId: existing.documentId, text: text)
                 if repair.indexText {
-                    additions.texts.append((existing.documentId, text))
+                    additions.repairTexts.append((existing.documentId, text))
                 }
                 if repair.embed {
                     guard attached != nil else { throw WaxError.missingEmbedder }
@@ -259,7 +261,6 @@ extension MemoryOrchestrator {
             guard let text = frame.searchText else { continue }
             let frameId = firstFrameId + UInt64(offset)
             additions.texts.append((frameId, text))
-            additions.enrichment.append((frameId, text))
             embedFrameIds.append(frameId)
             embedTexts.append(text)
         }
