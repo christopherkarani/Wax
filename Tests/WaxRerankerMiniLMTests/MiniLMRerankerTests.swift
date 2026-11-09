@@ -103,6 +103,14 @@ struct BertCleanTextTests {
 }
 
 struct MiniLMRerankerOutputTests {
+    /// Measured on CPU: batches of 8 were fastest (LongMemEval N=20: 297 ms p50 vs 355 ms at 64;
+    /// LoCoMo N=50: 89 ms vs 135 ms), because length-sorted windows pad less in small batches.
+    @available(macOS 15.0, iOS 18.0, *)
+    @Test func defaultBatchSizeIsTheMeasuredFastest() {
+        #expect(MiniLMReranker.defaultBatchSize == 8)
+        #expect(MiniLMReranker.defaultBatchSize <= MiniLMRerankerModel.maximumPredictionBatchSize)
+    }
+
     @available(macOS 15.0, iOS 18.0, *)
     @Test func decodesOneScorePerRow() throws {
         let array = try MLMultiArray(shape: [3, 1], dataType: .float32)

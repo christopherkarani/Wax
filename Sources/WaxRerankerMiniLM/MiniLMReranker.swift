@@ -26,12 +26,14 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
     package let windowing: CrossEncoderWindowing
     /// Rows per CoreML prediction.
     package let batchSize: Int
+    /// Fastest measured on CPU: windows are sorted by length, so small batches pad less.
+    package static let defaultBatchSize = 8
 
     package init(
         model: MiniLMRerankerModel,
         tokenizer: BertTokenizer,
         windowing: CrossEncoderWindowing = defaultWindowing,
-        batchSize: Int = MiniLMRerankerModel.maximumPredictionBatchSize
+        batchSize: Int = defaultBatchSize
     ) throws {
         self.model = model
         self.tokenizer = tokenizer
@@ -42,7 +44,7 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
     /// Loads the bundled model (cached per compute unit) under `timeout`.
     package static func make(
         computeUnits: MLComputeUnits = .cpuOnly,
-        batchSize: Int = MiniLMRerankerModel.maximumPredictionBatchSize,
+        batchSize: Int = defaultBatchSize,
         timeout: Duration
     ) async throws -> MiniLMReranker {
         try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM reranker model load") {
