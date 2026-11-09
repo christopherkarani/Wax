@@ -9,7 +9,7 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | Benchmark | Metric | Wax | Best reference | Before fixes |
 |---|---|---|---|---|
 | LoCoMo retrieval | R_all@5 / @10 | **0.609 / 0.686** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.555 / 0.636 without the reranker | Contriever 0.407 / 0.494 | 0.186 / 0.294 |
-| LoCoMo QA | LLM judge J | **70.4%** (hybrid, Arctic, top 30); 64.9% with MiniLM | Contriever top 30: 62.4% | 56.3% (vector, top 30) |
+| LoCoMo QA | LLM judge J | **73.8%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 30); 72.0% without the reranker; 64.9% with MiniLM | Contriever top 30: 62.4%; memvid top 30: 57.0% | 56.3% (vector, top 30) |
 | LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.938 / 0.950** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.905 / 0.926 without the reranker | Contriever 0.902 / 0.927 | 0.742 / – |
 | LongMemEval-S QA | accuracy, mean of 3 runs | **89.4%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 5); task-averaged 90.2% | Contriever top 5: 87.7%; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
@@ -26,7 +26,8 @@ against 90.0%). Without the reranker, LongMemEval ties Contriever (0.905 retriev
 QA). With the default MiniLM-L6 embedder and no reranker it is 1.9 points behind in
 retrieval and 1.8 points behind in QA. With Contriever embeddings Wax ties bare Contriever
 on LongMemEval and adds 8 points on LoCoMo (see [Same-model comparison](#same-model-comparison)).
-LoCoMo QA (70.4%) was measured without the reranker.
+On LoCoMo QA, Wax with e5 and the reranker reaches 73.8% against full context's 76.6%, and
+memvid, given the same MiniLM vectors as Wax's 64.9% row, scores 57.0% (see [memvid](#memvid)).
 
 ## Setup
 
@@ -187,11 +188,21 @@ against 78.5%), which follows the retrieval gap above.
 
 | Context | J | F1 | Multi-hop | Temporal | Open-domain | Single-hop |
 |---|---|---|---|---|---|---|
-| Full conversation | **76.6%** | 0.461 | 67.4% | 70.1% | 52.1% | 85.0% |
-| Wax hybrid Arctic top 30 | 70.4% | **0.471** | 55.7% | 61.1% | 51.0% | 81.1% |
+| Full conversation | **76.6%** | 0.461 | **67.4%** | 70.1% | 52.1% | **85.0%** |
+| Wax hybrid e5-small-v2, text weight 0.4, MiniLM reranker (top 50, RRF k=10), top 30 | 73.8% | **0.482** | 58.9% | **71.7%** | **54.2%** | 81.8% |
+| Wax hybrid e5-small-v2, text weight 0.4, top 30 | 72.0% | **0.482** | 57.8% | 67.3% | 47.9% | 81.3% |
+| Wax hybrid Arctic top 30 | 70.4% | 0.471 | 55.7% | 61.1% | 51.0% | 81.1% |
 | Wax hybrid MiniLM top 30 | 64.9% | 0.445 | 43.6% | 58.3% | 46.9% | 76.7% |
 | Contriever top 30 | 62.4% | 0.435 | 48.6% | 52.6% | 49.0% | 72.3% |
+| memvid vector (MiniLM vectors) top 30 | 57.0% | 0.392 | 42.2% | 53.9% | 44.8% | 64.6% |
+| memvid hybrid, OR-joined query (MiniLM vectors) top 30 | 51.6% | 0.353 | 37.6% | 50.5% | 40.6% | 57.9% |
 | Wax vector MiniLM top 30, before fixes | 56.3% | 0.383 | 39.0% | 51.1% | 44.8% | 65.4% |
+
+Each LoCoMo row is one reader and judge run. The e5 runs are paired (same retrieval before
+reranking): the reranker gained 112 questions and lost 85 (sign test p = 0.06), so its 1.8
+points are suggestive, not established. Reranked, temporal questions score above full context
+(71.7% against 70.1%), as do token F1 (0.482 against 0.461) and open-domain (54.2% against
+52.1%).
 
 ## Systems
 
@@ -248,6 +259,13 @@ back for their own vector, so 10k passages loaded in one call score recall@10 0.
 but the 10k passages then exceed the free tier's 50 MB file cap. 1,000-document batches
 deadlocked on the second or third call. At 100k the cap rules it out. For reference, the
 one-call 10k load ran at 8.6 docs/s and 46.6 MB, with 100 ms cold open and first query.
+
+LoCoMo QA through the same reader, judge and top 30 as every other row: memvid vector
+57.0% and hybrid-or 51.6%, against 64.9% for Wax hybrid on the same MiniLM vectors and 62.4%
+for Contriever (per-category figures in the [LoCoMo QA table](#locomo-1540-questions)).
+hybrid-or loses to vector because its R_all@30 is 0.450 against 0.548, and the reader sees
+the top 30. Rerun on 2026-11-10 with the same versions, its recall reproduced the figures
+above exactly (bare MiniLM 0.326 / 0.406 from the same vectors).
 
 memvid publishes LoCoMo 85.65% (categories 1–4, 1,540 questions). That run uses GPT-4o
 as reader, gpt-4o-mini as a lenient judge, OpenAI text-embedding-3-large embeddings and
