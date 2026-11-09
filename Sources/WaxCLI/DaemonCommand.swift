@@ -289,7 +289,7 @@ private extension DaemonCommand {
 
         // Bounded from the signal: the accept loop notices it only at its next
         // poll slice, and on a busy host resuming here can take longer still.
-        await drainHandledRequests(inflight, startedAt: shutdown.requestedAt ?? Date())
+        await drainHandledRequests(inflight, startedAt: shutdown.requestedAt ?? ContinuousClock.now)
         if let loopError {
             throw loopError
         }
@@ -334,7 +334,7 @@ private extension DaemonCommand {
                 rejectBusyClient(client)
                 continue
             }
-            let readDeadline = Date().addingTimeInterval(socketRequestReadSeconds)
+            let readDeadline = ContinuousClock.Instant.deadline(afterSeconds: socketRequestReadSeconds)
             Task {
                 defer { inflight.clientDone() }
                 do {
@@ -358,18 +358,18 @@ private extension DaemonCommand {
     /// Stops new requests from reaching the service, then waits a bounded time
     /// for the ones already in it. Clients still sending a request are not
     /// waited for: the process exits under them once the store is closed.
-    func drainHandledRequests(_ inflight: SocketInflight, startedAt: Date) async {
+    func drainHandledRequests(_ inflight: SocketInflight, startedAt: ContinuousClock.Instant) async {
         inflight.startDraining()
         DaemonTestHooks.current?.markDraining()
-        await waitWhileHandling(inflight, until: startedAt.addingTimeInterval(socketShutdownDrainSeconds))
+        await waitWhileHandling(inflight, until: startedAt.advanced(by: .seconds(socketShutdownDrainSeconds)))
     }
 
     func waitWhileHandling(_ inflight: SocketInflight, seconds: TimeInterval) async {
-        await waitWhileHandling(inflight, until: Date().addingTimeInterval(seconds))
+        await waitWhileHandling(inflight, until: .deadline(afterSeconds: seconds))
     }
 
-    func waitWhileHandling(_ inflight: SocketInflight, until deadline: Date) async {
-        while inflight.isHandling, Date() < deadline {
+    func waitWhileHandling(_ inflight: SocketInflight, until deadline: ContinuousClock.Instant) async {
+        while inflight.isHandling, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -404,7 +404,7 @@ private extension DaemonCommand {
     func handleSocketClient(
         service: AgentBrokerService,
         fd: Int32,
-        readDeadline: Date,
+        readDeadline: ContinuousClock.Instant,
         inflight: SocketInflight
     ) async throws -> Bool {
         defer { close(fd) }
@@ -511,10 +511,10 @@ private extension DaemonCommand {
 
     /// Reads one request line, giving up at `deadline`. Blocks its thread, so
     /// callers run it off the pool.
-    func readSocketRequestLine(fd: Int32, deadline: Date) throws -> SocketRequestRead {
+    func readSocketRequestLine(fd: Int32, deadline: ContinuousClock.Instant) throws -> SocketRequestRead {
         var buffer = Data()
         while true {
-            let remainingMS = AgentBrokerClient.pollTimeoutMilliseconds(remaining: deadline.timeIntervalSinceNow)
+            let remainingMS = AgentBrokerClient.pollTimeoutMilliseconds(remaining: deadline.secondsRemaining)
             guard remainingMS > 0 else { return .timedOut }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, remainingMS)
@@ -618,31 +618,27 @@ private enum SocketRequestRead: Sendable {
 private final class DaemonShutdown: @unchecked Sendable {
     private let lock = NSLock()
     private var signalsReceived = 0
-    private var firstSignalAt: Date?
+    private var firstSignalAt: ContinuousClock.Instant?
 
     /// Records a signal. Returns true for the first one.
     func recordSignal() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        signalsReceived += 1
-        if signalsReceived == 1 {
-            firstSignalAt = Date()
+        lock.withLock {
+            signalsReceived += 1
+            if signalsReceived == 1 {
+                firstSignalAt = ContinuousClock.now
+            }
+            return signalsReceived == 1
         }
-        return signalsReceived == 1
     }
 
     /// When the first signal was handled, so shutdown's bounds count from the
     /// signal rather than from whenever the server loop noticed it.
-    var requestedAt: Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return firstSignalAt
+    var requestedAt: ContinuousClock.Instant? {
+        lock.withLock { firstSignalAt }
     }
 
     var isRequested: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return signalsReceived > 0
+        lock.withLock { signalsReceived > 0 }
     }
 }
 
@@ -667,11 +663,11 @@ private final class SocketInflight: @unchecked Sendable {
 
     /// Takes a client slot. False once `limit` clients are being served.
     func admitClient(limit: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard clients < limit else { return false }
-        clients += 1
-        return true
+        lock.withLock {
+            guard clients < limit else { return false }
+            clients += 1
+            return true
+        }
     }
 
     func clientDone() {
@@ -679,18 +675,16 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     var hasClients: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients > 0
+        lock.withLock { clients > 0 }
     }
 
     /// Admits a request to the service. False once draining has started.
     func beginHandling() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !draining else { return false }
-        handling += 1
-        return true
+        lock.withLock {
+            guard !draining else { return false }
+            handling += 1
+            return true
+        }
     }
 
     func endHandling() {
@@ -702,9 +696,7 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     var isHandling: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return handling > 0
+        lock.withLock { handling > 0 }
     }
 
     func requestStop() {
@@ -712,9 +704,7 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     var shouldStop: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stop
+        lock.withLock { stop }
     }
 }
 

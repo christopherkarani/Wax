@@ -100,10 +100,11 @@ private final class DeadlineBox: @unchecked Sendable {
     }
 
     func cancel() {
-        let source = lock.withLock {
+        let source: DispatchSourceTimer? = lock.withLock {
             isCancelled = true
-            defer { timer = nil }
-            return timer
+            let installed = timer
+            timer = nil
+            return installed
         }
         source?.cancel()
     }

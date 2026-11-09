@@ -38,10 +38,11 @@ enum MCPDeadline {
         }
 
         func finish(_ value: T) {
-            lock.lock()
-            let pending = continuation
-            continuation = nil
-            lock.unlock()
+            let pending: CheckedContinuation<T, Never>? = lock.withLock {
+                let installed = continuation
+                continuation = nil
+                return installed
+            }
             pending?.resume(returning: value)
         }
     }
