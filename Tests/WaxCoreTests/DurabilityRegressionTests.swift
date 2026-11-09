@@ -91,13 +91,13 @@ import Testing
         contentsOfFile: "Sources/WaxCore/Wax.swift",
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
+    let start = try #require(source.range(of: "    func commitLocked(frameImport importing: FrameImport? = nil) async throws {"))
     let remainder = source[start.lowerBound...]
     let end = try #require(remainder.range(of: "    private struct CommitRollbackState {"))
     let body = String(remainder[..<end.lowerBound])
 
     let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))
-    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC()"))
+    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC(frameImport: importing)"))
     let restoreDefer = try #require(body.range(of: "defer {\n            if !commitSucceeded {\n                rollbackState.restore(into: self)"))
     let successMark = try #require(body.range(of: "commitSucceeded = true"))
 

@@ -91,8 +91,9 @@ extension Wax {
         var vectorChanges: [PendingVectorChange]
     }
 
+    /// Applies the pending mutations, then `frameImport`'s frames and embeddings after them.
     /// Internal only because of the file split; call only while holding `opLock` for writing.
-    func applyPendingMutationsIntoTOC() throws -> AppliedPendingMutations {
+    func applyPendingMutationsIntoTOC(frameImport: FrameImport? = nil) throws -> AppliedPendingMutations {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
@@ -171,6 +172,16 @@ extension Wax {
                 }
                 vectorChanges.append(.remove(removal.frameId))
             }
+        }
+
+        if let frameImport {
+            guard frameImport.firstFrameId == UInt64(toc.frames.count + newFrames.count) else {
+                throw WaxError.invalidToc(
+                    reason: "frame import starts at \(frameImport.firstFrameId), expected \(toc.frames.count + newFrames.count)"
+                )
+            }
+            newFrames += frameImport.frames
+            vectorChanges += frameImport.embeddings.map(PendingVectorChange.put)
         }
 
         if !newFrames.isEmpty {

@@ -70,6 +70,12 @@ package actor Wax {
     /// Whether a header page on disk is still format 1.0 (Wax+VectorRuns.swift).
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var legacyHeaderPageOnDisk = false
+    /// The open frame import, if any (Wax+FrameImport.swift).
+    /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
+    var frameImport: FrameImport?
+    /// Writes parked until the open frame import ends (Wax+FrameImport.swift).
+    /// Internal only because of the file split.
+    var frameImportEndWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Internal only because of the file split; use only under `opLock` (`withReadLock` / `withWriteLock`).
     var dataEnd: UInt64
@@ -160,16 +166,46 @@ package actor Wax {
         }
     }
 
+    /// `withWriteLock` for writes from outside a frame import: waits until no import is open,
+    /// so the import's frame ids and its single commit stay its own.
+    /// Internal only because of the file split; takes the lock itself.
+    func withMutationLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
+        while true {
+            await waitUntilNoFrameImport()
+            await opLock.writeLock()
+            if frameImport == nil { break }
+            await opLock.writeUnlock()
+        }
+        do {
+            let value = try await body()
+            await opLock.writeUnlock()
+            return value
+        } catch {
+            await opLock.writeUnlock()
+            throw error
+        }
+    }
+
     /// Embedding writes take the embedding write gate before the op lock, the same order as
     /// ``withEmbeddingWritesPaused(_:)`` holders, so they wait out an in-flight stage/commit.
+    /// Like ``withMutationLock(_:)`` they wait for an open frame import first, holding neither.
     /// Internal only because of the file split; takes the locks itself.
     func withEmbeddingWriteLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
-        await embeddingWriteGate.lock()
+        while true {
+            await waitUntilNoFrameImport()
+            await embeddingWriteGate.lock()
+            await opLock.writeLock()
+            if frameImport == nil { break }
+            await opLock.writeUnlock()
+            await embeddingWriteGate.unlock()
+        }
         do {
-            let value = try await withWriteLock(body)
+            let value = try await body()
+            await opLock.writeUnlock()
             await embeddingWriteGate.unlock()
             return value
         } catch {
+            await opLock.writeUnlock()
             await embeddingWriteGate.unlock()
             throw error
         }
@@ -351,13 +387,18 @@ package actor Wax {
     }
 
     package func commit() async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             try await commitLocked()
         }
     }
 
-    private func commitLocked() async throws {
-        guard dirty || stagedLexIndex != nil else { return }
+    /// Commits the pending mutations, plus `frameImport` when the import commits itself.
+    /// Internal only because of the file split; call only while holding `opLock` for writing.
+    func commitLocked(frameImport importing: FrameImport? = nil) async throws {
+        guard importing != nil || frameImport == nil else {
+            throw WaxError.io("a frame import is open; only its own commit may run")
+        }
+        guard dirty || stagedLexIndex != nil || importing != nil else { return }
         // A frame whose last change is a removal needs no vector index.
         if pendingEmbeddingsLackVectorIndexLocked() {
             throw WaxError.vectorIndexNotStaged
@@ -372,7 +413,7 @@ package actor Wax {
             }
         }
 
-        let applied = try applyPendingMutationsIntoTOC()
+        let applied = try applyPendingMutationsIntoTOC(frameImport: importing)
         let appliedWalSeq = applied.maxSequence
         let cachedFramesPayload = try encodedCommittedFramePayloadForCommit(
             appendedFrames: applied.appendedFrames,
@@ -500,7 +541,7 @@ package actor Wax {
         }
 
         clearPendingMutations()
-        rememberDedupIndex?.didCommit()
+        rememberDedupIndex?.didCommit(appending: importing?.frames ?? [])
         stagedLexIndex = nil
         stagedLexIndexStamp = nil
         stagedVectorImport = nil
@@ -605,6 +646,17 @@ package actor Wax {
         }
     }
 
+    /// Whether a text index is staged for the next commit. Internal only because of the file
+    /// split; call only while holding `opLock`.
+    var hasStagedLexIndexLocked: Bool { stagedLexIndex != nil }
+
+    /// Drops the text index staged for the next commit. Internal only because of the file
+    /// split; call only while holding `opLock` for writing.
+    func discardStagedLexIndexLocked() {
+        stagedLexIndex = nil
+        stagedLexIndexStamp = nil
+    }
+
     package func readStagedLexIndexBytes() async -> Data? {
         await withReadLock {
             stagedLexIndex?.bytes
@@ -656,7 +708,7 @@ package actor Wax {
     }
 
     package func close() async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             var commitError: Error?
             if dirty || stagedLexIndex != nil {
                 do {

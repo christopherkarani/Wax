@@ -110,7 +110,7 @@ extension Wax {
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
-        try await withWriteLock {
+        try await withMutationLock {
             try await putLocked(content, options: options, timestampMs: nil, compression: compression)
         }
     }
@@ -121,7 +121,7 @@ extension Wax {
         compression: CanonicalEncoding = .plain,
         timestampMs: Int64
     ) async throws -> UInt64 {
-        try await withWriteLock {
+        try await withMutationLock {
             try await putLocked(content, options: options, timestampMs: timestampMs, compression: compression)
         }
     }
@@ -292,7 +292,7 @@ extension Wax {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
         }
 
-        return try await withWriteLock {
+        return try await withMutationLock {
             try await putBatchLocked(contents, options: options, timestampsMs: nil, compression: compression)
         }
     }
@@ -313,7 +313,7 @@ extension Wax {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != timestampsMs.count (\(timestampsMs.count))")
         }
 
-        return try await withWriteLock {
+        return try await withMutationLock {
             try await putBatchLocked(contents, options: options, timestampsMs: timestampsMs, compression: compression)
         }
     }
@@ -509,7 +509,7 @@ extension Wax {
     }
 
     package func delete(frameId: UInt64) async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             try validateKnownFrameForMutationLocked(frameId)
             let entry = WALEntry.deleteFrame(DeleteFrame(frameId: frameId))
             let payload = try WALEntryCodec.encode(entry)
@@ -524,7 +524,7 @@ extension Wax {
     }
 
     package func supersede(supersededId: UInt64, supersedingId: UInt64) async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             guard supersededId != supersedingId else {
                 throw WaxError.invalidToc(reason: "supersedeFrame requires distinct ids")
             }
