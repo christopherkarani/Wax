@@ -212,17 +212,20 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
 
     private func overwriteVector(at index: Int, with vector: [Float]) {
         let start = index * dimensions
-        for dim in 0..<dimensions {
-            vectors[start + dim] = vector[dim]
-        }
+        // One mutation per row: per-element subscript writes cost a uniqueness check each, and
+        // Swift 6.2 debug builds copied the whole store on every one of them.
+        vectors.replaceSubrange(start..<(start + dimensions), with: vector)
     }
 
     private func overwriteVector(at index: Int, withSliceFrom sourceIndex: Int) {
         guard index != sourceIndex else { return }
         let sourceStart = sourceIndex * dimensions
         let targetStart = index * dimensions
-        for dim in 0..<dimensions {
-            vectors[targetStart + dim] = vectors[sourceStart + dim]
+        let dimensions = dimensions
+        vectors.withUnsafeMutableBufferPointer { rows in
+            for dim in 0..<dimensions {
+                rows[targetStart + dim] = rows[sourceStart + dim]
+            }
         }
     }
 
