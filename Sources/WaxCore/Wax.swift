@@ -177,6 +177,34 @@ package actor Wax {
         }
     }
 
+    /// Runs `body` under the write lock if nobody holds it now; returns `nil` without running
+    /// it otherwise. Internal only because of the file split; takes the lock itself.
+    func withWriteLockIfFree<T: Sendable>(_ body: () async throws -> T) async rethrows -> T? {
+        guard await opLock.tryWriteLock() else { return nil }
+        do {
+            let value = try await body()
+            await opLock.writeUnlock()
+            return value
+        } catch {
+            await opLock.writeUnlock()
+            throw error
+        }
+    }
+
+    /// Holds the write lock, as a commit does, until ``releaseWriteLockForTesting()``.
+    package func acquireWriteLockForTesting() async {
+        await opLock.writeLock()
+    }
+
+    package func releaseWriteLockForTesting() async {
+        await opLock.writeUnlock()
+    }
+
+    /// Calls waiting for the write lock. Tests only.
+    package func writeLockWaitersForTesting() async -> Int {
+        await opLock.writersWaitingForTesting()
+    }
+
     /// Embedding writes take the embedding write gate before the op lock, the same order as
     /// ``withEmbeddingWritesPaused(_:)`` holders, so they wait out an in-flight stage/commit.
     /// Internal only because of the file split; takes the locks itself.

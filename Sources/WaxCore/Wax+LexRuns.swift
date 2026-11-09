@@ -52,71 +52,90 @@ extension Wax {
     /// a view of memory it holds unchanged only for the call.
     package func stageLexIndexForNextCommit(bytes: Data, docCount: UInt64, version: UInt32 = 1) async throws {
         try await withWriteLock {
-            guard version == 1 else {
-                throw WaxError.invalidToc(reason: "unsupported lex index version \(version)")
-            }
-            guard !bytes.isEmpty else {
-                throw WaxError.io("lex index bytes must be non-empty (expected sqlite3_serialize output)")
-            }
-            guard bytes.count <= Constants.maxBlobBytes else {
-                throw WaxError.capacityExceeded(
-                    limit: UInt64(Constants.maxBlobBytes),
-                    requested: UInt64(bytes.count)
-                )
-            }
-            let seed = lexFingerprintSeed
-            let (pageSize, fingerprints) = bytes.withUnsafeBytes { (image: UnsafeRawBufferPointer) -> (Int, [UInt64]) in
-                let pageSize = LexRunCodec.pageSize(of: image, fallback: Self.defaultLexPageSize)
-                return (pageSize, LexPageFingerprint.fingerprints(of: image, pageSize: pageSize, seed: seed))
-            }
+            try await stageLexIndexLocked(bytes: bytes, docCount: docCount, version: version)
+        }
+    }
 
-            if let staged = stagedLexIndex,
-               staged.docCount == docCount,
-               staged.version == version,
-               staged.pageSize == pageSize,
-               staged.imageLength == bytes.count,
-               staged.fingerprints == fingerprints {
+    /// Stages like ``stageLexIndexForNextCommit(bytes:docCount:version:)`` if no commit or other
+    /// call holds the store now, and returns whether it did; it never waits for the store. For a
+    /// caller lending `bytes` from memory that its own writers must leave unchanged until this
+    /// returns, which should not make them wait out a commit.
+    package func stageLexIndexForNextCommitIfUncontended(
+        bytes: Data,
+        docCount: UInt64,
+        version: UInt32 = 1
+    ) async throws -> Bool {
+        let staged: Void? = try await withWriteLockIfFree {
+            try await stageLexIndexLocked(bytes: bytes, docCount: docCount, version: version)
+        }
+        return staged != nil
+    }
+
+    private func stageLexIndexLocked(bytes: Data, docCount: UInt64, version: UInt32) async throws {
+        guard version == 1 else {
+            throw WaxError.invalidToc(reason: "unsupported lex index version \(version)")
+        }
+        guard !bytes.isEmpty else {
+            throw WaxError.io("lex index bytes must be non-empty (expected sqlite3_serialize output)")
+        }
+        guard bytes.count <= Constants.maxBlobBytes else {
+            throw WaxError.capacityExceeded(
+                limit: UInt64(Constants.maxBlobBytes),
+                requested: UInt64(bytes.count)
+            )
+        }
+        let seed = lexFingerprintSeed
+        let (pageSize, fingerprints) = bytes.withUnsafeBytes { (image: UnsafeRawBufferPointer) -> (Int, [UInt64]) in
+            let pageSize = LexRunCodec.pageSize(of: image, fallback: Self.defaultLexPageSize)
+            return (pageSize, LexPageFingerprint.fingerprints(of: image, pageSize: pageSize, seed: seed))
+        }
+
+        if let staged = stagedLexIndex,
+           staged.docCount == docCount,
+           staged.version == version,
+           staged.pageSize == pageSize,
+           staged.imageLength == bytes.count,
+           staged.fingerprints == fingerprints {
+            return
+        }
+
+        let content: StagedLexIndex.Content
+        if let manifest = toc.indexes.lex,
+           let committed = await committedLexFingerprintsLocked(pageSize: pageSize) {
+            let changed = fingerprints.indices.filter { index in
+                index >= committed.hashes.count || committed.hashes[index] != fingerprints[index]
+            }
+            if changed.isEmpty,
+               committed.imageLength == bytes.count,
+               manifest.docCount == docCount,
+               manifest.version == version {
+                stagedLexIndex = nil
+                stagedLexIndexStamp = nil
                 return
             }
-
-            let content: StagedLexIndex.Content
-            if let manifest = toc.indexes.lex,
-               let committed = await committedLexFingerprintsLocked(pageSize: pageSize) {
-                let changed = fingerprints.indices.filter { index in
-                    index >= committed.hashes.count || committed.hashes[index] != fingerprints[index]
-                }
-                if changed.isEmpty,
-                   committed.imageLength == bytes.count,
-                   manifest.docCount == docCount,
-                   manifest.version == version {
-                    stagedLexIndex = nil
-                    stagedLexIndexStamp = nil
-                    return
-                }
-                let deltaLength = LexRunCodec.encodedLength(pages: changed, pageSize: pageSize, imageLength: bytes.count)
-                if Self.lexDeltaFits(deltaLength, after: manifest, pageSize: pageSize, imageLength: bytes.count) {
-                    content = .delta(try bytes.withUnsafeBytes { (image: UnsafeRawBufferPointer) in
-                        try LexRunCodec.encode(pages: changed, of: image, pageSize: pageSize)
-                    })
-                } else {
-                    content = .base(Self.copying(bytes))
-                }
+            let deltaLength = LexRunCodec.encodedLength(pages: changed, pageSize: pageSize, imageLength: bytes.count)
+            if Self.lexDeltaFits(deltaLength, after: manifest, pageSize: pageSize, imageLength: bytes.count) {
+                content = .delta(try bytes.withUnsafeBytes { (image: UnsafeRawBufferPointer) in
+                    try LexRunCodec.encode(pages: changed, of: image, pageSize: pageSize)
+                })
             } else {
                 content = .base(Self.copying(bytes))
             }
-
-            stagedLexIndex = StagedLexIndex(
-                content: content,
-                docCount: docCount,
-                version: version,
-                pageSize: pageSize,
-                imageLength: bytes.count,
-                fingerprints: fingerprints
-            )
-            stagedLexIndexStampCounter &+= 1
-            stagedLexIndexStamp = stagedLexIndexStampCounter
-            dirty = true
+        } else {
+            content = .base(Self.copying(bytes))
         }
+
+        stagedLexIndex = StagedLexIndex(
+            content: content,
+            docCount: docCount,
+            version: version,
+            pageSize: pageSize,
+            imageLength: bytes.count,
+            fingerprints: fingerprints
+        )
+        stagedLexIndexStampCounter &+= 1
+        stagedLexIndexStamp = stagedLexIndexStampCounter
+        dirty = true
     }
 
     /// Whether a delta of `deltaLength` bytes can follow the runs of `manifest`, or the commit

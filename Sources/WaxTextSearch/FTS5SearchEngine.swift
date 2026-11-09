@@ -306,9 +306,22 @@ package actor FTS5SearchEngine {
         if !dirty, !compact { return }
         try await recordCoverage(of: metas)
         try await flushPendingOpsIfNeeded()
-        // The store compares the image page by page with the committed one and keeps only the
-        // changed pages. A borrowed image is SQLite's own buffer, so writes wait until the
-        // store has read it; a copy needs no such wait.
+        // Ops queued while the flushes above awaited, or from here on, are not in the image
+        // staged below; they keep the engine dirty so the next stage writes them.
+        dirty = !pendingOps.isEmpty || !pendingStructuredOps.isEmpty
+        do {
+            try await stageImage(into: wax, compact: compact)
+        } catch {
+            dirty = true
+            throw error
+        }
+    }
+
+    /// Hands the store the database image, which it compares page by page with the committed
+    /// one to keep only the changed pages. A borrowed image is SQLite's own buffer, so writes
+    /// wait until the store has read it. When a commit holds the store, the image is copied
+    /// instead, so writes do not wait out the commit's fsyncs.
+    private func stageImage(into wax: Wax, compact: Bool) async throws {
         await beginWrite()
         var holdsWriteGate = true
         defer { if holdsWriteGate { endWrite() } }
@@ -321,13 +334,20 @@ package actor FTS5SearchEngine {
                 return try FTS5Serializer.image(connection: try Self.requireConnection(db))
             }
         }
-        if !image.borrowed {
-            holdsWriteGate = false
-            endWrite()
+        // Flushes change the count only under the write gate, so it matches the image.
+        let imageDocCount = docCount
+        var bytes = image.bytes
+        if image.borrowed {
+            if try await wax.stageLexIndexForNextCommitIfUncontended(bytes: bytes, docCount: imageDocCount) {
+                lastStagedImageWasBorrowed = true
+                return
+            }
+            bytes = image.bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Data in Data(raw) }
         }
-        try await wax.stageLexIndexForNextCommit(bytes: image.bytes, docCount: docCount)
-        lastStagedImageWasBorrowed = image.borrowed
-        dirty = false
+        holdsWriteGate = false
+        endWrite()
+        try await wax.stageLexIndexForNextCommit(bytes: bytes, docCount: imageDocCount)
+        lastStagedImageWasBorrowed = false
     }
 
     /// Whether the last `stageForCommit` handed the store SQLite's buffer instead of a copy.
