@@ -27,26 +27,38 @@ private enum CrashScenario: String, CaseIterable {
     case toc
     case footer
     case header
+    /// A frame import's commit, killed before and after its footer is durable.
+    case importToc = "import-toc"
+    case importFooter = "import-footer"
+
+    /// Frames the import scenarios' child imports.
+    static let importCount = 300
 
     var checkpoint: String {
         switch self {
         case .segment:
             return "after_vector_run_write_before_toc"
-        case .toc:
+        case .toc, .importToc:
             return "after_toc_write_before_footer"
-        case .footer:
+        case .footer, .importFooter:
             return "after_footer_fsync_before_header"
         case .header:
             return "after_header_write_before_final_fsync"
         }
     }
 
+    var isImport: Bool {
+        self == .importToc || self == .importFooter
+    }
+
     var expectedCommittedFramesAfterRecovery: UInt64 {
         switch self {
-        case .segment, .toc:
+        case .segment, .toc, .importToc:
             return 1
         case .footer, .header:
             return 2
+        case .importFooter:
+            return 1 + UInt64(Self.importCount)
         }
     }
 }
@@ -112,6 +124,7 @@ struct WaxCrashHarness {
             throw HarnessError.childDidNotCrash(status: child.status, reason: child.reason)
         }
 
+        let crashedSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
         let recovered = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
         let stats = await recovered.stats()
         guard stats.frameCount == scenario.expectedCommittedFramesAfterRecovery else {
@@ -122,6 +135,12 @@ struct WaxCrashHarness {
         let seed = try await recovered.frameContent(frameId: seedFrameId)
         guard seed == Data("seed".utf8) else {
             throw HarnessError.invariantFailed("seed frame mismatch after recovery")
+        }
+
+        if scenario.isImport {
+            try await checkImport(recovered, scenario: scenario, seedFrameId: seedFrameId, crashedSize: crashedSize?.uint64Value ?? 0)
+            try await recovered.close()
+            return
         }
 
         try await checkVectors(recovered, scenario: scenario, seedFrameId: seedFrameId)
@@ -161,6 +180,52 @@ struct WaxCrashHarness {
         let pending = await wax.pendingEmbeddingMutations(since: nil).embeddings.map(\.frameId)
         guard pending == (childCommitted ? [] : [childFrameId]) else {
             throw HarnessError.invariantFailed("pending vectors mismatch after \(scenario.rawValue): \(pending)")
+        }
+    }
+
+    private static func importPayload(_ index: Int) -> Data {
+        Data("imported-\(index)-".utf8) + Data(repeating: UInt8(truncatingIfNeeded: index), count: 512)
+    }
+
+    /// An import commit that died before its footer leaves the seed alone, and its payloads
+    /// are free space; one that died after its footer synced is recovered whole, vectors too.
+    private static func checkImport(
+        _ wax: WaxCore.Wax,
+        scenario: CrashScenario,
+        seedFrameId: UInt64,
+        crashedSize: UInt64
+    ) async throws {
+        try await wax.verify(deep: true)
+        let committed = scenario == .importFooter
+        guard let vectors = try await wax.readCommittedVectors() else {
+            throw HarnessError.invariantFailed("no committed vectors after \(scenario.rawValue)")
+        }
+        let expectedVectorCount = committed ? 1 + CrashScenario.importCount : 1
+        guard vectors.frameIds.count == expectedVectorCount else {
+            throw HarnessError.invariantFailed(
+                "\(scenario.rawValue) expected \(expectedVectorCount) committed vectors, got \(vectors.frameIds.count)"
+            )
+        }
+        if committed {
+            for index in [0, CrashScenario.importCount / 2, CrashScenario.importCount - 1] {
+                let frameId = seedFrameId + 1 + UInt64(index)
+                guard try await wax.frameContent(frameId: frameId) == importPayload(index) else {
+                    throw HarnessError.invariantFailed("imported frame \(index) mismatch after \(scenario.rawValue)")
+                }
+                guard let row = vectors.frameIds.firstIndex(of: frameId),
+                      Array(vectors.vectors[(row * 8)..<((row + 1) * 8)]) == vector(frameId) else {
+                    throw HarnessError.invariantFailed("imported vector \(index) mismatch after \(scenario.rawValue)")
+                }
+            }
+            return
+        }
+        // The dead import's payloads are free: a commit truncates them away.
+        let path = await wax.fileURL().path
+        _ = try await wax.put(Data("after".utf8), options: FrameMetaSubset(searchText: "after"))
+        try await wax.commit()
+        let after = try FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber
+        guard let after, after.uint64Value < crashedSize else {
+            throw HarnessError.invariantFailed("\(scenario.rawValue) did not reclaim the dead import's space")
         }
     }
 
@@ -205,6 +270,20 @@ struct WaxCrashHarness {
 
         let url = URL(fileURLWithPath: storePath)
         let wax = try await WaxCore.Wax.open(at: url, options: WaxOptions(walReplayStateSnapshotEnabled: true))
+        if scenario.isImport {
+            guard try await wax.beginFrameImport() else {
+                throw HarnessError.invariantFailed("could not open a frame import")
+            }
+            let indices = Array(0..<CrashScenario.importCount)
+            let ids = try await wax.importFrames(
+                indices.map(importPayload),
+                options: indices.map { (index: Int) -> FrameMetaSubset in FrameMetaSubset(searchText: "imported \(index)") }
+            )
+            try await wax.importEmbeddings(frameIds: ids, vectors: ids.map(vector))
+            try await wax.commitFrameImport()
+            try await wax.close()
+            return
+        }
         let frameId = try await wax.put(
             Data("payload-\(scenario.rawValue)".utf8),
             options: FrameMetaSubset(searchText: "payload-\(scenario.rawValue)")

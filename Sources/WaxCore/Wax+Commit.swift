@@ -50,6 +50,11 @@ extension Wax {
         // for those cases; it should never be reached in normal crash-injection runs but
         // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
+        // Another thread may take the signal a little later on a busy machine; wait for it
+        // instead of reaching the safety net first.
+        for _ in 0..<1_000 {
+            usleep(10_000)
+        }
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
 #else
