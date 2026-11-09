@@ -89,22 +89,22 @@ private final class DeadlineBox: @unchecked Sendable {
 
     /// Holds `source` for a later `cancel()`; cancels it at once if that already ran.
     func install(_ source: DispatchSourceTimer) {
-        lock.lock()
-        guard !isCancelled else {
-            lock.unlock()
-            source.cancel()
-            return
+        let alreadyCancelled = lock.withLock {
+            if isCancelled { return true }
+            timer = source
+            return false
         }
-        timer = source
-        lock.unlock()
+        if alreadyCancelled {
+            source.cancel()
+        }
     }
 
     func cancel() {
-        lock.lock()
-        isCancelled = true
-        let source = timer
-        timer = nil
-        lock.unlock()
+        let source = lock.withLock {
+            isCancelled = true
+            defer { timer = nil }
+            return timer
+        }
         source?.cancel()
     }
 }
@@ -116,16 +116,11 @@ private final class CancelBox: @unchecked Sendable {
     private var watcher: Task<Void, Never>?
 
     func setWatcher(_ task: Task<Void, Never>) {
-        lock.lock()
-        defer { lock.unlock() }
-        watcher = task
+        lock.withLock { watcher = task }
     }
 
     func cancelWatcher() {
-        lock.lock()
-        let task = watcher
-        lock.unlock()
-        task?.cancel()
+        lock.withLock { watcher }?.cancel()
     }
 }
 
@@ -138,35 +133,47 @@ private final class OnceThrowingContinuation<T: Sendable>: @unchecked Sendable {
     private var pendingResult: Result<T, any Error>?
     private var isResolved = false
 
+    private enum ResumeAction {
+        case alreadyResolved
+        case held
+        case resume(CheckedContinuation<T, Error>)
+    }
+
     func install(_ continuation: CheckedContinuation<T, Error>) {
-        lock.lock()
-        if let pendingResult {
-            self.pendingResult = nil
-            lock.unlock()
-            continuation.resume(with: pendingResult)
-            return
+        let pending: Result<T, any Error>? = lock.withLock {
+            if let pendingResult {
+                self.pendingResult = nil
+                return pendingResult
+            }
+            self.continuation = continuation
+            return nil
         }
-        self.continuation = continuation
-        lock.unlock()
+        if let pending {
+            continuation.resume(with: pending)
+        }
     }
 
     /// Returns `false` when a result was already delivered.
     @discardableResult
     func resume(with result: Result<T, any Error>) -> Bool {
-        lock.lock()
-        guard !isResolved else {
-            lock.unlock()
-            return false
+        let action: ResumeAction = lock.withLock {
+            guard !isResolved else { return .alreadyResolved }
+            isResolved = true
+            guard let continuation else {
+                pendingResult = result
+                return .held
+            }
+            self.continuation = nil
+            return .resume(continuation)
         }
-        isResolved = true
-        guard let continuation else {
-            pendingResult = result
-            lock.unlock()
+        switch action {
+        case .alreadyResolved:
+            return false
+        case .held:
+            return true
+        case .resume(let continuation):
+            continuation.resume(with: result)
             return true
         }
-        self.continuation = nil
-        lock.unlock()
-        continuation.resume(with: result)
-        return true
     }
 }

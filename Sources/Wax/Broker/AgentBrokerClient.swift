@@ -43,7 +43,7 @@ package enum AgentBrokerClient {
     /// Silence window after our spawned peer exits before startup fails.
     /// A bind-race winner answers within milliseconds; anything longer
     /// means no broker will ever serve this socket.
-    private static let peerExitGraceSeconds: TimeInterval = 1.0
+    private static let peerExitGrace: Duration = .seconds(1)
 
     /// How long a cancelled or failed start lets the launched broker exit on SIGTERM
     /// before it is SIGKILLed, so a broker mid-write can close its store cleanly.
@@ -239,7 +239,7 @@ package enum AgentBrokerClient {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         var observedExitStatus: Int32?
         var observedStderr: String?
-        var peerExitNotedAt: Date?
+        var peerExitNotedAt: ContinuousClock.Instant?
         var failedFast = false
         while Date() < deadline {
             if let response = try await sendOffPool(
@@ -261,7 +261,7 @@ package enum AgentBrokerClient {
                     observedStderr = await BlockingWork.run { readPipeText(stderrPipe) }
                 }
                 if peerExitNotedAt == nil {
-                    peerExitNotedAt = Date()
+                    peerExitNotedAt = ContinuousClock.now
                 }
             } else {
                 peerExitNotedAt = nil
@@ -272,7 +272,7 @@ package enum AgentBrokerClient {
             // answers within milliseconds), and the post-loop ping below
             // remains the last chance for a slow winner.
             if let noted = peerExitNotedAt,
-               Date().timeIntervalSince(noted) > peerExitGraceSeconds {
+               noted.duration(to: .now) > peerExitGrace {
                 failedFast = true
                 break
             }

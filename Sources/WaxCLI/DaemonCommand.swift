@@ -304,13 +304,14 @@ private extension DaemonCommand {
         idleTimeoutSeconds: Double,
         shutdown: DaemonShutdown
     ) throws {
-        var lastActivity = Date()
+        // Monotonic: a wall-clock change must not trigger or postpone the idle exit.
+        var lastActivity = ContinuousClock.now
         while !inflight.shouldStop, !shutdown.isRequested {
             var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
             if pollResult == 0 {
                 if idleTimeoutSeconds > 0,
-                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
+                   lastActivity.duration(to: .now) / .seconds(1) >= idleTimeoutSeconds,
                    !inflight.hasClients {
                     return
                 }
@@ -327,7 +328,7 @@ private extension DaemonCommand {
                 throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
             }
 
-            lastActivity = Date()
+            lastActivity = ContinuousClock.now
             disableSIGPIPE(on: client)
             guard inflight.admitClient(limit: maxClients) else {
                 rejectBusyClient(client)
@@ -674,9 +675,7 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     func clientDone() {
-        lock.lock()
-        clients = max(0, clients - 1)
-        lock.unlock()
+        lock.withLock { clients = max(0, clients - 1) }
     }
 
     var hasClients: Bool {
@@ -695,15 +694,11 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     func endHandling() {
-        lock.lock()
-        handling = max(0, handling - 1)
-        lock.unlock()
+        lock.withLock { handling = max(0, handling - 1) }
     }
 
     func startDraining() {
-        lock.lock()
-        draining = true
-        lock.unlock()
+        lock.withLock { draining = true }
     }
 
     var isHandling: Bool {
@@ -713,9 +708,7 @@ private final class SocketInflight: @unchecked Sendable {
     }
 
     func requestStop() {
-        lock.lock()
-        stop = true
-        lock.unlock()
+        lock.withLock { stop = true }
     }
 
     var shouldStop: Bool {
