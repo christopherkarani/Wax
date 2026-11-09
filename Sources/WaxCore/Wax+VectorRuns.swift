@@ -209,6 +209,23 @@ extension Wax {
         var liveFrameIds: Set<UInt64>?
     }
 
+    /// Removes vec catalog entries no run names and returns their ranges, to free once the
+    /// commit is durable. Released 1.0 builds left one per superseded vector segment.
+    /// Internal only because of the file split; call only from the commit, after
+    /// ``writeVectorRunsLocked(_:generation:)``, while holding `opLock` for writing.
+    func removeUnreferencedVecSegmentsLocked() -> [Range<UInt64>] {
+        let named = Set((toc.indexes.vec?.runs ?? []).map(\.bytesOffset))
+        var unreferenced: [Range<UInt64>] = []
+        toc.segmentCatalog.entries.removeAll { entry in
+            guard entry.kind == .vec, !named.contains(entry.bytesOffset) else { return false }
+            if entry.bytesLength > 0 {
+                unreferenced.append(entry.bytesOffset..<(entry.bytesOffset + entry.bytesLength))
+            }
+            return true
+        }
+        return unreferenced
+    }
+
     /// Writes this commit's run and at most one merge, and updates the vec manifest and
     /// catalog in `toc`. Internal only because of the file split; call only from the commit,
     /// while holding `opLock` for writing.

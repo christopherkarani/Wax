@@ -412,6 +412,7 @@ package actor Wax {
         let footerGeneration = try nextFooterGenerationLocked()
         let vectorRuns = try await writeVectorRunsLocked(applied.vectorChanges, generation: footerGeneration)
         supersededRanges += vectorRuns.supersededRanges
+        supersededRanges += removeUnreferencedVecSegmentsLocked()
         if vectorRuns.liveFrameIds != nil {
             Self.maybeCrashAfterCheckpoint(.afterVectorRunWriteBeforeToc)
         }

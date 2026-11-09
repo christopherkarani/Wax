@@ -475,6 +475,74 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
     try await reopened.close()
 }
 
+// MARK: - Stores released builds wrote
+
+private func staleFixtureVector(_ frame: Int, version: Int = 0) -> [Float] {
+    (0..<8).map { Float(frame + 1) * 0.01 + Float($0) * 0.1 + Float(version) }
+}
+
+/// The fixture's committed vectors: frames 0..<32, frames 5 and 7 re-embedded once.
+private func staleFixtureVectors() -> [UInt64: [Float]] {
+    var expected = Dictionary(uniqueKeysWithValues: (0..<32).map { (UInt64($0), staleFixtureVector($0)) })
+    expected[5] = staleFixtureVector(5, version: 1)
+    expected[7] = staleFixtureVector(7, version: 1)
+    return expected
+}
+
+private func vecCatalogRanges(_ wax: Wax) async -> [Range<UInt64>] {
+    await wax.segmentCatalogEntriesForTesting()
+        .filter { $0.kind == .vec }
+        .map { $0.bytesOffset..<($0.bytesOffset + $0.bytesLength) }
+}
+
+/// Released builds (waxmcp 0.1.50 and earlier) appended a vec catalog entry per commit that
+/// staged a vector index and never removed the old ones. Such a store opens with its blob
+/// adopted as the only run, and its first commit, with or without vectors, drops the stale
+/// entries and frees their space once its header is durable.
+@Test(arguments: [true, false])
+func aV1StoreWithStaleVecCatalogEntriesOpensAndFreesThemAtItsFirstCommit(firstCommitWritesVectors: Bool) async throws {
+    let url = try await copyMigrationFixture(named: "migration-v1-stale-vec-entries")
+    defer { try? FileManager.default.removeItem(at: url) }
+    var expected = staleFixtureVectors()
+
+    let wax = try await Wax.open(at: url)
+    #expect(await wax.stats().frameCount == 35)
+    #expect(try await committedMap(wax) == expected)
+    #expect(try await wax.committedVectorFrameIds() == Set(expected.keys))
+    try await wax.verify(deep: true)
+    let adopted = try #require(await wax.committedVecIndexManifest()?.runs.first)
+    let stale = await vecCatalogRanges(wax).filter { $0.lowerBound != adopted.bytesOffset }
+    #expect(stale.count == 2, "the fixture holds the two superseded blobs")
+
+    if firstCommitWritesVectors {
+        try await wax.putEmbedding(frameId: 33, vector: staleFixtureVector(33))
+        expected[33] = staleFixtureVector(33)
+    } else {
+        _ = try await wax.put(Data("frame 35".utf8))
+    }
+    try await wax.commit()
+
+    let manifest = try #require(await wax.committedVecIndexManifest())
+    #expect(await vecCatalogRanges(wax) == manifest.runs.map { $0.bytesOffset..<($0.bytesOffset + $0.bytesLength) })
+    let free = await wax.freeDataRangesForTesting()
+    let fileSize = try #require(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber).uint64Value
+    for range in stale {
+        #expect(
+            range.lowerBound >= fileSize
+                || free.contains { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound },
+            "stale vec segment \(range) is free after the first commit"
+        )
+    }
+    #expect(try await committedMap(wax) == expected)
+    try await wax.verify(deep: true)
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    #expect(try await committedMap(reopened) == expected)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
 // MARK: - RNG
 
 private struct RunTestRandom {

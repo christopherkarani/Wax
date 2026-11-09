@@ -306,7 +306,10 @@ extension Wax {
                     throw WaxError.invalidToc(reason: "vec run missing matching segment catalog entry")
                 }
             }
-            guard segmentCatalog.entries.count(where: { $0.kind == .vec }) == vec.runs.count else {
+            // Released 1.0 builds kept every superseded vec segment in the catalog. Their blob is
+            // adopted as the only run, with no keys checksum, and the first commit drops the rest.
+            let adoptedLegacyBlob = vec.runs.count == 1 && vec.runs[0].keysChecksum == nil
+            guard adoptedLegacyBlob || segmentCatalog.entries.count(where: { $0.kind == .vec }) == vec.runs.count else {
                 throw WaxError.invalidToc(reason: "vec segment catalog entries do not match the vec runs")
             }
             let rowCount = vec.runs.reduce(UInt64(0)) { $0 &+ $1.rowCount }
