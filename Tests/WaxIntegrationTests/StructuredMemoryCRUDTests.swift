@@ -646,3 +646,56 @@ import WaxVectorSearch
     let ids = result.hits.map(\.factId)
     #expect(ids == [factA, factB])
 }
+
+@Test func concurrentAssertFactsApplyEachOperationOnce() async throws {
+    // Each assertFact flushes the structured queue and awaits the write. A flush that starts
+    // while another is in flight must not re-apply the operations the first one is writing.
+    let engine = try FTS5SearchEngine.inMemory()
+    let factCount = 200
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for i in 0..<factCount {
+            group.addTask {
+                _ = try await engine.assertFact(
+                    subject: EntityKey("person:p\(i)"),
+                    predicate: PredicateKey("status"),
+                    object: .string("value-\(i)"),
+                    valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+                    system: StructuredTimeRange(fromMs: 10, toMs: nil),
+                    evidence: [
+                        StructuredEvidence(
+                            sourceFrameId: UInt64(i),
+                            chunkIndex: nil,
+                            spanUTF8: 0..<4,
+                            extractorId: "test",
+                            extractorVersion: "1",
+                            confidence: 0.5,
+                            assertedAtMs: 10
+                        ),
+                    ]
+                )
+            }
+        }
+        try await group.waitForAll()
+    }
+
+    var wrongFacts = 0
+    var maxEvidence = 0
+    for i in 0..<factCount {
+        let result = try await engine.facts(
+            about: EntityKey("person:p\(i)"),
+            predicate: PredicateKey("status"),
+            asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+            limit: 10
+        )
+        let evidenceCount = result.hits.reduce(0) { (sum: Int, hit: StructuredFactHit) -> Int in
+            sum + hit.evidence.count
+        }
+        if result.hits.count != 1 || evidenceCount != 1 { wrongFacts += 1 }
+        maxEvidence = max(maxEvidence, evidenceCount)
+    }
+    #expect(
+        wrongFacts == 0,
+        "facts with duplicated or missing evidence: \(wrongFacts) of \(factCount); max evidence rows \(maxEvidence)"
+    )
+}

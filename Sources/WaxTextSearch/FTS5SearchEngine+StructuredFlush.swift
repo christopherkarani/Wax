@@ -15,7 +15,12 @@ extension FTS5SearchEngine {
 
     func flushPendingStructuredOpsIfNeeded() async throws {
         guard !pendingStructuredOps.isEmpty else { return }
+        await acquireFlushGate()
+        defer { releaseFlushGate() }
+        // The flush this one waited for may have applied everything.
+        guard !pendingStructuredOps.isEmpty else { return }
 
+        // Ops are only appended while the write is in flight, so the snapshot stays the prefix.
         let ops = pendingStructuredOps
         let dbQueue = self.dbQueue
 
@@ -326,7 +331,7 @@ extension FTS5SearchEngine {
             }
         }
 
-        pendingStructuredOps.removeAll(keepingCapacity: true)
+        pendingStructuredOps.removeFirst(ops.count)
     }
 
     private struct FactObjectColumns {

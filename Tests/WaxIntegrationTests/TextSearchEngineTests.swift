@@ -606,3 +606,56 @@ private enum SQLiteBlobInspector {
 
     try FileManager.default.removeItem(at: tempDir)
 }
+
+/// Set once by the task under test; polled by the task racing it.
+private final class CompletionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func markDone() {
+        lock.lock()
+        done = true
+        lock.unlock()
+    }
+
+    var isDone: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return done
+    }
+}
+
+@Test func indexDuringInFlightFlushIsNotDropped() async throws {
+    // A search flushes the queued ops and awaits the SQLite write. Index calls that land
+    // during that await must stay queued and reach SQLite on a later flush.
+    let engine = try FTS5SearchEngine.inMemory()
+    let filler = Array(repeating: "filler", count: 64).joined(separator: " ")
+    // Below the auto-flush threshold, so the whole seed stays queued for one long write.
+    let seedCount = 1_000
+    for i in 0..<seedCount {
+        try await engine.index(frameId: UInt64(i), text: "seed \(filler)")
+    }
+
+    let flushDone = CompletionFlag()
+    let flushing = Task {
+        defer { flushDone.markDone() }
+        _ = try await engine.search(matchQuery: "\"seed\"", topK: 1)
+    }
+    // Keep indexing, paced, until the flush returns, so some calls land while it is in flight.
+    // The cap keeps the queue below the auto-flush threshold, so this loop never flushes itself.
+    var nextFrameId = UInt64(seedCount)
+    let lastFrameId = UInt64(seedCount + 1_000)
+    while !flushDone.isDone, nextFrameId < lastFrameId {
+        try await engine.index(frameId: nextFrameId, text: "late arrival")
+        nextFrameId += 1
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    try await flushing.value
+
+    let lateIds = Set(UInt64(seedCount)..<nextFrameId)
+    let count = try await engine.count()
+    #expect(count == Int(nextFrameId))
+    let lateHits = try await engine.search(matchQuery: "\"late\"", topK: 10_000)
+    let missing = lateIds.subtracting(lateHits.map(\.frameId))
+    #expect(missing.isEmpty, "late frames missing from the text index: \(missing.count) of \(lateIds.count)")
+}

@@ -29,6 +29,10 @@ package actor FTS5SearchEngine {
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
     var pendingStructuredOps: [StructuredOp] = []
+    /// Flushes are mutually exclusive. The queues are snapshotted before an `await`, so a flush
+    /// that overlapped another would re-apply the in-flight snapshot; see `acquireFlushGate()`.
+    private var flushGateHeld = false
+    private var flushGateWaiters: [CheckedContinuation<Void, Never>] = []
     /// Every text-indexable frame below this id is indexed (or was when it was staged).
     /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
     var coveredBelowFrameId: UInt64
@@ -285,13 +289,39 @@ package actor FTS5SearchEngine {
         try await flushPendingOpsIfNeeded()
     }
 
-    func flushPendingOpsIfNeeded() async throws {
-        guard !pendingOps.isEmpty else {
-            if !pendingStructuredOps.isEmpty {
-                try await flushPendingStructuredOpsIfNeeded()
-            }
+    /// Waits until no other flush is in flight, then takes the gate. Pair with `releaseFlushGate()`.
+    func acquireFlushGate() async {
+        guard flushGateHeld else {
+            flushGateHeld = true
             return
         }
+        // The releasing flush hands the gate straight to the first waiter.
+        await withCheckedContinuation { flushGateWaiters.append($0) }
+    }
+
+    func releaseFlushGate() {
+        if flushGateWaiters.isEmpty {
+            flushGateHeld = false
+        } else {
+            flushGateWaiters.removeFirst().resume()
+        }
+    }
+
+    func flushPendingOpsIfNeeded() async throws {
+        try await flushPendingTextOpsIfNeeded()
+        if !pendingStructuredOps.isEmpty {
+            try await flushPendingStructuredOpsIfNeeded()
+        }
+    }
+
+    /// Writes a snapshot of the queued text ops. Ops queued while the write is in flight, or
+    /// that replace a snapshotted op, stay queued; on a throw the whole snapshot stays queued.
+    private func flushPendingTextOpsIfNeeded() async throws {
+        guard !pendingOps.isEmpty else { return }
+        await acquireFlushGate()
+        defer { releaseFlushGate() }
+        // The flush this one waited for may have written everything.
+        guard !pendingOps.isEmpty else { return }
 
         let ops = pendingOps
         let keys = pendingKeys
@@ -350,12 +380,10 @@ package actor FTS5SearchEngine {
             docCount = docCount > removedU ? (docCount &- removedU) : 0
         }
 
-        pendingOps.removeAll(keepingCapacity: true)
-        pendingKeys.removeAll(keepingCapacity: true)
-
-        if !pendingStructuredOps.isEmpty {
-            try await flushPendingStructuredOpsIfNeeded()
+        for frameIdValue in keys where pendingOps[frameIdValue] == ops[frameIdValue] {
+            pendingOps.removeValue(forKey: frameIdValue)
         }
+        pendingKeys.removeAll { pendingOps[$0] == nil }
     }
 
     private static func makeConfiguration() -> Configuration {
