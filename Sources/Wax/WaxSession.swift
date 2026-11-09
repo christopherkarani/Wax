@@ -363,7 +363,7 @@ package actor WaxSession {
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
         try ensureWritable()
-        let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        let merged = try Self.mergeOptions(options, identity: identity, embeddingCount: embedding.count)
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
@@ -378,7 +378,7 @@ package actor WaxSession {
         timestampMs: Int64
     ) async throws -> UInt64 {
         try ensureWritable()
-        let merged = try mergeOptions(options, identity: identity, embeddingCount: embedding.count)
+        let merged = try Self.mergeOptions(options, identity: identity, embeddingCount: embedding.count)
         let frameId = try await wax.put(content, options: merged, compression: compression, timestampMs: timestampMs)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
@@ -420,7 +420,7 @@ package actor WaxSession {
         var mergedOptions = options
         if let identity {
             for (index, embedding) in embeddings.enumerated() {
-                mergedOptions[index] = try mergeOptions(
+                mergedOptions[index] = try Self.mergeOptions(
                     mergedOptions[index],
                     identity: identity,
                     embeddingCount: embedding.count
@@ -457,7 +457,7 @@ package actor WaxSession {
         var mergedOptions = options
         if let identity {
             for (index, embedding) in embeddings.enumerated() {
-                mergedOptions[index] = try mergeOptions(
+                mergedOptions[index] = try Self.mergeOptions(
                     mergedOptions[index],
                     identity: identity,
                     embeddingCount: embedding.count
@@ -485,6 +485,71 @@ package actor WaxSession {
             return meta.id
         }
         return nil
+    }
+
+    // MARK: - Frame import
+
+    /// Commits the store's open frame import (``Wax/beginFrameImport()``): indexes `texts`,
+    /// stages the text index and, when `hasVectors`, the vector index configuration, commits,
+    /// then adds the committed vectors to the vector engine. If a step throws, `texts` leave
+    /// the text index again and the import stays open for the caller to abandon.
+    package func commitFrameImport(
+        texts: [(frameId: UInt64, text: String)],
+        hasVectors: Bool,
+        memoryBinding: MemoryBinding?
+    ) async throws {
+        try ensureWritable()
+        let indexesTexts = config.enableTextSearch && !texts.isEmpty
+        let coverage = await textEngine?.coverageWatermark()
+        let embeddings: [PutEmbedding]
+        do {
+            if indexesTexts, let textEngine {
+                try await textEngine.indexBatch(frameIds: texts.map(\.frameId), texts: texts.map(\.text))
+            }
+            try await stageTextIndex(compact: false)
+            if hasVectors {
+                guard let concreteVectorEngine else {
+                    throw WaxError.io("vector search enabled but no vector engine configured; set vectorDimensions")
+                }
+                try await concreteVectorEngine.stageForCommit(into: wax)
+            }
+            embeddings = try await wax.commitFrameImport(memoryBinding: memoryBinding)
+        } catch {
+            if let textEngine {
+                if indexesTexts {
+                    await Self.unindex(texts.map(\.frameId), from: textEngine)
+                }
+                if let coverage {
+                    await textEngine.lowerCoverage(to: coverage)
+                }
+            }
+            throw error
+        }
+        guard !embeddings.isEmpty, let concreteVectorEngine else { return }
+        do {
+            try await concreteVectorEngine.addBatch(
+                frameIds: embeddings.map(\.frameId),
+                vectors: embeddings.map(\.vector)
+            )
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "frame import vector engine load",
+                fallback: "the committed vectors load into the engine on the next open"
+            )
+        }
+    }
+
+    private static func unindex(_ frameIds: [UInt64], from textEngine: FTS5SearchEngine) async {
+        do {
+            try await textEngine.indexBatch(frameIds: frameIds, texts: Array(repeating: "", count: frameIds.count))
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "frame import text index rollback",
+                fallback: "postings of the abandoned import stay until those frame ids are written again"
+            )
+        }
     }
 
     // MARK: - Lifecycle
@@ -615,7 +680,9 @@ package actor WaxSession {
         )
     }
 
-    private func mergeOptions(
+    /// `options` with the provider identity's `wax.embedding.*` metadata, for a frame stored
+    /// with an `embeddingCount`-dimensional vector.
+    package static func mergeOptions(
         _ options: FrameMetaSubset,
         identity: EmbeddingIdentity?,
         embeddingCount: Int

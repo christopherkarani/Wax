@@ -350,42 +350,52 @@ extension MemoryOrchestrator {
         )
     }
 
+    /// What making an existing single-chunk document searchable takes: indexing its text,
+    /// embedding it, both or neither. Internal only because of the file split.
+    func singleChunkDocumentRepair(
+        documentId: UInt64,
+        text: String
+    ) async -> (indexText: Bool, embed: Bool) {
+        if await isSingleChunkDocumentSearchable(documentId: documentId, expectedText: text) {
+            return (false, false)
+        }
+        let indexText = config.enableTextSearch
+            ? !(await documentIsInTextIndex(documentId: documentId, text: text))
+            : false
+        let embed = config.enableVectorSearch
+            ? !(await documentHasEmbedding(frameId: documentId))
+            : false
+        return (indexText, embed)
+    }
+
     /// Re-index / re-embed an existing single-chunk document in place (0 new frames).
     /// `searchText` cannot be patched on a written frame; FTS and embeddings can.
     private func ensureSingleChunkDocumentSearchable(
         documentId: UInt64,
         text: String
     ) async throws {
-        if await isSingleChunkDocumentSearchable(documentId: documentId, expectedText: text) {
-            return
+        let repair = await singleChunkDocumentRepair(documentId: documentId, text: text)
+
+        if repair.indexText {
+            try await session.indexText(frameId: documentId, text: text)
         }
 
-        if config.enableTextSearch {
-            let alreadyIndexed = await documentIsInTextIndex(documentId: documentId, text: text)
-            if !alreadyIndexed {
-                try await session.indexText(frameId: documentId, text: text)
+        if repair.embed {
+            guard let attached = readyEmbedderSnapshot else {
+                throw WaxError.missingEmbedder
             }
-        }
-
-        if config.enableVectorSearch {
-            let alreadyEmbedded = await documentHasEmbedding(frameId: documentId)
-            if !alreadyEmbedded {
-                guard let attached = readyEmbedderSnapshot else {
-                    throw WaxError.missingEmbedder
-                }
-                let localEmbedder = attached
-                let embedding = try await Self.embedOne(
-                    text,
-                    attached: attached,
-                    cache: embeddingCache,
-                    timeout: config.ingestEmbeddingTimeout
+            let localEmbedder = attached
+            let embedding = try await Self.embedOne(
+                text,
+                attached: attached,
+                cache: embeddingCache,
+                timeout: config.ingestEmbeddingTimeout
+            )
+            try await wax.putEmbedding(frameId: documentId, vector: embedding)
+            if let identity = localEmbedder.identity {
+                try await ensureMemoryBindingIfNeeded(
+                    MemoryBindingCompatibility.binding(from: identity)
                 )
-                try await wax.putEmbedding(frameId: documentId, vector: embedding)
-                if let identity = localEmbedder.identity {
-                    try await ensureMemoryBindingIfNeeded(
-                        MemoryBindingCompatibility.binding(from: identity)
-                    )
-                }
             }
         }
     }

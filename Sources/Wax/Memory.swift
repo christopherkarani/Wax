@@ -223,6 +223,33 @@ public actor Memory {
         try await orchestrator.remember(batch: Array(documents))
     }
 
+    /// Import many documents, each with its own metadata, as one atomic write: the fast way
+    /// to load a large corpus.
+    ///
+    /// Saves what ``save(contentsOf:)`` would: the same frames, chunks, vectors and text
+    /// index entries, so searches return the same results. Instead of writing through the
+    /// write-ahead log and committing every few thousand documents, it writes each document
+    /// straight to the store, embeds in batches of ``Config/ingestBatchSize``, and adds
+    /// everything to the text and vector indexes in a single commit at the end.
+    ///
+    /// - Returns: One frame ID per document, in input order: what calling
+    ///   ``save(_:metadata:)`` for each document in turn would return, including the
+    ///   existing ID for a document already stored, or repeated earlier in `documents`.
+    ///
+    /// Atomic: nothing of the import is visible to searches or durable until it returns. If
+    /// it throws, or the process stops before it returns, the store holds exactly what it held
+    /// before the call, and the space the import wrote is reused by later writes.
+    ///
+    /// It first commits pending saves, as ``flush()`` would. While it runs, other saves,
+    /// deletes and flushes on this store wait and then run after it; searches do not wait
+    /// and see the store as it was before the import.
+    @discardableResult
+    public func importDocuments(
+        _ documents: some Sequence<(text: String, metadata: [String: String])>
+    ) async throws -> [UInt64] {
+        try await orchestrator.importDocuments(Array(documents))
+    }
+
     /// Persist multiple texts in one call, in order.
     ///
     /// Not atomic: each text is saved separately. If one save throws, the texts
