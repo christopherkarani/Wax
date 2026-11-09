@@ -70,3 +70,36 @@ import Testing
         try await wax.close()
     }
 }
+
+/// Puts small frames until WAL pressure commits for the writer.
+private func putUntilWalPressureCommits(_ wax: Wax) async throws -> Bool {
+    for index in 0..<20_000 {
+        _ = try await wax.put(Data("filler \(index)".utf8))
+        let stats: WaxWALStats = await wax.walStats()
+        if stats.autoCommitCount > 0 { return true }
+    }
+    return false
+}
+
+/// WAL pressure may commit for the writer once every pending embedding is removed again,
+/// since that commit needs no vector index; it must still refuse while one is live.
+@Test(arguments: [true, false])
+func walPressureCommitsUnlessAPendingEmbeddingNeedsAVectorIndex(embeddingRemoved: Bool) async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url, walSize: 64 * 1024)
+        _ = try await wax.put(Data("frame 0".utf8))
+        try await wax.putEmbedding(frameId: 0, vector: [1, 0])
+        if embeddingRemoved {
+            try await wax.removeEmbedding(frameId: 0)
+            #expect(try await putUntilWalPressureCommits(wax))
+            #expect(try await wax.committedVectorFrameIds().isEmpty)
+            try await wax.verify(deep: true)
+        } else {
+            await #expect(throws: WaxError.self) {
+                _ = try await putUntilWalPressureCommits(wax)
+            }
+            try await wax.setVectorIndexConfiguration(dimension: 2, similarity: .cosine)
+        }
+        try await wax.close()
+    }
+}

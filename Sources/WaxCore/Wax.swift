@@ -198,7 +198,15 @@ package actor Wax {
     }
 
     private func canAutoCommitForWalPressureLocked() -> Bool {
-        !(pendingMutationSummary.hasPendingEmbedding && toc.indexes.vec == nil && vectorConfiguration == nil)
+        !pendingEmbeddingsLackVectorIndexLocked()
+    }
+
+    /// Whether a commit would throw `vectorIndexNotStaged`: a pending embedding outlives its
+    /// frame's removals and the store has no vector index to put it in.
+    private func pendingEmbeddingsLackVectorIndexLocked() -> Bool {
+        pendingMutationSummary.hasPendingEmbedding
+            && toc.indexes.vec == nil && vectorConfiguration == nil && stagedVectorImport == nil
+            && !PendingVectorChange.lastChanges(pendingVectorChangesLocked().map(\.change)).embeddings.isEmpty
     }
 
     private func estimatedWalBytesForAppend(payloadSize: Int) -> UInt64? {
@@ -226,7 +234,6 @@ package actor Wax {
     private func maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: UInt64) async throws {
         guard let thresholdBytes = walProactiveCommitThresholdBytes else { return }
         guard estimatedIncomingWalBytes > 0 else { return }
-        guard canAutoCommitForWalPressureLocked() else { return }
         if let maxWalSizeBytes = walProactiveCommitMaxWalSizeBytes,
            wal.walSize > maxWalSizeBytes {
             return
@@ -238,6 +245,7 @@ package actor Wax {
         let (projectedPendingBytes, overflowed) = pendingBytes.addingReportingOverflow(estimatedIncomingWalBytes)
         let projected = overflowed ? UInt64.max : projectedPendingBytes
         guard projected >= thresholdBytes else { return }
+        guard canAutoCommitForWalPressureLocked() else { return }
 
         try await commitLocked()
         walAutoCommitCount &+= 1
@@ -351,9 +359,7 @@ package actor Wax {
     private func commitLocked() async throws {
         guard dirty || stagedLexIndex != nil else { return }
         // A frame whose last change is a removal needs no vector index.
-        if pendingMutationSummary.hasPendingEmbedding,
-           toc.indexes.vec == nil, vectorConfiguration == nil, stagedVectorImport == nil,
-           !PendingVectorChange.lastChanges(pendingVectorChangesLocked().map(\.change)).embeddings.isEmpty {
+        if pendingEmbeddingsLackVectorIndexLocked() {
             throw WaxError.vectorIndexNotStaged
         }
 
