@@ -56,6 +56,9 @@ package actor Wax {
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
     private let walReplayStateSnapshotEnabled: Bool
+    /// Largest TOC a commit may write: the reader's limit, so every commit stays openable.
+    /// Internal only because of the file split; lowered only by tests.
+    var tocByteLimit: UInt64 = Constants.maxTocBytes
 
     /// Internal only because of the file split; use only from the writer-lease methods (Wax+Lifecycle.swift).
     var writerWaiters: [WriterWaiter] = []
@@ -463,6 +466,8 @@ package actor Wax {
         )
 
         let file = self.file
+        // Written only once the TOC is known to fit, so a refused commit writes nothing.
+        var indexBlobWrites: [(bytes: Data, offset: UInt64)] = []
         if let staged = stagedLexIndex {
             let byteCount = staged.bytes.count
             guard byteCount <= Constants.maxBlobBytes else {
@@ -472,9 +477,7 @@ package actor Wax {
                 )
             }
             let lexOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: lexOffset)
-            }
+            indexBlobWrites.append((bytes: staged.bytes, offset: lexOffset))
             let lexLength = UInt64(byteCount)
             dataEnd += lexLength
 
@@ -507,9 +510,7 @@ package actor Wax {
             }
 
             let vecOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: vecOffset)
-            }
+            indexBlobWrites.append((bytes: staged.bytes, offset: vecOffset))
             let vecLength = UInt64(byteCount)
             dataEnd += vecLength
 
@@ -534,6 +535,15 @@ package actor Wax {
         }
 
         let tocBytes = try toc.encode(cachedFramesPayload: cachedFramesPayload)
+        // Open refuses a larger TOC, so committing one would leave the store unopenable.
+        guard UInt64(tocBytes.count) <= tocByteLimit else {
+            throw WaxError.capacityExceeded(limit: tocByteLimit, requested: UInt64(tocBytes.count))
+        }
+        for write in indexBlobWrites {
+            try await io.run {
+                try file.writeAll(write.bytes, at: write.offset)
+            }
+        }
         let tocChecksum = tocBytes.suffix(32)
         toc.tocChecksum = Data(tocChecksum)
 
