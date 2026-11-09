@@ -55,6 +55,7 @@ package actor FTS5SearchEngine {
     private var removedInactiveFrameIds: Set<Int64> = []
     /// Inactive frames `removeInactiveFrames` has deleted postings for.
     private(set) var inactiveFrameRemovalsForTesting = 0
+    private var lastStagedImageWasBorrowed: Bool?
 
     private init(
         dbQueue: DatabaseQueue,
@@ -88,6 +89,13 @@ package actor FTS5SearchEngine {
         let queue = try DatabaseQueue(configuration: config)
         try queue.write { db in
             try FTS5Schema.create(in: db)
+        }
+        // Reopened from its own image, the database lives in one SQLite-owned buffer, which
+        // `stageForCommit` hands to the store without copying it.
+        try queue.writeWithoutTransaction { db in
+            let connection = try Self.requireConnection(db)
+            try FTS5Serializer.deserialize(try FTS5Serializer.serialize(connection: connection), into: connection)
+            db.clearSchemaCache()
         }
         return FTS5SearchEngine(dbQueue: queue, io: io, backingStoreDirectory: nil, docCount: 0, dirty: false)
     }
@@ -281,10 +289,7 @@ package actor FTS5SearchEngine {
         return try await io.run {
             try dbQueue.writeWithoutTransaction { db in
                 if compact {
-                    let freelistCount = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
-                    if freelistCount > 0 {
-                        try db.execute(sql: "VACUUM")
-                    }
+                    try Self.vacuumIfFragmented(db)
                 }
                 let connection = try Self.requireConnection(db)
                 return try FTS5Serializer.serialize(connection: connection)
@@ -300,9 +305,34 @@ package actor FTS5SearchEngine {
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
         try await recordCoverage(of: metas)
-        let blob = try await serialize(compact: compact)
-        try await wax.stageLexIndexForNextCommit(bytes: blob, docCount: docCount)
+        try await flushPendingOpsIfNeeded()
+        // The store compares the image page by page with the committed one and keeps only the
+        // changed pages. A borrowed image is SQLite's own buffer, so writes wait until the
+        // store has read it; a copy needs no such wait.
+        await beginWrite()
+        var holdsWriteGate = true
+        defer { if holdsWriteGate { endWrite() } }
+        let dbQueue = self.dbQueue
+        let image = try await io.run { () throws -> (bytes: Data, borrowed: Bool) in
+            try dbQueue.writeWithoutTransaction { db in
+                if compact {
+                    try Self.vacuumIfFragmented(db)
+                }
+                return try FTS5Serializer.image(connection: try Self.requireConnection(db))
+            }
+        }
+        if !image.borrowed {
+            holdsWriteGate = false
+            endWrite()
+        }
+        try await wax.stageLexIndexForNextCommit(bytes: image.bytes, docCount: docCount)
+        lastStagedImageWasBorrowed = image.borrowed
         dirty = false
+    }
+
+    /// Whether the last `stageForCommit` handed the store SQLite's buffer instead of a copy.
+    package func lastStagedImageWasBorrowedForTesting() -> Bool? {
+        lastStagedImageWasBorrowed
     }
 
     private enum PendingOp: Sendable, Equatable {
@@ -458,6 +488,13 @@ package actor FTS5SearchEngine {
         try db.execute(sql: "PRAGMA journal_mode=DELETE")
         try db.execute(sql: "PRAGMA temp_store=MEMORY")
         try db.execute(sql: "PRAGMA foreign_keys=ON")
+    }
+
+    private static func vacuumIfFragmented(_ db: Database) throws {
+        let freelistCount = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
+        if freelistCount > 0 {
+            try db.execute(sql: "VACUUM")
+        }
     }
 
     private static func requireConnection(_ db: Database) throws -> OpaquePointer {
