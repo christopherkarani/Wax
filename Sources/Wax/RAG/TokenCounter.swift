@@ -98,7 +98,7 @@ package actor TokenCounter {
         guard maxTokens > 0 else { return "" }
 
         // Check cache for existing encoding
-        if let cachedTokens = await encodingCache.get(text) {
+        if let cachedTokens = encodingCache.get(text) {
             if cachedTokens.count <= maxTokens {
                 return text
             }
@@ -108,13 +108,33 @@ package actor TokenCounter {
 
         // Encode and cache
         let tokens = encode(text)
-        await encodingCache.put(text, tokens)
+        encodingCache.put(text, tokens)
 
         if tokens.count <= maxTokens {
             return text
         }
         let sliced = Array(tokens.prefix(maxTokens))
         return decode(sliced)
+    }
+
+    /// `truncate(text, maxTokens:)` and `count` of its result, encoding `text` once instead
+    /// of twice when it already fits.
+    package func truncateCounted(_ text: String, maxTokens: Int) async -> (text: String, tokens: Int) {
+        guard maxTokens > 0 else { return ("", count("")) }
+        let tokens: [UInt32]
+        if let cachedTokens = encodingCache.get(text) {
+            tokens = cachedTokens
+        } else {
+            tokens = encode(text)
+            encodingCache.put(text, tokens)
+        }
+        // `count(text)` is `encode(text).count`, which is what the cache holds for `text`.
+        if tokens.count <= maxTokens {
+            return (text, tokens.count)
+        }
+        // A decoded prefix can re-encode to a different length, so count it as `count` would.
+        let truncated = decode(Array(tokens.prefix(maxTokens)))
+        return (truncated, count(truncated))
     }
 
     package func encode(_ text: String) -> [UInt32] {
@@ -298,8 +318,9 @@ package actor TokenCounter {
 }
 
 /// LRU cache for tokenization results to avoid redundant encoding operations.
-/// Uses a doubly-linked list for O(1) access and eviction.
-private actor TokenizationCache {
+/// Uses a doubly-linked list for O(1) access and eviction. Owned by one `TokenCounter` and
+/// used only on its executor, so a lookup is a call rather than an actor hop.
+private final class TokenizationCache {
     private struct Entry {
         var key: String
         var value: [UInt32]
