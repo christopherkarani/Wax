@@ -647,6 +647,127 @@ import WaxVectorSearch
     #expect(ids == [factA, factB])
 }
 
+@Test func rejectedStructuredOpDoesNotBlockLaterWork() async throws {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let engine = try await FTS5SearchEngine.load(from: wax)
+
+    let alice = EntityKey("person:alice")
+    let status = PredicateKey("status")
+    let aliceFact = try await engine.assertFact(
+        subject: alice,
+        predicate: status,
+        object: .string("active"),
+        valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+        system: StructuredTimeRange(fromMs: 10, toMs: nil),
+        evidence: []
+    )
+    try await engine.index(frameId: 1, text: "searchable after rejection")
+
+    // Both ops pass enqueue validation and fail only when applied: each predates the open span.
+    // Each caller must get its own op's error.
+    var retractError = ""
+    do {
+        try await engine.retractFact(factId: aliceFact, atMs: 5)
+    } catch {
+        retractError = String(describing: error)
+    }
+    #expect(retractError.contains("retraction time"), "\(retractError)")
+    var supersedeError = ""
+    do {
+        _ = try await engine.assertFact(
+            subject: alice,
+            predicate: status,
+            object: .string("active"),
+            relation: .updates,
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 5, toMs: nil),
+            evidence: []
+        )
+    } catch {
+        supersedeError = String(describing: error)
+    }
+    #expect(supersedeError.contains("superseding fact"), "\(supersedeError)")
+
+    var failures: [String] = []
+    do {
+        let hits = try await engine.search(matchQuery: "\"searchable\"", topK: 10)
+        if hits.map(\.frameId) != [1] { failures.append("search returned \(hits.map(\.frameId))") }
+    } catch {
+        failures.append("search threw \(error)")
+    }
+    do {
+        _ = try await engine.assertFact(
+            subject: EntityKey("person:bob"),
+            predicate: status,
+            object: .string("away"),
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 20, toMs: nil),
+            evidence: []
+        )
+    } catch {
+        failures.append("later assertFact threw \(error)")
+    }
+    do {
+        try await engine.stageForCommit(into: wax)
+        try await wax.commit()
+    } catch {
+        failures.append("stageForCommit or commit threw \(error)")
+    }
+    #expect(failures.isEmpty, "\(failures)")
+
+    // The committed index holds the valid work and neither rejected op.
+    let bytes = try #require(try await wax.readCommittedLexIndexBytes())
+    let committed = try FTS5SearchEngine.deserialize(from: bytes)
+    let asOf = StructuredMemoryAsOf(systemTimeMs: 30, validTimeMs: 0)
+    let aliceHits = try await committed.facts(about: alice, predicate: status, asOf: asOf, limit: 10).hits
+    let bobHits = try await committed.facts(about: EntityKey("person:bob"), predicate: status, asOf: asOf, limit: 10).hits
+    #expect(aliceHits.map(\.system) == [StructuredTimeRange(fromMs: 10, toMs: nil)])
+    #expect(bobHits.count == 1)
+    let textHits = try await committed.search(matchQuery: "\"searchable\"", topK: 10)
+    #expect(textHits.map(\.frameId) == [1])
+    try await wax.close()
+}
+
+@Test func assertFactRejectsOutOfRangeEvidenceFrameIdWithoutBlockingLaterWork() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 1, text: "searchable after rejection")
+
+    await #expect(throws: WaxError.self) {
+        _ = try await engine.assertFact(
+            subject: EntityKey("person:alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0, toMs: nil),
+            system: StructuredTimeRange(fromMs: 10, toMs: nil),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: UInt64.max,
+                    chunkIndex: nil,
+                    spanUTF8: 0..<4,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 0.5,
+                    assertedAtMs: 10
+                ),
+            ]
+        )
+    }
+
+    let hits = try await engine.search(matchQuery: "\"searchable\"", topK: 10)
+    #expect(hits.map(\.frameId) == [1])
+    let facts = try await engine.facts(
+        about: EntityKey("person:alice"),
+        predicate: PredicateKey("status"),
+        asOf: .init(systemTimeMs: 10, validTimeMs: 0),
+        limit: 10
+    )
+    #expect(facts.hits.isEmpty)
+}
+
 @Test func concurrentAssertFactsApplyEachOperationOnce() async throws {
     // Each assertFact flushes the structured queue and awaits the write. A flush that starts
     // while another is in flight must not re-apply the operations the first one is writing.

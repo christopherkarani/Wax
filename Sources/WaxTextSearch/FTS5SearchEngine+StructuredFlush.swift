@@ -3,9 +3,25 @@ import Foundation
 import WaxCore
 
 extension FTS5SearchEngine {
-    func enqueueStructuredOp(_ op: StructuredOp) {
-        pendingStructuredOps.append(op)
+    /// Queues `op`, flushes, and throws `op`'s own error if the flush rejected it.
+    ///
+    /// The flush that applies `op` may be another caller's, so a rejection is held for this
+    /// caller under the op's id instead of being thrown by whichever flush hit it.
+    func enqueueAndFlushStructuredOp(_ op: StructuredOp) async throws {
+        let id = nextStructuredOpId
+        nextStructuredOpId &+= 1
+        pendingStructuredOps.append(QueuedStructuredOp(id: id, op: op))
+        awaitedStructuredOpIds.insert(id)
         markDirty()
+        defer {
+            awaitedStructuredOpIds.remove(id)
+            structuredOpRejections.removeValue(forKey: id)
+        }
+        try await flushPendingStructuredOpsIfThresholdExceeded()
+        try await flushPendingStructuredOpsIfNeeded()
+        if let rejection = structuredOpRejections[id] {
+            throw rejection
+        }
     }
 
     func flushPendingStructuredOpsIfThresholdExceeded() async throws {
@@ -24,8 +40,8 @@ extension FTS5SearchEngine {
         let ops = pendingStructuredOps
         let dbQueue = self.dbQueue
 
-        try await io.run {
-            try dbQueue.write { db in
+        let rejected = try await io.run { () throws -> [UInt64: WaxError] in
+            try dbQueue.write { (db: Database) throws -> [UInt64: WaxError] in
                 let selectEntityStmt = try db.makeStatement(sql: """
                     SELECT entity_id, kind FROM sm_entity WHERE key = ?
                     """)
@@ -165,7 +181,7 @@ extension FTS5SearchEngine {
                     try closeSpanByIDStmt.execute(arguments: [closeAt, closedHash, spanId])
                 }
 
-                for op in ops {
+                func applyStructuredOp(_ op: StructuredOp) throws {
                     switch op {
                     case .upsertEntity(let key, let kind, let aliases, let nowMs):
                         let entityId = try ensureEntityId(key: key, kind: kind, nowMs: nowMs)
@@ -253,7 +269,7 @@ extension FTS5SearchEngine {
                             )
                         }
                         if relation == .retracts {
-                            continue
+                            return
                         }
 
                         let spanHash = StructuredMemoryHasher.hashSpanKey(
@@ -328,10 +344,30 @@ extension FTS5SearchEngine {
                         }
                     }
                 }
+
+                // One savepoint per op. An op that fails its own checks against stored state
+                // (`encodingError`) is rolled back alone and dropped, and the rest of the batch
+                // still applies in order. Any other error, such as a database or I/O failure,
+                // aborts the whole transaction and leaves the batch queued.
+                var rejected: [UInt64: WaxError] = [:]
+                for queued in ops {
+                    do {
+                        try db.inSavepoint {
+                            try applyStructuredOp(queued.op)
+                            return .commit
+                        }
+                    } catch WaxError.encodingError(let reason) {
+                        rejected[queued.id] = .encodingError(reason: reason)
+                    }
+                }
+                return rejected
             }
         }
 
         pendingStructuredOps.removeFirst(ops.count)
+        for (id, error) in rejected where awaitedStructuredOpIds.contains(id) {
+            structuredOpRejections[id] = error
+        }
     }
 
     private struct FactObjectColumns {

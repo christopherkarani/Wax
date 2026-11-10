@@ -36,7 +36,12 @@ package actor FTS5SearchEngine {
     private var mutationGeneration: UInt64 = 0
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
-    var pendingStructuredOps: [StructuredOp] = []
+    var pendingStructuredOps: [QueuedStructuredOp] = []
+    var nextStructuredOpId: UInt64 = 0
+    /// Ops whose caller is still waiting for the flush that applies them.
+    var awaitedStructuredOpIds: Set<UInt64> = []
+    /// Errors for awaited ops that a flush rejected and dropped, until their caller takes them.
+    var structuredOpRejections: [UInt64: WaxError] = [:]
     /// Flushes are mutually exclusive. The queues are snapshotted before an `await`, so a flush
     /// that overlapped another would re-apply the in-flight snapshot; see `acquireFlushGate()`.
     private var flushGateHeld = false
@@ -296,6 +301,11 @@ package actor FTS5SearchEngine {
     private enum PendingOp: Sendable, Equatable {
         case upsert(String)
         case delete
+    }
+
+    struct QueuedStructuredOp: Sendable {
+        let id: UInt64
+        let op: StructuredOp
     }
 
     enum StructuredOp: Sendable, Equatable {
