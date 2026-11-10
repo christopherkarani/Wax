@@ -458,8 +458,12 @@ private final class UnixStatsResponder: @unchecked Sendable {
     }
 
     private func handle(client: Int32) {
+        // The bound only catches a hang. The client's ping is written from a shared
+        // blocking pool that can lag by seconds under `--parallel`; a 2s window made
+        // the stub hang up first, so the ping looked unanswered. Liveness probes
+        // close right after connecting and end this wait at once.
         var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
-        let pollResult = poll(&descriptor, 1, 2_000)
+        let pollResult = poll(&descriptor, 1, 30_000)
         if pollResult <= 0 {
             close(client)
             return

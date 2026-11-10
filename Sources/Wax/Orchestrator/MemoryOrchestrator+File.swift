@@ -7,13 +7,7 @@ package extension MemoryOrchestrator {
             throw FileIngestError.fileNotFound(url: url)
         }
 
-        let data = try await Task.detached(priority: .utility) {
-            do {
-                return try Data(contentsOf: url)
-            } catch {
-                throw FileIngestError.loadFailed(url: url)
-            }
-        }.value
+        let data = try await loadFileData(at: url)
 
         guard let text = String(data: data, encoding: .utf8) else {
             throw FileIngestError.unsupportedTextEncoding(url: url)
@@ -40,4 +34,14 @@ private enum FileMetadataKeys {
     static let sourceURI = "source_uri"
     static let sourceFilename = "source_filename"
     static let sourceExtension = "source_extension"
+}
+
+/// Blocking file read, kept off the orchestrator actor.
+@concurrent
+private func loadFileData(at url: URL) async throws -> Data {
+    do {
+        return try Data(contentsOf: url)
+    } catch {
+        throw FileIngestError.loadFailed(url: url)
+    }
 }
