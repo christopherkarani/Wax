@@ -365,11 +365,32 @@ private extension BrokerCorpusStoreBuilder {
             embedderTuning: embedderTuning,
             structuredMemoryEnabled: false
         )
-        defer {
-            Task {
-                try? await sourceMemory.close()
-            }
+        // Close is awaited on both paths. A `defer { Task { ... } }` close is an
+        // unstructured task that can be dropped (for example when the CLI exits) and
+        // leaves the source store open while the next store is ingested.
+        let outcome: IngestOutcome
+        do {
+            outcome = try await ingestDocuments(
+                from: sourceMemory,
+                at: sourceStoreURL,
+                into: targetMemory,
+                noEmbedder: noEmbedder
+            )
+        } catch {
+            try? await sourceMemory.close()
+            throw error
         }
+        // A failed close can leave the store open, so report it like the ingest itself.
+        try await sourceMemory.close()
+        return outcome
+    }
+
+    static func ingestDocuments(
+        from sourceMemory: MemoryOrchestrator,
+        at sourceStoreURL: URL,
+        into targetMemory: MemoryOrchestrator,
+        noEmbedder: Bool
+    ) async throws -> IngestOutcome {
         let sourceDocuments = try await sourceMemory.corpusSourceDocuments()
         if noEmbedder {
             try await targetMemory.ingestCorpusDocumentsTextOnly(

@@ -493,9 +493,7 @@ final class MCPClientSessionHint: @unchecked Sendable {
             }
         case "session_end", "session_close":
             if let ended = Self.workingSessionID(from: payload) {
-                lock.lock()
-                let matches = sessionID == ended
-                lock.unlock()
+                let matches = lock.withLock { sessionID == ended }
                 if matches {
                     bind(nil, ownership: nil)
                 }
