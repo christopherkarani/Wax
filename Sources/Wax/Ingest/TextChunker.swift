@@ -33,23 +33,27 @@ package enum TextChunker {
             )
             return [text]
         }
-        let tokens = await counter.encode(text)
-        if tokens.count <= cappedTarget {
-            return [text]
-        }
-
-        let ranges = await scalarAligned(
-            tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
-            in: tokens,
-            counter: counter
-        )
         var chunks: [String] = []
-        chunks.reserveCapacity(ranges.count)
-        for range in ranges {
-            let slice = Array(tokens[range])
-            let chunk = await counter.decode(slice)
-            if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                chunks.append(chunk)
+        for segment in tokenizerSegments(of: text) {
+            let segmentText = String(segment)
+            let tokens = await counter.encode(segmentText)
+            if tokens.count <= cappedTarget {
+                chunks.append(segmentText)
+                continue
+            }
+
+            let ranges = await scalarAligned(
+                tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
+                in: tokens,
+                counter: counter
+            )
+            chunks.reserveCapacity(chunks.count + ranges.count)
+            for range in ranges {
+                let slice = Array(tokens[range])
+                let chunk = await counter.decode(slice)
+                if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    chunks.append(chunk)
+                }
             }
         }
         if chunks.isEmpty {
@@ -81,24 +85,26 @@ package enum TextChunker {
                     continuation.finish()
                     return
                 }
-                let tokens = await counter.encode(text)
-                if tokens.count <= cappedTarget {
-                    continuation.yield(text)
-                    continuation.finish()
-                    return
-                }
+                for segment in tokenizerSegments(of: text) {
+                    let segmentText = String(segment)
+                    let tokens = await counter.encode(segmentText)
+                    if tokens.count <= cappedTarget {
+                        continuation.yield(segmentText)
+                        continue
+                    }
 
-                let ranges = await scalarAligned(
-                    tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
-                    in: tokens,
-                    counter: counter
-                )
+                    let ranges = await scalarAligned(
+                        tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
+                        in: tokens,
+                        counter: counter
+                    )
 
-                for range in ranges {
-                    let slice = Array(tokens[range])
-                    let chunk = await counter.decode(slice)
-                    if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        continuation.yield(chunk)
+                    for range in ranges {
+                        let slice = Array(tokens[range])
+                        let chunk = await counter.decode(slice)
+                        if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            continuation.yield(chunk)
+                        }
                     }
                 }
                 continuation.finish()
@@ -146,6 +152,34 @@ package enum TextChunker {
         }
         let nonEmpty = fitted.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return nonEmpty.isEmpty ? chunks : nonEmpty
+    }
+
+    /// Splits text longer than the tokenizer's per-call cap (`TokenCounter.maxTokenizationBytes`;
+    /// `encode` sees only that prefix) into pieces it encodes whole, so chunks cover all of it.
+    /// Each cut follows the last ASCII whitespace inside the cap, or falls on the last scalar
+    /// boundary when there is none. Text within the cap is one piece.
+    private static func tokenizerSegments(of text: String) -> [Substring] {
+        let maxBytes = TokenCounter.maxTokenizationBytes
+        var segments: [Substring] = []
+        var rest = text[...]
+        while rest.utf8.count > maxBytes {
+            let utf8 = rest.utf8
+            let limit = utf8.index(utf8.startIndex, offsetBy: maxBytes)
+            var cut = limit
+            if let space = utf8[..<limit].lastIndex(where: { (byte: UInt8) -> Bool in
+                byte == 0x20 || byte == 0x0A || byte == 0x09 || byte == 0x0D
+            }) {
+                cut = utf8.index(after: space)
+            } else {
+                while UTF8.isContinuation(utf8[cut]) {
+                    cut = utf8.index(before: cut)
+                }
+            }
+            segments.append(rest[..<cut])
+            rest = rest[cut...]
+        }
+        segments.append(rest)
+        return segments
     }
 
     /// Moves each range bound forward to the next token that starts a Unicode scalar, so no

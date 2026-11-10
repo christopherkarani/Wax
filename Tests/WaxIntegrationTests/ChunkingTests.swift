@@ -100,6 +100,27 @@ func fitPiecesJoinBackToTheChunkAcrossMultiByteCharacters() async throws {
     #expect(pieces.joined() == text)
 }
 
+@Test
+func tokenChunkingCoversTextPastTheTokenizerByteCap() async throws {
+    let marker = "zqxtailmarker"
+    let sentence = "Swift concurrency uses actors and tasks. "
+    let filler = String(repeating: sentence, count: (8 * 1024 * 1024 + 512 * 1024) / sentence.utf8.count)
+    #expect(filler.utf8.count > TokenCounter.maxTokenizationBytes)
+    let tail = String(repeating: sentence, count: 50 * 1024 / sentence.utf8.count)
+    let text = filler + marker + " " + tail
+    #expect(text.utf8.count - filler.utf8.count < 100 * 1024)
+
+    let strategy = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
+    let chunks = await TextChunker.chunk(text: text, strategy: strategy)
+    #expect(chunks.contains { $0.contains(marker) })
+
+    var streamedMarker = false
+    for await chunk in TextChunker.stream(text: text, strategy: strategy) where chunk.contains(marker) {
+        streamedMarker = true
+    }
+    #expect(streamedMarker)
+}
+
 /// Deterministic text drawn from CJK (BMP and ext B) and emoji, `characters` long.
 private func mixedScriptText(characters: Int, includeSpaces: Bool) -> String {
     var pool: [Character] = ["漢", "字", "龘", "鱻", "齉", "𠜎", "𪚥", "𤭢", "🦀", "🧬", "🪐", "😀", "🫠", "語"]
