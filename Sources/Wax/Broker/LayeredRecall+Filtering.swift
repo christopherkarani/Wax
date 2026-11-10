@@ -146,6 +146,9 @@ extension LayeredRecall {
         return projectMatches && repoMatches
     }
 
+    /// Most ended-session stores one recall or search opens, newest first.
+    package static let maxEpisodicStores = 6
+
     /// Ended virtual session stores eligible for the episodic lane.
     /// Agent filtering applies only when a current session is in scope.
     /// Reclaimed tombstones are excluded. Missing store files are skipped by the
