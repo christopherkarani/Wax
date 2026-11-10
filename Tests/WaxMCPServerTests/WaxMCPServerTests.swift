@@ -4983,6 +4983,63 @@ func brokerMarkdownExportSyncRoundTripPreservesEveryDurableText() async throws {
 }
 
 @Test
+func brokerMarkdownSyncReplacedMemoryIsNotFoundBySearchOrRecall() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-replaced-search-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)
+        let oldToken = "REPLACEDOLD\(suffix)"
+        let newToken = "REPLACEDNEW\(suffix)"
+        // Long enough to be stored as a document with chunk frames.
+        let filler = String(repeating: "Background filler sentence about orbital docking procedures. ", count: 300)
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Replaced memory \(oldToken). \(filler)"),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(remember.ok == true, "remember failed: \(remember.error ?? "nil")")
+        let preSearch = try await service.longTermMemory.searchExecution(query: oldToken, mode: .textOnly)
+        #expect(!preSearch.hits.isEmpty)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(export.ok == true)
+        let chunkFrames = await service.longTermMemory.wax.frameMetas().filter {
+            $0.parentId != nil && $0.status == .active
+        }
+        #expect(!chunkFrames.isEmpty, "the memory was not stored with chunk frames")
+        let memoryPath = try #require(export.payload?.objectValue?["memory_md_path"]?.stringValue)
+        let exported = try String(contentsOfFile: memoryPath, encoding: .utf8)
+        let edited = exported.replacingOccurrences(of: oldToken, with: newToken)
+        #expect(edited != exported)
+        try edited.write(toFile: memoryPath, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true, "markdown_sync failed: \(sync.error ?? "nil")")
+        #expect(sync.payload?.objectValue?["counts"]?.objectValue?["updated"]?.intValue == 1)
+
+        let search = try await service.longTermMemory.searchExecution(query: oldToken, mode: .textOnly)
+        #expect(search.hits.isEmpty, "a replaced memory is still searchable: \(search.hits.map(\.frameId))")
+        let recall = try await service.longTermMemory.recallExecution(query: oldToken, mode: .textOnly)
+        #expect(
+            !recall.context.items.contains { $0.text.contains(oldToken) },
+            "a replaced memory is still recalled"
+        )
+        let newSearch = try await service.longTermMemory.searchExecution(query: newToken, mode: .textOnly)
+        #expect(!newSearch.hits.isEmpty)
+    }
+}
+
+@Test
 func brokerMarkdownSyncKeepsMultiLineMemoryFromLegacyExportLine() async throws {
     try await withAgentBrokerService { service, _ in
         let rootURL = FileManager.default.temporaryDirectory
