@@ -332,6 +332,9 @@ extension Wax {
                         requested: UInt64(vector.count)
                     )
                 }
+                guard vector.allSatisfy(\.isFinite) else {
+                    throw WaxError.encodingError(reason: "embedding vector must contain only finite values")
+                }
                 let dim = UInt32(vector.count)
                 if let existing = dimension {
                     guard existing == dim else {
@@ -356,6 +359,13 @@ extension Wax {
                 guard staged.dimension == dimension else {
                     throw WaxError.invalidToc(
                         reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                    )
+                }
+            }
+            if let pending = pendingMutationSummary.pendingEmbeddingDimension {
+                guard pending == dimension else {
+                    throw WaxError.invalidToc(
+                        reason: "embedding dimension mismatch vs pending embeddings: expected \(pending), got \(dimension)"
                     )
                 }
             }
@@ -410,6 +420,9 @@ extension Wax {
             guard vector.count <= Int(UInt32.max) else {
                 throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: UInt64(vector.count))
             }
+            guard vector.allSatisfy(\.isFinite) else {
+                throw WaxError.encodingError(reason: "embedding vector must contain only finite values")
+            }
 
             let dimension = UInt32(vector.count)
 
@@ -424,6 +437,13 @@ extension Wax {
                 guard staged.dimension == dimension else {
                     throw WaxError.invalidToc(
                         reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                    )
+                }
+            }
+            if let pending = pendingMutationSummary.pendingEmbeddingDimension {
+                guard pending == dimension else {
+                    throw WaxError.invalidToc(
+                        reason: "embedding dimension mismatch vs pending embeddings: expected \(pending), got \(dimension)"
                     )
                 }
             }
