@@ -13,7 +13,8 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.938 / 0.950** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.905 / 0.926 without the reranker | Contriever 0.902 / 0.927 | 0.742 / – |
 | LongMemEval-S QA | accuracy, mean of 3 runs | **89.4%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 5); task-averaged 90.2% | Contriever top 5: 87.7%; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
-| Systems, 100k passages | disk | 395 MB | Chroma 408 MB (text + vectors) | 13.5 GB |
+| Systems, 100k passages | ingest | 13,826 docs/s with `importDocuments`; 4,864 saving one at a time | sqlite-vec 40,608; FAISS flat 1.24M (vectors only) | 136 docs/s |
+| Systems, 100k passages | disk | 308 MB with `importDocuments`; 417 MB saving one at a time | Chroma 408 MB (text + vectors) | 13.5 GB |
 | Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
 | Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
 
@@ -207,8 +208,9 @@ points are suggestive, not established. Reranked, temporal questions score above
 ## Systems
 
 MS MARCO passages with precomputed all-MiniLM-L6-v2 vectors, 1,000 queries,
-recall@10 against exact search. Wax ingests through `Memory.save` with no manual flush;
-the competitors bulk-load. Wax's disk figure includes the text, the full-text index and
+recall@10 against exact search. Wax ingests through `Memory.save` with no manual flush,
+and in a second row through the atomic bulk load `Memory.importDocuments`; the competitors
+bulk-load. Wax's disk figure includes the text, the full-text index and
 metadata; most competitors store vectors only.
 
 | System | N | Ingest docs/s | Disk MB | Cold open + 1st query ms | Vector p50 / p95 ms | Recall@10 |
@@ -218,14 +220,19 @@ metadata; most competitors store vectors only.
 | sqlite-vec | 10,000 | 43,334 | 19 | 4 | 2.27 / 2.54 | 1.000 |
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
-| Wax | 100,000 | 1,858 | 395 | 482 | 3.86 / 4.44 | 0.998 |
+| Wax `save` | 100,000 | 4,864 | 417 | 482 | 3.86 / 4.44 | 0.998 |
+| Wax `importDocuments` | 100,000 | 13,826 | 308 | – | – | 0.998 |
 | Chroma HNSW | 100,000 | 2,820 | 408 | 384 | 1.06 / 1.37 | 0.976 |
 | sqlite-vec | 100,000 | 40,608 | 192 | 27 | 26.3 / 28.9 | 1.000 |
 | usearch HNSW | 100,000 | 12,630 | 169 | 65 | 0.34 / 0.48 | 0.968 |
 | FAISS flat | 100,000 | 1,236,051 | 154 | 53 | 1.57 / 2.04 | 1.000 |
 | LanceDB IVF-PQ | 100,000 | 22,584 | 177 | 556 | 2.49 / 3.02 | 0.522 |
 
-Wax latency and open figures are the median of three query runs on the final build. Wax
+Wax ingest and disk figures are medians of three runs on the final build at load average
+55–125, higher than the 30–57 of the competitor runs. Wax latency and open figures are the
+median of three query runs at load average 5.9 on the build before the last three changes
+below; on the loaded machine the final build matched or beat that build in back-to-back
+runs on the same store (vector p50 3.9 to 3.2 ms; text, hybrid and open unchanged). Wax
 hybrid search (text and vector lanes fused) at 100k: p50 5.7 ms, p95 14.8 ms, p99 17.8 ms
 (before `386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9).
 
@@ -325,6 +332,25 @@ Fixes on the branch, each with tests:
   now beats normalized BM25 on LoCoMo (R_all@5 0.359 to 0.429, against 0.399) and gains
   on LongMemEval (0.809 to 0.828). Hybrid search ranks by fused rank and is unchanged.
 - **Embeddings (`c67cb0088`).** The CoreML autorelease pool drains after every prediction.
+- **Text-index commits (`0aefdef06`, `c7a815632`, `8df2de8b3`, `4e3b4bff6`).** A commit
+  rewrote, hashed and wrote the whole FTS5 database, about 40% of commit work at 100k. It
+  now writes only the pages that changed, as a delta run against a base image, and writes a
+  new base once the deltas pass a quarter of the image or 32 runs. File format 3.0; older
+  stores are adopted on their first commit. Saving one at a time at 100k: 92 to 88 billion
+  instructions, store 495 to 417 MB.
+- **Bulk import (`9ed294808`, `d30a432d4`, `60b30f8bc`, `aba291023`).** New
+  `Memory.importDocuments(_:)` writes payloads outside the WAL, builds the text and vector
+  additions once and commits once; nothing is visible until it returns, and a failure or
+  crash leaves the store as it was. At 100k: 46 billion instructions, 7.2 CPU s, 13,826
+  docs/s and 308 MB, against 61 billion, 10.0 s, 7,713 docs/s and 495 MB for
+  `save(contentsOf:)` in batches of 1,024. Results match `save(contentsOf:)` in every
+  search mode.
+- **Vector search overhead (`b2aab5121`, `402293c54`).** Every search ran the
+  structured-memory lane's alias lookups (about seven SQLite queries) even in a store with
+  no entities, and packing the context encoded each snippet twice. Vector p50 at 100k
+  halved in back-to-back runs on a heavily loaded machine (8.0 to 4.0 ms). MetalANNS graph
+  search was measured and left off: its best setting reached recall@10 0.979 (HNSW, ef 512)
+  and adds about 15 s to opening a 100k store.
 
 ## Open issues
 
@@ -336,9 +362,10 @@ Fixes on the branch, each with tests:
    search. The OR fallback still scores every matching row. Going under 10 ms needs top-k
    pruning (MaxScore or WAND), which stock FTS5 cannot do: a custom `bm25` function or a
    separate inverted index.
-3. **Per-commit cost grows with store size.** Each commit rewrites the full-text index,
-   the vector segment and the table of contents. That limits sustained ingest (1,858
-   docs/s at 100k) and is why Wax was not run at 1M. Fixing it needs a file-format change.
+3. **Ingest against bulk-loading stores.** Commits now write text-index and vector deltas,
+   but still rewrite and hash the whole table of contents (about 15% of commit work at
+   100k). Wax ingests 4,864 docs/s saving one at a time and 13,826 with `importDocuments`,
+   against 32k–1.2M for the vector-only stores. Wax was not run at 1M.
 4. **Cold open** is 482 ms at 100k, against 384 ms for Chroma. What remains is mostly the
    vector segment's checksum and decode (about 150 ms) and the table-of-contents parse
    (about 105 ms). Going lower needs lazy loading or per-chunk checksums.
