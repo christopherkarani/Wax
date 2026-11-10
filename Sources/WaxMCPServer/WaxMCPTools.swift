@@ -885,7 +885,7 @@ extension WaxMCPTools {
             received["cwd"] = .null
         }
         return structuredErrorResult(
-            message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+            message: "project identity is unresolved; retry with cwd set to your shell working directory, or pass explicit project/repo",
             code: "project_unresolved",
             fields: [
                 "committed": .bool(false),
@@ -900,7 +900,7 @@ extension WaxMCPTools {
         switch error {
         case .projectUnresolved(let missing):
             return structuredErrorResult(
-                message: "project identity is unresolved; pass cwd, project, or advertise one MCP root",
+                message: "project identity is unresolved; retry with cwd set to your shell working directory, or pass explicit project/repo",
                 code: "project_unresolved",
                 fields: [
                     "committed": .bool(false),
