@@ -1,6 +1,6 @@
 [
   {
-    "shortDescription" : "cross-encoder\/ms-marco-MiniLM-L-6-v2 relevance logit for a (query, passage) pair (INT8 weights, FP32 compute).",
+    "shortDescription" : "cross-encoder\/ms-marco-MiniLM-L-6-v2 relevance logit for a (query, passage) pair (INT8 weights, FP16 compute).",
     "metadataOutputVersion" : "3.0",
     "outputSchema" : [
       {
@@ -20,31 +20,29 @@
     ],
     "author" : "Wax",
     "specificationVersion" : 9,
-    "storagePrecision" : "Mixed (Float32, Int32, Int8)",
+    "storagePrecision" : "Mixed (Float16, Int32, Int8)",
     "license" : "Apache-2.0 (cross-encoder\/ms-marco-MiniLM-L-6-v2)",
     "mlProgramOperationTypeHistogram" : {
-      "Ios18.expandDims" : 2,
-      "Ios18.softmax" : 6,
-      "Ios18.mul" : 7,
-      "Ios18.matmul" : 12,
-      "Ios18.greaterEqual" : 6,
-      "Select" : 6,
-      "Ios18.gather" : 22,
-      "Ios18.add" : 26,
-      "Ios18.layerNorm" : 13,
-      "Ios18.reshape" : 24,
-      "Shape" : 13,
       "Ios18.linear" : 38,
-      "Ios18.concat" : 13,
-      "Ios18.gelu" : 6,
       "Ios18.sub" : 1,
+      "Ios18.expandDims" : 2,
+      "Ios18.matmul" : 12,
+      "Ios18.gelu" : 6,
+      "Ios18.gather" : 22,
+      "Ios18.concat" : 13,
+      "Ios18.add" : 20,
+      "Shape" : 13,
       "Ios18.tanh" : 1,
-      "Ios18.cast" : 1,
-      "Ios18.transpose" : 24,
+      "Ios18.softmax" : 6,
       "Ios18.sliceByIndex" : 2,
-      "Ios18.constexprBlockwiseShiftScale" : 39
+      "Ios18.layerNorm" : 13,
+      "Ios18.cast" : 37,
+      "Ios18.transpose" : 24,
+      "Ios18.constexprBlockwiseShiftScale" : 39,
+      "Ios18.reshape" : 24,
+      "Ios18.mul" : 7
     },
-    "computePrecision" : "Mixed (Float32, Int32)",
+    "computePrecision" : "Mixed (Float16, Float32, Int16, Int32, UInt16)",
     "stateSchema" : [
 
     ],
@@ -99,7 +97,7 @@
       }
     ],
     "userDefinedMetadata" : {
-      "com.github.apple.coremltools.conversion_date" : "2026-11-08",
+      "com.github.apple.coremltools.conversion_date" : "2026-11-11",
       "com.github.apple.coremltools.source" : "torch==2.7.1",
       "com.github.apple.coremltools.version" : "9.0",
       "com.github.apple.coremltools.source_dialect" : "TorchScript"

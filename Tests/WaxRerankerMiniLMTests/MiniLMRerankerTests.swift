@@ -154,8 +154,9 @@ struct MiniLMRerankerOutputTests {
 @Suite(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_RERANKER"] != "1",
                  "Set WAX_TEST_RERANKER=1 to run MiniLM reranker inference tests"))
 struct MiniLMRerankerInferenceTests {
-    /// INT8 weights against PyTorch fp32: the conversion measured max |d| 0.045 logits over
-    /// 305 benchmark windows (scores span about -11.5 to 8.6).
+    /// INT8 weights and FP16 compute against PyTorch fp32: max |d| 0.084 logits on the CPU and
+    /// 0.020 on the GPU over the 12 reference scores (scores span about -11.5 to 8.6). Retrieval
+    /// matched the FP32 graph: LongMemEval R_all@5 0.938 both, LoCoMo 0.6085 against 0.6091.
     static let tolerance: Float = 0.1
 
     @available(macOS 15.0, iOS 18.0, *)

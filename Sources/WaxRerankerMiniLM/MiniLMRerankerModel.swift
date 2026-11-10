@@ -157,7 +157,7 @@ package final class MiniLMRerankerModel: @unchecked Sendable {
         default:
             throw OutputError.unexpectedShape(shape: shape, batchSize: batchSize)
         }
-        // The graph computes in FP32 (scripts/convert_ms_marco_minilm_reranker.py).
+        // The graph returns FP32 scores (scripts/convert_ms_marco_minilm_reranker.py).
         guard scores.dataType == .float32 else {
             throw OutputError.unsupportedDataType(rawValue: scores.dataType.rawValue)
         }

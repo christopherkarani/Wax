@@ -5,7 +5,7 @@ Convert cross-encoder/ms-marco-MiniLM-L-6-v2 (Apache-2.0) to CoreML (.mlpackage 
 Follows scripts/convert_e5_small_v2.py so the reranker shares the embedders' runtime contract:
   - Flexible shapes: batch 1...64 x sequence 32...512. MiniLMReranker pads each batch to one of
     MiniLMRerankerModel.sequenceLengthBuckets: [32, 64, 128, 192, 256, 288, 384, 512]
-  - FP32 compute over INT8 per-channel symmetric weights (--weights int8, the default),
+  - FP16 compute over INT8 per-channel symmetric weights (--weights int8, the default),
     or uncompressed FP32 weights (--weights fp32) for checking quantization error
   - Inputs: input_ids, attention_mask, token_type_ids (BERT segment ids: 0 for
     [CLS] query [SEP], 1 for the passage window and its closing [SEP])
@@ -119,7 +119,7 @@ def convert(weights: str, output_dir: str) -> None:
     )
     shape = ct.Shape(shape=[batch_dim, sequence_dim])
 
-    print("Converting to CoreML (FP32 compute)...")
+    print("Converting to CoreML (FP16 compute)...")
     mlmodel = ct.convert(
         traced,
         inputs=[
@@ -127,11 +127,13 @@ def convert(weights: str, output_dir: str) -> None:
             ct.TensorType(name="attention_mask", shape=shape, dtype=np.int32),
             ct.TensorType(name="token_type_ids", shape=shape, dtype=np.int32),
         ],
-        outputs=[ct.TensorType(name="scores")],
+        # FP32 output, so MiniLMRerankerModel reads the same type either way.
+        outputs=[ct.TensorType(name="scores", dtype=np.float32)],
         convert_to="mlprogram",
-        # As for e5: keep FP32 compute (FP16 overflows in attention / layer norm) and
-        # shrink only the stored weights.
-        compute_precision=ct.precision.FLOAT32,
+        # FP16 compute nearly halves CPU reranking time (LoCoMo p50 338 to 180 ms) and
+        # changes R_all@5 by one question in 1,535. The finite MASK_FILL keeps padded
+        # rows out of FP16 overflow.
+        compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.macOS15,
     )
 
@@ -149,7 +151,7 @@ def convert(weights: str, output_dir: str) -> None:
     mlmodel.license = "Apache-2.0 (cross-encoder/ms-marco-MiniLM-L-6-v2)"
     mlmodel.short_description = (
         "cross-encoder/ms-marco-MiniLM-L-6-v2 relevance logit for a (query, passage) pair "
-        f"({weights.upper()} weights, FP32 compute)."
+        f"({weights.upper()} weights, FP16 compute)."
     )
     mlmodel.version = "1.0"
 

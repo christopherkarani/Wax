@@ -96,16 +96,28 @@ shipped.
 `Memory.Config.reranking = .builtIn(.msMarcoMiniLM)` (opt-in, off by default) rescores the
 top candidates with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
 behind the `MiniLMReranker` trait. Each frame is scored as its best 288-token window, and
-the reranker order is fused with the retrieval order by reciprocal rank (k = 10). Scores
-match PyTorch to 0.015 logits on the reference pairs.
+the reranker order is fused with the retrieval order by reciprocal rank (k = 10). The
+graph computes in FP16 over INT8 weights; scores match PyTorch to 0.084 logits on the CPU
+and 0.020 on the GPU over the reference pairs.
 
 The runs are paired: the reranked run's pre-rerank order matched the base run on all 500
 LongMemEval queries. On LongMemEval, reranking the top 20 takes R_all@5 from 0.905 to
 0.938 (17 questions gained, 3 lost; sign test p = 0.003). On LoCoMo, reranking the top 50
-takes it from 0.555 to 0.609 (102 gained, 19 lost). It costs about 300 ms per LongMemEval
-query and 90 ms per LoCoMo query on the CPU (M3 Max, `--rerank-compute cpu`, prediction
-batch 8). Reproduce with `wax-bench retrieve ... --rerank minilm --rerank-candidates 20
---rerank-fusion rrf:10`.
+takes it from 0.555 to 0.609 (102 gained, 19 lost). Reproduce with `wax-bench retrieve ...
+--rerank minilm --rerank-candidates 20 --rerank-fusion rrf:10`.
+
+Search with reranking, p50 and p95 per query on the CPU (M3 Max, `--rerank-compute cpu`,
+prediction batch 8, four jobs at once, back-to-back runs on a loaded machine):
+
+| | LongMemEval (top 20) | LoCoMo (top 50) |
+|---|---|---|
+| FP32 graph (before) | 374 / 600 ms, R_all@5 0.938 | 338 / 382 ms, R_all@5 0.6091 |
+| FP16 graph (shipped) | 232 / 331 ms, R_all@5 0.938 | 180 / 208 ms, R_all@5 0.6085 |
+
+FP16 compute also cut CPU time per LoCoMo run from 274 to 155 s. The Neural Engine does not
+help: the FP32 graph cannot run there, so `--rerank-compute ane` fell back to the CPU, and an
+FP16 graph with fixed shapes ran on it at 1.8 s p50. Fixed shapes alone made the CPU
+slower (395 ms p50 on LoCoMo).
 
 ## LoCoMo retrieval
 
