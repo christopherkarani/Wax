@@ -102,50 +102,79 @@ func fitPiecesJoinBackToTheChunkAcrossMultiByteCharacters() async throws {
 
 @Test
 func tokenChunkingCoversTextPastTheTokenizerByteCap() async throws {
+    // The only test at the real cap: it proves the default segment size matches the prefix
+    // `TokenCounter.encode` keeps. The marker starts at byte `cap`, just past that prefix.
+    let cap = TokenCounter.maxTokenizationBytes
     let marker = "zqxtailmarker"
     let sentence = "Swift concurrency uses actors and tasks. "
-    let filler = String(repeating: sentence, count: (8 * 1024 * 1024 + 512 * 1024) / sentence.utf8.count)
-    #expect(filler.utf8.count > TokenCounter.maxTokenizationBytes)
-    let tail = String(repeating: sentence, count: 50 * 1024 / sentence.utf8.count)
-    let text = filler + marker + " " + tail
-    #expect(text.utf8.count - filler.utf8.count < 100 * 1024)
+    let filler = String(repeating: sentence, count: cap / sentence.utf8.count)
+    let text = filler + String(repeating: " ", count: cap - filler.utf8.count) + marker
+    #expect(text.utf8.count == cap + marker.utf8.count)
 
-    let strategy = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
-    let chunks = await TextChunker.chunk(text: text, strategy: strategy)
+    let chunks = await TextChunker.chunk(text: text, strategy: .tokenCount(targetTokens: 2_000, overlapTokens: 0))
+
     #expect(chunks.contains { $0.contains(marker) })
+}
 
-    var streamedMarker = false
-    for await chunk in TextChunker.stream(text: text, strategy: strategy) where chunk.contains(marker) {
-        streamedMarker = true
+private let smallSegmentBytes = 4 * 1024
+
+/// Chunks from both `chunk` and `stream` with `smallSegmentBytes` segments, after checking they agree.
+private func smallSegmentChunks(_ text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
+    let strategy = ChunkingStrategy.tokenCount(targetTokens: targetTokens, overlapTokens: overlapTokens)
+    let chunks = await TextChunker.chunk(text: text, strategy: strategy, maxSegmentBytes: smallSegmentBytes)
+    var streamed: [String] = []
+    for await chunk in TextChunker.stream(text: text, strategy: strategy, maxSegmentBytes: smallSegmentBytes) {
+        streamed.append(chunk)
     }
-    #expect(streamedMarker)
+    #expect(streamed == chunks)
+    return chunks
 }
 
 @Test
-func tokenChunkingPastTheByteCapEmitsNoWhitespaceOnlyChunks() async throws {
-    let cap = TokenCounter.maxTokenizationBytes
+func tokenChunkingAcrossSegmentsCutAtWhitespaceCoversTheText() async {
+    let words = (0..<3_000).map { "w\($0)" }
+    let text = words.joined(separator: " ")
+    #expect(text.utf8.count > 3 * smallSegmentBytes)
+
+    let chunks = await smallSegmentChunks(text, targetTokens: 100, overlapTokens: 0)
+
+    #expect(chunks.count > 3)
+    // A chunk of only the space a cut leaves at a segment's end is dropped, so compare the
+    // visible text: nothing lost, duplicated or reordered.
+    let visible: (String) -> String = { $0.filter { !$0.isWhitespace } }
+    #expect(visible(chunks.joined()) == visible(text))
+}
+
+@Test
+func tokenChunkingAcrossSegmentsWithoutWhitespaceCutsOnScalarBoundaries() async {
+    // No whitespace in any window, and most characters are 4 UTF-8 bytes, so the cuts fall
+    // back to the last scalar boundary inside the cap.
+    let text = mixedScriptText(characters: 6_000, includeSpaces: false)
+    #expect(text.utf8.count > 3 * smallSegmentBytes)
+
+    let chunks = await smallSegmentChunks(text, targetTokens: 100, overlapTokens: 0)
+
+    #expect(chunks.count > 3)
+    #expect(!chunks.contains { $0.contains("\u{FFFD}") })
+    #expect(chunks.joined() == text)
+}
+
+@Test
+func tokenChunkingAcrossSegmentsEmitsNoWhitespaceOnlyChunks() async {
+    let cap = smallSegmentBytes
     let sentence = "Swift concurrency uses actors and tasks. "
     // The cut lands inside the trailing newlines, so the last segment is whitespace only.
     let body = String(repeating: sentence, count: cap / sentence.utf8.count)
     let trailingNewlines = body + String(repeating: "\n", count: cap - body.utf8.count + 3)
-    // The window's only whitespace is its first byte, so the first segment is " ". Digits
-    // tokenize in three-digit pieces, so the whitespace-free run stays cheap to encode.
+    // The window's only whitespace is its first byte, so the first segment is " ".
     let digits = String(repeating: "0123456789", count: cap / 10 + 1)
     let leadingSpace = " " + String(digits.prefix(cap))
 
     for text in [trailingNewlines, leadingSpace] {
         #expect(text.utf8.count > cap)
-        let strategy = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
-        let chunks = await TextChunker.chunk(text: text, strategy: strategy)
+        let chunks = await smallSegmentChunks(text, targetTokens: 100, overlapTokens: 10)
         #expect(chunks.count > 1)
         #expect(!chunks.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-
-        var streamedWhitespaceOnly = 0
-        for await chunk in TextChunker.stream(text: text, strategy: strategy)
-        where chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            streamedWhitespaceOnly += 1
-        }
-        #expect(streamedWhitespaceOnly == 0)
     }
 }
 
@@ -154,16 +183,17 @@ private func mixedScriptText(characters: Int, includeSpaces: Bool) -> String {
     var pool: [Character] = ["漢", "字", "龘", "鱻", "齉", "𠜎", "𪚥", "𤭢", "🦀", "🧬", "🪐", "😀", "🫠", "語"]
     if includeSpaces { pool.append(" ") }
     var state: UInt64 = 0x9E37_79B9_7F4A_7C15
-    var text = ""
+    var picked: [Character] = []
+    picked.reserveCapacity(characters)
     var previous: Character = " "
-    while text.count < characters {
+    while picked.count < characters {
         state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
         let next = pool[Int((state >> 33) % UInt64(pool.count))]
-        if next == " " && (previous == " " || text.isEmpty) { continue }
-        text.append(next)
+        if next == " " && previous == " " { continue }
+        picked.append(next)
         previous = next
     }
-    return text
+    return String(picked)
 }
 
 /// Bytes of `text` covered from its start by `chunks`, each found in order as an exact UTF-8

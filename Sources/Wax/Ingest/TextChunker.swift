@@ -2,23 +2,47 @@ import Foundation
 
 package enum TextChunker {
     /// Deterministic, token-aware chunking using the same encoding as Fast RAG.
+    /// - Parameter maxSegmentBytes: longest piece tokenized in one call; see `tokenizerSegments`.
     /// - Returns: array of chunk strings (UTF-8), or `[text]` when it fits.
-    package static func chunk(text: String, strategy: ChunkingStrategy) async -> [String] {
+    package static func chunk(
+        text: String,
+        strategy: ChunkingStrategy,
+        maxSegmentBytes: Int = TokenCounter.maxTokenizationBytes
+    ) async -> [String] {
         switch strategy {
         case let .tokenCount(targetTokens, overlapTokens):
-            return await tokenCountChunk(text: text, targetTokens: targetTokens, overlapTokens: overlapTokens)
+            return await tokenCountChunk(
+                text: text,
+                targetTokens: targetTokens,
+                overlapTokens: overlapTokens,
+                maxSegmentBytes: maxSegmentBytes
+            )
         }
     }
 
     /// Stream chunked text without materializing the full chunk list in memory.
-    package static func stream(text: String, strategy: ChunkingStrategy) -> AsyncStream<String> {
+    package static func stream(
+        text: String,
+        strategy: ChunkingStrategy,
+        maxSegmentBytes: Int = TokenCounter.maxTokenizationBytes
+    ) -> AsyncStream<String> {
         switch strategy {
         case let .tokenCount(targetTokens, overlapTokens):
-            return tokenCountChunkStream(text: text, targetTokens: targetTokens, overlapTokens: overlapTokens)
+            return tokenCountChunkStream(
+                text: text,
+                targetTokens: targetTokens,
+                overlapTokens: overlapTokens,
+                maxSegmentBytes: maxSegmentBytes
+            )
         }
     }
 
-    private static func tokenCountChunk(text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
+    private static func tokenCountChunk(
+        text: String,
+        targetTokens: Int,
+        overlapTokens: Int,
+        maxSegmentBytes: Int
+    ) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
 
@@ -34,7 +58,7 @@ package enum TextChunker {
             return [text]
         }
         var chunks: [String] = []
-        let segments = tokenizerSegments(of: text)
+        let segments = tokenizerSegments(of: text, maxBytes: maxSegmentBytes)
         for segment in segments {
             let segmentText = String(segment)
             let tokens = await counter.encode(segmentText)
@@ -68,7 +92,8 @@ package enum TextChunker {
     private static func tokenCountChunkStream(
         text: String,
         targetTokens: Int,
-        overlapTokens: Int
+        overlapTokens: Int,
+        maxSegmentBytes: Int
     ) -> AsyncStream<String> {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
@@ -88,7 +113,7 @@ package enum TextChunker {
                     continuation.finish()
                     return
                 }
-                let segments = tokenizerSegments(of: text)
+                let segments = tokenizerSegments(of: text, maxBytes: maxSegmentBytes)
                 for segment in segments {
                     let segmentText = String(segment)
                     let tokens = await counter.encode(segmentText)
@@ -160,12 +185,13 @@ package enum TextChunker {
         return nonEmpty.isEmpty ? chunks : nonEmpty
     }
 
-    /// Splits text longer than the tokenizer's per-call cap (`TokenCounter.maxTokenizationBytes`;
-    /// `encode` sees only that prefix) into pieces it encodes whole, so chunks cover all of it.
-    /// Each cut follows the last ASCII whitespace inside the cap, or falls on the last scalar
+    /// Splits text longer than `maxBytes` into pieces of at most `maxBytes` UTF-8 bytes. With the
+    /// default, the tokenizer's per-call cap (`TokenCounter.maxTokenizationBytes`; `encode` sees
+    /// only that prefix), every piece is encoded whole, so chunks cover all of the text. Each
+    /// cut follows the last ASCII whitespace inside the cap, or falls on the last scalar
     /// boundary when there is none. Text within the cap is one piece.
-    private static func tokenizerSegments(of text: String) -> [Substring] {
-        let maxBytes = TokenCounter.maxTokenizationBytes
+    private static func tokenizerSegments(of text: String, maxBytes: Int) -> [Substring] {
+        precondition(maxBytes >= 4, "a segment must fit one UTF-8 scalar")
         var segments: [Substring] = []
         var rest = text[...]
         while rest.utf8.count > maxBytes {
