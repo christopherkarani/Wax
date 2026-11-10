@@ -4796,6 +4796,140 @@ func brokerMarkdownSyncDoesNotDeleteLockedMemoryWhenLineRemoved() async throws {
 }
 
 @Test
+func brokerMarkdownExportSyncRoundTripPreservesEveryDurableText() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-round-trip-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let suffix = UUID().uuidString
+        let contents: [String] = [
+            "Plain single-line round trip fact \(suffix)",
+            "Release steps \(suffix):\n- tag\n- push",
+            "Heading lines \(suffix)\n## not a section\n# not a title",
+            "Comment markers \(suffix) <!-- wax:not-a-marker --> and --> arrows",
+            "[x] looks like a checkbox \(suffix)",
+            "Trailing whitespace \(suffix)   ",
+        ]
+        for content in contents {
+            let remember = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "memory_type": .string("fact"),
+                    "durability": .string("durable"),
+                ]
+            ))
+            #expect(remember.ok == true, "remember failed: \(remember.error ?? "nil")")
+        }
+
+        func durableTexts() async throws -> [String] {
+            try await service.longTermMemory.corpusSourceDocuments().map(\.text).sorted()
+        }
+        #expect(try await durableTexts() == contents.sorted())
+
+        // First cycle: sync adopts the exported lines without changing any text.
+        let firstExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(firstExport.ok == true)
+        let firstSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(firstSync.ok == true, "markdown_sync failed: \(firstSync.error ?? "nil")")
+        let firstCounts = try #require(firstSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(firstCounts["created"]?.intValue == 0)
+        #expect(firstCounts["deleted"]?.intValue == 0)
+        #expect(try await durableTexts() == contents.sorted())
+
+        // Second cycle on adopted documents: export then sync is a full no-op.
+        let secondExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(secondExport.ok == true)
+        let memoryPath = try #require(secondExport.payload?.objectValue?["memory_md_path"]?.stringValue)
+        let entries = try BrokerMarkdownSync.parseFile(at: URL(fileURLWithPath: memoryPath))
+            .filter(\.isManagedImportCandidate)
+        #expect(entries.map(\.text).sorted() == contents.sorted())
+        let framesBefore = try await service.longTermMemory.corpusSourceDocuments().map(\.frameId).sorted()
+
+        let secondSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(secondSync.ok == true, "markdown_sync failed: \(secondSync.error ?? "nil")")
+        let secondCounts = try #require(secondSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(secondCounts["created"]?.intValue == 0)
+        #expect(secondCounts["updated"]?.intValue == 0)
+        #expect(secondCounts["deleted"]?.intValue == 0)
+        #expect(secondCounts["unchanged"]?.intValue == Int64(contents.count))
+        #expect(try await service.longTermMemory.corpusSourceDocuments().map(\.frameId).sorted() == framesBefore)
+        #expect(try await durableTexts() == contents.sorted())
+
+        // An edit to an encoded multi-line entry still imports as an update.
+        let memoryURL = URL(fileURLWithPath: memoryPath)
+        let exported = try String(contentsOf: memoryURL, encoding: .utf8)
+        let edited = exported.replacingOccurrences(of: "\\n- push", with: "\\n- push --tags")
+        #expect(edited != exported)
+        try edited.write(to: memoryURL, atomically: true, encoding: .utf8)
+        let editSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(editSync.ok == true, "markdown_sync failed: \(editSync.error ?? "nil")")
+        let editCounts = try #require(editSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(editCounts["updated"]?.intValue == 1)
+        #expect(editCounts["deleted"]?.intValue == 0)
+        let expectedAfterEdit = contents.map {
+            $0 == "Release steps \(suffix):\n- tag\n- push" ? "Release steps \(suffix):\n- tag\n- push --tags" : $0
+        }
+        #expect(try await durableTexts() == expectedAfterEdit.sorted())
+    }
+}
+
+@Test
+func brokerMarkdownSyncKeepsMultiLineMemoryFromLegacyExportLine() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-legacy-multiline-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let content = "Legacy release steps \(UUID().uuidString):\n- tag\n- push"
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(content),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(remember.ok == true)
+        let document = try #require(try await service.longTermMemory.corpusSourceDocuments().first)
+
+        // Files exported before single-line encoding wrote the raw text, so the
+        // marker landed on the item's last physical line.
+        let marker = await service.marker(for: document, kind: .memory)
+        let legacyItem = "- \(content) \(BrokerMarkdownSync.markerComment(marker))"
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try "# MEMORY\n\n## fact\n\(legacyItem)\n".write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true, "markdown_sync failed: \(sync.error ?? "nil")")
+        let counts = try #require(sync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(counts["updated"]?.intValue == 0)
+        #expect(counts["deleted"]?.intValue == 0)
+        let documents = try await service.longTermMemory.corpusSourceDocuments()
+        #expect(documents.map(\.text) == [content])
+        #expect(documents.map(\.frameId) == [document.frameId])
+    }
+}
+
+@Test
 func brokerRetrievalEventsPersistQueryHashWithoutRawQuery() async throws {
     try await withAgentBrokerService { service, sessionRootURL in
         let started = await service.handle(.init(command: "session_start"))
