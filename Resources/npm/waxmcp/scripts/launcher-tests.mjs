@@ -1193,9 +1193,20 @@ function stagePackageCopy(directory, version, bundledServerContent) {
   return path.join(directory, "bin", "waxmcp.js");
 }
 
-for (const [label, packageCopyVersion, expected] of [
+// The launch-time check reads only the runtime manifest: digests are verified
+// when the runtime is staged, not on every start. A changed runtime file under a
+// matching manifest therefore still runs the installed runtime.
+const tamperRuntimeFile = installRoot => {
+  const resource = path.join(
+    installRoot, "runtime", `${os.platform()}-${os.arch()}`, requiredRuntimeBundles[0], "resource.txt"
+  );
+  fs.writeFileSync(resource, "changed after staging\n");
+};
+
+for (const [label, packageCopyVersion, expected, afterInstall] of [
   ["prefers the bundled binary over an installed runtime from another version", "0.0.1-newer", /bundled-server/],
   ["prefers an installed runtime whose manifest matches this version", packageVersion, /installed-server/],
+  ["does not re-hash the installed runtime at launch", packageVersion, /installed-server/, tamperRuntimeFile],
 ]) {
   test(`launcher ${label}`, {
     skip: process.platform !== "darwin" || process.arch !== "arm64",
@@ -1213,6 +1224,7 @@ for (const [label, packageCopyVersion, expected] of [
         encoding: "utf8",
       });
       assert.equal(install.status, 0, install.stderr);
+      afterInstall?.(installRoot);
 
       const packageCopy = stagePackageCopy(
         path.join(root, "package"),

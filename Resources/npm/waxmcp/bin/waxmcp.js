@@ -97,7 +97,7 @@ function findBinary(name) {
   const runtimeDir = path.join(installRoot, "runtime", platformKey);
   // An install-root runtime staged by another waxmcp version must not shadow
   // this package's bundled binaries; use it only when its manifest matches.
-  if (hasVerifiedInstalledRuntime(runtimeDir, installRoot, platformKey)) {
+  if (installedRuntimeMatchesPackage(runtimeDir, installRoot, platformKey)) {
     candidates.push(path.join(runtimeDir, name));
   }
   const bundled = resolveBundledBinary(name);
@@ -111,10 +111,17 @@ function findBinary(name) {
   return candidates;
 }
 
-function hasVerifiedInstalledRuntime(runtimeDir, installRoot, platformKey) {
+// Launch-time check: manifest only. Digests are verified when the runtime is
+// staged (hasVerifiedRuntime); re-hashing the whole runtime on every start
+// would add no tamper protection, since the manifest is just as writable.
+function installedRuntimeMatchesPackage(runtimeDir, installRoot, platformKey) {
   try {
+    const manifestPath = path.join(runtimeDir, runtimeManifestName);
+    assertSafeManagedPath(installRoot, manifestPath);
+    if (!fs.lstatSync(manifestPath).isFile()) return false;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     const packageInfo = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
-    return hasVerifiedRuntime(runtimeDir, installRoot, packageInfo, platformKey);
+    return manifest?.version === packageInfo.version && manifest?.platform === platformKey;
   } catch {
     return false;
   }
