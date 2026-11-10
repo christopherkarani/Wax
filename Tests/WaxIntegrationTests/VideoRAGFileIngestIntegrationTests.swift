@@ -322,6 +322,84 @@ func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
         let ctx = try await rag.recall(query)
         #expect(ctx.items.count == 1)
         #expect(ctx.items.first?.videoID.id == "valid")
+
+        // The index must reflect the surviving video too: a filtered recall and a delete
+        // both resolve it through the in-memory index.
+        let validID = VideoID(source: .file, id: "valid")
+        var filteredQuery = query
+        filteredQuery.videoIDs = [validID]
+        let filtered = try await rag.recall(filteredQuery)
+        #expect(filtered.items.map(\.videoID) == [validID])
+
+        try await rag.delete(videoID: validID)
+        let afterDelete = try await rag.recall(query)
+        #expect(afterDelete.items.isEmpty)
+        #expect(await liveVideoRootIDs(rag, videoID: validID).isEmpty)
+    }
+}
+
+private func liveVideoRootIDs(_ rag: VideoRAGOrchestrator, videoID: VideoID) async -> [UInt64] {
+    await rag.wax.frameMetas()
+        .filter { meta in
+            meta.kind == VideoFrameKind.root.rawValue
+                && meta.status != .deleted
+                && meta.supersededBy == nil
+                && meta.metadata?.entries[VideoMetadataKey.sourceID.rawValue] == videoID.id
+        }
+        .map(\.id)
+}
+
+@Test
+func videoRAGFailedReingestKeepsOnlyThePreviousVersion() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 4, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 1
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 2
+        config.vectorEnginePreference = .cpuOnly
+
+        // Two segments per ingest: the first ingest embeds calls 1-2; the re-ingest writes its
+        // root, embeds call 3, then fails on call 4 before any segment frame is written.
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: FailingOnCallImageEmbedder(failOnImageCall: 4),
+            transcriptProvider: TestTranscriptProvider()
+        )
+        let videoID = VideoID(source: .file, id: "clip")
+        let file = VideoFile(id: videoID, url: mp4Url)
+
+        try await rag.ingest(files: [file])
+        let firstRoots = await liveVideoRootIDs(rag, videoID: videoID)
+        try #require(firstRoots.count == 1)
+
+        await #expect(throws: MockEmbedderError.self) {
+            try await rag.ingest(files: [file])
+        }
+        try await rag.flush()
+
+        let liveRoots: [UInt64] = await liveVideoRootIDs(rag, videoID: videoID)
+        #expect(liveRoots == firstRoots)
+
+        let query = VideoQuery(
+            text: TestTranscriptProvider.token,
+            videoIDs: [videoID],
+            resultLimit: 5,
+            segmentLimitPerVideo: 5,
+            contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 2)
+        )
+        let ctx = try await rag.recall(query)
+        #expect(ctx.items.map(\.videoID) == [videoID])
+
+        try await rag.delete(videoID: videoID)
+        #expect(await liveVideoRootIDs(rag, videoID: videoID).isEmpty)
+        try await rag.close()
     }
 }
 

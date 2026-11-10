@@ -182,6 +182,41 @@ package actor PhotoRAGOrchestrator {
         try await removeSearchIndexes(frameIds: ids)
     }
 
+    /// Deletes a tree whose ingest failed before it superseded the previous version, so the
+    /// asset keeps its previous version (or nothing) rather than a partial second live tree.
+    /// Best-effort: the ingest error is what the caller reports.
+    func discardPartialTree(rootId: UInt64) async {
+        let children = await wax.frameMetasIncludingPending().filter { $0.parentId == rootId }
+        let frameIds = [rootId] + children.map(\.id)
+        do {
+            for frameId in frameIds {
+                try await wax.delete(frameId: frameId)
+            }
+            try await removeSearchIndexes(frameIds: frameIds)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "PhotoRAG partial-tree discard",
+                fallback: "partial tree may stay live until the asset is re-ingested"
+            )
+        }
+    }
+
+    /// Ends an ingest call that failed partway: commits the trees that completed and rebuilds
+    /// the index so it matches the store. Best-effort: the ingest error is what the caller reports.
+    func reconcileAfterFailedIngest() async {
+        do {
+            try await session.commit()
+            try await rebuildIndex()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "PhotoRAG failed-ingest reconcile",
+                fallback: "completed trees stay pending until the next flush"
+            )
+        }
+    }
+
     /// Drops vector and text postings for frames that must no longer be searchable.
     /// Text cleanup is required: otherwise BM25 keeps ranking deleted/superseded
     /// OCR frames and live re-ingests of the same asset disappear from recall.

@@ -47,9 +47,14 @@ extension VideoRAGOrchestrator {
         let unique = Self.dedupeFiles(files)
         guard !unique.isEmpty else { return }
 
-        for file in unique {
-            try Task.checkCancellation()
-            try await ingestOneFile(file)
+        do {
+            for file in unique {
+                try Task.checkCancellation()
+                try await ingestOneFile(file)
+            }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
@@ -61,8 +66,13 @@ extension VideoRAGOrchestrator {
         let unique = Self.dedupeIDs(photoAssetIDs)
         guard !unique.isEmpty else { return }
 
-        for assetID in unique {
-            try await ingestOnePhoto(assetID: assetID)
+        do {
+            for assetID in unique {
+                try await ingestOnePhoto(assetID: assetID)
+            }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
@@ -73,6 +83,18 @@ extension VideoRAGOrchestrator {
     // MARK: - Ingest internals
 
     private func ingestOneFile(_ file: VideoFile) async throws {
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(file: file, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for `file`. `newRootId` holds the new root from the moment it is
+    /// written until it supersedes the previous version, so a failure in between can discard it.
+    private func ingestTree(file: VideoFile, newRootId: inout UInt64?) async throws {
         guard file.url.isFileURL else {
             throw VideoIngestError.invalidVideo(reason: "file URL must be a file:// URL")
         }
@@ -114,6 +136,7 @@ extension VideoRAGOrchestrator {
         }
         let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
+        newRootId = rootId
 
         // Segment frames (embedded + optional transcript payload)
         try await writeSegments(
@@ -128,12 +151,25 @@ extension VideoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot, videoID: videoID)
         }
     }
 
     #if canImport(Photos)
     private func ingestOnePhoto(assetID: String) async throws {
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(assetID: assetID, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for a Photos video; `newRootId` follows the same contract as in
+    /// ``ingestTree(file:newRootId:)``.
+    private func ingestTree(assetID: String, newRootId: inout UInt64?) async throws {
         let videoID = VideoID(source: .photos, id: assetID)
         let previousRoot = index.rootByVideoID[videoID]
 
@@ -185,6 +221,7 @@ extension VideoRAGOrchestrator {
         }
         let rootOptions = FrameMetaSubset(kind: VideoFrameKind.root.rawValue, metadata: rootMeta)
         let rootId = try await session.put(Data(), options: rootOptions, compression: .plain, timestampMs: captureMs)
+        newRootId = rootId
 
         if record.isLocal {
             try await writeSegments(
@@ -200,6 +237,7 @@ extension VideoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot, videoID: videoID)
         }
     }

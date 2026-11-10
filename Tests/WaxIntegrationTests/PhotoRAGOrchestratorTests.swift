@@ -387,3 +387,85 @@ func photoRAGLocationFilteredRecallMatchesTextOnlyInOCRBlock() async throws {
         try await orchestrator.close()
     }
 }
+
+private let tinyPhotoPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII="
+
+private func writeTinyPhoto(near storeURL: URL, name: String) throws -> URL {
+    let imageURL = storeURL.deletingLastPathComponent()
+        .appendingPathComponent("wax-\(name)-\(UUID().uuidString).png")
+    try #require(Data(base64Encoded: tinyPhotoPNGBase64)).write(to: imageURL)
+    return imageURL
+}
+
+private func livePhotoRootIDs(_ orchestrator: PhotoRAGOrchestrator, photoID: PhotoID) async -> [UInt64] {
+    await orchestrator.wax.frameMetas()
+        .filter { meta in
+            meta.kind == PhotoFrameKind.root.rawValue
+                && meta.status != .deleted
+                && meta.supersededBy == nil
+                && meta.metadata?.entries[PhotoMetadataKey.assetID.rawValue] == photoID.id
+        }
+        .map(\.id)
+}
+
+@Test
+func photoRAGFailedIngestKeepsPreviousVersionAndReindexesSurvivors() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let urlA = try writeTinyPhoto(near: storeURL, name: "failed-ingest-a")
+        let urlB = try writeTinyPhoto(near: storeURL, name: "failed-ingest-b")
+        defer {
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = true
+        config.enableRegionEmbeddings = false
+        config.ingestConcurrency = 1
+        config.vectorEnginePreference = .cpuOnly
+
+        // OCR runs after the root frame is written. Call 1 is A's first ingest, call 2 is B,
+        // call 3 is A's re-ingest, which therefore fails with its new root already written.
+        let ocr = FailingOnCallOCRProvider(
+            blocks: [RecognizedTextBlock(text: "receipt", bbox: PhotoNormalizedRect(x: 0, y: 0, width: 1, height: 1), confidence: 0.9)],
+            failOnCall: 3
+        )
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: storeURL,
+            config: config,
+            embedder: stubMultimodalEmbedder,
+            ocr: ocr,
+            captioner: StubCaptionProvider(captionText: "a photo")
+        )
+        let idA = PhotoID(source: .file, id: "photo-a")
+        let idB = PhotoID(source: .file, id: "photo-b")
+
+        try await orchestrator.ingest(files: [PhotoFile(id: idA, url: urlA)])
+        let firstRootsA = await livePhotoRootIDs(orchestrator, photoID: idA)
+        try #require(firstRootsA.count == 1)
+
+        await #expect(throws: MockEmbedderError.self) {
+            try await orchestrator.ingest(files: [PhotoFile(id: idB, url: urlB), PhotoFile(id: idA, url: urlA)])
+        }
+        try await orchestrator.flush()
+
+        let liveRootsA: [UInt64] = await livePhotoRootIDs(orchestrator, photoID: idA)
+        let liveRootsB: [UInt64] = await livePhotoRootIDs(orchestrator, photoID: idB)
+        #expect(liveRootsA == firstRootsA)
+        #expect(liveRootsB.count == 1)
+
+        let budget = PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+        let onlyB = try await orchestrator.recall(PhotoQuery(filters: PhotoFilters(assetIDs: [idB]), resultLimit: 5, contextBudget: budget))
+        #expect(onlyB.items.map(\.photoID) == [idB])
+        let onlyA = try await orchestrator.recall(PhotoQuery(text: "receipt", filters: PhotoFilters(assetIDs: [idA]), resultLimit: 5, contextBudget: budget))
+        #expect(onlyA.items.map(\.photoID) == [idA])
+
+        try await orchestrator.delete(photoID: idB)
+        try await orchestrator.delete(photoID: idA)
+        #expect(await livePhotoRootIDs(orchestrator, photoID: idA).isEmpty)
+        #expect(await livePhotoRootIDs(orchestrator, photoID: idB).isEmpty)
+        try await orchestrator.close()
+    }
+}

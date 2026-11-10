@@ -44,6 +44,64 @@ struct StubCaptionProvider: CaptionProvider, Sendable {
     }
 }
 
+/// Counts calls across copies of a provider; `next()` returns the 1-based call number.
+actor ProviderCallCounter {
+    private var count = 0
+
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
+/// Returns `blocks`, except that the `failOnCall`-th call (1-based) throws.
+struct FailingOnCallOCRProvider: OCRProvider, Sendable {
+    let blocks: [RecognizedTextBlock]
+    let failOnCall: Int
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+    private let counter = ProviderCallCounter()
+
+    init(blocks: [RecognizedTextBlock], failOnCall: Int) {
+        self.blocks = blocks
+        self.failOnCall = failOnCall
+    }
+
+    func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
+        _ = image
+        if await counter.next() == failOnCall {
+            throw MockEmbedderError.forcedFailure
+        }
+        return blocks
+    }
+}
+
+/// A 4-D multimodal embedder whose `failOnImageCall`-th image embed (1-based) throws.
+struct FailingOnCallImageEmbedder: MultimodalEmbeddingProvider, Sendable {
+    let dimensions = 4
+    let normalize = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Mock", model: "FailingOnCall", dimensions: 4, normalized: true)
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+    let failOnImageCall: Int
+    private let counter = ProviderCallCounter()
+
+    init(failOnImageCall: Int) {
+        self.failOnImageCall = failOnImageCall
+    }
+
+    func embed(text: String) async throws -> [Float] {
+        _ = text
+        return [1, 0, 0, 0]
+    }
+
+    func embed(image: CGImage) async throws -> [Float] {
+        _ = image
+        if await counter.next() == failOnImageCall {
+            throw MockEmbedderError.forcedFailure
+        }
+        return [0, 1, 0, 0]
+    }
+}
+
 struct StubTranscriptProvider: VideoTranscriptProvider, Sendable {
     let chunks: [VideoTranscriptChunk]
     let executionMode: ProviderExecutionMode

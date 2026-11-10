@@ -67,22 +67,27 @@ extension PhotoRAGOrchestrator {
         let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueAssetIDs.makeIterator()
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<concurrency {
-                guard let photoID = iterator.next() else { break }
-                group.addTask {
-                    try Task.checkCancellation()
-                    try await self.ingestOne(photoID: photoID)
-                }
-            }
-            for try await _ in group {
-                if let photoID = iterator.next() {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<concurrency {
+                    guard let photoID = iterator.next() else { break }
                     group.addTask {
                         try Task.checkCancellation()
                         try await self.ingestOne(photoID: photoID)
                     }
                 }
+                for try await _ in group {
+                    if let photoID = iterator.next() {
+                        group.addTask {
+                            try Task.checkCancellation()
+                            try await self.ingestOne(photoID: photoID)
+                        }
+                    }
+                }
             }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
@@ -97,22 +102,27 @@ extension PhotoRAGOrchestrator {
         let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueFiles.makeIterator()
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<concurrency {
-                guard let file = iterator.next() else { break }
-                group.addTask {
-                    try Task.checkCancellation()
-                    try await self.ingestOne(file: file)
-                }
-            }
-            for try await _ in group {
-                if let file = iterator.next() {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<concurrency {
+                    guard let file = iterator.next() else { break }
                     group.addTask {
                         try Task.checkCancellation()
                         try await self.ingestOne(file: file)
                     }
                 }
+                for try await _ in group {
+                    if let file = iterator.next() {
+                        group.addTask {
+                            try Task.checkCancellation()
+                            try await self.ingestOne(file: file)
+                        }
+                    }
+                }
             }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
@@ -152,6 +162,18 @@ extension PhotoRAGOrchestrator {
         guard inFlightPhotoIDs.insert(libraryID).inserted else { return }
         defer { inFlightPhotoIDs.remove(libraryID) }
 
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(libraryID: libraryID, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for `libraryID`. `newRootId` holds the new root from the moment it is
+    /// written until it supersedes the previous version, so a failure in between can discard it.
+    private func ingestTree(libraryID: PhotoID, newRootId: inout UInt64?) async throws {
         #if canImport(Photos)
         let metadata = try await PhotosAssetMetadata.load(photoID: libraryID)
         let resolvedID = metadata.photoID
@@ -182,8 +204,10 @@ extension PhotoRAGOrchestrator {
                 metadata: baseMeta
             )
             let rootId = try await session.put(Data(), options: options, compression: .plain, timestampMs: frameTimestampMs)
+            newRootId = rootId
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                newRootId = nil
                 try await removeVectorsForRetiredTree(previousRoot)
             }
             return
@@ -203,8 +227,10 @@ extension PhotoRAGOrchestrator {
                 compression: .plain,
                 timestampMs: frameTimestampMs
             )
+            newRootId = rootId
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                newRootId = nil
                 try await removeVectorsForRetiredTree(previousRoot)
             }
             return
@@ -237,6 +263,7 @@ extension PhotoRAGOrchestrator {
             compression: .plain,
             timestampMs: frameTimestampMs
         )
+        newRootId = rootId
 
         // OCR
         var ocrBlocks: [RecognizedTextBlock] = []
@@ -429,6 +456,7 @@ extension PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot)
         }
         #else
@@ -441,6 +469,19 @@ extension PhotoRAGOrchestrator {
         guard inFlightPhotoIDs.insert(photoID).inserted else { return }
         defer { inFlightPhotoIDs.remove(photoID) }
 
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(file: file, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for `file`; `newRootId` follows the same contract as in
+    /// ``ingestTree(libraryID:newRootId:)``.
+    private func ingestTree(file: PhotoFile, newRootId: inout UInt64?) async throws {
+        let photoID = file.id
         guard FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)) else {
             throw PhotoIngestError.fileMissing(id: photoID, url: file.url)
         }
@@ -509,6 +550,7 @@ extension PhotoRAGOrchestrator {
             compression: .plain,
             timestampMs: frameTimestampMs
         )
+        newRootId = rootId
 
         var ocrBlocks: [RecognizedTextBlock] = []
         if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
@@ -602,6 +644,7 @@ extension PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot)
         }
     }
