@@ -2383,6 +2383,52 @@ func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
 }
 
 @Test
+func brokerCorpusBuildFailureRemovesItsTemporaryStore() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        let corpus = root.appendingPathComponent("corpus.wax")
+        try await writeSessionStore(
+            at: sessionsDir.appendingPathComponent("session-a.wax"),
+            documents: [("Readable session note about reactor telemetry.", ["session_id": "session-a"])]
+        )
+        // Not a Wax store: opening it fails with an error the build does not skip.
+        let unreadable = sessionsDir.appendingPathComponent("session-unreadable.wax")
+        try Data(repeating: 0x5A, count: 64 * 1024).write(to: unreadable)
+
+        func buildLeftovers() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.contains("-building-") }
+        }
+
+        for _ in 0..<2 {
+            await #expect(throws: (any Error).self) {
+                try await BrokerCorpusStoreBuilder.build(
+                    sessionsDirectory: sessionsDir,
+                    targetStoreURL: corpus,
+                    noEmbedder: true,
+                    embedderChoice: "minilm",
+                    recursive: true
+                )
+            }
+            #expect(try buildLeftovers().isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: corpus.path))
+        }
+
+        try FileManager.default.removeItem(at: unreadable)
+        let build = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(build.storesIndexed == 1)
+        #expect(FileManager.default.fileExists(atPath: corpus.path))
+        #expect(try buildLeftovers().isEmpty)
+    }
+}
+
+@Test
 func corpusSearchIncludesActiveSessionDocumentsWhileStoreIsLockedByBroker() async throws {
     // Active session stores hold an exclusive flock, so disk rebuild skips them.
     // corpus_search must still surface in-process active session notes.
