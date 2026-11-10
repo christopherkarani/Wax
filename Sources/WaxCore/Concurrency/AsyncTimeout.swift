@@ -53,8 +53,8 @@ package enum AsyncTimeout {
             try await withCheckedThrowingContinuation { continuation in
                 once.install(continuation)
                 // A serial queue of its own, not a global one: GCD always gives a serial
-                // queue a thread, while a global queue waits for a free core, and on a
-                // busy host a blocked operation could finish before its timeout fired.
+                // queue a thread, while it caps a global queue's threads by the core count,
+                // and on a busy host a blocked operation could finish before its timeout fired.
                 let timer = DispatchSource.makeTimerSource(
                     queue: DispatchQueue(label: "com.wax.async-timeout", qos: .userInitiated)
                 )

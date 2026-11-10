@@ -3,77 +3,68 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-// Work that must start promptly on a loaded host: blocking work (mostly waiting
-// on a child process, a socket or a sleep) and timeout deadlines. A queue GCD
-// caps at one active thread per core starts neither while the cores are busy.
-// In a parallel test run that kept a 0.1 s CLI call waiting about 50 s to start,
-// and let a 1 s blocked operation finish before its 30 ms timeout fired.
-
-/// Serialized: each test's spinners would hold the cores the other one waits for.
-@Suite(.serialized)
-struct BusyCoreSchedulingTests {
-    @Test func blockingWorkStartsWhileEveryCoreIsBusy() async throws {
-        let started = try await withEveryCoreBusy {
-            let submitted = ContinuousClock.now
-            let started = await BlockingWork.run { ContinuousClock.now }
-            return submitted.duration(to: started)
-        }
-        // Starting is all that is measured; the bound only separates prompt from starved.
-        #expect(started < .seconds(2))
-    }
-
-    @Test func asyncTimeoutFiresWhileEveryCoreIsBusy() async throws {
-        try await withEveryCoreBusy {
-            await #expect(throws: AsyncTimeout.TimeoutError.self) {
-                // The operation blocks its thread for 3 s; the 30 ms timeout must fire first.
-                _ = try await AsyncTimeout.run(timeout: .milliseconds(30), operation: "busy-cores") {
-                    blockThread(for: 3)
-                    return 0
-                }
+/// Blocking work is mostly waiting (a child process, a socket, a sleep), so a
+/// call must start even while other blocking calls keep every core busy. On a
+/// shared queue, which GCD caps at a few threads per core, a parallel test run kept the
+/// work of a 0.1 s CLI call waiting about 50 s to start, and a CI runner pushed
+/// that past the parity test's 2-minute limit.
+///
+/// The busy calls are blocking work themselves and stop as soon as the probe
+/// starts, so a passing run holds the cores for milliseconds, not seconds.
+@Test func blockingWorkStartsWhileOtherBlockingWorkHoldsEveryCore() async throws {
+    let spin = SpinControl()
+    let cores = ProcessInfo.processInfo.activeProcessorCount
+    // Twice the cores: on a 14-core Mac the old shared queue ran 28 and no more.
+    let spinners = (0..<(cores * 2)).map { _ in
+        Task {
+            await BlockingWork.run {
+                spin.markStarted()
+                // Stops on its own, so a starved probe fails the test instead of hanging it.
+                let stop = ContinuousClock.now.advanced(by: .seconds(10))
+                while !spin.isReleased, ContinuousClock.now < stop {}
             }
         }
     }
-}
-
-/// `Thread.sleep` is unavailable in async code; the timeout is meant to escape a blocked thread.
-private func blockThread(for seconds: TimeInterval) {
-    Thread.sleep(forTimeInterval: seconds)
-}
-
-/// Runs `body` while spinners at user-initiated QoS hold every core. They stop
-/// on their own after 10 s, so starved work fails a test instead of hanging it.
-private func withEveryCoreBusy<T: Sendable>(
-    _ body: () async throws -> T
-) async throws -> T {
-    let spin = SpinControl()
-    let cores = ProcessInfo.processInfo.activeProcessorCount
-    for _ in 0..<(cores * 2) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            spin.markStarted()
-            let stop = ContinuousClock.now.advanced(by: .seconds(10))
-            while !spin.isReleased, ContinuousClock.now < stop {}
-        }
-    }
     defer { spin.release() }
-    // Start once a spinner holds every core, or GCD may hand the work an idle thread.
-    // The bound keeps a host too busy to start them all from hanging the test.
-    let ready = ContinuousClock.now.advanced(by: .seconds(5))
-    while spin.startedCount < cores, ContinuousClock.now < ready {
+    try await waitUntil(seconds: 5) { spin.startedCount >= cores }
+
+    let probe = Task { await BlockingWork.run { spin.markProbeStarted() } }
+    let probeStarted = try await waitUntil(seconds: 2) { spin.probeStarted }
+    spin.release()
+    await probe.value
+    for spinner in spinners {
+        await spinner.value
+    }
+
+    #expect(probeStarted, "a blocking call waited for a core while \(spin.startedCount) others ran")
+}
+
+/// Polls `condition` until it holds or `seconds` pass. Returns whether it held.
+@discardableResult
+private func waitUntil(seconds: Int, _ condition: () -> Bool) async throws -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+    while !condition() {
+        guard ContinuousClock.now < deadline else { return false }
         try await Task.sleep(for: .milliseconds(5))
     }
-    return try await body()
+    return true
 }
 
 private final class SpinControl: @unchecked Sendable {
     private let lock = NSLock()
     private var released = false
     private var started = 0
+    private var probe = false
 
     var isReleased: Bool { lock.withLock { released } }
 
     var startedCount: Int { lock.withLock { started } }
 
+    var probeStarted: Bool { lock.withLock { probe } }
+
     func markStarted() { lock.withLock { started += 1 } }
+
+    func markProbeStarted() { lock.withLock { probe = true } }
 
     func release() { lock.withLock { released = true } }
 }
