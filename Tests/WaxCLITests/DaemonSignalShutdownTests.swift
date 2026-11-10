@@ -279,6 +279,46 @@ import Testing
         try await fixture.expectStoreReleasedAndCommitted()
     }
 
+    /// A command holding the store's locks for longer than the client's ping
+    /// budget makes the daemon busy, not mute: another client's availability
+    /// check must reuse it instead of killing it under the running command.
+    @Test(.timeLimit(.minutes(3)))
+    func availabilityCheckKeepsADaemonThatIsBusyWithALongCommand() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: fixture.holdEnvironment(command: "flush", inService: true)
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let running = try SocketClient(path: fixture.socketPath)
+        defer { running.close() }
+        try running.send(#"{"command":"flush","arguments":{}}"# + "\n")
+        try await fixture.waitForMarker("held", daemon: daemon)
+
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/nonexistent/wax-cli-must-not-start",
+            storePath: fixture.storeURL.path,
+            sessionRootPath: fixture.root.appendingPathComponent("sessions").path,
+            socketPath: fixture.socketPath,
+            embedderChoice: "auto",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: .fromEnvironment()
+        )
+        let started = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        #expect(started == false, "the availability check started a broker")
+        #expect(daemon.process.isRunning, "the availability check killed a busy daemon")
+
+        try fixture.releaseHeldCommand()
+        let fd = running.fd
+        let answered = try await BlockingWork.run { try readLine(fd: fd) }
+        #expect(answered.contains(#""ok":true"#), "the held command was not answered: \(answered)")
+        #expect(daemon.process.isRunning, "the daemon exited after the held command")
+    }
+
     /// While a running command holds graceful shutdown, a second signal exits
     /// at once instead of waiting for it.
     @Test(.timeLimit(.minutes(2)))

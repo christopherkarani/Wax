@@ -329,6 +329,53 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     }
 }
 
+/// A broker from a build without `ping` rejects it as an unknown command. The
+/// client must fall back to `stats` and reuse that broker, not call it mute.
+@Test
+func availabilityCheckFallsBackToStatsForABrokerWithoutPing() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsp-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    let listener = try bindAndListenUnixSocket(at: socketPath)
+    let responder = Thread {
+        while true {
+            let client = accept(listener, nil, nil)
+            guard client >= 0 else { return }
+            var buffer = Data()
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            while !buffer.contains(0x0A) {
+                let count = read(client, &chunk, chunk.count)
+                guard count > 0 else { break }
+                buffer.append(contentsOf: chunk.prefix(count))
+            }
+            let line = buffer.prefix { $0 != 0x0A }
+            let request = try? JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line))
+            let response: AgentBrokerResponse = request?.command == "stats"
+                ? .success(id: request?.id, payload: .object([:]))
+                : .failure(id: request?.id, message: "Unknown broker command '\(request?.command ?? "")'.")
+            if var reply = try? JSONEncoder().encode(response) {
+                reply.append(0x0A)
+                _ = reply.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+            }
+            close(client)
+        }
+    }
+    responder.start()
+    defer {
+        shutdown(listener, SHUT_RDWR)
+        close(listener)
+        unlink(socketPath)
+    }
+
+    let started = try await AgentBrokerClient.ensureAvailable(
+        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+    )
+    #expect(started == false)
+}
+
 #if canImport(Darwin)
 private let testUnixStreamSocketType: Int32 = SOCK_STREAM
 #else
