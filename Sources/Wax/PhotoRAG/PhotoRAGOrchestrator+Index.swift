@@ -132,8 +132,12 @@ extension PhotoRAGOrchestrator {
         let lat = center.latitude
         let lon = center.longitude
 
+        // No coordinate is within any distance of a non-finite center.
+        guard lat.isFinite, lon.isFinite else { return [] }
+
         // 111,000 meters ≈ 1 degree of latitude (standard geodetic approximation).
-        let latDelta = radius / 111_000.0
+        // Cap latDelta to 180 degrees so an infinite or huge radius cannot overflow the Int bin conversion.
+        let latDelta = min(180.0, radius / 111_000.0)
         // Cap lonDelta to 180 degrees to prevent unbounded expansion near poles.
         // cos(lat) adjusts for longitude convergence; max(1e-6, ...) prevents division by zero at poles.
         let lonDelta = min(180.0, radius / max(1e-6, 111_000.0 * cos(lat * .pi / 180)))

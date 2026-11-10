@@ -567,3 +567,94 @@ func photoRAGDegradedDiagnosticsUseLocalAvailabilityMetadata() async throws {
         try await orchestrator.flush()
     }
 }
+
+@Test
+func photoRAGLocationQueryWithNonFiniteOrHugeRadiusDoesNotCrash() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let sessionConfig = WaxSession.Config(
+            enableTextSearch: true,
+            enableVectorSearch: true,
+            enableStructuredMemory: false,
+            vectorEnginePreference: .cpuOnly,
+            vectorMetric: .cosine,
+            vectorDimensions: 4
+        )
+        let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+
+        let located: [(id: String, lat: String, lon: String)] = [
+            ("cupertino", "37.3318", "-122.0312"),
+            ("sydney", "-33.8688", "151.2093"),
+        ]
+        for (offset, photo) in located.enumerated() {
+            var meta = Metadata()
+            meta.entries[PhotoMetadataKey.assetID.rawValue] = photo.id
+            meta.entries[PhotoMetadataKey.lat.rawValue] = photo.lat
+            meta.entries[PhotoMetadataKey.lon.rawValue] = photo.lon
+            _ = try await session.put(
+                Data(),
+                embedding: [1, 0, 0, 0],
+                identity: nil,
+                options: FrameMetaSubset(kind: PhotoFrameKind.root.rawValue, metadata: meta),
+                compression: .plain,
+                timestampMs: 1_700_000_000_000 + Int64(offset)
+            )
+        }
+
+        try await session.commit()
+        await session.close()
+        try await wax.close()
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.vectorEnginePreference = .cpuOnly
+
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: stubMultimodalEmbedder
+        )
+
+        func recallIDs(_ location: PhotoLocationQuery) async throws -> Set<String> {
+            let ctx = try await orchestrator.recall(
+                PhotoQuery(
+                    location: location,
+                    resultLimit: 10,
+                    contextBudget: PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+                )
+            )
+            return Set(ctx.items.map(\.photoID.id))
+        }
+
+        let center = PhotoCoordinate(latitude: 37.3318, longitude: -122.0312)
+        let allLocated: Set<String> = ["cupertino", "sydney"]
+
+        let infinite: Set<String> = try await recallIDs(PhotoLocationQuery(center: center, radiusMeters: .infinity))
+        #expect(infinite == allLocated)
+        let huge: Set<String> = try await recallIDs(PhotoLocationQuery(center: center, radiusMeters: 1e300))
+        #expect(huge == allLocated)
+
+        var negative = PhotoLocationQuery(center: center, radiusMeters: 10)
+        negative.radiusMeters = -10
+        _ = try await recallIDs(negative)
+
+        var notANumber = PhotoLocationQuery(center: center, radiusMeters: 10)
+        notANumber.radiusMeters = .nan
+        _ = try await recallIDs(notANumber)
+
+        var nanCenter = PhotoLocationQuery(center: center, radiusMeters: 1_000)
+        nanCenter.center.latitude = .nan
+        let nanCenterIDs: Set<String> = try await recallIDs(nanCenter)
+        #expect(nanCenterIDs.isEmpty)
+
+        var infiniteCenter = PhotoLocationQuery(center: center, radiusMeters: 1_000)
+        infiniteCenter.center.longitude = .infinity
+        let infiniteCenterIDs: Set<String> = try await recallIDs(infiniteCenter)
+        #expect(infiniteCenterIDs.isEmpty)
+
+        try await orchestrator.flush()
+    }
+}
