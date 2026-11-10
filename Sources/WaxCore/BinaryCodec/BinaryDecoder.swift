@@ -15,9 +15,9 @@ package struct BinaryDecoder {
     private let limits: Limits
 
     package init(data: Data, limits: Limits = .init()) throws {
-        // Offsets below are relative to the first byte. A slice with a nonzero
-        // start index is rebased once so every read stays in bounds.
-        self.data = data.startIndex == 0 ? data : Data(data)
+        // `cursor` counts from the first byte. A slice keeps its parent's indices,
+        // so absolute positions add `startIndex` instead of copying the buffer.
+        self.data = data
         self.limits = limits
     }
 
@@ -44,9 +44,9 @@ package struct BinaryDecoder {
 
     private mutating func read(count: Int, context: String) throws -> Data {
         try requireAvailable(count, context: context)
-        let range = cursor..<(cursor + count)
+        let start = data.startIndex + cursor
         cursor += count
-        return data.subdata(in: range)
+        return data.subdata(in: start..<(start + count))
     }
 
     /// Reads a little-endian integer in place, without copying its bytes out first.

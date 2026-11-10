@@ -5,7 +5,7 @@ class Wax < Formula
   sha256 "fa6fcdf91235937bfa8fe51cd3c7290cc6aac78de709c27800fd1b0111a6a92b"
   license "MIT"
 
-  depends_on xcode: ["26.0", :build]
+  depends_on xcode: ["16.3", :build]
 
   def install
     # The upstream repo defines a `waxTests` target with a custom path of

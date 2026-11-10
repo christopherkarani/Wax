@@ -33,13 +33,13 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
     }
 
     func embed(image: CGImage) async throws -> [Float] {
-        let description = try await Self.describe(image: image)
+        let description = await Self.describe(image: image)
         return try await base.embed(description)
     }
 
     /// Vision work is synchronous and heavy, so it runs on the concurrent pool.
     @concurrent
-    private static func describe(image: CGImage) async throws -> String {
+    private static func describe(image: CGImage) async -> String {
         #if canImport(Vision)
         var labels: [String] = []
         var ocrText: [String] = []
