@@ -156,6 +156,27 @@ extension MemoryOrchestrator {
     }
     #endif
 
+    /// Rejects a vector the store could never index: the vector engines refuse it on add, and
+    /// once it is in the WAL every flush and every later open would fail on it.
+    /// Internal only because of the file split.
+    static func validateIngestVector(_ vector: [Float], from embedder: any EmbeddingProvider) throws {
+        guard vector.count == embedder.dimensions else {
+            throw WaxError.encodingError(
+                reason: "embedding provider \(providerName(embedder)) returned \(vector.count) dimensions; it declares \(embedder.dimensions)"
+            )
+        }
+        guard vector.allSatisfy(\.isFinite) else {
+            throw WaxError.encodingError(
+                reason: "embedding provider \(providerName(embedder)) returned a non-finite value (NaN or infinity)"
+            )
+        }
+    }
+
+    private static func providerName(_ embedder: any EmbeddingProvider) -> String {
+        guard let identity = embedder.identity else { return String(describing: type(of: embedder)) }
+        return "\(identity.provider ?? "unknown")/\(identity.model ?? "unknown")"
+    }
+
     /// Internal only because of the file split.
     static func embedOne(
         _ text: String,
@@ -199,6 +220,9 @@ extension MemoryOrchestrator {
             }
         } else {
             vector = try await produce()
+        }
+        if !isQuery {
+            try validateIngestVector(vector, from: embedder)
         }
         if embedder.normalize {
             vector = normalizedL2(vector)

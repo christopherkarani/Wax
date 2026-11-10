@@ -139,3 +139,60 @@ func memoryOrchestratorVectorStoreWithoutEmbedderThrowsMissingEmbedder() async t
         try await reopened.close()
     }
 }
+
+/// A custom provider's bad vector must fail the save that produced it and leave the store
+/// usable: flush, close and the next open all succeed, and later good saves are searchable.
+private func expectBadProviderVectorIsRejected(
+    _ badProvider: any EmbeddingProvider,
+    reasonContains expected: String,
+    goodProvider: any EmbeddingProvider
+) async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(at: url, config: .init(embedding: .custom(badProvider)))
+        let longText = (0..<200).map { "chunk word \($0)" }.joined(separator: " ")
+        for text in ["a single chunk note", longText] {
+            do {
+                try await memory.save(text)
+                Issue.record("save must reject the provider's vector")
+            } catch let WaxError.encodingError(reason) {
+                #expect(reason.contains(expected), "\(reason)")
+            }
+        }
+        try await memory.flush()
+        try await memory.close()
+
+        let reopened = try await Memory(at: url, config: .init(embedding: .custom(badProvider)))
+        try await reopened.close()
+
+        let good = try await Memory(at: url, config: .init(embedding: .custom(goodProvider)))
+        try await good.save("a good note after the rejected ones")
+        try await good.flush()
+        let results = try await good.search("a good note after the rejected ones", options: .init(topK: 1, mode: .vectorOnly))
+        #expect(results.items.first?.text == "a good note after the rejected ones")
+        try await good.close()
+    }
+}
+
+@Test
+func memoryCustomProviderNonFiniteVectorIsRejectedAndStoreStaysUsable() async throws {
+    try await expectBadProviderVectorIsRejected(
+        ConstantEmbedder(vector: [.nan, 0.5], provider: "Mock", model: "DeterministicText", normalized: false),
+        reasonContains: "non-finite",
+        goodProvider: DeterministicTextEmbedder()
+    )
+}
+
+@Test
+func memoryCustomProviderWrongDimensionVectorIsRejectedAndStoreStaysUsable() async throws {
+    // Declares 4 dimensions but always returns 2 components.
+    try await expectBadProviderVectorIsRejected(
+        DeterministicTextEmbedder(dimensions: 4, identity: EmbeddingIdentity(
+            provider: "Mock",
+            model: "DeterministicText",
+            dimensions: 4,
+            normalized: true
+        )),
+        reasonContains: "declares 4",
+        goodProvider: SeededHashEmbedder(dimensions: 4, provider: "Mock")
+    )
+}

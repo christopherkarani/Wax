@@ -553,6 +553,7 @@ extension MemoryOrchestrator {
             cacheItems.reserveCapacity(missingIndices.count)
             for (localIdx, globalIdx) in missingIndices.enumerated() {
                 var vec = vectors[localIdx]
+                try validateIngestVector(vec, from: embedder)
                 if shouldNormalize && !vec.isEmpty {
                     vec = normalizedL2(vec)
                 }
