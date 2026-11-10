@@ -87,6 +87,13 @@ search drops slightly on LongMemEval (0.893 to 0.885) and rises on LoCoMo (0.448
 0.528). The e5 rows come from the bundled Core ML model, whose embeddings match PyTorch to
 a cosine of at least 0.9996 on 215 texts.
 
+The bundled model computes in FP16 over INT8 weights. Against the earlier FP32 graph, in
+paired runs on the CPU, FP16 halves embedding cost and leaves retrieval unchanged:
+LongMemEval took 471 CPU s against 988 (MiniLM: 554), with R_all@5 0.905 and R_all@10 0.976
+both. LoCoMo took 28.7 CPU s against 61 (MiniLM: 34.5), with R_all@5 0.5544 against 0.5550
+(one question). Embeddings match PyTorch to a cosine of at least 0.99980 on the reference
+texts, up to 512 tokens.
+
 A rule that picked the text weight from the corpus's median document length scored
 0.912 on LongMemEval but failed a held-out check (LongMemEval turn level), so it was not
 shipped.

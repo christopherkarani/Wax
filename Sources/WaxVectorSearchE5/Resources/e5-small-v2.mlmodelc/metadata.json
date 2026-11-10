@@ -1,6 +1,6 @@
 [
   {
-    "shortDescription" : "intfloat\/e5-small-v2 (384-dim, INT8 weights, FP32 compute). Masked mean pooling + L2 normalization baked in. No query\/passage prefixes.",
+    "shortDescription" : "intfloat\/e5-small-v2 (384-dim, INT8 weights, FP16 compute). Masked mean pooling + L2 normalization baked in. No query\/passage prefixes.",
     "metadataOutputVersion" : "3.0",
     "outputSchema" : [
       {
@@ -20,28 +20,27 @@
     ],
     "author" : "Wax",
     "specificationVersion" : 9,
-    "storagePrecision" : "Mixed (Float32, Int32, Int8)",
+    "storagePrecision" : "Mixed (Float16, Int32, Int8)",
     "license" : "MIT (intfloat\/e5-small-v2)",
     "mlProgramOperationTypeHistogram" : {
       "Ios18.expandDims" : 3,
-      "Ios18.mul" : 14,
       "Ios18.softmax" : 12,
+      "Ios18.mul" : 14,
       "Ios16.reduceL2Norm" : 1,
       "Ios18.matmul" : 24,
       "Ios18.realDiv" : 3,
       "Ios18.equal" : 1,
-      "Ios18.greaterEqual" : 6,
-      "Select" : 7,
+      "Select" : 1,
       "Tile" : 1,
       "Ios18.gather" : 41,
-      "Ios18.add" : 44,
+      "Ios18.add" : 38,
       "Ios18.layerNorm" : 25,
       "Ios16.reduceSum" : 2,
       "Ios18.reshape" : 48,
       "Shape" : 26,
       "Ios18.linear" : 72,
       "Ios18.concat" : 26,
-      "Ios18.cast" : 1,
+      "Ios18.cast" : 69,
       "Ios18.sub" : 1,
       "Ios18.transpose" : 48,
       "Ios18.gelu" : 12,
@@ -49,7 +48,7 @@
       "Ios18.sliceByIndex" : 2,
       "Ios18.constexprBlockwiseShiftScale" : 74
     },
-    "computePrecision" : "Mixed (Float32, Int32)",
+    "computePrecision" : "Mixed (Float16, Float32, Int16, Int32, UInt16)",
     "stateSchema" : [
 
     ],
@@ -92,7 +91,7 @@
       }
     ],
     "userDefinedMetadata" : {
-      "com.github.apple.coremltools.conversion_date" : "2026-11-07",
+      "com.github.apple.coremltools.conversion_date" : "2026-11-11",
       "com.github.apple.coremltools.source" : "torch==2.7.1",
       "com.github.apple.coremltools.version" : "9.0",
       "com.github.apple.coremltools.source_dialect" : "TorchScript"

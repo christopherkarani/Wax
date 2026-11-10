@@ -124,8 +124,7 @@ package final class E5Embeddings {
         try Self.refuseUnsupportedComputeUnits(configuration, overrides: overrides)
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
-            // CPU by default, as for Arctic: the Neural Engine runs this FP32 graph in Float16.
-            // ANE stays available as an explicit opt-in.
+            // CPU by default. ANE stays available as an explicit opt-in.
             defaultConfig.computeUnits = .cpuOnly
             defaultConfig.allowLowPrecisionAccumulationOnGPU = true
             return defaultConfig

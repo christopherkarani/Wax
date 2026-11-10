@@ -119,7 +119,7 @@ Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
 Source: `Sources/Wax/Reranking/Reranking.swift`
 
-- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0) on CoreML, 22 MB INT8 weights, FP32 compute; iOS 18/macOS 15+, `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
+- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0) on CoreML, 22 MB INT8 weights, FP16 compute; iOS 18/macOS 15+, `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
 - `public struct RerankingOptions` — `candidateCount` (20, clamped to `RerankingOptions.candidateCountRange`, `1...200`) and `fusion` (`.reciprocalRank(k: 10)`).
 - `public enum RerankingFusion { case rerankerOrder, reciprocalRank(k: Int) }` — order by reranker score alone, or fuse `1/(k + retrievalRank) + 1/(k + rerankerRank)`; ties keep the retrieval order.
 - `public enum BuiltInRerankers { public static func make(_:computeUnit:timeoutSeconds:) async throws -> any RerankingProvider }` — loads are cached per compute unit for the process.

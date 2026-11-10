@@ -5,7 +5,7 @@ Convert intfloat/e5-small-v2 (MIT) to CoreML (.mlpackage -> .mlmodelc).
 Mirrors scripts/convert_arctic_embed.py so both opt-in embedders share one runtime contract:
   - Flexible shapes: batch 1...64 x sequence 32...512. Wax's BertTokenizer pads to the
     sequenceLengthBuckets in E5Embeddings.swift: [32, 64, 128, 256, 384, 512]
-  - FP32 compute, INT8 per-channel symmetric weights (~32 MB)
+  - FP16 compute, INT8 per-channel symmetric weights (~32 MB)
   - Mean pooling over the attention mask + L2 normalization baked into the graph, matching
     sentence-transformers' e5-small-v2 pooling. The graph takes token ids; E5Embedder adds
     the "query: " / "passage: " prefixes in Swift before tokenizing
@@ -107,18 +107,19 @@ def convert() -> None:
         lower_bound=MIN_SEQUENCE_LENGTH, upper_bound=MAX_SEQUENCE_LENGTH, default=MIN_SEQUENCE_LENGTH
     )
 
-    print("Converting to CoreML (FP32 compute)...")
+    print("Converting to CoreML (FP16 compute)...")
     mlmodel = ct.convert(
         traced,
         inputs=[
             ct.TensorType(name="input_ids", shape=ct.Shape(shape=[batch_dim, sequence_dim]), dtype=np.int32),
             ct.TensorType(name="attention_mask", shape=ct.Shape(shape=[batch_dim, sequence_dim]), dtype=np.int32),
         ],
-        outputs=[ct.TensorType(name="embeddings")],
+        outputs=[ct.TensorType(name="embeddings", dtype=np.float32)],
         convert_to="mlprogram",
-        # FP16 compute overflows in the attention / layer-norm paths; keep FP32 compute and
-        # shrink only the stored weights.
-        compute_precision=ct.precision.FLOAT32,
+        # FP16 compute halves CPU embedding time (LongMemEval ingest 988 to 471 CPU s) with
+        # the same retrieval (R_all@5 0.905 both). The finite MASK_FILL keeps padded rows
+        # out of FP16 overflow.
+        compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.macOS15,
     )
 
@@ -134,7 +135,7 @@ def convert() -> None:
     mlmodel.author = "Wax"
     mlmodel.license = "MIT (intfloat/e5-small-v2)"
     mlmodel.short_description = (
-        "intfloat/e5-small-v2 (384-dim, INT8 weights, FP32 compute). "
+        "intfloat/e5-small-v2 (384-dim, INT8 weights, FP16 compute). "
         "Masked mean pooling + L2 normalization baked in. No query/passage prefixes."
     )
     mlmodel.version = "1.0"
