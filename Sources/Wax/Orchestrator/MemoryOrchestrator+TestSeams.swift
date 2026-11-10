@@ -19,6 +19,10 @@ extension MemoryOrchestrator {
         deleteStepHookForTesting = hook
     }
 
+    package func setRememberBatchWriteHookForTesting(_ hook: (@Sendable (Int) throws -> Void)?) {
+        rememberBatchWriteHookForTesting = hook
+    }
+
     package func setAccessStatsPersistenceHoldForTesting(_ duration: Duration?) {
         accessStatsPersistenceHoldForTesting = duration
     }

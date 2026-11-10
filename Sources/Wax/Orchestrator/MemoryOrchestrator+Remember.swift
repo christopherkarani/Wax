@@ -253,68 +253,74 @@ extension MemoryOrchestrator {
             )
         )
 
-        for entry in batchRanges {
-            let batchChunks = Array(chunks[entry.range])
-            let batchContents = batchChunks.map { Data($0.utf8) }
-            var options: [FrameMetaSubset] = []
-            options.reserveCapacity(batchChunks.count)
-            for (localIdx, globalIdx) in entry.range.enumerated() {
-                var option = FrameMetaSubset()
-                option.role = .chunk
-                option.parentId = docId
-                option.chunkIndex = UInt32(globalIdx)
-                option.chunkCount = UInt32(chunkCount)
-                option.searchText = batchChunks[localIdx]
+        do {
+            for entry in batchRanges {
+                try rememberBatchWriteHookForTesting?(entry.index)
+                let batchChunks = Array(chunks[entry.range])
+                let batchContents = batchChunks.map { Data($0.utf8) }
+                var options: [FrameMetaSubset] = []
+                options.reserveCapacity(batchChunks.count)
+                for (localIdx, globalIdx) in entry.range.enumerated() {
+                    var option = FrameMetaSubset()
+                    option.role = .chunk
+                    option.parentId = docId
+                    option.chunkIndex = UInt32(globalIdx)
+                    option.chunkCount = UInt32(chunkCount)
+                    option.searchText = batchChunks[localIdx]
 
-                var chunkMeta = Metadata(metadata)
-                if let effectiveSessionId {
-                    chunkMeta.entries["session_id"] = effectiveSessionId
+                    var chunkMeta = Metadata(metadata)
+                    if let effectiveSessionId {
+                        chunkMeta.entries["session_id"] = effectiveSessionId
+                    }
+                    option.metadata = chunkMeta
+                    options.append(option)
                 }
-                option.metadata = chunkMeta
-                options.append(option)
-            }
 
-            if writeVectors {
-                guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
-                    throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
-                }
-                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
-                    searchTexts: batchChunks,
-                    metadata: metadata,
-                    embeddingDimensions: embeddings.first?.count
-                ))
-                let frameIds = try await localSession.putBatch(
-                    contents: batchContents,
-                    embeddings: embeddings,
-                    identity: localEmbedder?.identity,
-                    options: options
-                )
-                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
+                if writeVectors {
+                    guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
+                        throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
+                    }
+                    try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                        searchTexts: batchChunks,
+                        metadata: metadata,
+                        embeddingDimensions: embeddings.first?.count
+                    ))
+                    let frameIds = try await localSession.putBatch(
+                        contents: batchContents,
+                        embeddings: embeddings,
+                        identity: localEmbedder?.identity,
+                        options: options
+                    )
+                    try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
 
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
+                    if config.enableTextSearch {
+                        try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                    }
+                    if let enrichmentPipeline {
+                        for (offset, frameId) in frameIds.enumerated() {
+                            try await enrichmentPipeline.enqueue(
+                                EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                            )
+                        }
+                    }
+                } else {
+                    let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
+
+                    if config.enableTextSearch {
+                        try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                    }
+                    if let enrichmentPipeline {
+                        for (offset, frameId) in frameIds.enumerated() {
+                            try await enrichmentPipeline.enqueue(
+                                EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                            )
+                        }
                     }
                 }
-            } else {
-                let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
-                    }
-                }
             }
+        } catch {
+            await removePartialDocument(docId)
+            throw error
         }
         return RememberResult(
             frameId: docId,
@@ -322,6 +328,21 @@ extension MemoryOrchestrator {
             deduplicated: false,
             searchable: config.enableTextSearch || writeVectors
         )
+    }
+
+    /// Deletes a document whose chunk writes failed, so a retry does not add a
+    /// second copy beside it. A cleanup failure is logged; the caller rethrows
+    /// the original error.
+    private func removePartialDocument(_ docId: UInt64) async {
+        do {
+            try await deleteAdmitted(frameIds: [docId])
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "remove partially written document",
+                fallback: "the partial document stays; a retry adds a new copy"
+            )
+        }
     }
 
     /// Internal only for tests.

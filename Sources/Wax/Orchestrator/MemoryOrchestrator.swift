@@ -76,6 +76,11 @@ package actor MemoryOrchestrator {
     /// ``delete(frameIds:)``; throwing there simulates that step failing.
     /// Internal only because of the file split; set it through `setDeleteStepHookForTesting(_:)`.
     var deleteStepHookForTesting: (@Sendable (DeleteStep, UInt64) throws -> Void)? = nil
+
+    /// Test seam: called with the batch index before a multi-chunk remember
+    /// writes each chunk batch; throwing there simulates that write failing.
+    /// Internal only because of the file split; set it through `setRememberBatchWriteHookForTesting(_:)`.
+    var rememberBatchWriteHookForTesting: (@Sendable (Int) throws -> Void)? = nil
     /// Internal only because of the file split; immutable after init.
     let enrichmentPipeline: EnrichmentPipeline?
     /// Internal only because of the file split; immutable after init.
