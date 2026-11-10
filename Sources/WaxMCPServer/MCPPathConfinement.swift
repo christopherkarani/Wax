@@ -16,6 +16,7 @@ enum MCPPathConfinementError: Error, Sendable, Equatable {
     case outsideAllowedRoots(argument: String, path: String, allowedRoots: [String])
     case notAWaxStorePath(argument: String, path: String)
     case wouldOverwriteNonStore(argument: String, path: String)
+    case protectedStore(argument: String, path: String)
 
     var message: String {
         switch self {
@@ -30,6 +31,8 @@ enum MCPPathConfinementError: Error, Sendable, Equatable {
             return "\(argument) '\(path)' must name a .wax store file"
         case .wouldOverwriteNonStore(let argument, let path):
             return "\(argument) '\(path)' already exists and is not a Wax store; refusing to overwrite it"
+        case .protectedStore(let argument, let path):
+            return "\(argument) '\(path)' is the source store or inside the broker session root; refusing to write a store copy there"
         }
     }
 }
@@ -46,7 +49,9 @@ enum MCPPathConfinementError: Error, Sendable, Equatable {
 /// `task_state_migrate` writes a whole store copy and may overwrite its
 /// destination, so that destination is held tighter: a `.wax` file inside
 /// the store directory, and an existing file is only replaced
-/// when it is already a Wax store (`WAX1` header).
+/// when it is already a Wax store (`WAX1` header). The source store and
+/// anything under the broker session root, whose session stores stay
+/// resumable after the broker exits, are never a destination.
 ///
 /// Tool arguments come from the model, so they never widen the allowed set.
 struct MCPPathConfinement: Sendable {
@@ -64,10 +69,13 @@ struct MCPPathConfinement: Sendable {
     var fixedRoots: [String]
     /// Only root for `task_state_migrate` destinations; nil refuses them.
     var storeDirectory: String?
+    /// Never a `task_state_migrate` destination, nor anything inside them.
+    var protectedStorePaths: [String]
 
-    init(fixedRoots: [String], storeDirectory: String? = nil) {
+    init(fixedRoots: [String], storeDirectory: String? = nil, protectedStorePaths: [String] = []) {
         self.fixedRoots = fixedRoots
         self.storeDirectory = storeDirectory
+        self.protectedStorePaths = protectedStorePaths
     }
 
     init(storeURL: URL, sessionRootURL: URL, includeProcessDirectory: Bool) {
@@ -76,7 +84,11 @@ struct MCPPathConfinement: Sendable {
         if includeProcessDirectory {
             roots.append(FileManager.default.currentDirectoryPath)
         }
-        self.init(fixedRoots: roots, storeDirectory: storeDirectory)
+        self.init(
+            fixedRoots: roots,
+            storeDirectory: storeDirectory,
+            protectedStorePaths: [storeURL.path, sessionRootURL.path]
+        )
     }
 
     init(configuration: AgentBrokerConfiguration, includeProcessDirectory: Bool) {
@@ -113,6 +125,9 @@ struct MCPPathConfinement: Sendable {
         let argument = Self.migrationDestinationArgument
         let roots = Self.canonicalRoots(storeDirectory.map { [$0] } ?? [])
         let resolved = try Self.confine(argument: argument, path: raw, roots: roots)
+        guard !Self.canonicalRoots(protectedStorePaths).contains(where: { Self.isContained(resolved, in: $0) }) else {
+            throw .protectedStore(argument: argument, path: raw)
+        }
         guard (resolved as NSString).pathExtension.lowercased() == "wax" else {
             throw .notAWaxStorePath(argument: argument, path: raw)
         }

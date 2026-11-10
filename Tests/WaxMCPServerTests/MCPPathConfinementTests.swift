@@ -271,6 +271,89 @@ func migrationDestinationOnlyOverwritesExistingWaxStores() throws {
 }
 
 @Test
+func migrationDestinationRefusesSessionRootAndSourceStore() throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    let storeURL = fixture.store.appendingPathComponent("memory.wax")
+    let sessionRoot = fixture.store.appendingPathComponent("sessions-0123abcd", isDirectory: true)
+    try FileManager.default.createDirectory(at: sessionRoot, withIntermediateDirectories: true)
+    let confinement = MCPPathConfinement(
+        storeURL: storeURL,
+        sessionRootURL: sessionRoot,
+        includeProcessDirectory: false
+    )
+    let waxHeader = Data("WAX1".utf8) + Data(repeating: 0, count: 64)
+    let sessionStore = sessionRoot.appendingPathComponent("\(UUID().uuidString).wax")
+    try waxHeader.write(to: sessionStore)
+    try waxHeader.write(to: storeURL)
+
+    for refused in [sessionStore, sessionRoot.appendingPathComponent("fresh.wax"), storeURL] {
+        #expect(throws: MCPPathConfinementError.self, "\(refused.lastPathComponent) must be refused") {
+            try confinement.confineMigrationDestination(path: refused.path)
+        }
+    }
+
+    // Other Wax stores in the store directory may still be replaced, and new ones created.
+    let previousCopy = fixture.store.appendingPathComponent("previous.wax")
+    try waxHeader.write(to: previousCopy)
+    #expect(throws: Never.self) {
+        try confinement.confineMigrationDestination(path: previousCopy.path)
+        try confinement.confineMigrationDestination(path: fixture.store.appendingPathComponent("repaired.wax").path)
+    }
+}
+
+@Test
+func taskStateMigrateCannotOverwriteSessionStores() async throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    // An active session whose broker exited (idle shutdown, restart): its
+    // store is unlocked on disk and resumable.
+    let previousBroker = try await fixture.makeBroker()
+    let parkedStore = try await startSession(on: previousBroker, agent: "confine-parked")
+    try await previousBroker.close()
+    try #require(FileManager.default.fileExists(atPath: parkedStore.path))
+
+    let broker = try await fixture.makeBroker()
+    defer { Task { try? await broker.close() } }
+    let liveStore = try await startSession(on: broker, agent: "confine-live")
+
+    for sessionStore in [liveStore, parkedStore] {
+        let before = try Data(contentsOf: sessionStore)
+        for overwrite in [true, false] {
+            let result = await WaxMCPTools.handleCall(
+                params: .init(name: "task_state_migrate", arguments: [
+                    "destination_path": .string(sessionStore.path),
+                    "overwrite_destination": .bool(overwrite),
+                ]),
+                broker: broker
+            )
+            let label = "\(sessionStore == liveStore ? "live" : "parked") overwrite_destination=\(overwrite)"
+            #expect(result.isError ?? false, "\(label) must be refused")
+            #expect(errorCode(result) == "path_not_allowed", "\(label): \(result.content)")
+        }
+        #expect(try Data(contentsOf: sessionStore) == before)
+    }
+}
+
+private enum ConfinementTestError: Error {
+    case sessionStartFailed(String)
+}
+
+/// Starts a broker session and returns the path of its session store.
+private func startSession(on broker: AgentBrokerService, agent: String) async throws -> URL {
+    let started = await broker.handle(AgentBrokerRequest(
+        command: "session_start",
+        arguments: ["agent_id": .string(agent), "run_id": .string("\(agent)-run")]
+    ))
+    guard case .success(let payload) = started.outcome,
+          let rawID = payload.objectValue?["session_id"]?.stringValue
+    else {
+        throw ConfinementTestError.sessionStartFailed("\(started)")
+    }
+    return await broker.sessionRootURL.appendingPathComponent("\(rawID).wax")
+}
+
+@Test
 func taskStateMigrateCannotOverwriteArbitraryFilesInAllowedRoots() async throws {
     let fixture = try ConfinementFixture()
     defer { fixture.cleanup() }
