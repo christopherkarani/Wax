@@ -49,6 +49,8 @@ package extension MemoryOrchestrator {
         }
 
         try await session.commit()
+        let sourceWal = await wax.walStats()
+        let sourceWalLastSequence = sourceWal.pendingBytes == 0 ? sourceWal.lastSeq : nil
 
         // Build beside the requested destination. Creating directly at an
         // overwrite path would truncate the previous output before the new
@@ -221,7 +223,8 @@ package extension MemoryOrchestrator {
             logicalBytesAfter: destinationSizes.logical,
             allocatedBytesBefore: sourceSizes.allocated,
             allocatedBytesAfter: destinationSizes.allocated,
-            durationMs: durationMs
+            durationMs: durationMs,
+            sourceWalLastSequence: sourceWalLastSequence
         )
     }
 
@@ -591,10 +594,17 @@ package extension MemoryOrchestrator {
 
     static func promoteValidatedLiveSetCandidateIfNeeded(
         _ report: ScheduledLiveSetMaintenanceReport,
-        sourceURL: URL
+        sourceURL: URL,
+        sourceWalLastSequence: UInt64
     ) throws {
         guard report.outcome == .rewriteSucceeded else { return }
         guard let candidateURL = report.candidateURL?.standardizedFileURL else { return }
+        // A write after the candidate's snapshot is only in the source; promoting would drop it.
+        guard let snapshotSequence = report.rewriteReport?.sourceWalLastSequence,
+              snapshotSequence == sourceWalLastSequence
+        else {
+            throw WaxError.io("live-set promotion refused: the source changed after the candidate snapshot")
+        }
 
         let sourceURL = sourceURL.standardizedFileURL
         guard candidateURL != sourceURL else { return }

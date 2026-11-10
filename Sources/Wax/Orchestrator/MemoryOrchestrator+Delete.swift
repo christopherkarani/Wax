@@ -65,6 +65,8 @@ extension MemoryOrchestrator {
     /// and live, while its already-deleted descendants stay hidden.
     package func delete(frameIds: [UInt64]) async throws {
         guard !frameIds.isEmpty else { return }
+        try beginWrite()
+        defer { endWrite() }
         lastWriteActivityAt = .now
 
         let metas = await wax.frameMetasIncludingPending()

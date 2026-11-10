@@ -46,6 +46,9 @@ package actor MemoryOrchestrator {
     var committedVectorCoverage: CommittedVectorCoverage?
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var isClosed = false
+    /// Writes admitted by ``beginWrite()`` that have not finished; `close()` waits for them.
+    private var inFlightWriteCount = 0
+    private var writeDrainWaiters: [CheckedContinuation<Void, Never>] = []
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var readinessFollowTask: Task<Void, Never>?
     private var automaticEmbeddingBackfillEnabled = false
@@ -590,7 +593,9 @@ package actor MemoryOrchestrator {
         sessionId: UUID? = nil,
         commit: Bool = true
     ) async throws -> UInt64 {
-        try await handoffWriteMutex.withLock { [self] in
+        try beginWrite()
+        defer { endWrite() }
+        return try await handoffWriteMutex.withLock { [self] in
             try await rememberHandoffSerialized(
                 content: content,
                 project: project,
@@ -665,6 +670,34 @@ package actor MemoryOrchestrator {
     }
 
     // MARK: - Persistence lifecycle
+
+    /// Admits one write, or throws the closed-session error once `close()` has begun.
+    /// Pair every successful call with ``endWrite()``.
+    /// Internal only because of the file split.
+    func beginWrite() throws {
+        guard !isClosed else { throw WaxError.io("session is closed") }
+        inFlightWriteCount += 1
+    }
+
+    /// Internal only because of the file split.
+    func endWrite() {
+        inFlightWriteCount -= 1
+        guard inFlightWriteCount == 0 else { return }
+        let waiters = writeDrainWaiters
+        writeDrainWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForInFlightWrites() async {
+        while inFlightWriteCount > 0 {
+            await withCheckedContinuation { writeDrainWaiters.append($0) }
+        }
+    }
+
+    /// Internal only because of the file split.
+    var isWaitingForInFlightWrites: Bool {
+        !writeDrainWaiters.isEmpty
+    }
 
     package func flush() async throws {
         try await flushMutex.withLock { [self] in
@@ -762,6 +795,8 @@ package actor MemoryOrchestrator {
                 )
             }
         }
+        // New writes are refused from here on; the flush must include the admitted ones.
+        await waitForInFlightWrites()
         try await flush()
         if let enrichmentPipeline {
             do {
@@ -776,13 +811,15 @@ package actor MemoryOrchestrator {
         }
         let sourceURL = await wax.fileURL()
         let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
+        let sourceWalLastSequence = await wax.walStats().lastSeq
         await session.close()
         try await wax.close()
         if let maintenanceReport {
             do {
                 try Self.promoteValidatedLiveSetCandidateIfNeeded(
                     maintenanceReport,
-                    sourceURL: sourceURL
+                    sourceURL: sourceURL,
+                    sourceWalLastSequence: sourceWalLastSequence
                 )
             } catch {
                 WaxDiagnostics.logSwallowed(

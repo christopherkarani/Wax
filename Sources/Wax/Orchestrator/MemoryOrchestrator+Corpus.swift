@@ -96,6 +96,8 @@ extension MemoryOrchestrator {
         guard !documents.isEmpty else {
             return
         }
+        try beginWrite()
+        defer { endWrite() }
 
         let texts = documents.map(\.text)
         let contents = texts.map { Data($0.utf8) }

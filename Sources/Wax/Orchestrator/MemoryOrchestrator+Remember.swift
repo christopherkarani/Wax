@@ -18,6 +18,8 @@ extension MemoryOrchestrator {
     ///   implement their own rollback by superseding the document frame on failure.
     @discardableResult
     package func remember(_ content: String, metadata: [String: String] = [:]) async throws -> RememberResult {
+        try beginWrite()
+        defer { endWrite() }
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
