@@ -233,6 +233,35 @@ func waxRepoIndexRefusesCheckpointThatIsNotACommitHash() async throws {
     #expect(!FileManager.default.fileExists(atPath: injected.path + "..HEAD"))
 }
 
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoIndexKeepsGitignoreThatIsNotUTF8() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-gitignore")
+    defer { try? FileManager.default.removeItem(at: repo) }
+    try await WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "a.txt",
+        contents: "content\n",
+        message: "Only commit"
+    )
+    // "café.log" in Latin-1: 0xE9 is not valid UTF-8.
+    let original = Data("build/\ncaf".utf8) + Data([0xE9]) + Data(".log\n".utf8)
+    let gitignore = repo.appendingPathComponent(".gitignore")
+    try original.write(to: gitignore)
+
+    let index = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(index.status == 0, "index failed: \(index.stderr)")
+
+    let after = try Data(contentsOf: gitignore)
+    #expect(after.starts(with: original), "index rewrote .gitignore: \(Array(after))")
+    #expect(after == original + Data(".wax-repo/\n".utf8))
+}
+
 private func frameCount(from statsOutput: String) throws -> Int {
     for line in statsOutput.components(separatedBy: .newlines) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)

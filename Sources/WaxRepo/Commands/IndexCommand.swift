@@ -123,18 +123,26 @@ private func ensureGitignore(repoRoot: String) {
     let gitignorePath = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
     let entry = ".wax-repo/"
 
-    if let contents = try? String(contentsOf: gitignorePath, encoding: .utf8) {
-        let lines = contents.components(separatedBy: .newlines)
-        if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == entry }) {
-            return // already present
-        }
-        // Append entry
-        let separator = contents.hasSuffix("\n") ? "" : "\n"
-        let updated = contents + separator + entry + "\n"
-        try? updated.write(to: gitignorePath, atomically: true, encoding: .utf8)
-    } else {
+    guard FileManager.default.fileExists(atPath: gitignorePath.path) else {
         // Create new .gitignore
         try? (entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
+        return
+    }
+    guard let bytes = try? Data(contentsOf: gitignorePath) else {
+        writeStderr("warning: could not read \(gitignorePath.path); add \(entry) to it manually.")
+        return
+    }
+    // Decode only to look for the entry. The file may not be UTF-8, so the
+    // original bytes are kept verbatim and the entry is appended after them.
+    let lines = String(decoding: bytes, as: UTF8.self).components(separatedBy: .newlines)
+    if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == entry }) {
+        return // already present
+    }
+    let separator = bytes.isEmpty || bytes.last == UInt8(ascii: "\n") ? "" : "\n"
+    do {
+        try (bytes + Data((separator + entry + "\n").utf8)).write(to: gitignorePath, options: .atomic)
+    } catch {
+        writeStderr("warning: could not update \(gitignorePath.path): \(error.localizedDescription)")
     }
 }
 
