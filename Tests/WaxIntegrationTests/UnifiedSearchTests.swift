@@ -314,6 +314,57 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
     }
 }
 
+/// A search that finds no entity alias must not hide entities written after it.
+@Test func structuredSearchSeesEntitiesAddedAfterASearchFoundNone() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the entity alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload")
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+        try await session.commit()
+
+        let request = try SearchRequest(query: "F031SubjectAlice", lane: .textOnly, topK: 5, asOfMs: .max)
+        let before = try await session.search(request)
+        #expect(before.results.isEmpty)
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f031-alice"),
+            kind: "person",
+            aliases: ["F031SubjectAlice"],
+            nowMs: 1_000
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f031-alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: 1_000),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: 1_000
+                ),
+            ]
+        )
+
+        let after = try await session.search(request)
+        #expect(after.results.map(\.frameId) == [evidenceFrame])
+        #expect(after.results.first?.sources == [.structured])
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
 @Test func filtersAllowResultsBeyondTopK() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)

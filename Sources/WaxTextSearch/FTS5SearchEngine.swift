@@ -30,6 +30,11 @@ package actor FTS5SearchEngine {
     private var pendingKeys: [Int64] = []
     var afterFlushWriteForTesting: (@Sendable () async throws -> Void)?
     var pendingStructuredOps: [StructuredOp] = []
+    /// Bumped by every queued structured write; see `hasEntityAliases()`.
+    var structuredWriteGeneration: UInt64 = 0
+    /// Whether `sm_entity_alias` has a row, as of the last check with no structured write
+    /// since; `nil` when unknown.
+    var entityAliasPresence: Bool?
     /// Every text-indexable frame below this id is indexed (or was when it was staged).
     /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
     var coveredBelowFrameId: UInt64

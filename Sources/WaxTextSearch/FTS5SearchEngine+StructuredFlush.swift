@@ -5,6 +5,8 @@ import WaxCore
 extension FTS5SearchEngine {
     func enqueueStructuredOp(_ op: StructuredOp) {
         pendingStructuredOps.append(op)
+        structuredWriteGeneration &+= 1
+        entityAliasPresence = nil
         dirty = true
     }
 

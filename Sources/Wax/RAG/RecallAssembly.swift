@@ -6,13 +6,26 @@ package enum RecallAssembly {
     package struct Tokenizer: Sendable {
         package var count: @Sendable (String) async -> Int
         package var truncate: @Sendable (String, Int) async -> String
+        /// `truncate` and `count` of its result in one call, so a tokenizer can encode a
+        /// text that already fits once. Defaults to calling the two in turn.
+        package var truncateCounted: @Sendable (String, Int) async -> (text: String, tokens: Int)
 
         package init(
             count: @escaping @Sendable (String) async -> Int,
-            truncate: @escaping @Sendable (String, Int) async -> String
+            truncate: @escaping @Sendable (String, Int) async -> String,
+            truncateCounted: (@Sendable (String, Int) async -> (text: String, tokens: Int))? = nil
         ) {
             self.count = count
             self.truncate = truncate
+            if let truncateCounted {
+                self.truncateCounted = truncateCounted
+            } else {
+                self.truncateCounted = { (text: String, maxTokens: Int) async -> (text: String, tokens: Int) in
+                    let truncated: String = await truncate(text, maxTokens)
+                    let tokens: Int = await count(truncated)
+                    return (text: truncated, tokens: tokens)
+                }
+            }
         }
 
         /// Test adapter: one token per Character.
@@ -181,8 +194,7 @@ package enum RecallAssembly {
     ) async -> (text: String, tokens: Int)? {
         guard maxTokens > 0, remaining > 0, !text.isEmpty else { return nil }
         let cap = shrinkToRemaining ? min(maxTokens, remaining) : maxTokens
-        let capped = await tokenizer.truncate(text, cap)
-        let tokens = await tokenizer.count(capped)
+        let (capped, tokens) = await tokenizer.truncateCounted(text, cap)
         guard !capped.isEmpty, tokens <= remaining else { return nil }
         return (capped, tokens)
     }
