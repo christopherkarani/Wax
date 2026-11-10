@@ -121,6 +121,34 @@ func tokenChunkingCoversTextPastTheTokenizerByteCap() async throws {
     #expect(streamedMarker)
 }
 
+@Test
+func tokenChunkingPastTheByteCapEmitsNoWhitespaceOnlyChunks() async throws {
+    let cap = TokenCounter.maxTokenizationBytes
+    let sentence = "Swift concurrency uses actors and tasks. "
+    // The cut lands inside the trailing newlines, so the last segment is whitespace only.
+    let body = String(repeating: sentence, count: cap / sentence.utf8.count)
+    let trailingNewlines = body + String(repeating: "\n", count: cap - body.utf8.count + 3)
+    // The window's only whitespace is its first byte, so the first segment is " ". Digits
+    // tokenize in three-digit pieces, so the whitespace-free run stays cheap to encode.
+    let digits = String(repeating: "0123456789", count: cap / 10 + 1)
+    let leadingSpace = " " + String(digits.prefix(cap))
+
+    for text in [trailingNewlines, leadingSpace] {
+        #expect(text.utf8.count > cap)
+        let strategy = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
+        let chunks = await TextChunker.chunk(text: text, strategy: strategy)
+        #expect(chunks.count > 1)
+        #expect(!chunks.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+
+        var streamedWhitespaceOnly = 0
+        for await chunk in TextChunker.stream(text: text, strategy: strategy)
+        where chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            streamedWhitespaceOnly += 1
+        }
+        #expect(streamedWhitespaceOnly == 0)
+    }
+}
+
 /// Deterministic text drawn from CJK (BMP and ext B) and emoji, `characters` long.
 private func mixedScriptText(characters: Int, includeSpaces: Bool) -> String {
     var pool: [Character] = ["漢", "字", "龘", "鱻", "齉", "𠜎", "𪚥", "𤭢", "🦀", "🧬", "🪐", "😀", "🫠", "語"]

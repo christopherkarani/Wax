@@ -34,11 +34,14 @@ package enum TextChunker {
             return [text]
         }
         var chunks: [String] = []
-        for segment in tokenizerSegments(of: text) {
+        let segments = tokenizerSegments(of: text)
+        for segment in segments {
             let segmentText = String(segment)
             let tokens = await counter.encode(segmentText)
             if tokens.count <= cappedTarget {
-                chunks.append(segmentText)
+                if segments.count == 1 || !segmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    chunks.append(segmentText)
+                }
                 continue
             }
 
@@ -85,11 +88,14 @@ package enum TextChunker {
                     continuation.finish()
                     return
                 }
-                for segment in tokenizerSegments(of: text) {
+                let segments = tokenizerSegments(of: text)
+                for segment in segments {
                     let segmentText = String(segment)
                     let tokens = await counter.encode(segmentText)
                     if tokens.count <= cappedTarget {
-                        continuation.yield(segmentText)
+                        if segments.count == 1 || !segmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            continuation.yield(segmentText)
+                        }
                         continue
                     }
 
