@@ -483,6 +483,67 @@ private enum SQLiteBlobInspector {
 }
 #endif // canImport(SQLite3)
 
+/// Names of the `wax-fts5-*` backing directories in the temp directory right now. Tests running
+/// in parallel create these too, so compare sets taken before and after rather than counts.
+private func waxFTS5BackingDirectoryNames() throws -> Set<String> {
+    let names = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+    return Set(names.filter { $0.hasPrefix("wax-fts5-") })
+}
+
+private func posixPermissions(atPath path: String) -> Int? {
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+    return (attributes[.posixPermissions] as? NSNumber)?.intValue
+}
+
+@Test func deserializedBackingStoreIsOwnerOnly() async throws {
+    // Other tests and processes share the temp directory, so find this load's copy by content.
+    let marker = "privatemarker\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    let source = try FTS5SearchEngine.inMemory()
+    try await source.index(frameId: 0, text: "private memory text \(marker)")
+    let blob = try await source.serialize()
+
+    let before = try waxFTS5BackingDirectoryNames()
+    let engine = try FTS5SearchEngine.deserialize(from: blob)
+    let created = try waxFTS5BackingDirectoryNames().subtracting(before)
+
+    let tempDir = FileManager.default.temporaryDirectory
+    let markerBytes = Data(marker.utf8)
+    let ours = created.filter { name in
+        let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
+        return FileManager.default.contents(atPath: databasePath)?.range(of: markerBytes) != nil
+    }
+    #expect(ours.count == 1)
+    for name in ours {
+        let directory = tempDir.appendingPathComponent(name, isDirectory: true)
+        let directoryMode = try #require(posixPermissions(atPath: directory.path))
+        #expect(directoryMode == 0o700, "\(name) has mode \(String(directoryMode, radix: 8))")
+        let fileMode = try #require(posixPermissions(atPath: directory.appendingPathComponent("fts.sqlite").path))
+        #expect(fileMode == 0o600, "\(name)/fts.sqlite has mode \(String(fileMode, radix: 8))")
+    }
+    // Keeps the engine, and so its backing directory, alive until the checks are done.
+    let count = try await engine.count()
+    #expect(count == 1)
+}
+
+@Test func deserializeCorruptBytesLeavesNoBackingCopy() throws {
+    let marker = "not-a-database-\(UUID().uuidString)"
+    let corrupt = Data(String(repeating: marker, count: 64).utf8)
+
+    let before = try waxFTS5BackingDirectoryNames()
+    #expect(throws: (any Error).self) {
+        _ = try FTS5SearchEngine.deserialize(from: corrupt)
+    }
+    let created = try waxFTS5BackingDirectoryNames().subtracting(before)
+
+    // Only a directory holding this test's bytes is a leak from this load.
+    let tempDir = FileManager.default.temporaryDirectory
+    let leaked = created.filter { name in
+        let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
+        return FileManager.default.contents(atPath: databasePath) == corrupt
+    }
+    #expect(leaked.isEmpty, "leaked backing directories: \(leaked.sorted())")
+}
+
 @Test func serializeSupportsOptionalCompaction() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Hello, World!")

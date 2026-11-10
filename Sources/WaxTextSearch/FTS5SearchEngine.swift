@@ -2,6 +2,10 @@ import Foundation
 @preconcurrency import GRDB
 import WaxCore
 
+#if canImport(Glibc)
+import Glibc
+#endif
+
 package actor FTS5SearchEngine {
     static let maxResults = 10_000
     private static let bm25ScoreSaturation = 0.000_000_14
@@ -81,21 +85,25 @@ package actor FTS5SearchEngine {
         let config = makeConfiguration()
         let storeDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-fts5-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
-        let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
-        FileManager.default.createFile(atPath: dbURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dbURL)
-        try handle.write(contentsOf: data)
-        try handle.close()
-
-        let queue = try DatabaseQueue(path: dbURL.path, configuration: config)
-        try queue.writeWithoutTransaction { db in
-            try FTS5Schema.validateOrUpgrade(in: db)
+        // The copy holds the full text of every memory: owner-only from the moment it exists,
+        // since a shared /tmp (Linux) is readable by other local users.
+        guard mkdir(storeDirectory.path, 0o700) == 0 else {
+            throw WaxError.io("failed to create text index directory: errno \(errno)")
         }
-        let (count, coveredBelowFrameId) = try queue.read { db in
-            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
-            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
+        let opened: (queue: DatabaseQueue, count: Int64, coveredBelowFrameId: UInt64?)
+        do {
+            opened = try openBackingStore(
+                at: storeDirectory.appendingPathComponent("fts.sqlite"),
+                data: data,
+                configuration: config
+            )
+        } catch {
+            // Do not leave a plaintext copy of a blob that failed to open. The helper's queue,
+            // if any, is already closed, so the file is not unlinked while SQLite holds it.
+            try? FileManager.default.removeItem(at: storeDirectory)
+            throw error
         }
+        let (queue, count, coveredBelowFrameId) = opened
         let docCount = UInt64(max(0, count))
         return FTS5SearchEngine(
             dbQueue: queue,
@@ -105,6 +113,34 @@ package actor FTS5SearchEngine {
             dirty: false,
             coveredBelowFrameId: coveredBelowFrameId
         )
+    }
+
+    /// Writes `data` to a new owner-only file at `dbURL`, opens it, and validates the schema.
+    private static func openBackingStore(
+        at dbURL: URL,
+        data: Data,
+        configuration: Configuration
+    ) throws -> (queue: DatabaseQueue, count: Int64, coveredBelowFrameId: UInt64?) {
+        guard FileManager.default.createFile(
+            atPath: dbURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw WaxError.io("failed to create text index file")
+        }
+        let handle = try FileHandle(forWritingTo: dbURL)
+        try handle.write(contentsOf: data)
+        try handle.close()
+
+        let queue = try DatabaseQueue(path: dbURL.path, configuration: configuration)
+        try queue.writeWithoutTransaction { db in
+            try FTS5Schema.validateOrUpgrade(in: db)
+        }
+        let (count, coveredBelowFrameId) = try queue.read { db in
+            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
+        }
+        return (queue, count, coveredBelowFrameId)
     }
 
     package static func load(from wax: Wax) async throws -> FTS5SearchEngine {
