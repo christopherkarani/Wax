@@ -7684,6 +7684,13 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         stdinPipe.fileHandleForWriting.write(Data([0x0A]))
     }
 
+    /// Writes one JSON message with no trailing newline, like a script whose
+    /// last write is not line-terminated.
+    func sendUnterminatedJSON(_ object: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        stdinPipe.fileHandleForWriting.write(data)
+    }
+
     func bootstrap(
         clientName: String,
         initializeID: Int = 1,
@@ -8249,6 +8256,80 @@ struct WaxMCPProcessTests {
         try harness.closeInput()
 
         #expect(try await harness.waitForExit(timeout: 15) == EXIT_SUCCESS)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessAnswersUnterminatedFinalRequestAtEOF() async throws {
+        try await assertRemembersWrittenThenStdinClosedAreAnswered(count: 1, terminateLastLine: false)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessFinishesInFlightRequestsBeforeEOFTeardown() async throws {
+        try await assertRemembersWrittenThenStdinClosedAreAnswered(count: 5, terminateLastLine: true)
+    }
+
+    /// A script or hook writes the whole exchange and closes stdin without
+    /// waiting for any response. Every remember must still be answered and
+    /// committed before the process tears its session down and exits.
+    private func assertRemembersWrittenThenStdinClosedAreAnswered(
+        count: Int,
+        terminateLastLine: Bool
+    ) async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        try harness.sendJSONLine([
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": [
+                "protocolVersion": "2024-11-05",
+                "capabilities": [:],
+                "clientInfo": ["name": "wax-mcp-eof-script", "version": "1.0"],
+            ],
+        ])
+        try harness.sendJSONLine(["jsonrpc": "2.0", "method": "notifications/initialized", "params": [:]])
+        let ids: [Int] = (0..<count).map { 2 + $0 }
+        let markers: [String] = ids.map { _ in "waxmcp-eof-\(UUID().uuidString)" }
+        for (index, id) in ids.enumerated() {
+            let remember: [String: Any] = [
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": [
+                    "name": "remember",
+                    "arguments": [
+                        "content": markers[index],
+                        "memory_type": "fact",
+                        "cwd": harness.storeURL.deletingLastPathComponent().path,
+                    ],
+                ],
+            ]
+            if index == ids.count - 1, !terminateLastLine {
+                try harness.sendUnterminatedJSON(remember)
+            } else {
+                try harness.sendJSONLine(remember)
+            }
+        }
+        try harness.closeInput()
+
+        for id in ids {
+            let response = try await harness.waitForResponseLine(id: id, timeout: 30)
+            let rememberJSON = try parseToolTextJSON(fromResponseLine: response)
+            #expect((rememberJSON["status"] as? String) == "ok", "remember id \(id): \(response)")
+        }
+        #expect(try await harness.waitForExit(timeout: 15) == EXIT_SUCCESS)
+        try harness.shutdownBrokerIfRunning()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let reopened = try await MemoryOrchestrator(at: harness.storeURL, config: config)
+        defer { Task { try? await reopened.close() } }
+        for marker in markers {
+            let context = try await reopened.recall(query: marker)
+            #expect(context.items.contains { $0.text.contains(marker) }, "\(marker) was not committed")
+        }
     }
 
     @Test(.timeLimit(.minutes(1)))
