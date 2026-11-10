@@ -365,7 +365,11 @@ extension MemoryOrchestrator {
             let alreadyEmbedded = await documentHasEmbedding(frameId: documentId)
             if !alreadyEmbedded {
                 guard let attached = readyEmbedderSnapshot else {
-                    throw WaxError.missingEmbedder
+                    // Same rule as a new save: text-only while no embedder is required.
+                    if requiresEmbedderForSave {
+                        throw WaxError.missingEmbedder
+                    }
+                    return
                 }
                 let localEmbedder = attached
                 let embedding = try await Self.embedOne(

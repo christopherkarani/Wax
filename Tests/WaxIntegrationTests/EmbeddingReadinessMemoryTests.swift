@@ -658,6 +658,31 @@ func memoryAutomaticUnavailableSavesTextOnly() async throws {
 }
 
 @Test
+func memoryResavingSameTextWhileLoadingReturnsTheSameDocument() async throws {
+    try await TempFiles.withTempFile { url in
+        let gate = Gate()
+        let readiness = EmbeddingReadiness()
+        let memory = try await Memory(
+            at: url,
+            config: .init(requireOnDeviceProviders: false, embedding: .automatic),
+            readiness: readiness
+        ) {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        #expect(await memory.stats().embeddingStatus == .loading)
+
+        let first = try await memory.save("note")
+        let second = try await memory.save("note")
+        #expect(second == first)
+        #expect(await memory.stats().embeddingStatus == .loading)
+
+        await gate.open()
+        try await memory.close()
+    }
+}
+
+@Test
 func orchestratorUnavailableWithoutAutomaticSourceStillThrowsMissingEmbedder() async throws {
     try await TempFiles.withTempFile { url in
         let orchestrator = try await MemoryOrchestrator(
