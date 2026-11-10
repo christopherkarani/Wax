@@ -215,3 +215,66 @@ func fileLockUpgradeTimesOutWhileAnotherSharedHolderExists() throws {
     }
     #expect(file.isClosed)
 }
+
+// MARK: - A commit that fails after its footer write
+
+enum LateCommitFault: Sendable, CaseIterable {
+    /// The header-page write fails (nothing of it lands in the file).
+    case headerWrite
+    /// The fsync after the header-page write fails; the new header page is already in the file.
+    case finalFsync
+
+    var plan: FDFileFaultPlan {
+        switch self {
+        case .headerWrite:
+            // Let the TOC and footer writes through, then fail the header-page write.
+            let pass = FDFileWriteFault.shortWrite(maxBytes: Int.max)
+            return FDFileFaultPlan(pwrite: [pass, pass, .eio])
+        case .finalFsync:
+            return FDFileFaultPlan(fsync: [.pass, .eio])
+        }
+    }
+}
+
+/// A commit fails at or after its footer write. Whatever the handle accepts next must still be
+/// there when a copy of the file taken right then (a crash) is opened, and so must the frames
+/// the failed commit covered.
+@Test(arguments: LateCommitFault.allCases)
+func writesAfterALateCommitFailureSurviveACrash(fault: LateCommitFault) async throws {
+    let url = TempFiles.uniqueURL()
+    let crashURL = TempFiles.uniqueURL()
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: crashURL)
+    }
+    let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("first".utf8))
+    try await wax.commit()
+    _ = try await wax.put(Data("second".utf8))
+
+    await wax.installFileFaultPlanForTesting(fault.plan)
+    await #expect(throws: WaxError.self) { try await wax.commit() }
+    await wax.installFileFaultPlanForTesting(nil)
+
+    var expected: [UInt64: Data] = [0: Data("first".utf8), 1: Data("second".utf8)]
+    let thirdId = try? await wax.put(Data("third".utf8))
+    if let thirdId {
+        expected[thirdId] = Data("third".utf8)
+    }
+    // The handle takes no writes after a commit failed at or past its footer write.
+    #expect(thirdId == nil, "\(fault)")
+    await #expect(throws: WaxError.self) { try await wax.commit() }
+    try FileManager.default.copyItem(at: url, to: crashURL)
+    _ = try? await wax.close()
+
+    for reopenURL in [crashURL, url] {
+        let context = "\(fault), \(reopenURL == url ? "after close" : "crash copy")"
+        let recovered = try await Wax.open(at: reopenURL)
+        let ids = await recovered.frameMetasIncludingPending().map(\.id)
+        #expect(ids == expected.keys.sorted(), "\(context)")
+        for (id, content) in expected where ids.contains(id) {
+            #expect(try await recovered.frameContentIncludingPending(frameId: id) == content, "\(context)")
+        }
+        try await recovered.close()
+    }
+}

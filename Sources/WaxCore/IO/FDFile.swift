@@ -53,6 +53,12 @@ enum FDFileWriteFault: Sendable, Equatable {
     case shortWrite(maxBytes: Int)
 }
 
+enum FDFileSyncFault: Sendable, Equatable {
+    /// Let this `fsync` through, to reach a later one.
+    case pass
+    case eio
+}
+
 /// A file operation observed while a fault plan with `recordsOperations` is installed.
 enum FDFileOperation: Sendable, Equatable {
     case pwrite(offset: UInt64, length: Int)
@@ -62,16 +68,19 @@ enum FDFileOperation: Sendable, Equatable {
 struct FDFileFaultPlan: Sendable, Equatable {
     var pread: [FDFileReadFault]
     var pwrite: [FDFileWriteFault]
+    var fsync: [FDFileSyncFault]
     /// Record every `pwrite` and `fsync`, in order, for ordering assertions in tests.
     var recordsOperations: Bool
 
     init(
         pread: [FDFileReadFault] = [],
         pwrite: [FDFileWriteFault] = [],
+        fsync: [FDFileSyncFault] = [],
         recordsOperations: Bool = false
     ) {
         self.pread = pread
         self.pwrite = pwrite
+        self.fsync = fsync
         self.recordsOperations = recordsOperations
     }
 }
@@ -94,12 +103,14 @@ package final class FDFile {
         private let lock = NSLock()
         private var preadPlan: [FDFileReadFault]
         private var pwritePlan: [FDFileWriteFault]
+        private var fsyncPlan: [FDFileSyncFault]
         private let recordsOperations: Bool
         private var operations: [FDFileOperation] = []
 
         init(plan: FDFileFaultPlan) {
             self.preadPlan = plan.pread
             self.pwritePlan = plan.pwrite
+            self.fsyncPlan = plan.fsync
             self.recordsOperations = plan.recordsOperations
         }
 
@@ -131,6 +142,13 @@ package final class FDFile {
             case .shortRead(let maxBytes):
                 preadPlan.removeFirst()
                 return .short(maxBytes: max(1, maxBytes))
+            }
+        }
+
+        func nextSyncFails() -> Bool {
+            lock.withLock {
+                guard !fsyncPlan.isEmpty else { return false }
+                return fsyncPlan.removeFirst() == .eio
             }
         }
 
@@ -321,6 +339,9 @@ package final class FDFile {
     package func fsync() throws {
         try ensureOpen()
         faultInjectionState?.record(.fsync)
+        if faultInjectionState?.nextSyncFails() == true {
+            throw WaxError.io("fsync failed: injected EIO")
+        }
         #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
         if fcntl(fd, F_FULLFSYNC, 0) == 0 { return }
         #endif
