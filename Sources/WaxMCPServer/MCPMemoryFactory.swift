@@ -33,8 +33,6 @@ enum MCPPathing {
 }
 
 enum MCPMemoryFactory {
-    private static let defaultLockTimeoutSeconds = 2.0
-
     static func openMemory(
         at url: URL,
         noEmbedder: Bool,
@@ -152,17 +150,7 @@ enum MCPMemoryFactory {
     }
 
     private static func lockWaitTimeout() -> Duration? {
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty
-        else {
-            return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
-        }
-        guard let secs = Double(raw) else {
-            return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
-        }
-        guard secs > 0 else { return nil }
-        return .milliseconds(Int64(secs * 1000))
+        CommandLineEmbedderFactory.lockWaitTimeout()
     }
 }
 #endif
