@@ -1379,3 +1379,32 @@ func memoryPromoteWritesTextThatOnlyDuplicatesAnotherProjectsMemory() async thro
         #expect(promoted.payload?.objectValue?["written"]?.boolValue == true)
     }
 }
+
+@Test
+func harvestReclaimDeadlineSaturatesForHugeRecentlyClosedWindow() async throws {
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-huge-window")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: "Working note that stays behind as a low-recall leftover.",
+            memoryType: "note"
+        )
+        let state = try await liveHarvestState(service, sessionID: sessionID)
+        let retention = MemoryRetentionSettings.fromEnvironment([
+            "WAX_SESSION_RECENTLY_CLOSED_SECS": String(Int64.max / 1000),
+        ])
+        let report = await SessionHarvest.run(
+            sessionMemory: state.memory,
+            longTermMemory: service.longTermMemory,
+            sessionID: state.id,
+            manifest: state.manifest,
+            events: [],
+            scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
+            retention: retention,
+            nowMs: BrokerClock.nowMs()
+        )
+        #expect(report.leftoverDocumentCount == 1)
+        #expect(report.reclaimAfterMs == Int64.max)
+    }
+}
