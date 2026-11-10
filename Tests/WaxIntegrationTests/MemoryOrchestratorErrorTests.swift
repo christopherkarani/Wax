@@ -154,7 +154,7 @@ private func expectBadProviderVectorIsRejected(
             do {
                 try await memory.save(text)
                 Issue.record("save must reject the provider's vector")
-            } catch let WaxError.encodingError(reason) {
+            } catch let WaxError.invalidEmbedding(reason) {
                 #expect(reason.contains(expected), "\(reason)")
             }
         }

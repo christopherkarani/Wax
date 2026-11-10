@@ -333,7 +333,7 @@ extension Wax {
                     )
                 }
                 guard vector.allSatisfy(\.isFinite) else {
-                    throw WaxError.encodingError(reason: "embedding vector must contain only finite values")
+                    throw WaxError.invalidEmbedding(reason: "embedding vector must contain only finite values")
                 }
                 let dim = UInt32(vector.count)
                 if let existing = dimension {
@@ -421,7 +421,7 @@ extension Wax {
                 throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: UInt64(vector.count))
             }
             guard vector.allSatisfy(\.isFinite) else {
-                throw WaxError.encodingError(reason: "embedding vector must contain only finite values")
+                throw WaxError.invalidEmbedding(reason: "embedding vector must contain only finite values")
             }
 
             let dimension = UInt32(vector.count)

@@ -161,12 +161,12 @@ extension MemoryOrchestrator {
     /// Internal only because of the file split.
     static func validateIngestVector(_ vector: [Float], from embedder: any EmbeddingProvider) throws {
         guard vector.count == embedder.dimensions else {
-            throw WaxError.encodingError(
+            throw WaxError.invalidEmbedding(
                 reason: "embedding provider \(providerName(embedder)) returned \(vector.count) dimensions; it declares \(embedder.dimensions)"
             )
         }
         guard vector.allSatisfy(\.isFinite) else {
-            throw WaxError.encodingError(
+            throw WaxError.invalidEmbedding(
                 reason: "embedding provider \(providerName(embedder)) returned a non-finite value (NaN or infinity)"
             )
         }
