@@ -1092,7 +1092,13 @@ class WaxMemoryProvider(MemoryProvider):
         existing = load_plugin_config(hermes_home)
         existing.update(values)
         try:
-            config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+            # Owner-only: the file can hold auth_token. Tighten a pre-existing
+            # file before writing so the token never lands in a readable file.
+            fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), 0o600)
+                handle.write(json.dumps(existing, indent=2) + "\n")
             self._config.update(existing)
             self.endpoint = resolve_endpoint(self._config)
         except Exception as exc:

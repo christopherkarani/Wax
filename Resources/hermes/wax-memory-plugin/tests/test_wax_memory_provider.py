@@ -164,6 +164,27 @@ class ConfigResolutionTests(unittest.TestCase):
         self.assertEqual(nested.get("auto_start"), True)
         self.assertEqual(nested.get("endpoint"), "http://127.0.0.1:3000/mcp")
 
+    def test_save_config_writes_owner_only_file_new_or_existing(self) -> None:
+        values = {"endpoint": "http://127.0.0.1:3000/mcp", "auth_token": "test-token"}
+        previous_umask = os.umask(0o022)
+        try:
+            for pre_existing in (False, True):
+                with self.subTest(pre_existing=pre_existing), tempfile.TemporaryDirectory() as home:
+                    path = Path(home) / "wax-memory.json"
+                    if pre_existing:
+                        path.write_text(json.dumps({"auto_start": True}), encoding="utf-8")
+                        os.chmod(path, 0o644)
+                    with mock.patch.dict(os.environ, {}, clear=False):
+                        os.environ.pop("WAX_MCP_HTTP_ENDPOINT", None)
+                        _provider().save_config(values, home)
+                    saved = json.loads(path.read_text(encoding="utf-8"))
+                    expected = {**values, "auto_start": True} if pre_existing else values
+                    self.assertEqual(saved, expected)
+                    if os.name == "posix":
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        finally:
+            os.umask(previous_umask)
+
 
 class AutoStartTests(unittest.TestCase):
     class Process:
