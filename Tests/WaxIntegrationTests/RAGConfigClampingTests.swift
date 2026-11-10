@@ -215,6 +215,122 @@ func videoRAGConfigClampsNonFiniteHybridAlpha() {
     #expect(infConfig.hybridAlpha == 0.0)
 }
 
+struct PhotoConfigMutation: Sendable, CustomTestStringConvertible {
+    let name: String
+    let expectsRegions: Bool
+    let apply: @Sendable (inout PhotoRAGConfig) -> Void
+
+    var testDescription: String { name }
+}
+
+private let photoConfigMutationsAfterInit: [PhotoConfigMutation] = [
+    PhotoConfigMutation(name: "ingestConcurrency = 0", expectsRegions: true) { $0.ingestConcurrency = 0 },
+    PhotoConfigMutation(name: "ingestConcurrency = -1", expectsRegions: true) { $0.ingestConcurrency = -1 },
+    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = 0", expectsRegions: true) { $0.maxOCRBlocksPerPhoto = 0 },
+    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = -1", expectsRegions: true) { $0.maxOCRBlocksPerPhoto = -1 },
+    PhotoConfigMutation(name: "maxOCRSummaryLines = -1", expectsRegions: true) { $0.maxOCRSummaryLines = -1 },
+    PhotoConfigMutation(name: "regionEmbeddingConcurrency = 0", expectsRegions: true) { $0.regionEmbeddingConcurrency = 0 },
+    PhotoConfigMutation(name: "regionEmbeddingConcurrency = -1", expectsRegions: true) { $0.regionEmbeddingConcurrency = -1 },
+    PhotoConfigMutation(name: "maxRegionsPerPhoto = -1", expectsRegions: false) { $0.maxRegionsPerPhoto = -1 },
+    PhotoConfigMutation(name: "embedMaxPixelSize = 0", expectsRegions: true) { $0.embedMaxPixelSize = 0 },
+    PhotoConfigMutation(name: "ocrMaxPixelSize = -1", expectsRegions: true) { $0.ocrMaxPixelSize = -1 },
+]
+
+@Test(arguments: photoConfigMutationsAfterInit)
+func photoRAGFileIngestSurvivesConfigLimitsSetAfterInit(_ mutation: PhotoConfigMutation) async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-config-mutation-\(UUID().uuidString).png")
+        try tinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        var config = defaultPhotoSearchConfig()
+        config.enableOCR = true
+        config.enableRegionEmbeddings = true
+        config.maxRegionsPerPhoto = 1
+        mutation.apply(&config)
+
+        let ocr = StubOCRProvider(blocks: [
+            RecognizedTextBlock(text: "first line", bbox: PhotoNormalizedRect(x: 0, y: 0, width: 1, height: 1), confidence: 0.9),
+            RecognizedTextBlock(text: "second line", bbox: PhotoNormalizedRect(x: 0, y: 0, width: 1, height: 1), confidence: 0.8),
+        ])
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: storeURL,
+            config: config,
+            embedder: DeterministicMultimodalEmbedder(),
+            ocr: ocr
+        )
+
+        try await orchestrator.ingest(files: [PhotoFile(id: "mutated", url: imageURL)])
+
+        let metas: [FrameMeta] = await orchestrator.wax.frameMetas()
+        let roots: [FrameMeta] = metas.filter { $0.kind == PhotoFrameKind.root.rawValue }
+        let regions: [FrameMeta] = metas.filter { $0.kind == PhotoFrameKind.region.rawValue }
+        #expect(roots.count == 1, "\(mutation.name): photo was not ingested")
+        #expect(regions.isEmpty == !mutation.expectsRegions, "\(mutation.name): region frames \(regions.count)")
+        try await orchestrator.close()
+    }
+}
+
+struct VideoConfigMutation: Sendable, CustomTestStringConvertible {
+    let name: String
+    let expectedSegmentCount: Int
+    let apply: @Sendable (inout VideoRAGConfig) -> Void
+
+    var testDescription: String { name }
+}
+
+/// Base config: 1 s segments, no overlap, at most 2 segments, over a 2 s clip.
+private let videoConfigMutationsAfterInit: [VideoConfigMutation] = [
+    VideoConfigMutation(name: "segmentDurationSeconds = .infinity", expectedSegmentCount: 1) { $0.segmentDurationSeconds = .infinity },
+    VideoConfigMutation(name: "segmentDurationSeconds = 1e300", expectedSegmentCount: 1) { $0.segmentDurationSeconds = 1e300 },
+    VideoConfigMutation(name: "segmentDurationSeconds = .nan", expectedSegmentCount: 0) { $0.segmentDurationSeconds = .nan },
+    VideoConfigMutation(name: "segmentDurationSeconds = -1", expectedSegmentCount: 0) { $0.segmentDurationSeconds = -1 },
+    VideoConfigMutation(name: "segmentDurationSeconds = 0", expectedSegmentCount: 0) { $0.segmentDurationSeconds = 0 },
+    VideoConfigMutation(name: "segmentOverlapSeconds = .infinity", expectedSegmentCount: 2) { $0.segmentOverlapSeconds = .infinity },
+    VideoConfigMutation(name: "segmentOverlapSeconds = 1e300", expectedSegmentCount: 2) { $0.segmentOverlapSeconds = 1e300 },
+    VideoConfigMutation(name: "segmentOverlapSeconds = .nan", expectedSegmentCount: 2) { $0.segmentOverlapSeconds = .nan },
+    VideoConfigMutation(name: "segmentOverlapSeconds = -1", expectedSegmentCount: 2) { $0.segmentOverlapSeconds = -1 },
+    VideoConfigMutation(name: "segmentWriteBatchSize = 0", expectedSegmentCount: 2) { $0.segmentWriteBatchSize = 0 },
+    VideoConfigMutation(name: "segmentWriteBatchSize = -1", expectedSegmentCount: 2) { $0.segmentWriteBatchSize = -1 },
+    VideoConfigMutation(name: "maxSegmentsPerVideo = -1", expectedSegmentCount: 0) { $0.maxSegmentsPerVideo = -1 },
+    VideoConfigMutation(name: "maxTranscriptBytesPerSegment = -1", expectedSegmentCount: 2) { $0.maxTranscriptBytesPerSegment = -1 },
+]
+
+@Test(arguments: videoConfigMutationsAfterInit)
+func videoRAGFileIngestSurvivesConfigLimitsSetAfterInit(_ mutation: VideoConfigMutation) async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let mp4URL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4URL) }
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4URL, width: 32, height: 32, frameCount: 4, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 1
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 2
+        config.vectorEnginePreference = .cpuOnly
+        mutation.apply(&config)
+
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: storeURL,
+            config: config,
+            embedder: ByteSumMultimodalEmbedder(model: "ConfigMutation"),
+            transcriptProvider: StubTranscriptProvider(chunks: [.init(startMs: 0, endMs: 2_000, text: "clip words")])
+        )
+
+        let videoID = VideoID(source: .file, id: "mutated")
+        try await rag.ingest(files: [VideoFile(id: videoID, url: mp4URL)])
+
+        let index: VideoRAGOrchestrator.IndexState = await rag.index
+        #expect(index.rootByVideoID[videoID] != nil, "\(mutation.name): video was not ingested")
+        let segmentCount: Int = index.segmentIdsByVideoID[videoID]?.count ?? 0
+        #expect(segmentCount == mutation.expectedSegmentCount, "\(mutation.name)")
+        try await rag.close()
+    }
+}
+
 @Test
 func fastRAGRrfKZeroOrNegativeDoesNotCrash() async throws {
     try await TempFiles.withTempFile { url in

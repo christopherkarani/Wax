@@ -64,7 +64,7 @@ extension PhotoRAGOrchestrator {
 
         // Throttled concurrency: the actor's executor serializes state mutations, while
         // suspension points (metadata load, embedding, OCR) interleave across assets.
-        let concurrency = config.ingestConcurrency
+        let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueAssetIDs.makeIterator()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -94,7 +94,7 @@ extension PhotoRAGOrchestrator {
         let uniqueFiles = Self.dedupePhotoFiles(files)
         guard !uniqueFiles.isEmpty else { return }
 
-        let concurrency = config.ingestConcurrency
+        let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueFiles.makeIterator()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -297,7 +297,7 @@ extension PhotoRAGOrchestrator {
 
             // Blocks — also text-indexed so serials and short OCR tokens stay findable
             // even when they are not selected into the summary.
-            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
+            for block in ocrBlocks.prefix(max(1, config.maxOCRBlocksPerPhoto)) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
                 meta.entries["photo.ocr.confidence"] = String(block.confidence)
@@ -359,7 +359,7 @@ extension PhotoRAGOrchestrator {
 
                     try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
                         var activeCount = 0
-                        let maxConcurrency = self.config.regionEmbeddingConcurrency
+                        let maxConcurrency = max(1, self.config.regionEmbeddingConcurrency)
                         var cropIterator = crops.makeIterator()
 
                         // Start initial batch
@@ -558,7 +558,7 @@ extension PhotoRAGOrchestrator {
             if !summary.isEmpty {
                 addDerived(kind: PhotoFrameKind.ocrSummary.rawValue, text: summary, searchable: true)
             }
-            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
+            for block in ocrBlocks.prefix(max(1, config.maxOCRBlocksPerPhoto)) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
                 meta.entries["photo.ocr.confidence"] = String(block.confidence)
@@ -634,7 +634,7 @@ extension PhotoRAGOrchestrator {
 
         try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
             var activeCount = 0
-            let maxConcurrency = config.regionEmbeddingConcurrency
+            let maxConcurrency = max(1, config.regionEmbeddingConcurrency)
             var cropIterator = crops.makeIterator()
 
             while activeCount < maxConcurrency, let item = cropIterator.next() {

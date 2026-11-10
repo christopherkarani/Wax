@@ -258,7 +258,7 @@ extension VideoRAGOrchestrator {
         // Capture-time semantics: segment frames share the video's capture timestamp so
         // `VideoQuery.timeRange` behaves as a capture-time filter.
         let timestamps = Array(repeating: captureMs, count: segments.count)
-        let batchSize = config.segmentWriteBatchSize
+        let batchSize = max(1, config.segmentWriteBatchSize)
         var allFrameIds: [UInt64] = []
         allFrameIds.reserveCapacity(segments.count)
 
@@ -373,8 +373,8 @@ extension VideoRAGOrchestrator {
         maxSegments: Int
     ) -> [SegmentPlan] {
         guard durationMs > 0 else { return [] }
-        let segmentDurationMs = Int64(segmentDurationSeconds * 1000)
-        let overlapMs = Int64(segmentOverlapSeconds * 1000)
+        let segmentDurationMs = milliseconds(fromSeconds: segmentDurationSeconds)
+        let overlapMs = milliseconds(fromSeconds: segmentOverlapSeconds)
         let strideMs = max(1, segmentDurationMs - overlapMs)
         guard segmentDurationMs > 0, maxSegments > 0 else { return [] }
 
@@ -382,12 +382,15 @@ extension VideoRAGOrchestrator {
         segments.reserveCapacity(min(maxSegments, 64))
 
         var i = 0
+        var startMs: Int64 = 0
         while i < maxSegments {
-            let startMs = Int64(i) * strideMs
             if startMs >= durationMs { break }
-            let endMs = min(startMs + segmentDurationMs, durationMs)
-            let midMs = (startMs + endMs) / 2
+            let endMs = startMs + min(segmentDurationMs, durationMs - startMs)
+            let midMs = startMs + (endMs - startMs) / 2
             segments.append(SegmentPlan(startMs: startMs, endMs: endMs, midMs: midMs, index: i, count: 0))
+            let (nextStartMs, overflow) = startMs.addingReportingOverflow(strideMs)
+            if overflow { break }
+            startMs = nextStartMs
             i += 1
         }
 
@@ -396,6 +399,15 @@ extension VideoRAGOrchestrator {
             segments[idx].count = count
         }
         return segments
+    }
+
+    /// Config seconds to whole milliseconds without trapping: NaN and non-positive values
+    /// become 0, and values past `Int64.max` milliseconds (including infinity) saturate.
+    private static func milliseconds(fromSeconds seconds: Double) -> Int64 {
+        let milliseconds = seconds * 1000
+        guard milliseconds > 0 else { return 0 }
+        guard milliseconds < Double(Int64.max) else { return Int64.max }
+        return Int64(milliseconds)
     }
 
     static func mapTranscript(
