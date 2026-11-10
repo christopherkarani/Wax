@@ -218,6 +218,8 @@ func videoRAGConfigClampsNonFiniteHybridAlpha() {
 struct PhotoConfigMutation: Sendable, CustomTestStringConvertible {
     let name: String
     let expectsRegions: Bool
+    /// OCR block frames written from the two stub blocks; init clamps the limit to at least 1.
+    var expectedOCRBlocks: Int = 2
     let apply: @Sendable (inout PhotoRAGConfig) -> Void
 
     var testDescription: String { name }
@@ -226,8 +228,8 @@ struct PhotoConfigMutation: Sendable, CustomTestStringConvertible {
 private let photoConfigMutationsAfterInit: [PhotoConfigMutation] = [
     PhotoConfigMutation(name: "ingestConcurrency = 0", expectsRegions: true) { $0.ingestConcurrency = 0 },
     PhotoConfigMutation(name: "ingestConcurrency = -1", expectsRegions: true) { $0.ingestConcurrency = -1 },
-    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = 0", expectsRegions: true) { $0.maxOCRBlocksPerPhoto = 0 },
-    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = -1", expectsRegions: true) { $0.maxOCRBlocksPerPhoto = -1 },
+    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = 0", expectsRegions: true, expectedOCRBlocks: 1) { $0.maxOCRBlocksPerPhoto = 0 },
+    PhotoConfigMutation(name: "maxOCRBlocksPerPhoto = -1", expectsRegions: true, expectedOCRBlocks: 1) { $0.maxOCRBlocksPerPhoto = -1 },
     PhotoConfigMutation(name: "maxOCRSummaryLines = -1", expectsRegions: true) { $0.maxOCRSummaryLines = -1 },
     PhotoConfigMutation(name: "regionEmbeddingConcurrency = 0", expectsRegions: true) { $0.regionEmbeddingConcurrency = 0 },
     PhotoConfigMutation(name: "regionEmbeddingConcurrency = -1", expectsRegions: true) { $0.regionEmbeddingConcurrency = -1 },
@@ -268,6 +270,8 @@ func photoRAGFileIngestSurvivesConfigLimitsSetAfterInit(_ mutation: PhotoConfigM
         let regions: [FrameMeta] = metas.filter { $0.kind == PhotoFrameKind.region.rawValue }
         #expect(roots.count == 1, "\(mutation.name): photo was not ingested")
         #expect(regions.isEmpty == !mutation.expectsRegions, "\(mutation.name): region frames \(regions.count)")
+        let ocrBlocks: [FrameMeta] = metas.filter { $0.kind == PhotoFrameKind.ocrBlock.rawValue }
+        #expect(ocrBlocks.count == mutation.expectedOCRBlocks, "\(mutation.name): OCR block frames \(ocrBlocks.count)")
         try await orchestrator.close()
     }
 }
