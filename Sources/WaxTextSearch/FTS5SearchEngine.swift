@@ -72,6 +72,9 @@ package actor FTS5SearchEngine {
 
     deinit {
         guard let url = backingStoreDirectory else { return }
+        // Close before removing: SQLite reports deleting a file it still has open as an API violation.
+        // No closure on dbQueue's queue holds the engine, so this deinit never runs on that queue.
+        try? dbQueue.close()
         try? FileManager.default.removeItem(at: url)
     }
 
