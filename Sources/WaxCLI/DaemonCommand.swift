@@ -310,9 +310,12 @@ private extension DaemonCommand {
             var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
             if pollResult == 0 {
-                if idleTimeoutSeconds > 0,
-                   lastActivity.duration(to: .now) / .seconds(1) >= idleTimeoutSeconds,
-                   !inflight.hasClients {
+                // Idle time counts from when the last client left, not from the
+                // last accept: a long-lived connection must not use up the timeout.
+                if inflight.hasClients {
+                    lastActivity = ContinuousClock.now
+                } else if idleTimeoutSeconds > 0,
+                          lastActivity.duration(to: .now) / .seconds(1) >= idleTimeoutSeconds {
                     return
                 }
                 continue

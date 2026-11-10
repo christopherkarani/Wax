@@ -485,17 +485,22 @@ final class MCPClientSessionHint: @unchecked Sendable {
         return context?.mcpRoots.isEmpty == false
     }
 
+    /// Each branch reads and rebinds under one lock hold. A `session_end` that
+    /// checked the ID, released the lock and then cleared the binding could
+    /// otherwise wipe a `session_start` that landed in between.
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
-            if let sessionID = Self.workingSessionID(from: payload) {
-                bind(sessionID, ownership: ownership ?? .transport)
+            if let started = Self.workingSessionID(from: payload) {
+                lock.withLock {
+                    bindLocked(started, ownership: ownership ?? .transport)
+                }
             }
         case "session_end", "session_close":
             if let ended = Self.workingSessionID(from: payload) {
-                let matches = lock.withLock { sessionID == ended }
-                if matches {
-                    bind(nil, ownership: nil)
+                lock.withLock {
+                    guard sessionID == ended else { return }
+                    bindLocked(nil, ownership: nil)
                 }
             }
         default:
@@ -504,10 +509,15 @@ final class MCPClientSessionHint: @unchecked Sendable {
     }
 
     func bind(_ sessionID: UUID?, ownership: MCPMemoryOwnership?) {
-        lock.lock()
+        lock.withLock { bindLocked(sessionID, ownership: ownership) }
+    }
+
+    /// Caller holds `lock`. The registry write stays inside it so the registry
+    /// and this hint cannot disagree after two binds race. The registry lock is
+    /// a leaf (`current()` already takes it under this lock), so the order is fixed.
+    private func bindLocked(_ sessionID: UUID?, ownership: MCPMemoryOwnership?) {
         self.sessionID = sessionID
         self.ownership = ownership
-        lock.unlock()
         if let connectionKey {
             MCPBoundSessionRegistry.shared.remember(
                 key: connectionKey,
