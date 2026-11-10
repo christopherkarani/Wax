@@ -378,6 +378,11 @@ package actor MemoryOrchestrator {
             try await embeddingBackfillStoreMutex.withLock { [self] in
                 try Task.checkCancellation()
                 guard !(await isClosed) else { throw CancellationError() }
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: [String?](repeating: nil, count: batch.count),
+                    metadata: [:],
+                    embeddingDimensions: vectors.first?.count
+                ))
                 try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                 if let identity = embedder.identity {
                     try await ensureMemoryBindingIfNeeded(
@@ -446,6 +451,13 @@ package actor MemoryOrchestrator {
                     try await embeddingBackfillStoreMutex.withLock { [self] in
                         try Task.checkCancellation()
                         guard !(await isClosed) else { throw CancellationError() }
+                        // A commit here keeps the last committed marker, so a resume redoes
+                        // these frames; it never skips one.
+                        try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                            searchTexts: [String?](repeating: nil, count: batch.count),
+                            metadata: [:],
+                            embeddingDimensions: vectors.first?.count
+                        ))
                         try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                     }
                     reembedded += UInt64(batch.count)
