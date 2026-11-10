@@ -761,6 +761,84 @@ struct WaxCLIMemoryTests {
         #expect(response.ok)
     }
 
+    /// The idle timeout counts from when the last client left. A connection held
+    /// longer than the timeout must not make the daemon exit the moment it closes.
+    @Test func daemonIdleTimeoutCountsFromLastClientLeaving() async throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxdi-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [
+            "daemon",
+            "--store-path", storeURL.path,
+            "--no-embedder",
+            "--socket-path", socketURL.path,
+            "--idle-timeout-secs", "5",
+        ]
+        // A long request-read deadline keeps the stalled client connected well
+        // past the idle timeout, so the margins below stay wide on a loaded host.
+        let hooksDir = tempRoot.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_TEST_HOOKS_DIR"] = hooksDir.path
+        environment["WAX_BROKER_TEST_READ_DEADLINE_SECS"] = "8"
+        process.environment = environment
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitForExit(timeout: 10)
+            }
+        }
+
+        try await waitForSocket(atPath: socketURL.path, timeout: 5)
+
+        // A stalled client stays connected until the daemon's 8s request-read
+        // deadline drops it, which is longer than the 5s idle timeout.
+        let stalledClient = try connectUnixSocket(path: socketURL.path)
+        defer { close(stalledClient) }
+        _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
+        try waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
+
+        // Well inside the idle timeout measured from that close; the old
+        // last-accept baseline exited within one 200ms poll slice.
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(process.isRunning, "daemon exited as soon as its long-lived client left")
+
+        let responseLine = try sendBrokerSocketRequest(
+            AgentBrokerRequest(command: "stats"),
+            socketPath: socketURL.path,
+            timeoutSeconds: 3
+        )
+        let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
+        #expect(response.ok)
+    }
+
+    /// Reads and discards until the peer closes `fd`. The bound only catches a hang.
+    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) throws {
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, timeoutSeconds * 1000)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0 else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "daemon never closed the stalled client"])
+            }
+            let count = read(fd, &chunk, chunk.count)
+            if count < 0, errno == EINTR { continue }
+            if count <= 0 { return }
+        }
+    }
+
     @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() async throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-install-stage-\(UUID().uuidString)", isDirectory: true)

@@ -27,49 +27,58 @@ public struct VisionOCRProvider: OCRProvider, Sendable {
 
     /// Recognize text blocks in `image` using Vision.
     public func recognizeText(in image: CGImage) async throws -> [RecognizedTextBlock] {
-        let accuracyLevel = accuracy
-        let languageCorrection = usesLanguageCorrection
+        try await Self.recognize(
+            in: image,
+            accuracyLevel: accuracy,
+            languageCorrection: usesLanguageCorrection
+        )
+    }
 
-        return try await Task.detached(priority: .userInitiated) {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = (accuracyLevel == .accurate) ? .accurate : .fast
-            request.usesLanguageCorrection = languageCorrection
+    /// Vision work is synchronous and heavy, so it runs on the concurrent pool.
+    @concurrent
+    private static func recognize(
+        in image: CGImage,
+        accuracyLevel: Accuracy,
+        languageCorrection: Bool
+    ) async throws -> [RecognizedTextBlock] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = (accuracyLevel == .accurate) ? .accurate : .fast
+        request.usesLanguageCorrection = languageCorrection
 
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
-            try handler.perform([request])
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        try handler.perform([request])
 
-            guard let observations = request.results else { return [] }
+        guard let observations = request.results else { return [] }
 
-            var out: [RecognizedTextBlock] = []
-            out.reserveCapacity(observations.count)
+        var out: [RecognizedTextBlock] = []
+        out.reserveCapacity(observations.count)
 
-            for obs in observations {
-                guard let top = obs.topCandidates(1).first else { continue }
-                let text = top.string
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+        for obs in observations {
+            guard let top = obs.topCandidates(1).first else { continue }
+            let text = top.string
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
 
-                // Vision bounding boxes are normalized with origin at bottom-left.
-                let b = obs.boundingBox
-                let topLeftY = 1.0 - Double(b.origin.y) - Double(b.size.height)
-                let rect = PhotoNormalizedRect(
-                    x: Double(b.origin.x),
-                    y: topLeftY,
-                    width: Double(b.size.width),
-                    height: Double(b.size.height)
+            // Vision bounding boxes are normalized with origin at bottom-left.
+            let b = obs.boundingBox
+            let topLeftY = 1.0 - Double(b.origin.y) - Double(b.size.height)
+            let rect = PhotoNormalizedRect(
+                x: Double(b.origin.x),
+                y: topLeftY,
+                width: Double(b.size.width),
+                height: Double(b.size.height)
+            )
+
+            out.append(
+                RecognizedTextBlock(
+                    text: text,
+                    bbox: rect,
+                    confidence: Float(top.confidence),
+                    language: nil
                 )
+            )
+        }
 
-                out.append(
-                    RecognizedTextBlock(
-                        text: text,
-                        bbox: rect,
-                        confidence: Float(top.confidence),
-                        language: nil
-                    )
-                )
-            }
-
-            return out
-        }.value
+        return out
     }
 }
 

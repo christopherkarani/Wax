@@ -168,9 +168,18 @@ assert_full_pass_rate() {
 }
 
 require_swiftpm_traits() {
+  # Package.swift is swift-tools-version 6.2; an older compiler would fail later
+  # with a less obvious manifest error.
+  local swift_version
+  swift_version="$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+  if [[ -n "$swift_version" ]] \
+     && [[ "$(printf '%s\n' "6.2" "$swift_version" | sort -V | head -n 1)" != "6.2" ]]; then
+    echo "FAIL: Swift $swift_version is too old; this package needs Swift 6.2+." >&2
+    return 1
+  fi
   if ! swift test --help | grep -q -- "--traits <traits>"; then
     echo "FAIL: current Swift toolchain does not support package traits (--traits)." >&2
-    echo "Install a Swift toolchain that supports package traits (for example Swift 6.1+)." >&2
+    echo "Install a Swift toolchain that supports package traits (Swift 6.2+)." >&2
     return 1
   fi
 }
