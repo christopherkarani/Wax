@@ -114,7 +114,7 @@ extension PhotoRAGOrchestrator {
 
     private static func isSearchablePhotoKind(_ kind: String) -> Bool {
         switch FrameKind(rawKind: kind) {
-        case .photo(.root), .photo(.ocrSummary), .photo(.captionShort), .photo(.tags), .photo(.region):
+        case .photo(.root), .photo(.ocrSummary), .photo(.ocrBlock), .photo(.captionShort), .photo(.tags), .photo(.region):
             return true
         default:
             return false

@@ -370,6 +370,7 @@ extension PhotoRAGOrchestrator {
                 if let id = refs.caption { frameIds.insert(id) }
                 if let id = refs.tags { frameIds.insert(id) }
                 frameIds.formUnion(refs.regions)
+                frameIds.formUnion(refs.ocrBlocks)
             }
         }
 
