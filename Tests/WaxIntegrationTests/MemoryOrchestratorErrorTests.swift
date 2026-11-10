@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 import WaxTestSupport
 
 @Test
@@ -195,4 +196,38 @@ func memoryCustomProviderWrongDimensionVectorIsRejectedAndStoreStaysUsable() asy
         reasonContains: "declares 4",
         goodProvider: SeededHashEmbedder(dimensions: 4, provider: "Mock")
     )
+}
+
+@Test(arguments: [false, true])
+func memoryOrchestratorOpenFailingOnAccessStatsReleasesTheStore(asyncEnrichment: Bool) async throws {
+    try await TempFiles.withTempFile { url in
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.enableAsyncEnrichment = asyncEnrichment
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember("access stats payload that will be corrupted")
+        await memory.recordAccess(frameId: remembered.frameId)
+        try await memory.flush()
+        try await memory.close()
+
+        // Corrupt the stored access-stats payload so reading it on open throws.
+        let wax = try await Wax.open(at: url)
+        let statsFrame = try #require(await wax.frameMetas().first { $0.kind == "wax.internal.access_stats" })
+        try await wax.close()
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seek(toOffset: statsFrame.payloadOffset)
+        let original = try #require(try handle.read(upToCount: 1)?.first)
+        try handle.seek(toOffset: statsFrame.payloadOffset)
+        try handle.write(contentsOf: Data([original ^ 0xFF]))
+        try handle.close()
+
+        await #expect(throws: (any Error).self) {
+            _ = try await MemoryOrchestrator(at: url, config: config)
+        }
+
+        // The failed open must not keep the file lock.
+        let reopened = try await Wax.open(at: url, options: WaxOptions(lockWaitTimeout: .milliseconds(500)))
+        try await reopened.close()
+    }
 }

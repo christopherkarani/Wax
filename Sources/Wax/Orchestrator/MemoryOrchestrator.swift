@@ -268,6 +268,11 @@ package actor MemoryOrchestrator {
 
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
+        // Before the pipeline starts: its handler retains the session, so a throw
+        // after that would leave the store's file lock held.
+        if resolvedConfig.enableAccessStatsScoring {
+            try await loadPersistedAccessStatsIfNeeded()
+        }
         if let enrichmentPipeline {
             let session = self.session
             await enrichmentPipeline.start { task in
@@ -279,9 +284,6 @@ package actor MemoryOrchestrator {
             } resultHandler: { result in
                 try await Self.persistEnrichmentResult(result, in: session)
             }
-        }
-        if resolvedConfig.enableAccessStatsScoring {
-            try await loadPersistedAccessStatsIfNeeded()
         }
         if supersededReason != nil {
             // Apps that only ever call remember must still finish the re-embed.
