@@ -25,7 +25,11 @@ package actor FTS5SearchEngine {
     let io: BlockingIOExecutor
     private let backingStoreDirectory: URL?
     private var docCount: UInt64
-    var dirty: Bool
+    /// Set through `markDirty()`, so every mutation also bumps `mutationGeneration`.
+    private(set) var dirty: Bool
+    /// Bumped on every mutation, so `stageForCommit` can tell whether one landed while it was
+    /// suspended and must leave the engine dirty.
+    private var mutationGeneration: UInt64 = 0
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
     var pendingStructuredOps: [StructuredOp] = []
@@ -184,7 +188,7 @@ package actor FTS5SearchEngine {
         if removedCount > 0 {
             let removedU = UInt64(removedCount)
             docCount = docCount > removedU ? (docCount &- removedU) : 0
-            dirty = true
+            markDirty()
         }
     }
 
@@ -243,10 +247,14 @@ package actor FTS5SearchEngine {
         try await removeInactiveFrames(metas)
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
+        // Every mutation before this point is flushed by `serialize` and is in the blob.
+        let stagedGeneration = mutationGeneration
         try await recordCoverage(of: metas)
         let blob = try await serialize(compact: compact)
         try await wax.stageLexIndexForNextCommit(bytes: blob, docCount: docCount)
-        dirty = false
+        if mutationGeneration == stagedGeneration {
+            dirty = false
+        }
     }
 
     private enum PendingOp: Sendable, Equatable {
@@ -281,7 +289,12 @@ package actor FTS5SearchEngine {
             pendingKeys.append(frameIdValue)
         }
         pendingOps[frameIdValue] = op
+        markDirty()
+    }
+
+    func markDirty() {
         dirty = true
+        mutationGeneration &+= 1
     }
 
     private func flushPendingOpsIfThresholdExceeded() async throws {

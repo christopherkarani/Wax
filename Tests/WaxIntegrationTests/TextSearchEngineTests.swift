@@ -659,3 +659,66 @@ private final class CompletionFlag: @unchecked Sendable {
     let missing = lateIds.subtracting(lateHits.map(\.frameId))
     #expect(missing.isEmpty, "late frames missing from the text index: \(missing.count) of \(lateIds.count)")
 }
+
+@Test func indexDuringStageForCommitReachesTheNextCommittedIndex() async throws {
+    // An index call that lands while stageForCommit is serializing or staging is not in that
+    // blob. The engine must stay dirty so the next stage writes a blob that includes it.
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
+    let wax = try await Wax.create(at: fileURL)
+    let engine = try await FTS5SearchEngine.load(from: wax)
+    // A large index makes serializing and staging the blob slow, widening the race window.
+    let corpusCount = 2_000
+    let corpusIds: [UInt64] = (0..<corpusCount).map { UInt64($0) }
+    let corpusTexts: [String] = (0..<corpusCount).map { (doc: Int) -> String in
+        (0..<100).map { (word: Int) -> String in "c\(doc)w\(word)" }.joined(separator: " ")
+    }
+    try await engine.indexBatch(frameIds: corpusIds, texts: corpusTexts)
+    let trials = 20
+    let maxLatePerTrial = 400
+    var nextFrameId = UInt64(corpusCount)
+    var lateIds: Set<UInt64> = []
+    var trialsMissingFrames = 0
+
+    for trial in 0..<trials {
+        try await engine.index(frameId: nextFrameId, text: "seed")
+        nextFrameId += 1
+
+        let stageDone = CompletionFlag()
+        let staging = Task {
+            defer { stageDone.markDone() }
+            try await engine.stageForCommit(into: wax)
+        }
+        // Keep indexing, paced, until the stage returns, so the last call often lands mid-stage.
+        var trialIds: Set<UInt64> = []
+        while !stageDone.isDone, trialIds.count < maxLatePerTrial {
+            try await engine.index(frameId: nextFrameId, text: "late trial\(trial)")
+            trialIds.insert(nextFrameId)
+            nextFrameId += 1
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try await staging.value
+        lateIds.formUnion(trialIds)
+
+        try await engine.stageForCommit(into: wax)
+        try await wax.commit()
+        let bytes = try #require(try await wax.readCommittedLexIndexBytes())
+        let committed = try FTS5SearchEngine.deserialize(from: bytes)
+        let hits = try await committed.search(matchQuery: "\"trial\(trial)\"", topK: 10_000)
+        if !trialIds.isSubset(of: Set(hits.map(\.frameId))) { trialsMissingFrames += 1 }
+    }
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: fileURL)
+    let reloaded = try await FTS5SearchEngine.load(from: reopened)
+    let hits = try await reloaded.search(matchQuery: "\"late\"", topK: 10_000)
+    try await reopened.close()
+
+    let missing = lateIds.subtracting(hits.map(\.frameId))
+    #expect(trialsMissingFrames == 0, "trials whose committed index lacked a frame: \(trialsMissingFrames) of \(trials)")
+    #expect(missing.isEmpty, "frames missing after reopen: \(missing.count) of \(lateIds.count)")
+}

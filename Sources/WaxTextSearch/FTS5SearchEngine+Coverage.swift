@@ -65,7 +65,7 @@ extension FTS5SearchEngine {
         // Without a recorded watermark, have the next commit record one even if nothing is
         // missing, so the full scan below runs once.
         if !coverageRecorded, !metas.isEmpty {
-            dirty = true
+            markDirty()
         }
         let floor = coveredBelowFrameId
         var candidates: [(frameId: Int64, text: String)] = []

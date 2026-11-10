@@ -5,7 +5,7 @@ import WaxCore
 extension FTS5SearchEngine {
     func enqueueStructuredOp(_ op: StructuredOp) {
         pendingStructuredOps.append(op)
-        dirty = true
+        markDirty()
     }
 
     func flushPendingStructuredOpsIfThresholdExceeded() async throws {
