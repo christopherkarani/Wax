@@ -36,6 +36,41 @@ func sessionEndForTheBoundSessionClearsHintAndRegistry() {
     #expect(MCPBoundSessionRegistry.shared.current(for: key) == nil)
 }
 
+@Test
+func sessionEndMatchingTheRegistryBindingClearsIt() {
+    let key = "hint-registry-end-\(UUID().uuidString)"
+    let hint = MCPClientSessionHint(connectionKey: key, context: nil)
+    defer { hint.clearBinding() }
+    let active = UUID()
+    // Bound on this connection by another hint; this one has no local binding.
+    MCPBoundSessionRegistry.shared.remember(key: key, sessionID: active, ownership: .transport)
+
+    hint.remember(name: "session_end", payload: sessionPayload(active))
+
+    #expect(hint.current() == nil)
+    #expect(MCPBoundSessionRegistry.shared.current(for: key) == nil)
+}
+
+@Test
+func staleClearKeepsASessionStartedAfterTheInjection() {
+    let key = "hint-stale-clear-\(UUID().uuidString)"
+    let hint = MCPClientSessionHint(connectionKey: key, context: nil)
+    defer { hint.clearBinding() }
+    let stale = UUID()
+    let started = UUID()
+
+    hint.remember(name: "session_start", payload: sessionPayload(stale))
+    // A call ran with `stale` injected; meanwhile the client started a new session.
+    hint.remember(name: "session_start", payload: sessionPayload(started))
+    hint.clearBinding(ifBoundTo: stale)
+
+    #expect(hint.current() == started)
+    #expect(MCPBoundSessionRegistry.shared.current(for: key) == started)
+
+    hint.clearBinding(ifBoundTo: started)
+    #expect(hint.current() == nil)
+}
+
 /// Ending the old session and starting a new one at the same time must always
 /// leave the new one bound: either the end runs first and the start rebinds, or
 /// the start runs first and the end no longer matches.

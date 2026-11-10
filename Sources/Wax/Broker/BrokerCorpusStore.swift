@@ -380,8 +380,9 @@ private extension BrokerCorpusStoreBuilder {
             try? await sourceMemory.close()
             throw error
         }
-        // A failed close can leave the store open, so report it like the ingest itself.
-        try await sourceMemory.close()
+        // The documents are already in the target, so a failed close of this
+        // read-only open must not mark the store skipped or abort the build.
+        try? await sourceMemory.close()
         return outcome
     }
 

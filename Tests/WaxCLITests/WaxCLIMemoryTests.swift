@@ -780,8 +780,16 @@ struct WaxCLIMemoryTests {
             "--store-path", storeURL.path,
             "--no-embedder",
             "--socket-path", socketURL.path,
-            "--idle-timeout-secs", "3",
+            "--idle-timeout-secs", "5",
         ]
+        // A long request-read deadline keeps the stalled client connected well
+        // past the idle timeout, so the margins below stay wide on a loaded host.
+        let hooksDir = tempRoot.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_TEST_HOOKS_DIR"] = hooksDir.path
+        environment["WAX_BROKER_TEST_READ_DEADLINE_SECS"] = "8"
+        process.environment = environment
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         try process.run()
@@ -794,8 +802,8 @@ struct WaxCLIMemoryTests {
 
         try await waitForSocket(atPath: socketURL.path, timeout: 5)
 
-        // A stalled client stays connected until the daemon's 5s request-read
-        // deadline drops it, which is longer than the 3s idle timeout.
+        // A stalled client stays connected until the daemon's 8s request-read
+        // deadline drops it, which is longer than the 5s idle timeout.
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
