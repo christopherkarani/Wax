@@ -43,7 +43,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_VERSION = "0.1.39"
+PLUGIN_VERSION = "0.1.50"
 DEFAULT_ENDPOINT = "http://127.0.0.1:3000/mcp"
 CONFIG_FILENAME = "wax-memory.json"
 MCP_PROTOCOL_VERSION = "2024-11-05"
