@@ -2,6 +2,10 @@ import Foundation
 @preconcurrency import GRDB
 import WaxCore
 
+#if canImport(Glibc)
+import Glibc
+#endif
+
 package actor FTS5SearchEngine {
     static let maxResults = 10_000
     private static let bm25ScoreSaturation = 0.000_000_14
@@ -25,10 +29,23 @@ package actor FTS5SearchEngine {
     let io: BlockingIOExecutor
     private let backingStoreDirectory: URL?
     private var docCount: UInt64
-    var dirty: Bool
+    /// Set through `markDirty()`, so every mutation also bumps `mutationGeneration`.
+    private(set) var dirty: Bool
+    /// Bumped on every mutation, so `stageForCommit` can tell whether one landed while it was
+    /// suspended and must leave the engine dirty.
+    private var mutationGeneration: UInt64 = 0
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
-    var pendingStructuredOps: [StructuredOp] = []
+    var pendingStructuredOps: [QueuedStructuredOp] = []
+    var nextStructuredOpId: UInt64 = 0
+    /// Ops whose caller is still waiting for the flush that applies them.
+    var awaitedStructuredOpIds: Set<UInt64> = []
+    /// Errors for awaited ops that a flush rejected and dropped, until their caller takes them.
+    var structuredOpRejections: [UInt64: WaxError] = [:]
+    /// Flushes are mutually exclusive. The queues are snapshotted before an `await`, so a flush
+    /// that overlapped another would re-apply the in-flight snapshot; see `acquireFlushGate()`.
+    private var flushGateHeld = false
+    private var flushGateWaiters: [CheckedContinuation<Void, Never>] = []
     /// Every text-indexable frame below this id is indexed (or was when it was staged).
     /// Frames at or above it may be durable without postings; see `FTS5SearchEngine+Coverage.swift`.
     var coveredBelowFrameId: UInt64
@@ -55,6 +72,9 @@ package actor FTS5SearchEngine {
 
     deinit {
         guard let url = backingStoreDirectory else { return }
+        // Close before removing: SQLite reports deleting a file it still has open as an API violation.
+        // No closure on dbQueue's queue holds the engine, so this deinit never runs on that queue.
+        try? dbQueue.close()
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -73,21 +93,25 @@ package actor FTS5SearchEngine {
         let config = makeConfiguration()
         let storeDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-fts5-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
-        let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
-        FileManager.default.createFile(atPath: dbURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dbURL)
-        try handle.write(contentsOf: data)
-        try handle.close()
-
-        let queue = try DatabaseQueue(path: dbURL.path, configuration: config)
-        try queue.writeWithoutTransaction { db in
-            try FTS5Schema.validateOrUpgrade(in: db)
+        // The copy holds the full text of every memory: owner-only from the moment it exists,
+        // since a shared /tmp (Linux) is readable by other local users.
+        guard mkdir(storeDirectory.path, 0o700) == 0 else {
+            throw WaxError.io("failed to create text index directory: errno \(errno)")
         }
-        let (count, coveredBelowFrameId) = try queue.read { db in
-            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
-            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
+        let opened: (queue: DatabaseQueue, count: Int64, coveredBelowFrameId: UInt64?)
+        do {
+            opened = try openBackingStore(
+                at: storeDirectory.appendingPathComponent("fts.sqlite"),
+                data: data,
+                configuration: config
+            )
+        } catch {
+            // Do not leave a plaintext copy of a blob that failed to open. The helper's queue,
+            // if any, is already closed, so the file is not unlinked while SQLite holds it.
+            try? FileManager.default.removeItem(at: storeDirectory)
+            throw error
         }
+        let (queue, count, coveredBelowFrameId) = opened
         let docCount = UInt64(max(0, count))
         return FTS5SearchEngine(
             dbQueue: queue,
@@ -97,6 +121,34 @@ package actor FTS5SearchEngine {
             dirty: false,
             coveredBelowFrameId: coveredBelowFrameId
         )
+    }
+
+    /// Writes `data` to a new owner-only file at `dbURL`, opens it, and validates the schema.
+    private static func openBackingStore(
+        at dbURL: URL,
+        data: Data,
+        configuration: Configuration
+    ) throws -> (queue: DatabaseQueue, count: Int64, coveredBelowFrameId: UInt64?) {
+        guard FileManager.default.createFile(
+            atPath: dbURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw WaxError.io("failed to create text index file")
+        }
+        let handle = try FileHandle(forWritingTo: dbURL)
+        try handle.write(contentsOf: data)
+        try handle.close()
+
+        let queue = try DatabaseQueue(path: dbURL.path, configuration: configuration)
+        try queue.writeWithoutTransaction { db in
+            try FTS5Schema.validateOrUpgrade(in: db)
+        }
+        let (count, coveredBelowFrameId) = try queue.read { db in
+            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
+        }
+        return (queue, count, coveredBelowFrameId)
     }
 
     package static func load(from wax: Wax) async throws -> FTS5SearchEngine {
@@ -180,7 +232,7 @@ package actor FTS5SearchEngine {
         if removedCount > 0 {
             let removedU = UInt64(removedCount)
             docCount = docCount > removedU ? (docCount &- removedU) : 0
-            dirty = true
+            markDirty()
         }
     }
 
@@ -239,15 +291,24 @@ package actor FTS5SearchEngine {
         try await removeInactiveFrames(metas)
         try await flushPendingOpsIfNeeded()
         if !dirty, !compact { return }
+        // Every mutation before this point is flushed by `serialize` and is in the blob.
+        let stagedGeneration = mutationGeneration
         try await recordCoverage(of: metas)
         let blob = try await serialize(compact: compact)
         try await wax.stageLexIndexForNextCommit(bytes: blob, docCount: docCount)
-        dirty = false
+        if mutationGeneration == stagedGeneration {
+            dirty = false
+        }
     }
 
     private enum PendingOp: Sendable, Equatable {
         case upsert(String)
         case delete
+    }
+
+    struct QueuedStructuredOp: Sendable {
+        let id: UInt64
+        let op: StructuredOp
     }
 
     enum StructuredOp: Sendable, Equatable {
@@ -277,7 +338,12 @@ package actor FTS5SearchEngine {
             pendingKeys.append(frameIdValue)
         }
         pendingOps[frameIdValue] = op
+        markDirty()
+    }
+
+    func markDirty() {
         dirty = true
+        mutationGeneration &+= 1
     }
 
     private func flushPendingOpsIfThresholdExceeded() async throws {
@@ -285,13 +351,39 @@ package actor FTS5SearchEngine {
         try await flushPendingOpsIfNeeded()
     }
 
-    func flushPendingOpsIfNeeded() async throws {
-        guard !pendingOps.isEmpty else {
-            if !pendingStructuredOps.isEmpty {
-                try await flushPendingStructuredOpsIfNeeded()
-            }
+    /// Waits until no other flush is in flight, then takes the gate. Pair with `releaseFlushGate()`.
+    func acquireFlushGate() async {
+        guard flushGateHeld else {
+            flushGateHeld = true
             return
         }
+        // The releasing flush hands the gate straight to the first waiter.
+        await withCheckedContinuation { flushGateWaiters.append($0) }
+    }
+
+    func releaseFlushGate() {
+        if flushGateWaiters.isEmpty {
+            flushGateHeld = false
+        } else {
+            flushGateWaiters.removeFirst().resume()
+        }
+    }
+
+    func flushPendingOpsIfNeeded() async throws {
+        try await flushPendingTextOpsIfNeeded()
+        if !pendingStructuredOps.isEmpty {
+            try await flushPendingStructuredOpsIfNeeded()
+        }
+    }
+
+    /// Writes a snapshot of the queued text ops. Ops queued while the write is in flight, or
+    /// that replace a snapshotted op, stay queued; on a throw the whole snapshot stays queued.
+    private func flushPendingTextOpsIfNeeded() async throws {
+        guard !pendingOps.isEmpty else { return }
+        await acquireFlushGate()
+        defer { releaseFlushGate() }
+        // The flush this one waited for may have written everything.
+        guard !pendingOps.isEmpty else { return }
 
         let ops = pendingOps
         let keys = pendingKeys
@@ -350,12 +442,10 @@ package actor FTS5SearchEngine {
             docCount = docCount > removedU ? (docCount &- removedU) : 0
         }
 
-        pendingOps.removeAll(keepingCapacity: true)
-        pendingKeys.removeAll(keepingCapacity: true)
-
-        if !pendingStructuredOps.isEmpty {
-            try await flushPendingStructuredOpsIfNeeded()
+        for frameIdValue in keys where pendingOps[frameIdValue] == ops[frameIdValue] {
+            pendingOps.removeValue(forKey: frameIdValue)
         }
+        pendingKeys.removeAll { pendingOps[$0] == nil }
     }
 
     private static func makeConfiguration() -> Configuration {

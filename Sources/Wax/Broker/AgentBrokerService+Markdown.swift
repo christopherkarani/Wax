@@ -64,7 +64,7 @@ extension AgentBrokerService {
         case .none:
             prefix = "-"
         }
-        return "\(prefix) \(text) \(BrokerMarkdownSync.markerComment(marker))"
+        return BrokerMarkdownSync.renderListItem(prefix: prefix, text: text, marker: marker)
     }
 
     func marker(
@@ -323,10 +323,24 @@ extension AgentBrokerService {
                 nowMs: BrokerClock.nowMs()
             )
 
+            // Files exported before item text was encoded wrote a multi-line
+            // document raw, so its marker sits on the item's last line and
+            // `entry.text` is only that line. Never replace the document with it.
+            if let existingByMarker,
+               entry.marker?.textEncoding == nil,
+               existingByMarker.text.rangeOfCharacter(from: .newlines) != nil {
+                matchedFrameIDs.insert(existingByMarker.frameId)
+                counts.unchanged += 1
+                continue
+            }
+
             if let existing {
                 let existingInfo = MemorySemantics.parse(metadata: existing.metadata, nowMs: BrokerClock.nowMs())
+                // A line that only moved is unchanged. Export orders by write time,
+                // so rewriting on a new line number rewrote every document on
+                // every export-then-sync cycle. Only adoption into this file writes.
                 if existing.text == entry.text,
-                   existing.metadata[MemoryMetadataKeys.sourceLine] == String(entry.lineNumber),
+                   existing.metadata[MemoryMetadataKeys.sourcePath] == sourcePath,
                    existingInfo.type == (semantics.type ?? existingInfo.type),
                    existingInfo.durability == (semantics.lock ? .locked : (semantics.durability ?? existingInfo.durability)) {
                     matchedFrameIDs.insert(existing.frameId)

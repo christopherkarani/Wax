@@ -112,6 +112,11 @@ extension Wax {
         }
     }
 
+    /// Lowers the TOC size a commit accepts, so tests need not build a TOC of the real limit.
+    func setTocByteLimitForTesting(_ limit: UInt64) {
+        tocByteLimit = limit
+    }
+
     func recordedFileOperationsForTesting() -> [FDFileOperation] {
         file.recordedOperations()
     }

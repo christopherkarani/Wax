@@ -312,17 +312,29 @@ extension LayeredRecall {
                 currentSessionID: request.sessionID,
                 currentAgentID: currentAgentID
             )
-            .prefix(6)
+            .prefix(maxEpisodicStores)
 
             for manifest in scopedManifests {
-                let laneHits = try await stores.endedSessions.search(
-                    EndedSessionSearchQuery(
-                        manifest: manifest,
-                        query: request.query,
-                        mode: request.mode,
-                        topK: max(1, min(3, request.topK))
+                let laneHits: [EpisodicLaneHit]
+                do {
+                    laneHits = try await stores.endedSessions.search(
+                        EndedSessionSearchQuery(
+                            manifest: manifest,
+                            query: request.query,
+                            mode: request.mode,
+                            topK: max(1, min(3, request.topK))
+                        )
                     )
-                )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "episodic search of an ended session store",
+                        fallback: "skip that session's episodic hits"
+                    )
+                    continue
+                }
                 let ageMs: Int64 = max(0, stores.nowMs() - manifest.updatedAtMs)
                 let recencyBoost: Float = ageMs < Int64(7 * 24 * 60 * 60 * 1000) ? 0.15 : 0.05
                 for laneHit in laneHits {

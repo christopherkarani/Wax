@@ -193,6 +193,52 @@ private func makeTestServer() -> Server {
     Server(name: "wax-mcp", version: "test", capabilities: .init(tools: .init(listChanged: false)))
 }
 
+/// Counts server builds per session id. Each build waits (bounded) until a
+/// second build has started, so concurrent creators overlap inside it.
+private actor CountingServerFactory {
+    private var builds: [String: Int] = [:]
+
+    func build(_ sessionID: String) async -> Server {
+        builds[sessionID, default: 0] += 1
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while builds.values.reduce(0, +) < 2, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return makeTestServer()
+    }
+
+    func buildCount(for sessionID: String) -> Int {
+        builds[sessionID] ?? 0
+    }
+}
+
+@Test
+func concurrentInitializeAndToolCallForOneUnknownSessionBuildOneServer() async throws {
+    let factory = CountingServerFactory()
+    let app = MCPHTTPApplication(serverFactory: { sessionID, _ in await factory.build(sessionID) })
+    // A client reconnecting after a server restart with its cached id.
+    let sessionID = "cached-\(UUID().uuidString)"
+    let initialize = try initializeRequest(sessionID: sessionID)
+    let toolCall = HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Host": "127.0.0.1:3000",
+            HTTPHeaderName.sessionID: sessionID,
+        ],
+        body: Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stats","arguments":{}}}"#.utf8),
+        path: "/mcp"
+    )
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask { _ = await app.handleHTTPRequest(initialize) }
+        group.addTask { _ = await app.handleHTTPRequest(toolCall) }
+    }
+    #expect(await factory.buildCount(for: sessionID) == 1, "a second server was built and orphaned")
+    #expect(await app.liveSessionIDs() == [sessionID])
+    await app.stop()
+}
+
 private final class TeardownProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var inFlight = 0

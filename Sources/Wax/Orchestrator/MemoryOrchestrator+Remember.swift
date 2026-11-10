@@ -18,6 +18,8 @@ extension MemoryOrchestrator {
     ///   implement their own rollback by superseding the document frame on failure.
     @discardableResult
     package func remember(_ content: String, metadata: [String: String] = [:]) async throws -> RememberResult {
+        try beginWrite()
+        defer { endWrite() }
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
@@ -123,6 +125,13 @@ extension MemoryOrchestrator {
                 chunkEmbedding = nil
             }
 
+            if let chunkEmbedding {
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: [chunk],
+                    metadata: docMeta.entries,
+                    embeddingDimensions: chunkEmbedding.count
+                ))
+            }
             // Put without identity so doc metadata stays user keys + hash.
             // `put(..., identity:)` stamps wax.embedding.* and the rematch
             // probe uses exact metadata equality without those keys.
@@ -229,6 +238,13 @@ extension MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
+        if writeVectors {
+            try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                searchTexts: [nil],
+                metadata: docMeta.entries,
+                embeddingDimensions: nil
+            ))
+        }
         let docId = try await localSession.put(
             contentData,
             options: FrameMetaSubset(
@@ -237,63 +253,74 @@ extension MemoryOrchestrator {
             )
         )
 
-        for entry in batchRanges {
-            let batchChunks = Array(chunks[entry.range])
-            let batchContents = batchChunks.map { Data($0.utf8) }
-            var options: [FrameMetaSubset] = []
-            options.reserveCapacity(batchChunks.count)
-            for (localIdx, globalIdx) in entry.range.enumerated() {
-                var option = FrameMetaSubset()
-                option.role = .chunk
-                option.parentId = docId
-                option.chunkIndex = UInt32(globalIdx)
-                option.chunkCount = UInt32(chunkCount)
-                option.searchText = batchChunks[localIdx]
+        do {
+            for entry in batchRanges {
+                try rememberBatchWriteHookForTesting?(entry.index)
+                let batchChunks = Array(chunks[entry.range])
+                let batchContents = batchChunks.map { Data($0.utf8) }
+                var options: [FrameMetaSubset] = []
+                options.reserveCapacity(batchChunks.count)
+                for (localIdx, globalIdx) in entry.range.enumerated() {
+                    var option = FrameMetaSubset()
+                    option.role = .chunk
+                    option.parentId = docId
+                    option.chunkIndex = UInt32(globalIdx)
+                    option.chunkCount = UInt32(chunkCount)
+                    option.searchText = batchChunks[localIdx]
 
-                var chunkMeta = Metadata(metadata)
-                if let effectiveSessionId {
-                    chunkMeta.entries["session_id"] = effectiveSessionId
+                    var chunkMeta = Metadata(metadata)
+                    if let effectiveSessionId {
+                        chunkMeta.entries["session_id"] = effectiveSessionId
+                    }
+                    option.metadata = chunkMeta
+                    options.append(option)
                 }
-                option.metadata = chunkMeta
-                options.append(option)
-            }
 
-            if writeVectors {
-                guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
-                    throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
-                }
-                let frameIds = try await localSession.putBatch(
-                    contents: batchContents,
-                    embeddings: embeddings,
-                    identity: localEmbedder?.identity,
-                    options: options
-                )
-                try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
+                if writeVectors {
+                    guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
+                        throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
+                    }
+                    try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                        searchTexts: batchChunks,
+                        metadata: metadata,
+                        embeddingDimensions: embeddings.first?.count
+                    ))
+                    let frameIds = try await localSession.putBatch(
+                        contents: batchContents,
+                        embeddings: embeddings,
+                        identity: localEmbedder?.identity,
+                        options: options
+                    )
+                    try await ensureMemoryBindingIfNeeded(bindingForEmbedderIdentity)
 
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
+                    if config.enableTextSearch {
+                        try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                    }
+                    if let enrichmentPipeline {
+                        for (offset, frameId) in frameIds.enumerated() {
+                            try await enrichmentPipeline.enqueue(
+                                EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                            )
+                        }
+                    }
+                } else {
+                    let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
+
+                    if config.enableTextSearch {
+                        try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
+                    }
+                    if let enrichmentPipeline {
+                        for (offset, frameId) in frameIds.enumerated() {
+                            try await enrichmentPipeline.enqueue(
+                                EnrichmentTask(frameId: frameId, text: batchChunks[offset])
+                            )
+                        }
                     }
                 }
-            } else {
-                let frameIds = try await localSession.putBatch(contents: batchContents, options: options)
-
-                if config.enableTextSearch {
-                    try await localSession.indexTextBatch(frameIds: frameIds, texts: batchChunks)
-                }
-                if let enrichmentPipeline {
-                    for (offset, frameId) in frameIds.enumerated() {
-                        try await enrichmentPipeline.enqueue(
-                            EnrichmentTask(frameId: frameId, text: batchChunks[offset])
-                        )
-                    }
-                }
             }
+        } catch {
+            await removePartialDocument(docId)
+            throw error
         }
         return RememberResult(
             frameId: docId,
@@ -301,6 +328,21 @@ extension MemoryOrchestrator {
             deduplicated: false,
             searchable: config.enableTextSearch || writeVectors
         )
+    }
+
+    /// Deletes a document whose chunk writes failed, so a retry does not add a
+    /// second copy beside it. A cleanup failure is logged; the caller rethrows
+    /// the original error.
+    private func removePartialDocument(_ docId: UInt64) async {
+        do {
+            try await deleteAdmitted(frameIds: [docId])
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "remove partially written document",
+                fallback: "the partial document stays; a retry adds a new copy"
+            )
+        }
     }
 
     /// Internal only for tests.
@@ -344,7 +386,11 @@ extension MemoryOrchestrator {
             let alreadyEmbedded = await documentHasEmbedding(frameId: documentId)
             if !alreadyEmbedded {
                 guard let attached = readyEmbedderSnapshot else {
-                    throw WaxError.missingEmbedder
+                    // Same rule as a new save: text-only while no embedder is required.
+                    if requiresEmbedderForSave {
+                        throw WaxError.missingEmbedder
+                    }
+                    return
                 }
                 let localEmbedder = attached
                 let embedding = try await Self.embedOne(
@@ -534,6 +580,7 @@ extension MemoryOrchestrator {
             cacheItems.reserveCapacity(missingIndices.count)
             for (localIdx, globalIdx) in missingIndices.enumerated() {
                 var vec = vectors[localIdx]
+                try validateIngestVector(vec, from: embedder)
                 if shouldNormalize && !vec.isEmpty {
                     vec = normalizedL2(vec)
                 }

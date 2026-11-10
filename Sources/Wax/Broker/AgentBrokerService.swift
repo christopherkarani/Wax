@@ -236,6 +236,8 @@ package actor AgentBrokerService {
             return await commandMutex.withLock { [self] in
                 await dispatch(command, request: request)
             }
+        case .unlocked:
+            return await dispatch(command, request: request)
         }
     }
 
@@ -252,7 +254,7 @@ package actor AgentBrokerService {
              .markdownSync, .entityUpsert, .entityResolve, .factRetract, .shutdown,
              .sessionSynthesize, .knowledgeCapture, .sessionOpen, .compactContext,
              .markdownExport, .factsQuery, .memoryPromote, .promote, .factAssert,
-             .corpusSearch, .memoryMaintain:
+             .corpusSearch, .memoryMaintain, .ping:
             return false
         }
     }
@@ -368,6 +370,9 @@ package actor AgentBrokerService {
                 shouldExit = false
             case .memoryMaintain(let command):
                 payload = try await memoryMaintain(command)
+                shouldExit = false
+            case .ping:
+                payload = .object(["status": .string("ok")])
                 shouldExit = false
             }
 

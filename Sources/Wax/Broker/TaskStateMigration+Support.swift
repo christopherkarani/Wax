@@ -264,14 +264,18 @@ extension AgentBrokerService {
                 try await memory.close()
                 return false
             }
-            let documentBySourceID: [String: MemoryOrchestrator.CorpusSourceDocument] = Dictionary(
-                uniqueKeysWithValues: documents.compactMap { document in
-                    guard let sourceID = document.metadata[MemoryMetadataKeys.migrationSourceFrameID] else {
-                        return nil
-                    }
-                    return (sourceID, document)
+            // The source id is client-writable metadata, so a duplicate is a
+            // verification failure, not a trap.
+            var documentBySourceID: [String: MemoryOrchestrator.CorpusSourceDocument] = [:]
+            for document in documents {
+                guard let sourceID = document.metadata[MemoryMetadataKeys.migrationSourceFrameID] else {
+                    continue
                 }
-            )
+                guard documentBySourceID.updateValue(document, forKey: sourceID) == nil else {
+                    try await memory.close()
+                    return false
+                }
+            }
             var seenSourceIDs = Set<UInt64>()
             for entry in report.entries {
                 guard seenSourceIDs.insert(entry.sourceFrameID).inserted else {

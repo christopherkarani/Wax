@@ -622,6 +622,56 @@ func scheduledLiveSetRewritePromotesValidatedCandidateOnCloseAndShrinksSource() 
     }
 }
 
+/// Close-time compaction must never drop a save that returned success: a save already in
+/// flight when close starts either throws or is found after reopen.
+@Test
+func closeTimeLiveSetRewriteKeepsSaveThatWasInFlightWhenCloseStarted() async throws {
+    try await TempFiles.withTempFile { sourceURL in
+        let maintenanceDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: maintenanceDir) }
+        try await seedDeadPayloadStore(at: sourceURL)
+
+        var config = closeTimeRewriteConfig(destinationDirectory: maintenanceDir)
+        // Only the close-time run rewrites, as under the default schedule's cadence.
+        config.liveSetRewriteSchedule.checkEveryFlushes = 1_000
+        let embedder = ParkingEmbedder()
+        let orchestrator = try await MemoryOrchestrator(
+            at: sourceURL,
+            config: config,
+            embedder: embedder
+        )
+        let text = "park this late save needle"
+        let save = Task { try await orchestrator.remember(text) }
+        while !(await embedder.hasParked()) { await Task.yield() }
+
+        let close = Task { try await orchestrator.close() }
+        // Release the save once close has snapshotted the source for its candidate, or once
+        // close is waiting for this in-flight save.
+        while !maintenanceDirectoryHasFiles(maintenanceDir) {
+            if await orchestrator.isWaitingForWritesToDrainForTesting() {
+                await #expect(throws: WaxError.self) {
+                    try await orchestrator.remember("a save started after close began")
+                }
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        await embedder.release()
+        let saveResult = await save.result
+        try await close.value
+
+        let saved = try await activeFrameTexts(at: sourceURL)
+        switch saveResult {
+        case .success:
+            #expect(saved.contains(text), "a save that returned success must survive close-time compaction")
+        case .failure:
+            break
+        }
+        #expect(!saved.contains("a save started after close began"))
+    }
+}
+
 @Test
 func orchestratorDefaultConfigEnablesAutomaticLiveSetRewriteSchedule() {
     let schedule = OrchestratorConfig.default.liveSetRewriteSchedule
@@ -672,6 +722,69 @@ private func seedDeadPayloadStore(at url: URL) async throws {
 
     try await wax.commit()
     try await wax.close()
+}
+
+private func closeTimeRewriteConfig(destinationDirectory: URL) -> OrchestratorConfig {
+    var config = OrchestratorConfig.default
+    config.liveSetRewriteSchedule = LiveSetRewriteSchedule(
+        enabled: true,
+        checkEveryFlushes: 1,
+        minDeadPayloadBytes: 64 * 1024,
+        minDeadPayloadFraction: 0.05,
+        minimumCompactionGainBytes: 0,
+        minimumIdleMs: 0,
+        minIntervalMs: 0,
+        verifyDeep: false,
+        destinationDirectory: destinationDirectory,
+        keepLatestCandidates: 2,
+        promoteValidatedCandidateOnClose: true
+    )
+    return config
+}
+
+private func maintenanceDirectoryHasFiles(_ directory: URL) -> Bool {
+    let contents = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    return !contents.isEmpty
+}
+
+private func activeFrameTexts(at url: URL) async throws -> Set<String> {
+    let wax = try await Wax.open(at: url)
+    let texts = await wax.frameMetas()
+        .filter { $0.status == .active && $0.supersededBy == nil }
+        .compactMap(\.searchText)
+    try await wax.close()
+    return Set(texts)
+}
+
+/// Parks the first `embed` of a text containing "park" until `release()`.
+private actor ParkingEmbedder: EmbeddingProvider {
+    nonisolated let dimensions = 2
+    nonisolated let normalize = true
+    nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Mock",
+        model: "Parking",
+        dimensions: 2,
+        normalized: true
+    )
+    private var parked: CheckedContinuation<Void, Never>?
+    private var didPark = false
+    private var released = false
+
+    func embed(_ text: String) async throws -> [Float] {
+        if text.contains("park"), !released {
+            didPark = true
+            await withCheckedContinuation { parked = $0 }
+        }
+        return [1, 0]
+    }
+
+    func hasParked() -> Bool { didPark }
+
+    func release() {
+        released = true
+        parked?.resume()
+        parked = nil
+    }
 }
 
 private func fileSizes(at url: URL) throws -> (logical: UInt64, allocated: UInt64) {

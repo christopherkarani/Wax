@@ -135,6 +135,10 @@ actor GracefulStdioTransport: Transport {
                     if !pendingData.isEmpty {
                         yieldCompleteLines(from: &pendingData)
                     }
+                    // A final message without a trailing newline is still a message.
+                    if pendingData.contains(where: { !Self.isWhitespace($0) }) {
+                        messageContinuation.yield(Data(pendingData))
+                    }
                     try? await Task.sleep(for: eofGracePeriod)
                     break
                 }
@@ -162,6 +166,11 @@ actor GracefulStdioTransport: Transport {
             guard !messageData.isEmpty else { continue }
             messageContinuation.yield(Data(messageData))
         }
+    }
+
+    private static func isWhitespace(_ byte: UInt8) -> Bool {
+        byte == UInt8(ascii: " ") || byte == UInt8(ascii: "\t")
+            || byte == UInt8(ascii: "\r") || byte == UInt8(ascii: "\n")
     }
 }
 #endif

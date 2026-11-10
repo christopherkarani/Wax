@@ -63,8 +63,9 @@ actor MCPHTTPApplication {
     private let validationPipeline: (any HTTPRequestValidationPipeline)?
     private var channel: Channel?
     private var sessions: [String: SessionContext] = [:]
-    /// In-flight recoveries keyed by client `Mcp-Session-Id` so concurrent stale
-    /// tool calls wait for one recreate instead of racing.
+    /// In-flight session creations (initialize or stale-id recovery) keyed by
+    /// `Mcp-Session-Id`, so concurrent requests for one id wait for a single
+    /// server instead of each building one.
     private var sessionRecoveryTasks: [String: Task<Bool, Never>] = [:]
     private var cleanupTask: Task<Void, Never>?
     /// Creations between `reserveSessionSlot()` and registration.
@@ -349,6 +350,36 @@ actor MCPHTTPApplication {
         preferredSessionID: String? = nil
     ) async -> HTTPResponse {
         let sessionID = resolveSessionID(preferred: preferredSessionID)
+        // A client-chosen id may already be in creation (a concurrent
+        // initialize or stale-id recovery). Use that session rather than
+        // build a second server that would replace it and never be torn down.
+        var awaited: Task<Bool, Never>?
+        while let inFlight = sessionRecoveryTasks[sessionID], inFlight != awaited {
+            awaited = inFlight
+            _ = await inFlight.value
+        }
+        if var session = sessions[sessionID] {
+            session.lastAccessedAt = Date()
+            sessions[sessionID] = session
+            return await session.transport.handleRequest(request)
+        }
+
+        let creation = Task<HTTPResponse, Never> {
+            await self.startSessionAndHandle(request, sessionID: sessionID)
+        }
+        let claim = Task<Bool, Never> {
+            _ = await creation.value
+            return self.sessions[sessionID] != nil
+        }
+        sessionRecoveryTasks[sessionID] = claim
+        let response = await creation.value
+        if sessionRecoveryTasks[sessionID] == claim {
+            sessionRecoveryTasks[sessionID] = nil
+        }
+        return response
+    }
+
+    private func startSessionAndHandle(_ request: HTTPRequest, sessionID: String) async -> HTTPResponse {
         let transport = StatefulHTTPServerTransport(
             sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
             validationPipeline: validationPipeline,
@@ -426,7 +457,9 @@ actor MCPHTTPApplication {
         }
         sessionRecoveryTasks[sessionID] = task
         let recovered = await task.value
-        sessionRecoveryTasks[sessionID] = nil
+        if sessionRecoveryTasks[sessionID] == task {
+            sessionRecoveryTasks[sessionID] = nil
+        }
         return recovered
     }
 

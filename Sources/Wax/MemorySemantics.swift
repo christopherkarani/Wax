@@ -134,7 +134,12 @@ package enum MemorySemantics {
 
         normalized[MemoryMetadataKeys.type] = resolvedType.rawValue
         normalized[MemoryMetadataKeys.durability] = resolvedDurability.rawValue
-        normalized[MemoryMetadataKeys.createdAtMs] = normalized[MemoryMetadataKeys.createdAtMs] ?? String(nowMs)
+        // Promotion and sync carry an earlier creation time on purpose; keep it
+        // only when it parses as a positive epoch-ms value.
+        let suppliedCreatedAtMs: Int64? = normalized[MemoryMetadataKeys.createdAtMs].flatMap(Int64.init)
+        if (suppliedCreatedAtMs ?? 0) <= 0 {
+            normalized[MemoryMetadataKeys.createdAtMs] = String(nowMs)
+        }
 
         if normalized["session_id"] == nil, let sessionID {
             normalized["session_id"] = sessionID.uuidString

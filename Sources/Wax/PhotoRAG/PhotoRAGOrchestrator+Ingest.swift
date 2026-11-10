@@ -39,8 +39,10 @@ extension PhotoRAGOrchestrator {
                 return ids
             }
         }
-        try await ingest(assetIDs: ids)
-        try await writeSyncState(scope: scope, assetCount: ids.count)
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(assetIDs: ids)
+            try await self.writeSyncState(scope: scope, assetCount: ids.count)
+        }
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
         #endif
@@ -59,67 +61,92 @@ extension PhotoRAGOrchestrator {
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
     package func ingest(assetIDs: [PhotoID]) async throws {
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(assetIDs: assetIDs)
+        }
+    }
+
+    /// Ingest local image files into the Photo RAG index.
+    package func ingest(files: [PhotoFile]) async throws {
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(files: files)
+        }
+    }
+
+    // MARK: - Ingest internals
+
+    /// Caller holds `ingestMutex`: each tree reads its previous root from the index, so a second
+    /// ingest must not start writing until the first has committed and rebuilt it.
+    private func ingestUnderLock(assetIDs: [PhotoID]) async throws {
         let uniqueAssetIDs = Self.photosLibraryIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
         // Throttled concurrency: the actor's executor serializes state mutations, while
         // suspension points (metadata load, embedding, OCR) interleave across assets.
-        let concurrency = config.ingestConcurrency
+        let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueAssetIDs.makeIterator()
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<concurrency {
-                guard let photoID = iterator.next() else { break }
-                group.addTask {
-                    try Task.checkCancellation()
-                    try await self.ingestOne(photoID: photoID)
-                }
-            }
-            for try await _ in group {
-                if let photoID = iterator.next() {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<concurrency {
+                    guard let photoID = iterator.next() else { break }
                     group.addTask {
                         try Task.checkCancellation()
                         try await self.ingestOne(photoID: photoID)
                     }
                 }
+                for try await _ in group {
+                    if let photoID = iterator.next() {
+                        group.addTask {
+                            try Task.checkCancellation()
+                            try await self.ingestOne(photoID: photoID)
+                        }
+                    }
+                }
             }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
         try await rebuildIndex()
     }
 
-    /// Ingest local image files into the Photo RAG index.
-    package func ingest(files: [PhotoFile]) async throws {
+    /// Caller holds `ingestMutex`; see ``ingestUnderLock(assetIDs:)``.
+    private func ingestUnderLock(files: [PhotoFile]) async throws {
         let uniqueFiles = Self.dedupePhotoFiles(files)
         guard !uniqueFiles.isEmpty else { return }
 
-        let concurrency = config.ingestConcurrency
+        let concurrency = max(1, config.ingestConcurrency)
         var iterator = uniqueFiles.makeIterator()
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<concurrency {
-                guard let file = iterator.next() else { break }
-                group.addTask {
-                    try Task.checkCancellation()
-                    try await self.ingestOne(file: file)
-                }
-            }
-            for try await _ in group {
-                if let file = iterator.next() {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<concurrency {
+                    guard let file = iterator.next() else { break }
                     group.addTask {
                         try Task.checkCancellation()
                         try await self.ingestOne(file: file)
                     }
                 }
+                for try await _ in group {
+                    if let file = iterator.next() {
+                        group.addTask {
+                            try Task.checkCancellation()
+                            try await self.ingestOne(file: file)
+                        }
+                    }
+                }
             }
+        } catch {
+            await reconcileAfterFailedIngest()
+            throw error
         }
 
         try await session.commit()
         try await rebuildIndex()
     }
-
-    // MARK: - Ingest internals
 
     private func writeSyncState(scope: PhotoScope, assetCount: Int) async throws {
         let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
@@ -152,6 +179,18 @@ extension PhotoRAGOrchestrator {
         guard inFlightPhotoIDs.insert(libraryID).inserted else { return }
         defer { inFlightPhotoIDs.remove(libraryID) }
 
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(libraryID: libraryID, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for `libraryID`. `newRootId` holds the new root from the moment it is
+    /// written until it supersedes the previous version, so a failure in between can discard it.
+    private func ingestTree(libraryID: PhotoID, newRootId: inout UInt64?) async throws {
         #if canImport(Photos)
         let metadata = try await PhotosAssetMetadata.load(photoID: libraryID)
         let resolvedID = metadata.photoID
@@ -182,8 +221,10 @@ extension PhotoRAGOrchestrator {
                 metadata: baseMeta
             )
             let rootId = try await session.put(Data(), options: options, compression: .plain, timestampMs: frameTimestampMs)
+            newRootId = rootId
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                newRootId = nil
                 try await removeVectorsForRetiredTree(previousRoot)
             }
             return
@@ -203,8 +244,10 @@ extension PhotoRAGOrchestrator {
                 compression: .plain,
                 timestampMs: frameTimestampMs
             )
+            newRootId = rootId
             if let previousRoot {
                 try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+                newRootId = nil
                 try await removeVectorsForRetiredTree(previousRoot)
             }
             return
@@ -237,6 +280,7 @@ extension PhotoRAGOrchestrator {
             compression: .plain,
             timestampMs: frameTimestampMs
         )
+        newRootId = rootId
 
         // OCR
         var ocrBlocks: [RecognizedTextBlock] = []
@@ -297,7 +341,7 @@ extension PhotoRAGOrchestrator {
 
             // Blocks — also text-indexed so serials and short OCR tokens stay findable
             // even when they are not selected into the summary.
-            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
+            for block in ocrBlocks.prefix(max(1, config.maxOCRBlocksPerPhoto)) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
                 meta.entries["photo.ocr.confidence"] = String(block.confidence)
@@ -359,7 +403,7 @@ extension PhotoRAGOrchestrator {
 
                     try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
                         var activeCount = 0
-                        let maxConcurrency = self.config.regionEmbeddingConcurrency
+                        let maxConcurrency = max(1, self.config.regionEmbeddingConcurrency)
                         var cropIterator = crops.makeIterator()
 
                         // Start initial batch
@@ -429,6 +473,7 @@ extension PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot)
         }
         #else
@@ -441,6 +486,19 @@ extension PhotoRAGOrchestrator {
         guard inFlightPhotoIDs.insert(photoID).inserted else { return }
         defer { inFlightPhotoIDs.remove(photoID) }
 
+        var newRootId: UInt64?
+        do {
+            try await ingestTree(file: file, newRootId: &newRootId)
+        } catch {
+            if let newRootId { await discardPartialTree(rootId: newRootId) }
+            throw error
+        }
+    }
+
+    /// Writes a new tree for `file`; `newRootId` follows the same contract as in
+    /// ``ingestTree(libraryID:newRootId:)``.
+    private func ingestTree(file: PhotoFile, newRootId: inout UInt64?) async throws {
+        let photoID = file.id
         guard FileManager.default.fileExists(atPath: file.url.path(percentEncoded: false)) else {
             throw PhotoIngestError.fileMissing(id: photoID, url: file.url)
         }
@@ -509,6 +567,7 @@ extension PhotoRAGOrchestrator {
             compression: .plain,
             timestampMs: frameTimestampMs
         )
+        newRootId = rootId
 
         var ocrBlocks: [RecognizedTextBlock] = []
         if config.enableOCR, let ocr = ocr ?? Self.defaultOCRProvider() {
@@ -558,7 +617,7 @@ extension PhotoRAGOrchestrator {
             if !summary.isEmpty {
                 addDerived(kind: PhotoFrameKind.ocrSummary.rawValue, text: summary, searchable: true)
             }
-            for block in ocrBlocks.prefix(config.maxOCRBlocksPerPhoto) {
+            for block in ocrBlocks.prefix(max(1, config.maxOCRBlocksPerPhoto)) {
                 var meta = baseMeta
                 Self.writeBBox(into: &meta, rect: block.bbox)
                 meta.entries["photo.ocr.confidence"] = String(block.confidence)
@@ -602,6 +661,7 @@ extension PhotoRAGOrchestrator {
 
         if let previousRoot {
             try await wax.supersede(supersededId: previousRoot, supersedingId: rootId)
+            newRootId = nil
             try await removeVectorsForRetiredTree(previousRoot)
         }
     }
@@ -634,7 +694,7 @@ extension PhotoRAGOrchestrator {
 
         try await withThrowingTaskGroup(of: (Int, [Float]).self) { group in
             var activeCount = 0
-            let maxConcurrency = config.regionEmbeddingConcurrency
+            let maxConcurrency = max(1, config.regionEmbeddingConcurrency)
             var cropIterator = crops.makeIterator()
 
             while activeCount < maxConcurrency, let item = cropIterator.next() {

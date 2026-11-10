@@ -288,6 +288,19 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [42])
 }
 
+@Test func searchWithControlCharacterInQueryDoesNotThrow() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.index(frameId: 9, text: "abc def")
+
+    let plan = try #require(MatchPlan.plan(query: "abc\u{0}def"))
+    let primary = try await engine.search(matchQuery: plan.primaryMatch, topK: 10)
+    #expect(primary.map(\.frameId) == [9])
+    if let fallback = plan.fallbackMatch {
+        let results = try await engine.search(matchQuery: fallback, topK: 10)
+        #expect(results.map(\.frameId) == [9])
+    }
+}
+
 @Test func searchRejectsNonPositiveTopK() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 7, text: "topK validation")
@@ -470,6 +483,67 @@ private enum SQLiteBlobInspector {
 }
 #endif // canImport(SQLite3)
 
+/// Names of the `wax-fts5-*` backing directories in the temp directory right now. Tests running
+/// in parallel create these too, so compare sets taken before and after rather than counts.
+private func waxFTS5BackingDirectoryNames() throws -> Set<String> {
+    let names = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+    return Set(names.filter { $0.hasPrefix("wax-fts5-") })
+}
+
+private func posixPermissions(atPath path: String) -> Int? {
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+    return (attributes[.posixPermissions] as? NSNumber)?.intValue
+}
+
+@Test func deserializedBackingStoreIsOwnerOnly() async throws {
+    // Other tests and processes share the temp directory, so find this load's copy by content.
+    let marker = "privatemarker\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    let source = try FTS5SearchEngine.inMemory()
+    try await source.index(frameId: 0, text: "private memory text \(marker)")
+    let blob = try await source.serialize()
+
+    let before = try waxFTS5BackingDirectoryNames()
+    let engine = try FTS5SearchEngine.deserialize(from: blob)
+    let created = try waxFTS5BackingDirectoryNames().subtracting(before)
+
+    let tempDir = FileManager.default.temporaryDirectory
+    let markerBytes = Data(marker.utf8)
+    let ours = created.filter { name in
+        let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
+        return FileManager.default.contents(atPath: databasePath)?.range(of: markerBytes) != nil
+    }
+    #expect(ours.count == 1)
+    for name in ours {
+        let directory = tempDir.appendingPathComponent(name, isDirectory: true)
+        let directoryMode = try #require(posixPermissions(atPath: directory.path))
+        #expect(directoryMode == 0o700, "\(name) has mode \(String(directoryMode, radix: 8))")
+        let fileMode = try #require(posixPermissions(atPath: directory.appendingPathComponent("fts.sqlite").path))
+        #expect(fileMode == 0o600, "\(name)/fts.sqlite has mode \(String(fileMode, radix: 8))")
+    }
+    // Keeps the engine, and so its backing directory, alive until the checks are done.
+    let count = try await engine.count()
+    #expect(count == 1)
+}
+
+@Test func deserializeCorruptBytesLeavesNoBackingCopy() throws {
+    let marker = "not-a-database-\(UUID().uuidString)"
+    let corrupt = Data(String(repeating: marker, count: 64).utf8)
+
+    let before = try waxFTS5BackingDirectoryNames()
+    #expect(throws: (any Error).self) {
+        _ = try FTS5SearchEngine.deserialize(from: corrupt)
+    }
+    let created = try waxFTS5BackingDirectoryNames().subtracting(before)
+
+    // Only a directory holding this test's bytes is a leak from this load.
+    let tempDir = FileManager.default.temporaryDirectory
+    let leaked = created.filter { name in
+        let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
+        return FileManager.default.contents(atPath: databasePath) == corrupt
+    }
+    #expect(leaked.isEmpty, "leaked backing directories: \(leaked.sorted())")
+}
+
 @Test func serializeSupportsOptionalCompaction() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Hello, World!")
@@ -592,4 +666,120 @@ private enum SQLiteBlobInspector {
     try await reopened.close()
 
     try FileManager.default.removeItem(at: tempDir)
+}
+
+/// Set once by the task under test; polled by the task racing it.
+private final class CompletionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    func markDone() {
+        lock.lock()
+        done = true
+        lock.unlock()
+    }
+
+    var isDone: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return done
+    }
+}
+
+@Test func indexDuringInFlightFlushIsNotDropped() async throws {
+    // A search flushes the queued ops and awaits the SQLite write. Index calls that land
+    // during that await must stay queued and reach SQLite on a later flush.
+    let engine = try FTS5SearchEngine.inMemory()
+    let filler = Array(repeating: "filler", count: 64).joined(separator: " ")
+    // Below the auto-flush threshold, so the whole seed stays queued for one long write.
+    let seedCount = 1_000
+    for i in 0..<seedCount {
+        try await engine.index(frameId: UInt64(i), text: "seed \(filler)")
+    }
+
+    let flushDone = CompletionFlag()
+    let flushing = Task {
+        defer { flushDone.markDone() }
+        _ = try await engine.search(matchQuery: "\"seed\"", topK: 1)
+    }
+    // Keep indexing, paced, until the flush returns, so some calls land while it is in flight.
+    // The cap keeps the queue below the auto-flush threshold, so this loop never flushes itself.
+    var nextFrameId = UInt64(seedCount)
+    let lastFrameId = UInt64(seedCount + 1_000)
+    while !flushDone.isDone, nextFrameId < lastFrameId {
+        try await engine.index(frameId: nextFrameId, text: "late arrival")
+        nextFrameId += 1
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    try await flushing.value
+
+    let lateIds = Set(UInt64(seedCount)..<nextFrameId)
+    let count = try await engine.count()
+    #expect(count == Int(nextFrameId))
+    let lateHits = try await engine.search(matchQuery: "\"late\"", topK: 10_000)
+    let missing = lateIds.subtracting(lateHits.map(\.frameId))
+    #expect(missing.isEmpty, "late frames missing from the text index: \(missing.count) of \(lateIds.count)")
+}
+
+@Test func indexDuringStageForCommitReachesTheNextCommittedIndex() async throws {
+    // An index call that lands while stageForCommit is serializing or staging is not in that
+    // blob. The engine must stay dirty so the next stage writes a blob that includes it.
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let fileURL = tempDir.appendingPathComponent("sample.wax")
+    let wax = try await Wax.create(at: fileURL)
+    let engine = try await FTS5SearchEngine.load(from: wax)
+    // A large index makes serializing and staging the blob slow, widening the race window.
+    let corpusCount = 2_000
+    let corpusIds: [UInt64] = (0..<corpusCount).map { UInt64($0) }
+    let corpusTexts: [String] = (0..<corpusCount).map { (doc: Int) -> String in
+        (0..<100).map { (word: Int) -> String in "c\(doc)w\(word)" }.joined(separator: " ")
+    }
+    try await engine.indexBatch(frameIds: corpusIds, texts: corpusTexts)
+    let trials = 20
+    let maxLatePerTrial = 400
+    var nextFrameId = UInt64(corpusCount)
+    var lateIds: Set<UInt64> = []
+    var trialsMissingFrames = 0
+
+    for trial in 0..<trials {
+        try await engine.index(frameId: nextFrameId, text: "seed")
+        nextFrameId += 1
+
+        let stageDone = CompletionFlag()
+        let staging = Task {
+            defer { stageDone.markDone() }
+            try await engine.stageForCommit(into: wax)
+        }
+        // Keep indexing, paced, until the stage returns, so the last call often lands mid-stage.
+        var trialIds: Set<UInt64> = []
+        while !stageDone.isDone, trialIds.count < maxLatePerTrial {
+            try await engine.index(frameId: nextFrameId, text: "late trial\(trial)")
+            trialIds.insert(nextFrameId)
+            nextFrameId += 1
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try await staging.value
+        lateIds.formUnion(trialIds)
+
+        try await engine.stageForCommit(into: wax)
+        try await wax.commit()
+        let bytes = try #require(try await wax.readCommittedLexIndexBytes())
+        let committed = try FTS5SearchEngine.deserialize(from: bytes)
+        let hits = try await committed.search(matchQuery: "\"trial\(trial)\"", topK: 10_000)
+        if !trialIds.isSubset(of: Set(hits.map(\.frameId))) { trialsMissingFrames += 1 }
+    }
+    try await wax.close()
+
+    let reopened = try await Wax.open(at: fileURL)
+    let reloaded = try await FTS5SearchEngine.load(from: reopened)
+    let hits = try await reloaded.search(matchQuery: "\"late\"", topK: 10_000)
+    try await reopened.close()
+
+    let missing = lateIds.subtracting(hits.map(\.frameId))
+    #expect(trialsMissingFrames == 0, "trials whose committed index lacked a frame: \(trialsMissingFrames) of \(trials)")
+    #expect(missing.isEmpty, "frames missing after reopen: \(missing.count) of \(lateIds.count)")
 }

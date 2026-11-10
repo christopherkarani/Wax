@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxCore
 import WaxTestSupport
 
 @Test
@@ -136,6 +137,97 @@ func memoryOrchestratorVectorStoreWithoutEmbedderThrowsMissingEmbedder() async t
         } catch {
             #expect(Bool(false))
         }
+        try await reopened.close()
+    }
+}
+
+/// A custom provider's bad vector must fail the save that produced it and leave the store
+/// usable: flush, close and the next open all succeed, and later good saves are searchable.
+private func expectBadProviderVectorIsRejected(
+    _ badProvider: any EmbeddingProvider,
+    reasonContains expected: String,
+    goodProvider: any EmbeddingProvider
+) async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(at: url, config: .init(embedding: .custom(badProvider)))
+        let longText = (0..<200).map { "chunk word \($0)" }.joined(separator: " ")
+        for text in ["a single chunk note", longText] {
+            do {
+                try await memory.save(text)
+                Issue.record("save must reject the provider's vector")
+            } catch let WaxError.invalidEmbedding(reason) {
+                #expect(reason.contains(expected), "\(reason)")
+            }
+        }
+        try await memory.flush()
+        try await memory.close()
+
+        let reopened = try await Memory(at: url, config: .init(embedding: .custom(badProvider)))
+        try await reopened.close()
+
+        let good = try await Memory(at: url, config: .init(embedding: .custom(goodProvider)))
+        try await good.save("a good note after the rejected ones")
+        try await good.flush()
+        let results = try await good.search("a good note after the rejected ones", options: .init(topK: 1, mode: .vectorOnly))
+        #expect(results.items.first?.text == "a good note after the rejected ones")
+        try await good.close()
+    }
+}
+
+@Test
+func memoryCustomProviderNonFiniteVectorIsRejectedAndStoreStaysUsable() async throws {
+    try await expectBadProviderVectorIsRejected(
+        ConstantEmbedder(vector: [.nan, 0.5], provider: "Mock", model: "DeterministicText", normalized: false),
+        reasonContains: "non-finite",
+        goodProvider: DeterministicTextEmbedder()
+    )
+}
+
+@Test
+func memoryCustomProviderWrongDimensionVectorIsRejectedAndStoreStaysUsable() async throws {
+    // Declares 4 dimensions but always returns 2 components.
+    try await expectBadProviderVectorIsRejected(
+        DeterministicTextEmbedder(dimensions: 4, identity: EmbeddingIdentity(
+            provider: "Mock",
+            model: "DeterministicText",
+            dimensions: 4,
+            normalized: true
+        )),
+        reasonContains: "declares 4",
+        goodProvider: SeededHashEmbedder(dimensions: 4, provider: "Mock")
+    )
+}
+
+@Test(arguments: [false, true])
+func memoryOrchestratorOpenFailingOnAccessStatsReleasesTheStore(asyncEnrichment: Bool) async throws {
+    try await TempFiles.withTempFile { url in
+        var config = TestHelpers.defaultMemoryConfig(vector: false)
+        config.enableAccessStatsScoring = true
+        config.enableAsyncEnrichment = asyncEnrichment
+
+        let memory = try await MemoryOrchestrator(at: url, config: config)
+        let remembered = try await memory.remember("access stats payload that will be corrupted")
+        await memory.recordAccess(frameId: remembered.frameId)
+        try await memory.flush()
+        try await memory.close()
+
+        // Corrupt the stored access-stats payload so reading it on open throws.
+        let wax = try await Wax.open(at: url)
+        let statsFrame = try #require(await wax.frameMetas().first { $0.kind == "wax.internal.access_stats" })
+        try await wax.close()
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seek(toOffset: statsFrame.payloadOffset)
+        let original = try #require(try handle.read(upToCount: 1)?.first)
+        try handle.seek(toOffset: statsFrame.payloadOffset)
+        try handle.write(contentsOf: Data([original ^ 0xFF]))
+        try handle.close()
+
+        await #expect(throws: (any Error).self) {
+            _ = try await MemoryOrchestrator(at: url, config: config)
+        }
+
+        // The failed open must not keep the file lock.
+        let reopened = try await Wax.open(at: url, options: WaxOptions(lockWaitTimeout: .milliseconds(500)))
         try await reopened.close()
     }
 }

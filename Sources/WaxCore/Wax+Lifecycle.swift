@@ -321,7 +321,7 @@ extension Wax {
             }
             var fileSize = try file.size()
 
-            let footerSlice: FooterSlice
+            var footerSlice: FooterSlice
             let shouldScanForNewerFooter: Bool = {
                 // Each commit appends its footer past the previous one, so a valid footer that
                 // ends the file is the newest. The replay snapshot names that footer even when
@@ -370,9 +370,22 @@ extension Wax {
             }
             footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate, newerFooter)
 
-            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
+            var toc = try WaxTOC.decode(from: footerSlice.tocBytes)
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
+            // The header names the footer of the last commit whose fsync finished. A newer footer
+            // comes from a commit that may not have: power loss can keep its TOC and footer but
+            // lose payload or index pages written before them. Adopt it only if those read back
+            // intact; otherwise keep the header's footer and let pending replay recover the tail.
+            // An unreadable header footer leaves nothing to fall back to, so the newer one stands.
+            if let fastFooter, footerSlice != fastFooter,
+               let durableToc = try? WaxTOC.decode(from: fastFooter.tocBytes),
+               (try? Self.validateTocRanges(durableToc, dataStart: dataStart, dataEnd: fastFooter.footerOffset)) != nil,
+               try !Self.bytesAddedAreIntact(in: toc, beyond: durableToc, file: file)
+            {
+                footerSlice = fastFooter
+                toc = durableToc
+            }
             let recoveredCommittedSeq = footerSlice.footer.walCommittedSeq
             let selectedHeaderWasStale = selectedHeaderFileGeneration != footerSlice.footer.generation
             header.footerOffset = footerSlice.footerOffset
@@ -567,6 +580,37 @@ extension Wax {
             throw error
         }
         return wax
+    }
+
+    /// Whether every frame payload and index segment that `newer` adds beyond `durable` matches
+    /// its stored checksum. Ranges were validated against the file by `validateTocRanges`.
+    private static func bytesAddedAreIntact(in newer: WaxTOC, beyond durable: WaxTOC, file: FDFile) throws -> Bool {
+        for frame in newer.frames.dropFirst(durable.frames.count) where frame.payloadLength > 0 {
+            let digest = try sha256(file: file, offset: frame.payloadOffset, length: frame.payloadLength)
+            guard digest == frame.storedChecksum else { return false }
+        }
+        let durableSegmentIds = Set(durable.segmentCatalog.entries.map(\.segmentId))
+        for entry in newer.segmentCatalog.entries
+        where entry.bytesLength > 0 && !durableSegmentIds.contains(entry.segmentId) {
+            let digest = try sha256(file: file, offset: entry.bytesOffset, length: entry.bytesLength)
+            guard digest == entry.checksum else { return false }
+        }
+        return true
+    }
+
+    private static func sha256(file: FDFile, offset: UInt64, length: UInt64) throws -> Data {
+        let chunkSize: UInt64 = 1024 * 1024
+        var hasher = SHA256Checksum()
+        var cursor: UInt64 = 0
+        while cursor < length {
+            let count = Int(min(chunkSize, length - cursor))
+            let bytes = try file.readExactly(length: count, at: offset + cursor)
+            bytes.withUnsafeBytes { raw in
+                hasher.update(raw)
+            }
+            cursor += UInt64(count)
+        }
+        return hasher.finalize()
     }
 
     /// Checks the data payload a pending (uncommitted) mutation refers to.

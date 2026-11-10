@@ -60,6 +60,8 @@ package enum Constants {
     package static let maxArrayCount: Int = 10_000_000
     package static let maxEmbeddingDimensions: Int = 1_000_000
 
-    package static let maxTocBytes: UInt64 = 64 * 1024 * 1024
+    /// A bound against hostile footers, not a store size limit: every read of a TOC is also
+    /// bounded by the bytes actually in the file. Commits refuse a TOC above it.
+    package static let maxTocBytes: UInt64 = 1024 * 1024 * 1024
     package static let maxFooterScanBytes: UInt64 = 32 * 1024 * 1024
 }

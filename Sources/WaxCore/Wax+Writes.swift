@@ -66,22 +66,24 @@ extension Wax {
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
 
-        let payloadOffset = dataEnd
-        let entry = WALEntry.putFrame(
-            PutFrame(
-                frameId: frameId,
-                timestampMs: timestampMs ?? currentTimestampMs(),
-                options: options,
-                payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
-                canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
-                canonicalChecksum: canonicalChecksum,
-                storedChecksum: storedChecksum
-            )
+        var putFrame = PutFrame(
+            frameId: frameId,
+            timestampMs: timestampMs ?? currentTimestampMs(),
+            options: options,
+            payloadOffset: 0,
+            payloadLength: UInt64(storedBytes.count),
+            canonicalEncoding: canonicalEncoding,
+            canonicalLength: UInt64(content.count),
+            canonicalChecksum: canonicalChecksum,
+            storedChecksum: storedChecksum
         )
+        let walPayloadSize = try WALEntryCodec.encode(.putFrame(putFrame)).count
+        // May auto-commit, which writes indexes, TOC and footer at `dataEnd` and moves it.
+        try await ensureWalCapacityLocked(payloadSize: walPayloadSize)
+        let payloadOffset = dataEnd
+        putFrame.payloadOffset = payloadOffset
+        let entry = WALEntry.putFrame(putFrame)
         let payload = try WALEntryCodec.encode(entry)
-        try await ensureWalCapacityLocked(payloadSize: payload.count)
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
@@ -330,6 +332,9 @@ extension Wax {
                         requested: UInt64(vector.count)
                     )
                 }
+                guard vector.allSatisfy(\.isFinite) else {
+                    throw WaxError.invalidEmbedding(reason: "embedding vector must contain only finite values")
+                }
                 let dim = UInt32(vector.count)
                 if let existing = dimension {
                     guard existing == dim else {
@@ -354,6 +359,13 @@ extension Wax {
                 guard staged.dimension == dimension else {
                     throw WaxError.invalidToc(
                         reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                    )
+                }
+            }
+            if let pending = pendingMutationSummary.pendingEmbeddingDimension {
+                guard pending == dimension else {
+                    throw WaxError.invalidToc(
+                        reason: "embedding dimension mismatch vs pending embeddings: expected \(pending), got \(dimension)"
                     )
                 }
             }
@@ -408,6 +420,9 @@ extension Wax {
             guard vector.count <= Int(UInt32.max) else {
                 throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: UInt64(vector.count))
             }
+            guard vector.allSatisfy(\.isFinite) else {
+                throw WaxError.invalidEmbedding(reason: "embedding vector must contain only finite values")
+            }
 
             let dimension = UInt32(vector.count)
 
@@ -422,6 +437,13 @@ extension Wax {
                 guard staged.dimension == dimension else {
                     throw WaxError.invalidToc(
                         reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                    )
+                }
+            }
+            if let pending = pendingMutationSummary.pendingEmbeddingDimension {
+                guard pending == dimension else {
+                    throw WaxError.invalidToc(
+                        reason: "embedding dimension mismatch vs pending embeddings: expected \(pending), got \(dimension)"
                     )
                 }
             }

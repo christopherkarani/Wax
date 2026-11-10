@@ -1126,6 +1126,20 @@ struct WaxCLIMemoryTests {
         #expect(tuning.computeUnitsOrder.map(\.rawValue) == ["cpuAndGPU", "cpuOnly"])
     }
 
+    @Test func embedderTimeoutIgnoresNonFiniteValuesAndConvertsHugeOnesWithoutTrapping() {
+        let defaultTimeout = CommandLineEmbedderRuntimeTuning.defaultTimeoutSeconds
+        for raw in ["inf", "infinity", "+inf", "nan"] {
+            let tuning = CommandLineEmbedderRuntimeTuning.fromEnvironment(["WAX_EMBEDDER_TIMEOUT_SECS": raw])
+            #expect(tuning.timeoutSeconds == defaultTimeout, "\(raw)")
+        }
+
+        let huge = CommandLineEmbedderRuntimeTuning.fromEnvironment(["WAX_EMBEDDER_TIMEOUT_SECS": "1e16"])
+        #expect(huge.timeoutSeconds == 1e16)
+        #expect(huge.timeoutDuration == .milliseconds(Int64.max))
+        #expect(CommandLineEmbedderRuntimeTuning(timeoutSeconds: .infinity).timeoutDuration == .milliseconds(Int64.max))
+        #expect(CommandLineEmbedderRuntimeTuning(timeoutSeconds: 1.5).timeoutDuration == .milliseconds(1_500))
+    }
+
     @Test func brokerConfigurationChangesWhenEmbedderTuningChanges() throws {
         let first = try AgentBrokerCLI.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
@@ -1452,6 +1466,92 @@ struct WaxCLIMemoryTests {
         #expect(!output.stdout.contains(secret), "dry-run stdout must not include the raw license key")
         #expect(!output.stderr.contains(secret), "dry-run stderr must not include the raw license key")
         #expect(output.stdout.contains("WAX_LICENSE_KEY=<redacted>"))
+    }
+
+    @Test func mcpInstallKeepsPreviousClaudeRegistrationWhenAddFails() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-install-claude-restore-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+
+        let fakeServer = tempRoot.appendingPathComponent("wax-mcp")
+        try makeExecutableStub(at: fakeServer)
+        // Stand-in `claude` that keeps user-scope servers in
+        // $CLAUDE_CONFIG_DIR/.claude.json like the real CLI, logs its argv,
+        // and fails every `mcp add`.
+        let fakeClaude = tempRoot.appendingPathComponent("claude")
+        try """
+        #!/usr/bin/env python3
+        import json, os, sys
+        home = os.environ["CLAUDE_CONFIG_DIR"]
+        config = os.path.join(home, ".claude.json")
+        args = sys.argv[1:]
+        with open(os.path.join(home, "claude-calls.log"), "a") as log:
+            log.write(json.dumps(args) + "\\n")
+        with open(config) as handle:
+            data = json.load(handle)
+        servers = data.setdefault("mcpServers", {})
+        def save():
+            with open(config, "w") as handle:
+                json.dump(data, handle)
+        if args[:2] == ["mcp", "remove"]:
+            if args[-1] not in servers:
+                sys.exit(1)
+            del servers[args[-1]]
+            save()
+        elif args[:2] == ["mcp", "add"]:
+            sys.exit(3)
+        elif args[:2] == ["mcp", "add-json"]:
+            if args[-2] in servers:
+                sys.exit(1)
+            servers[args[-2]] = json.loads(args[-1])
+            save()
+        sys.exit(0)
+        """.write(to: fakeClaude, atomically: true, encoding: .utf8)
+        try setExecutable(fakeClaude)
+
+        let previous: [String: Any] = [
+            "type": "stdio",
+            "command": "/previous/wax-mcp",
+            "args": ["--store-path", "/previous/memory.wax"],
+            "env": ["WAX_MCP_FEATURE_LICENSE": "0"],
+        ]
+        let claudeConfig = tempRoot.appendingPathComponent(".claude.json")
+        try JSONSerialization.data(withJSONObject: [
+            "numStartups": 3,
+            "mcpServers": ["wax": previous],
+        ]).write(to: claudeConfig)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try await runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "install",
+                "--skip-build",
+                "--skip-skill",
+                "--server-path", fakeServer.path,
+                "--hosts", "claude",
+                "--scope", "user",
+            ],
+            environment: [
+                "PATH": "\(tempRoot.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")",
+                "HOME": tempRoot.path,
+                "CLAUDE_CONFIG_DIR": tempRoot.path,
+            ],
+            timeout: 30
+        )
+
+        let calls = (try? String(contentsOf: tempRoot.appendingPathComponent("claude-calls.log"), encoding: .utf8)) ?? ""
+        #expect(output.status != EXIT_SUCCESS, "a failed explicit claude add must fail the install")
+        #expect(calls.contains(#"["mcp", "add", "wax""#), "claude calls: \(calls)")
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: claudeConfig)) as? [String: Any]
+        let servers = after?["mcpServers"] as? [String: Any]
+        let restored = try #require(
+            servers?["wax"] as? [String: Any],
+            "previous registration lost; claude calls: \(calls) stderr: \(output.stderr)"
+        )
+        #expect(NSDictionary(dictionary: restored).isEqual(to: previous))
+        #expect(after?["numStartups"] as? Int == 3)
     }
 
     @Test func mcpServePassesLicenseKeyInEnvironmentOnly() async throws {

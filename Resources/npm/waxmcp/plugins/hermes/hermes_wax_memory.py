@@ -43,7 +43,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_VERSION = "0.1.39"
+PLUGIN_VERSION = "0.1.50"
 DEFAULT_ENDPOINT = "http://127.0.0.1:3000/mcp"
 CONFIG_FILENAME = "wax-memory.json"
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -109,6 +109,20 @@ def _truthy(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Broker codes for a session_id that can no longer be written to (same set the
+# MCP server treats as a stale binding in WaxMCPTools.shouldRetryInactiveBinding).
+_SESSION_GONE_CODES = {"session_ended", "session_unknown", "session_not_live"}
+
+
+def _failure_code(text: Any) -> str:
+    try:
+        payload = json.loads(text) if text else {}
+    except (TypeError, ValueError):
+        return ""
+    code = payload.get("code") if isinstance(payload, dict) else None
+    return code if isinstance(code, str) else ""
 
 
 def _yaml_section_scalars(text: str, section: str) -> Dict[str, Any]:
@@ -866,13 +880,21 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _sync() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax sync_turn failed: %s", exc)
+            self._spawn(lambda: self._remember_in_background("sync_turn", arguments))
 
-            self._spawn(_sync)
+    def _remember_in_background(self, hook: str, arguments: Dict[str, Any]) -> None:
+        try:
+            result = self._client.call_tool("remember", arguments)
+        except Exception as exc:
+            logger.warning("Wax %s remember failed: %s", hook, exc)
+            return
+        if result.get("ok"):
+            return
+        # Log only the broker's failure code: the error text may echo memory content.
+        code = _failure_code(result.get("text"))
+        logger.warning("Wax %s remember failed: code=%s", hook, code or "unknown")
+        if code in _SESSION_GONE_CODES:
+            self._lifecycle.invalidate_session(arguments.get("session_id"))
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         names = set(CORE_TOOL_NAMES)
@@ -987,13 +1009,7 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _write() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax on_delegation failed: %s", exc)
-
-            self._spawn(_write)
+            self._spawn(lambda: self._remember_in_background("on_delegation", arguments))
 
     def on_memory_write(
         self,
@@ -1024,13 +1040,7 @@ class WaxMemoryProvider(MemoryProvider):
                 wax_session_id,
             )
 
-            def _write() -> None:
-                try:
-                    self._client.call_tool("remember", arguments)
-                except Exception as exc:
-                    logger.debug("Wax on_memory_write failed: %s", exc)
-
-            self._spawn(_write)
+            self._spawn(lambda: self._remember_in_background("on_memory_write", arguments))
 
     def backup_paths(self) -> List[str]:
         candidates = [
@@ -1082,7 +1092,13 @@ class WaxMemoryProvider(MemoryProvider):
         existing = load_plugin_config(hermes_home)
         existing.update(values)
         try:
-            config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+            # Owner-only: the file can hold auth_token. Tighten a pre-existing
+            # file before writing so the token never lands in a readable file.
+            fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), 0o600)
+                handle.write(json.dumps(existing, indent=2) + "\n")
             self._config.update(existing)
             self.endpoint = resolve_endpoint(self._config)
         except Exception as exc:

@@ -1178,3 +1178,67 @@ test("install without --build ignores ./.build/debug in the working directory", 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+function stagePackageCopy(directory, version, bundledServerContent) {
+  fs.mkdirSync(path.join(directory, "bin"), { recursive: true });
+  fs.copyFileSync(launcher, path.join(directory, "bin", "waxmcp.js"));
+  const packageInfo = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    `${JSON.stringify({ ...packageInfo, version }, null, 2)}\n`
+  );
+  const distDir = path.join(directory, "dist", `${os.platform()}-${os.arch()}`);
+  fs.mkdirSync(distDir, { recursive: true });
+  makeExecutable(path.join(distDir, "wax-mcp"), bundledServerContent);
+  return path.join(directory, "bin", "waxmcp.js");
+}
+
+// The launch-time check reads only the runtime manifest: digests are verified
+// when the runtime is staged, not on every start. A changed runtime file under a
+// matching manifest therefore still runs the installed runtime.
+const tamperRuntimeFile = installRoot => {
+  const resource = path.join(
+    installRoot, "runtime", `${os.platform()}-${os.arch()}`, requiredRuntimeBundles[0], "resource.txt"
+  );
+  fs.writeFileSync(resource, "changed after staging\n");
+};
+
+for (const [label, packageCopyVersion, expected, afterInstall] of [
+  ["prefers the bundled binary over an installed runtime from another version", "0.0.1-newer", /bundled-server/],
+  ["prefers an installed runtime whose manifest matches this version", packageVersion, /installed-server/],
+  ["does not re-hash the installed runtime at launch", packageVersion, /installed-server/, tamperRuntimeFile],
+]) {
+  test(`launcher ${label}`, {
+    skip: process.platform !== "darwin" || process.arch !== "arm64",
+  }, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-runtime-version-test-"));
+    try {
+      const installRoot = path.join(root, "installed");
+      const { server, cli } = makeRuntimeSource(
+        path.join(root, "source"),
+        "#!/bin/sh\necho installed-server\n",
+        "#!/bin/sh\necho installed-cli\n"
+      );
+      const install = spawnSync(process.execPath, [launcher, "install"], {
+        env: { ...process.env, WAX_MCP_BIN: server, WAX_CLI_BIN: cli, WAX_MCP_INSTALL_ROOT: installRoot },
+        encoding: "utf8",
+      });
+      assert.equal(install.status, 0, install.stderr);
+      afterInstall?.(installRoot);
+
+      const packageCopy = stagePackageCopy(
+        path.join(root, "package"),
+        packageCopyVersion,
+        "#!/bin/sh\necho bundled-server\n"
+      );
+      const result = spawnSync(process.execPath, [packageCopy, "--transport", "stdio"], {
+        env: envWithoutWaxBinaries({ WAX_MCP_INSTALL_ROOT: installRoot }),
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, expected);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

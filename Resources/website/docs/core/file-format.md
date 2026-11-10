@@ -127,4 +127,4 @@ Frame payloads support four encoding strategies via `CanonicalEncoding`:
 | Max string bytes | 16 MiB |
 | Max blob bytes | 256 MiB |
 | Max array count | 10,000,000 |
-| Max TOC bytes | 64 MiB |
+| Max TOC bytes | 1 GiB |

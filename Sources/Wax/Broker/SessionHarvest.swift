@@ -207,7 +207,8 @@ package enum SessionHarvest {
             }
 
             let immediate = leftoverDocumentCount == 0 && leftoverLockedCount == 0 && harvestError == nil
-            let reclaimAfterMs = immediate ? nowMs : nowMs + retention.recentlyClosedMs
+            let (windowEndMs, windowOverflow) = nowMs.addingReportingOverflow(retention.recentlyClosedMs)
+            let reclaimAfterMs = immediate ? nowMs : (windowOverflow ? Int64.max : windowEndMs)
             return Report(
                 harvested: true,
                 promotedCount: promotedCount,

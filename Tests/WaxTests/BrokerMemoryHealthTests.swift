@@ -149,6 +149,30 @@ struct BrokerMemoryHealthTests {
         #expect(tightened.quarantineCandidateIds == [50])
     }
 
+    @Test
+    func healthReportDoesNotTrapOnMinimumCreatedAt() {
+        let extreme = MemoryOrchestrator.CorpusSourceDocument(
+            frameId: 60,
+            timestampMs: nowMs,
+            kind: nil,
+            role: .document,
+            text: "Working note with a forged creation time.",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                MemoryMetadataKeys.createdAtMs: String(Int64.min),
+            ]
+        )
+        let report = BrokerMemoryInsights.healthReport(
+            documents: [extreme],
+            accessStats: [:],
+            facts: nil,
+            nowMs: nowMs
+        )
+        #expect(report.staleFrameIds == [60])
+        #expect(report.quarantineCandidateIds == [60])
+    }
+
     private func document(
         frameId: UInt64,
         text: String,

@@ -246,7 +246,7 @@ jobs:
   # The in-repo formula bump goes through a pull request; CI never pushes main.
   homebrew:
     name: Finalize Homebrew formula
-    needs: [gates, build]
+    needs: [gates, build, publish]
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'waxmcp-v') }}
     permissions:

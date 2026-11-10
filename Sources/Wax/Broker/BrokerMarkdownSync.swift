@@ -19,6 +19,10 @@ package struct MarkdownProjectionMarker: Codable, Sendable, Equatable {
     package var durability: String?
     package var confidence: Float?
     package var dateKey: String?
+    /// `json` when the item's text is written as a JSON string literal, because
+    /// the raw text would not parse back exactly (newlines, edge whitespace, a
+    /// leading checkbox). Absent for raw text, as in files written before it.
+    package var textEncoding: String?
 
     package init(
         managed: Bool = true,
@@ -88,6 +92,39 @@ package enum BrokerMarkdownSync {
         return "\(markerPrefix)\(base64MarkerPrefix)\(data.base64EncodedString()) -->"
     }
 
+    /// One list item on one physical line that ``parse(text:)`` reads back as
+    /// exactly `text`. Text that parses back as written stays raw, as people
+    /// edit these files; anything else becomes a JSON string literal.
+    package static func renderListItem(
+        prefix: String,
+        text: String,
+        marker: MarkdownProjectionMarker
+    ) -> String {
+        var rawMarker = marker
+        rawMarker.textEncoding = nil
+        let raw = "\(prefix) \(text) \(markerComment(rawMarker))"
+        let parsed = parse(text: raw)
+        if parsed.count == 1, parsed[0].text == text, parsed[0].marker != nil {
+            return raw
+        }
+        var encodedMarker = marker
+        encodedMarker.textEncoding = jsonTextEncoding
+        return "\(prefix) \(jsonStringLiteral(text)) \(markerComment(encodedMarker))"
+    }
+
+    private static let jsonTextEncoding = "json"
+
+    private static func jsonStringLiteral(_ text: String) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let data = (try? encoder.encode(text)) ?? Data("\"\"".utf8)
+        // JSON leaves these raw, but `parse` splits lines on them.
+        return String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\u{85}", with: "\\u0085")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    }
+
     package static func parseFile(at url: URL) throws -> [MarkdownProjectionEntry] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -131,7 +168,12 @@ package enum BrokerMarkdownSync {
         }
 
         let marker = extractMarker(from: &remainder)
-        let text = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An edit that broke the literal is imported as the person wrote it.
+        if marker?.textEncoding == jsonTextEncoding,
+           let decoded = try? JSONDecoder().decode(String.self, from: Data(text.utf8)) {
+            text = decoded
+        }
         guard !text.isEmpty else { return nil }
 
         return MarkdownProjectionEntry(

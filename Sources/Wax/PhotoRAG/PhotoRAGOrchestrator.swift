@@ -94,6 +94,8 @@ package actor PhotoRAGOrchestrator {
 
     var index = IndexState()
     var inFlightPhotoIDs: Set<PhotoID> = []
+    /// Serializes calls that write trees or commit, from the first write through the index rebuild.
+    package let ingestMutex = AsyncMutex()
 
     package init(
         storeURL: URL,
@@ -147,6 +149,12 @@ package actor PhotoRAGOrchestrator {
 
     /// Delete all frames associated with a given ``PhotoID``.
     package func delete(photoID: PhotoID) async throws {
+        try await ingestMutex.withLock {
+            try await self.deleteUnderLock(photoID: photoID)
+        }
+    }
+
+    private func deleteUnderLock(photoID: PhotoID) async throws {
         guard let rootId = index.rootByPhotoID[photoID] else { return }
 
         var toDelete: [UInt64] = [rootId]
@@ -182,6 +190,41 @@ package actor PhotoRAGOrchestrator {
         try await removeSearchIndexes(frameIds: ids)
     }
 
+    /// Deletes a tree whose ingest failed before it superseded the previous version, so the
+    /// asset keeps its previous version (or nothing) rather than a partial second live tree.
+    /// Best-effort: the ingest error is what the caller reports.
+    func discardPartialTree(rootId: UInt64) async {
+        let children = await wax.frameMetasIncludingPending().filter { $0.parentId == rootId }
+        let frameIds = [rootId] + children.map(\.id)
+        do {
+            for frameId in frameIds {
+                try await wax.delete(frameId: frameId)
+            }
+            try await removeSearchIndexes(frameIds: frameIds)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "PhotoRAG partial-tree discard",
+                fallback: "partial tree may stay live until the asset is re-ingested"
+            )
+        }
+    }
+
+    /// Ends an ingest call that failed partway: commits the trees that completed and rebuilds
+    /// the index so it matches the store. Best-effort: the ingest error is what the caller reports.
+    func reconcileAfterFailedIngest() async {
+        do {
+            try await session.commit()
+            try await rebuildIndex()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "PhotoRAG failed-ingest reconcile",
+                fallback: "completed trees stay pending until the next flush"
+            )
+        }
+    }
+
     /// Drops vector and text postings for frames that must no longer be searchable.
     /// Text cleanup is required: otherwise BM25 keeps ranking deleted/superseded
     /// OCR frames and live re-ingests of the same asset disappear from recall.
@@ -194,16 +237,29 @@ package actor PhotoRAGOrchestrator {
 
     /// Flush pending writes to disk.
     package func flush() async throws {
-        try await session.commit()
+        try await ingestMutex.withLock {
+            try await self.session.commit()
+        }
     }
 
     /// Flush pending writes, then close the session and the underlying store.
     ///
     /// The orchestrator must not be used after `close()` returns.
     package func close() async throws {
-        try await flush()
+        // A failed flush must not keep the store open: only `wax.close()` releases the file lock.
+        var flushError: (any Error)?
+        do {
+            try await flush()
+        } catch {
+            flushError = error
+        }
         await session.close()
-        try await wax.close()
+        do {
+            try await wax.close()
+        } catch {
+            throw flushError ?? error
+        }
+        if let flushError { throw flushError }
     }
 
     static func dedupePhotoIDs(_ photoIDs: [PhotoID]) -> [PhotoID] {

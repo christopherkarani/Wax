@@ -15,6 +15,9 @@ package struct LiveSetRewriteReport: Sendable, Equatable {
     package var allocatedBytesBefore: UInt64
     package var allocatedBytesAfter: UInt64
     package var durationMs: Double
+    /// The source WAL's last sequence when the copied state was read, or nil when writes were
+    /// pending then. Close promotes the candidate only if the source is still at this sequence.
+    package var sourceWalLastSequence: UInt64?
 
     package init(
         sourceURL: URL,
@@ -30,7 +33,8 @@ package struct LiveSetRewriteReport: Sendable, Equatable {
         logicalBytesAfter: UInt64,
         allocatedBytesBefore: UInt64,
         allocatedBytesAfter: UInt64,
-        durationMs: Double
+        durationMs: Double,
+        sourceWalLastSequence: UInt64? = nil
     ) {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
@@ -46,5 +50,6 @@ package struct LiveSetRewriteReport: Sendable, Equatable {
         self.allocatedBytesBefore = allocatedBytesBefore
         self.allocatedBytesAfter = allocatedBytesAfter
         self.durationMs = durationMs
+        self.sourceWalLastSequence = sourceWalLastSequence
     }
 }

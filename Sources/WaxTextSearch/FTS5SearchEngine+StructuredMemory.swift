@@ -12,9 +12,7 @@ extension FTS5SearchEngine {
         nowMs: Int64
     ) async throws -> EntityRowID {
         try StructuredMemoryValidation.validateEntityKey(key)
-        enqueueStructuredOp(.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs))
-        try await flushPendingStructuredOpsIfThresholdExceeded()
-        try await flushPendingStructuredOpsIfNeeded()
+        try await enqueueAndFlushStructuredOp(.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs))
         let dbQueue = self.dbQueue
         return try await io.run {
             try dbQueue.read { db in
@@ -142,6 +140,10 @@ extension FTS5SearchEngine {
         guard system.fromMs < Int64.max else {
             throw WaxError.encodingError(reason: "system_from_ms must be less than Int64.max")
         }
+        // Checked here, not when applying, so a bad frame id fails this call instead of the batch.
+        for item in evidence {
+            _ = try Self.toInt64(item.sourceFrameId)
+        }
 
         let factHash = try StructuredMemoryHasher.hashFact(
             subject: subject,
@@ -150,7 +152,7 @@ extension FTS5SearchEngine {
             qualifiersHash: nil
         )
 
-        enqueueStructuredOp(
+        try await enqueueAndFlushStructuredOp(
             .assertFact(
                 subject: subject,
                 predicate: predicate,
@@ -162,8 +164,6 @@ extension FTS5SearchEngine {
                 factHash: factHash
             )
         )
-        try await flushPendingStructuredOpsIfThresholdExceeded()
-        try await flushPendingStructuredOpsIfNeeded()
 
         let dbQueue = self.dbQueue
         return try await io.run {
@@ -191,8 +191,6 @@ extension FTS5SearchEngine {
         guard factExists else {
             throw WaxError.io("fact_id has no open spans")
         }
-        enqueueStructuredOp(.retractFact(factId: factId, atMs: atMs))
-        try await flushPendingStructuredOpsIfThresholdExceeded()
-        try await flushPendingStructuredOpsIfNeeded()
+        try await enqueueAndFlushStructuredOp(.retractFact(factId: factId, atMs: atMs))
     }
 }

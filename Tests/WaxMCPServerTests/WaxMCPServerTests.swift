@@ -329,6 +329,53 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     }
 }
 
+/// A broker from a build without `ping` rejects it as an unknown command. The
+/// client must fall back to `stats` and reuse that broker, not call it mute.
+@Test
+func availabilityCheckFallsBackToStatsForABrokerWithoutPing() async throws {
+    let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("wxsp-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let socketPath = root.appendingPathComponent("broker.sock").path
+    let listener = try bindAndListenUnixSocket(at: socketPath)
+    let responder = Thread {
+        while true {
+            let client = accept(listener, nil, nil)
+            guard client >= 0 else { return }
+            var buffer = Data()
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            while !buffer.contains(0x0A) {
+                let count = read(client, &chunk, chunk.count)
+                guard count > 0 else { break }
+                buffer.append(contentsOf: chunk.prefix(count))
+            }
+            let line = buffer.prefix { $0 != 0x0A }
+            let request = try? JSONDecoder().decode(AgentBrokerRequest.self, from: Data(line))
+            let response: AgentBrokerResponse = request?.command == "stats"
+                ? .success(id: request?.id, payload: .object([:]))
+                : .failure(id: request?.id, message: "Unknown broker command '\(request?.command ?? "")'.")
+            if var reply = try? JSONEncoder().encode(response) {
+                reply.append(0x0A)
+                _ = reply.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+            }
+            close(client)
+        }
+    }
+    responder.start()
+    defer {
+        shutdown(listener, SHUT_RDWR)
+        close(listener)
+        unlink(socketPath)
+    }
+
+    let started = try await AgentBrokerClient.ensureAvailable(
+        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+    )
+    #expect(started == false)
+}
+
 #if canImport(Darwin)
 private let testUnixStreamSocketType: Int32 = SOCK_STREAM
 #else
@@ -2336,6 +2383,52 @@ func brokerCorpusSearchBuildSkipsLockedSessionStore() async throws {
         #expect(!execution.hits.isEmpty)
         #expect(execution.hits.contains { ($0.previewText ?? "").contains("telemetry") })
         #expect(!execution.hits.contains { ($0.previewText ?? "").contains("navigation") })
+    }
+}
+
+@Test
+func brokerCorpusBuildFailureRemovesItsTemporaryStore() async throws {
+    try await withTemporaryDirectory { root in
+        let sessionsDir = root.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        let corpus = root.appendingPathComponent("corpus.wax")
+        try await writeSessionStore(
+            at: sessionsDir.appendingPathComponent("session-a.wax"),
+            documents: [("Readable session note about reactor telemetry.", ["session_id": "session-a"])]
+        )
+        // Not a Wax store: opening it fails with an error the build does not skip.
+        let unreadable = sessionsDir.appendingPathComponent("session-unreadable.wax")
+        try Data(repeating: 0x5A, count: 64 * 1024).write(to: unreadable)
+
+        func buildLeftovers() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.contains("-building-") }
+        }
+
+        for _ in 0..<2 {
+            await #expect(throws: (any Error).self) {
+                try await BrokerCorpusStoreBuilder.build(
+                    sessionsDirectory: sessionsDir,
+                    targetStoreURL: corpus,
+                    noEmbedder: true,
+                    embedderChoice: "minilm",
+                    recursive: true
+                )
+            }
+            #expect(try buildLeftovers().isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: corpus.path))
+        }
+
+        try FileManager.default.removeItem(at: unreadable)
+        let build = try await BrokerCorpusStoreBuilder.build(
+            sessionsDirectory: sessionsDir,
+            targetStoreURL: corpus,
+            noEmbedder: true,
+            embedderChoice: "minilm",
+            recursive: true
+        )
+        #expect(build.storesIndexed == 1)
+        #expect(FileManager.default.fileExists(atPath: corpus.path))
+        #expect(try buildLeftovers().isEmpty)
     }
 }
 
@@ -4796,6 +4889,197 @@ func brokerMarkdownSyncDoesNotDeleteLockedMemoryWhenLineRemoved() async throws {
         let getPayload = try #require(get.payload?.objectValue)
         #expect(getPayload["text"]?.stringValue == lockedContent)
         #expect(getPayload["metadata"]?.objectValue?[MemoryMetadataKeys.durability]?.stringValue == MemoryDurability.locked.rawValue)
+    }
+}
+
+@Test
+func brokerMarkdownExportSyncRoundTripPreservesEveryDurableText() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-round-trip-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let suffix = UUID().uuidString
+        let contents: [String] = [
+            "Plain single-line round trip fact \(suffix)",
+            "Release steps \(suffix):\n- tag\n- push",
+            "Heading lines \(suffix)\n## not a section\n# not a title",
+            "Comment markers \(suffix) <!-- wax:not-a-marker --> and --> arrows",
+            "[x] looks like a checkbox \(suffix)",
+            "Trailing whitespace \(suffix)   ",
+        ]
+        for content in contents {
+            let remember = await service.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string(content),
+                    "memory_type": .string("fact"),
+                    "durability": .string("durable"),
+                ]
+            ))
+            #expect(remember.ok == true, "remember failed: \(remember.error ?? "nil")")
+        }
+
+        func durableTexts() async throws -> [String] {
+            try await service.longTermMemory.corpusSourceDocuments().map(\.text).sorted()
+        }
+        #expect(try await durableTexts() == contents.sorted())
+
+        // First cycle: sync adopts the exported lines without changing any text.
+        let firstExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(firstExport.ok == true)
+        let firstSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(firstSync.ok == true, "markdown_sync failed: \(firstSync.error ?? "nil")")
+        let firstCounts = try #require(firstSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(firstCounts["created"]?.intValue == 0)
+        #expect(firstCounts["deleted"]?.intValue == 0)
+        #expect(try await durableTexts() == contents.sorted())
+
+        // Second cycle on adopted documents: export then sync is a full no-op.
+        let secondExport = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(secondExport.ok == true)
+        let memoryPath = try #require(secondExport.payload?.objectValue?["memory_md_path"]?.stringValue)
+        let entries = try BrokerMarkdownSync.parseFile(at: URL(fileURLWithPath: memoryPath))
+            .filter(\.isManagedImportCandidate)
+        #expect(entries.map(\.text).sorted() == contents.sorted())
+        let framesBefore = try await service.longTermMemory.corpusSourceDocuments().map(\.frameId).sorted()
+
+        let secondSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(secondSync.ok == true, "markdown_sync failed: \(secondSync.error ?? "nil")")
+        let secondCounts = try #require(secondSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(secondCounts["created"]?.intValue == 0)
+        #expect(secondCounts["updated"]?.intValue == 0)
+        #expect(secondCounts["deleted"]?.intValue == 0)
+        #expect(secondCounts["unchanged"]?.intValue == Int64(contents.count))
+        #expect(try await service.longTermMemory.corpusSourceDocuments().map(\.frameId).sorted() == framesBefore)
+        #expect(try await durableTexts() == contents.sorted())
+
+        // An edit to an encoded multi-line entry still imports as an update.
+        let memoryURL = URL(fileURLWithPath: memoryPath)
+        let exported = try String(contentsOf: memoryURL, encoding: .utf8)
+        let edited = exported.replacingOccurrences(of: "\\n- push", with: "\\n- push --tags")
+        #expect(edited != exported)
+        try edited.write(to: memoryURL, atomically: true, encoding: .utf8)
+        let editSync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(editSync.ok == true, "markdown_sync failed: \(editSync.error ?? "nil")")
+        let editCounts = try #require(editSync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(editCounts["updated"]?.intValue == 1)
+        #expect(editCounts["deleted"]?.intValue == 0)
+        let expectedAfterEdit = contents.map {
+            $0 == "Release steps \(suffix):\n- tag\n- push" ? "Release steps \(suffix):\n- tag\n- push --tags" : $0
+        }
+        #expect(try await durableTexts() == expectedAfterEdit.sorted())
+    }
+}
+
+@Test
+func brokerMarkdownSyncReplacedMemoryIsNotFoundBySearchOrRecall() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-replaced-search-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)
+        let oldToken = "REPLACEDOLD\(suffix)"
+        let newToken = "REPLACEDNEW\(suffix)"
+        // Long enough to be stored as a document with chunk frames.
+        let filler = String(repeating: "Background filler sentence about orbital docking procedures. ", count: 300)
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string("Replaced memory \(oldToken). \(filler)"),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(remember.ok == true, "remember failed: \(remember.error ?? "nil")")
+        let preSearch = try await service.longTermMemory.searchExecution(query: oldToken, mode: .textOnly)
+        #expect(!preSearch.hits.isEmpty)
+
+        let export = await service.handle(.init(
+            command: "markdown_export",
+            arguments: ["output_dir": .string(rootURL.path)]
+        ))
+        #expect(export.ok == true)
+        let chunkFrames = await service.longTermMemory.wax.frameMetas().filter {
+            $0.parentId != nil && $0.status == .active
+        }
+        #expect(!chunkFrames.isEmpty, "the memory was not stored with chunk frames")
+        let memoryPath = try #require(export.payload?.objectValue?["memory_md_path"]?.stringValue)
+        let exported = try String(contentsOfFile: memoryPath, encoding: .utf8)
+        let edited = exported.replacingOccurrences(of: oldToken, with: newToken)
+        #expect(edited != exported)
+        try edited.write(toFile: memoryPath, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true, "markdown_sync failed: \(sync.error ?? "nil")")
+        #expect(sync.payload?.objectValue?["counts"]?.objectValue?["updated"]?.intValue == 1)
+
+        let search = try await service.longTermMemory.searchExecution(query: oldToken, mode: .textOnly)
+        #expect(search.hits.isEmpty, "a replaced memory is still searchable: \(search.hits.map(\.frameId))")
+        let recall = try await service.longTermMemory.recallExecution(query: oldToken, mode: .textOnly)
+        #expect(
+            !recall.context.items.contains { $0.text.contains(oldToken) },
+            "a replaced memory is still recalled"
+        )
+        let newSearch = try await service.longTermMemory.searchExecution(query: newToken, mode: .textOnly)
+        #expect(!newSearch.hits.isEmpty)
+    }
+}
+
+@Test
+func brokerMarkdownSyncKeepsMultiLineMemoryFromLegacyExportLine() async throws {
+    try await withAgentBrokerService { service, _ in
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-markdown-legacy-multiline-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let content = "Legacy release steps \(UUID().uuidString):\n- tag\n- push"
+        let remember = await service.handle(.init(
+            command: "remember",
+            arguments: [
+                "content": .string(content),
+                "memory_type": .string("fact"),
+                "durability": .string("durable"),
+            ]
+        ))
+        #expect(remember.ok == true)
+        let document = try #require(try await service.longTermMemory.corpusSourceDocuments().first)
+
+        // Files exported before single-line encoding wrote the raw text, so the
+        // marker landed on the item's last physical line.
+        let marker = await service.marker(for: document, kind: .memory)
+        let legacyItem = "- \(content) \(BrokerMarkdownSync.markerComment(marker))"
+        let memoryURL = rootURL.appendingPathComponent("MEMORY.md")
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try "# MEMORY\n\n## fact\n\(legacyItem)\n".write(to: memoryURL, atomically: true, encoding: .utf8)
+
+        let sync = await service.handle(.init(
+            command: "markdown_sync",
+            arguments: ["root_dir": .string(rootURL.path)]
+        ))
+        #expect(sync.ok == true, "markdown_sync failed: \(sync.error ?? "nil")")
+        let counts = try #require(sync.payload?.objectValue?["counts"]?.objectValue)
+        #expect(counts["updated"]?.intValue == 0)
+        #expect(counts["deleted"]?.intValue == 0)
+        let documents = try await service.longTermMemory.corpusSourceDocuments()
+        #expect(documents.map(\.text) == [content])
+        #expect(documents.map(\.frameId) == [document.frameId])
     }
 }
 
@@ -7404,6 +7688,13 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         stdinPipe.fileHandleForWriting.write(Data([0x0A]))
     }
 
+    /// Writes one JSON message with no trailing newline, like a script whose
+    /// last write is not line-terminated.
+    func sendUnterminatedJSON(_ object: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        stdinPipe.fileHandleForWriting.write(data)
+    }
+
     func bootstrap(
         clientName: String,
         initializeID: Int = 1,
@@ -7969,6 +8260,80 @@ struct WaxMCPProcessTests {
         try harness.closeInput()
 
         #expect(try await harness.waitForExit(timeout: 15) == EXIT_SUCCESS)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessAnswersUnterminatedFinalRequestAtEOF() async throws {
+        try await assertRemembersWrittenThenStdinClosedAreAnswered(count: 1, terminateLastLine: false)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func waxMCPProcessFinishesInFlightRequestsBeforeEOFTeardown() async throws {
+        try await assertRemembersWrittenThenStdinClosedAreAnswered(count: 5, terminateLastLine: true)
+    }
+
+    /// A script or hook writes the whole exchange and closes stdin without
+    /// waiting for any response. Every remember must still be answered and
+    /// committed before the process tears its session down and exits.
+    private func assertRemembersWrittenThenStdinClosedAreAnswered(
+        count: Int,
+        terminateLastLine: Bool
+    ) async throws {
+        let harness = try MCPServerProcessHarness()
+        try harness.start()
+        defer { harness.terminateIfNeeded() }
+
+        try harness.sendJSONLine([
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": [
+                "protocolVersion": "2024-11-05",
+                "capabilities": [:],
+                "clientInfo": ["name": "wax-mcp-eof-script", "version": "1.0"],
+            ],
+        ])
+        try harness.sendJSONLine(["jsonrpc": "2.0", "method": "notifications/initialized", "params": [:]])
+        let ids: [Int] = (0..<count).map { 2 + $0 }
+        let markers: [String] = ids.map { _ in "waxmcp-eof-\(UUID().uuidString)" }
+        for (index, id) in ids.enumerated() {
+            let remember: [String: Any] = [
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": [
+                    "name": "remember",
+                    "arguments": [
+                        "content": markers[index],
+                        "memory_type": "fact",
+                        "cwd": harness.storeURL.deletingLastPathComponent().path,
+                    ],
+                ],
+            ]
+            if index == ids.count - 1, !terminateLastLine {
+                try harness.sendUnterminatedJSON(remember)
+            } else {
+                try harness.sendJSONLine(remember)
+            }
+        }
+        try harness.closeInput()
+
+        for id in ids {
+            let response = try await harness.waitForResponseLine(id: id, timeout: 30)
+            let rememberJSON = try parseToolTextJSON(fromResponseLine: response)
+            #expect((rememberJSON["status"] as? String) == "ok", "remember id \(id): \(response)")
+        }
+        #expect(try await harness.waitForExit(timeout: 15) == EXIT_SUCCESS)
+        try harness.shutdownBrokerIfRunning()
+
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = false
+        let reopened = try await MemoryOrchestrator(at: harness.storeURL, config: config)
+        defer { Task { try? await reopened.close() } }
+        for marker in markers {
+            let context = try await reopened.recall(query: marker)
+            #expect(context.items.contains { $0.text.contains(marker) }, "\(marker) was not committed")
+        }
     }
 
     @Test(.timeLimit(.minutes(1)))

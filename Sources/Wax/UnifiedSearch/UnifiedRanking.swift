@@ -97,7 +97,7 @@ package enum UnifiedRanking {
             let previewTerms = Set(analyzer.normalizedTerms(query: preview))
             let overlap = queryTerms.intersection(previewTerms)
             let createdAtMs = MemorySemantics.parse(metadata: result.metadata, nowMs: nowMs).createdAtMs
-            let isRecent = createdAtMs.map { max(0, nowMs - $0) <= recentMs } ?? false
+            let isRecent = createdAtMs.map { TimestampAge.elapsedMs(since: $0, nowMs: nowMs) <= recentMs } ?? false
             let isText = result.sources.contains(.text)
             let isVectorOnly = result.sources.contains(.vector) && !isText
             return Scored(

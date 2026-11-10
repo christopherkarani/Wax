@@ -102,7 +102,17 @@ package enum BrokerMemoryInsights {
         let suggestedType = MemorySemantics.classifyCandidate(text: content, metadata: metadata)
         let suggestedDurability = MemorySemantics.defaultDurability(for: suggestedType)
         let summary = MemorySemantics.summarizeCandidate(content)
+        // Only memories the candidate's project can recall count as duplicates:
+        // the same project, or unscoped (see LayeredRecall.matchesIdentityOrUnscoped).
+        // Another project's copy is filtered out of this project's recall.
+        // A candidate with no project still compares against everything.
+        let candidateProject = MemorySemantics.parse(metadata: metadata, nowMs: 0).project
         let duplicates = longTermDocuments
+            .filter { document in
+                guard let candidateProject else { return true }
+                let documentProject = MemorySemantics.parse(metadata: document.metadata, nowMs: 0).project
+                return documentProject == nil || documentProject == candidateProject
+            }
             .map { document -> BrokerPromotionDuplicate? in
                 let score = MemorySemantics.similarity(lhs: content, rhs: document.text)
                 guard score >= 0.45 else { return nil }
@@ -312,7 +322,7 @@ package enum BrokerMemoryInsights {
                 expired.append(document.frameId)
             }
             if let createdAtMs = info.createdAtMs {
-                let ageDays = max(0, nowMs - createdAtMs) / (1000 * 60 * 60 * 24)
+                let ageDays = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs) / (1000 * 60 * 60 * 24)
                 if ageDays > 30, info.durability == .working || info.durability == .ephemeral {
                     stale.append(document.frameId)
                 }

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Wax
+@testable import Wax
 import WaxTestSupport
 import WaxCore
 
@@ -102,6 +102,48 @@ import WaxCore
         let recall = try await retry.recall(query: "partial ingest failure recover")
         #expect(!recall.items.isEmpty)
         try await retry.close()
+    }
+}
+
+private struct InjectedBatchWriteFailure: Error {}
+
+@Test func rememberRetryAfterChunkBatchWriteFailureLeavesOneDocument() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.enableVectorSearch = true
+        config.enableTextSearch = true
+        config.ingestBatchSize = 1
+        config.chunking = .tokenCount(targetTokens: 3, overlapTokens: 0)
+
+        let content = "write phase failure on the second chunk batch must not leave a partial document behind"
+        let expectedChunks = await TextChunker.chunk(text: content, strategy: config.chunking)
+        #expect(expectedChunks.count > 2)
+
+        let orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: DeterministicTextEmbedder()
+        )
+        await orchestrator.setRememberBatchWriteHookForTesting { batchIndex in
+            if batchIndex == 1 { throw InjectedBatchWriteFailure() }
+        }
+        await #expect(throws: InjectedBatchWriteFailure.self) {
+            try await orchestrator.remember(content)
+        }
+
+        await orchestrator.setRememberBatchWriteHookForTesting(nil)
+        let retried = try await orchestrator.remember(content)
+        try await orchestrator.flush()
+
+        let live = await orchestrator.wax.frameMetasIncludingPending().filter { $0.status == .active }
+        #expect(live.filter { $0.role == .document }.map(\.id) == [retried.frameId])
+        #expect(live.filter { $0.role == .chunk }.count == expectedChunks.count)
+
+        let recall = try await orchestrator.recall(query: "partial document second chunk batch")
+        #expect(!recall.items.isEmpty)
+        let texts = recall.items.map(\.text)
+        #expect(Set(texts).count == texts.count)
+        try await orchestrator.close()
     }
 }
 

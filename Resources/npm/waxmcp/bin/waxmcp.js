@@ -93,7 +93,13 @@ function findBinary(name) {
     candidates.push(process.env[envKey]);
   }
   const installRoot = process.env.WAX_MCP_INSTALL_ROOT || path.join(os.homedir(), ".local", "share", "waxmcp");
-  candidates.push(path.join(installRoot, "runtime", `${os.platform()}-${os.arch()}`, name));
+  const platformKey = `${os.platform()}-${os.arch()}`;
+  const runtimeDir = path.join(installRoot, "runtime", platformKey);
+  // An install-root runtime staged by another waxmcp version must not shadow
+  // this package's bundled binaries; use it only when its manifest matches.
+  if (installedRuntimeMatchesPackage(runtimeDir, installRoot, platformKey)) {
+    candidates.push(path.join(runtimeDir, name));
+  }
   const bundled = resolveBundledBinary(name);
   if (bundled) {
     candidates.push(bundled);
@@ -103,6 +109,22 @@ function findBinary(name) {
   // `npx waxmcp` inside an untrusted checkout must not execute its binaries.
   // Source builds go through `waxmcp install --build` or WAX_MCP_BIN.
   return candidates;
+}
+
+// Launch-time check: manifest only. Digests are verified when the runtime is
+// staged (hasVerifiedRuntime); re-hashing the whole runtime on every start
+// would add no tamper protection, since the manifest is just as writable.
+function installedRuntimeMatchesPackage(runtimeDir, installRoot, platformKey) {
+  try {
+    const manifestPath = path.join(runtimeDir, runtimeManifestName);
+    assertSafeManagedPath(installRoot, manifestPath);
+    if (!fs.lstatSync(manifestPath).isFile()) return false;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    const packageInfo = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+    return manifest?.version === packageInfo.version && manifest?.platform === platformKey;
+  } catch {
+    return false;
+  }
 }
 
 function firstInstallSource(name, builtFromSource) {

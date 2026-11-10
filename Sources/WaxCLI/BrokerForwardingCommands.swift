@@ -12,14 +12,15 @@ struct BrokerForwardOptions: ParsableArguments {
     func values() throws -> [String: AgentBrokerValue] {
         var values: [String: AgentBrokerValue] = [:]
         if let jsonArgs {
-            let data = Data(jsonArgs.utf8)
-            let object = try JSONSerialization.jsonObject(with: data)
-            guard let dict = object as? [String: Any] else {
+            // Decode with the broker's own Codable mapping rather than
+            // JSONSerialization: a bridged NSNumber 1 matches `as Bool`,
+            // and JSONDecoder keeps true/false apart from numbers on every
+            // platform and falls back to Double for integers outside Int64.
+            let object = try JSONDecoder().decode(AgentBrokerValue.self, from: Data(jsonArgs.utf8))
+            guard case .object(let dict) = object else {
                 throw CLIError("--json-args must be a JSON object")
             }
-            for (key, value) in dict {
-                values[key] = try AgentBrokerValue(jsonObject: value)
-            }
+            values = dict
         }
 
         for raw in arg {
@@ -52,29 +53,6 @@ private extension AgentBrokerValue {
             self = .double(double)
         } else {
             self = .string(raw)
-        }
-    }
-
-    init(jsonObject: Any) throws {
-        switch jsonObject {
-        case _ as NSNull:
-            self = .null
-        case let value as Bool:
-            self = .bool(value)
-        case let value as Int:
-            self = .int(Int64(value))
-        case let value as Int64:
-            self = .int(value)
-        case let value as Double:
-            self = value.rounded() == value ? .int(Int64(value)) : .double(value)
-        case let value as String:
-            self = .string(value)
-        case let values as [Any]:
-            self = .array(try values.map { try AgentBrokerValue(jsonObject: $0) })
-        case let values as [String: Any]:
-            self = .object(try values.mapValues { try AgentBrokerValue(jsonObject: $0) })
-        default:
-            throw CLIError("Unsupported JSON argument value: \(jsonObject)")
         }
     }
 }

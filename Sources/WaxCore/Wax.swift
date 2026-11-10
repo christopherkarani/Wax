@@ -56,6 +56,13 @@ package actor Wax {
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
     private let walReplayStateSnapshotEnabled: Bool
+    /// Largest TOC a commit may write: the reader's limit, so every commit stays openable.
+    /// Internal only because of the file split; lowered only by tests.
+    var tocByteLimit: UInt64 = Constants.maxTocBytes
+    /// Set when a commit fails at or after its footer write. Its bytes, and possibly a header
+    /// page naming them, can already be in the file while the rollback reuses their offsets
+    /// and WAL range, so this handle takes no more writes; reopening recovers the store.
+    private var writesRefused = false
 
     /// Internal only because of the file split; use only from the writer-lease methods (Wax+Lifecycle.swift).
     var writerWaiters: [WriterWaiter] = []
@@ -216,8 +223,15 @@ package actor Wax {
         walAutoCommitCount &+= 1
     }
 
+    private func ensureWritableLocked() throws {
+        guard !writesRefused else {
+            throw WaxError.io("a commit failed after writing its footer; reopen the store before writing again")
+        }
+    }
+
     /// Internal only because of the file split; call only while holding `opLock` for writing.
     func ensureWalCapacityLocked(payloadSize: Int) async throws {
+        try ensureWritableLocked()
         if walProactiveCommitThresholdBytes != nil,
            let estimated = estimatedWalBytesForAppend(payloadSize: payloadSize) {
             try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
@@ -239,6 +253,7 @@ package actor Wax {
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
     func ensureWalCapacityLocked(payloadSizes: [Int]) async throws {
+        try ensureWritableLocked()
         guard !payloadSizes.isEmpty else { return }
         if walProactiveCommitThresholdBytes != nil,
            let estimated = estimatedWalBytesForAppendBatch(payloadSizes: payloadSizes) {
@@ -435,6 +450,7 @@ package actor Wax {
 
     private func commitLocked() async throws {
         guard dirty || stagedLexIndex != nil || stagedVecIndex != nil else { return }
+        try ensureWritableLocked()
 
         if stagedVecIndex == nil {
             if pendingMutationSummary.hasPendingEmbedding {
@@ -449,9 +465,13 @@ package actor Wax {
 
         let rollbackState = CommitRollbackState.capture(from: self)
         var commitSucceeded = false
+        var footerWriteStarted = false
         defer {
             if !commitSucceeded {
                 rollbackState.restore(into: self)
+                if footerWriteStarted {
+                    writesRefused = true
+                }
             }
         }
 
@@ -463,6 +483,8 @@ package actor Wax {
         )
 
         let file = self.file
+        // Written only once the TOC is known to fit, so a refused commit writes nothing.
+        var indexBlobWrites: [(bytes: Data, offset: UInt64)] = []
         if let staged = stagedLexIndex {
             let byteCount = staged.bytes.count
             guard byteCount <= Constants.maxBlobBytes else {
@@ -472,9 +494,7 @@ package actor Wax {
                 )
             }
             let lexOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: lexOffset)
-            }
+            indexBlobWrites.append((bytes: staged.bytes, offset: lexOffset))
             let lexLength = UInt64(byteCount)
             dataEnd += lexLength
 
@@ -507,9 +527,7 @@ package actor Wax {
             }
 
             let vecOffset = dataEnd
-            try await io.run {
-                try file.writeAll(staged.bytes, at: vecOffset)
-            }
+            indexBlobWrites.append((bytes: staged.bytes, offset: vecOffset))
             let vecLength = UInt64(byteCount)
             dataEnd += vecLength
 
@@ -534,6 +552,15 @@ package actor Wax {
         }
 
         let tocBytes = try toc.encode(cachedFramesPayload: cachedFramesPayload)
+        // Open refuses a larger TOC, so committing one would leave the store unopenable.
+        guard UInt64(tocBytes.count) <= tocByteLimit else {
+            throw WaxError.capacityExceeded(limit: tocByteLimit, requested: UInt64(tocBytes.count))
+        }
+        for write in indexBlobWrites {
+            try await io.run {
+                try file.writeAll(write.bytes, at: write.offset)
+            }
+        }
         let tocChecksum = tocBytes.suffix(32)
         toc.tocChecksum = Data(tocChecksum)
 
@@ -573,6 +600,7 @@ package actor Wax {
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
         #endif
 
+        footerWriteStarted = true
         try await io.run {
             try file.writeAll(try footer.encode(), at: footerOffset)
         }

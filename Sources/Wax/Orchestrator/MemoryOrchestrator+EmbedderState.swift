@@ -71,8 +71,10 @@ extension MemoryOrchestrator {
     /// Internal only because of the file split.
     var requiresEmbedderForSave: Bool {
         switch embeddingStatus {
-        case .active, .degraded, .unavailable:
+        case .active, .degraded:
             true
+        case .unavailable:
+            !savesTextOnlyWhenEmbedderUnavailable
         case .disabled, .loading:
             false
         }

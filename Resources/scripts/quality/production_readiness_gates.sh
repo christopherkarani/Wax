@@ -126,8 +126,14 @@ assert_full_pass_rate() {
   local summary
   summary="$(grep -E "Executed [0-9]+ tests?" "$log_file" | tail -n1 || true)"
   if [[ -z "$summary" ]]; then
-    echo "PASS_RATE: 100.00% (no XCTest summary line found, using command exit status)"
-    return 0
+    # `swift test --parallel` prints no XCTest summary; only a positive Swift
+    # Testing count then proves the run executed anything.
+    if grep -E "Test run with [1-9][0-9]* tests? (in [0-9]+ suites? )?passed" "$log_file" >/dev/null; then
+      echo "PASS_RATE: 100.00% (swift-testing; no XCTest summary line)"
+      return 0
+    fi
+    echo "FAIL: no test summary in $log_file; refusing to count a run that executed no tests as a pass." >&2
+    return 1
   fi
 
   local executed skipped failures runnable passed
@@ -298,12 +304,14 @@ run_soak_smoke() {
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-soak-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testSoakSmokeStability
   assert_no_skips "$stability_log"
+  assert_full_pass_rate "$stability_log"
 
   run_and_capture "$wal_log" env \
     WAX_BENCHMARK_WAL_COMPACTION=1 \
     WAX_BENCHMARK_WAL_GUARDRAILS=1 \
     swift test --enable-xctest --disable-swift-testing --filter WALCompactionBenchmarks.testProactivePressureGuardrails
   assert_no_skips "$wal_log"
+  assert_full_pass_rate "$wal_log"
 }
 
 run_burn_smoke() {
@@ -320,12 +328,14 @@ run_burn_smoke() {
     WAX_STABILITY_OUTPUT="${WAX_STABILITY_OUTPUT:-/tmp/wax-burn-stability.json}" \
     swift test --enable-xctest --disable-swift-testing --filter ProductionReadinessStabilityTests.testBurnSmokeStability
   assert_no_skips "$stability_log"
+  assert_full_pass_rate "$stability_log"
 
   run_and_capture "$wal_log" env \
     WAX_BENCHMARK_WAL_COMPACTION=1 \
     WAX_BENCHMARK_WAL_REOPEN_GUARDRAILS=1 \
     swift test --enable-xctest --disable-swift-testing --filter WALCompactionBenchmarks.testReplayStateSnapshotGuardrails
   assert_no_skips "$wal_log"
+  assert_full_pass_rate "$wal_log"
 }
 
 # `full` tolerates these opt-in skips (expected_optional_skip_pattern). The

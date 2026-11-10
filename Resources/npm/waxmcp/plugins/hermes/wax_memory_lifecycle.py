@@ -190,6 +190,12 @@ class WaxProviderLifecycle:
         with self._lifecycle_lock:
             return self._session_id
 
+    def invalidate_session(self, session_id: Optional[str]) -> None:
+        """Drop a broker-rejected session so the next ensure_session reopens one."""
+        with self._lifecycle_lock:
+            if session_id and self._session_id == session_id:
+                self._session_id = None
+
     def admitted_session(self) -> Optional[str]:
         session_id = self.ensure_session()
         with self._lifecycle_lock:

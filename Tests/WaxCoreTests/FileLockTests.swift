@@ -170,3 +170,22 @@ func exclusiveLockTimesOutWhenAlreadyLocked() throws {
         }
     }
 }
+
+/// A timeout too long to count in nanoseconds means "keep waiting". It must not turn into a
+/// deadline that has already passed.
+@Test(.timeLimit(.minutes(1)))
+func exclusiveLockWithUnrepresentableTimeoutWaitsForTheHolder() async throws {
+    let url = TempFiles.uniqueURL()
+    FileManager.default.createFile(atPath: url.path, contents: nil)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let holder = try FileLock.acquire(at: url, mode: .exclusive)
+    let waiter = Task.detached {
+        let lock = try FileLock.acquire(at: url, mode: .exclusive, timeout: .milliseconds(Int64.max))
+        try lock.release()
+    }
+    // Give the waiter time to meet the held lock; a wrapped deadline throws on that first attempt.
+    try await Task.sleep(for: .milliseconds(300))
+    try holder.release()
+    try await waiter.value
+}
