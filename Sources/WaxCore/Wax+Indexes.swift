@@ -76,11 +76,14 @@ extension Wax {
             throw WaxError.invalidToc(reason: "vec segment reserved bytes must be zero")
         }
 
+        // Lengths in the segment are untrusted (live-set rewrite stages bytes read from a store
+        // file): each is compared with the bytes remaining before it moves an offset.
         switch encoding {
         case 1:
-            let expectedTotal = headerSize + Int(payloadLength)
-            guard data.count == expectedTotal else {
-                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
+            guard payloadLength == UInt64(data.count - headerSize) else {
+                throw WaxError.invalidToc(
+                    reason: "vec segment length mismatch: payload_length \(payloadLength), got \(data.count) bytes"
+                )
             }
         case 2, 3:
             let dimProduct = vectorCount.multipliedReportingOverflow(by: UInt64(dimension))
@@ -95,28 +98,29 @@ extension Wax {
             guard payloadLength == vectorBytes else {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
-            let vectorLength = Int(payloadLength)
-            let frameIdLengthOffset = headerSize + vectorLength
-            guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
+            let afterHeader = UInt64(data.count - headerSize)
+            let lengthFieldSize = UInt64(MemoryLayout<UInt64>.stride)
+            guard afterHeader >= lengthFieldSize, payloadLength <= afterHeader - lengthFieldSize else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
+            let vectorLength = Int(payloadLength)
+            let frameIdLengthOffset = headerSize + vectorLength
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: frameIdLengthOffset, as: UInt64.self)
             })
-            let expectedFrameIdBytes = vectorCount * UInt64(MemoryLayout<UInt64>.stride)
-            guard frameIdLength == expectedFrameIdBytes else {
+            let expectedFrameIdBytes = vectorCount.multipliedReportingOverflow(by: lengthFieldSize)
+            guard !expectedFrameIdBytes.overflow, frameIdLength == expectedFrameIdBytes.partialValue else {
                 throw WaxError.invalidToc(reason: "vec frameId data length mismatch")
             }
-            guard frameIdLength <= UInt64(Int.max) else {
-                throw WaxError.invalidToc(reason: "vec frameId length exceeds Int.max: \(frameIdLength)")
-            }
-            let expectedTotal = frameIdLengthOffset + MemoryLayout<UInt64>.stride + Int(frameIdLength)
-            guard data.count == expectedTotal else {
-                throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
+            let frameIdsOffset = frameIdLengthOffset + MemoryLayout<UInt64>.stride
+            guard frameIdLength == UInt64(data.count - frameIdsOffset) else {
+                throw WaxError.invalidToc(
+                    reason: "vec segment length mismatch: frameIds need \(frameIdLength) bytes, got \(data.count - frameIdsOffset)"
+                )
             }
             try validateUniqueVecFrameIds(
                 in: data,
-                offset: frameIdLengthOffset + MemoryLayout<UInt64>.stride,
+                offset: frameIdsOffset,
                 byteCount: Int(frameIdLength)
             )
         default:
