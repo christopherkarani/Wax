@@ -123,6 +123,32 @@ func pathConfinementRejectsSymlinkEscape() throws {
 }
 
 @Test
+func stdioConfinementIncludesProcessDirectoryAndHTTPDoesNot() throws {
+    let fixture = try ConfinementFixture()
+    defer { fixture.cleanup() }
+    func confinement(for transport: MCPServedTransport) -> MCPPathConfinement {
+        MCPPathConfinement(
+            storeURL: fixture.store.appendingPathComponent("memory.wax"),
+            sessionRootURL: fixture.store.appendingPathComponent("sessions"),
+            includeProcessDirectory: transport.includesProcessDirectory
+        )
+    }
+    let inWorkingDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("wax-confine-probe-\(UUID().uuidString)")
+        .path
+
+    let confined = try confinement(for: .stdio).confine(
+        argument: "output_dir",
+        path: inWorkingDirectory,
+        projectRoots: []
+    )
+    #expect(confined.hasSuffix((inWorkingDirectory as NSString).lastPathComponent))
+    #expect(throws: MCPPathConfinementError.self) {
+        try confinement(for: .http).confine(argument: "output_dir", path: inWorkingDirectory, projectRoots: [])
+    }
+}
+
+@Test
 func pathConfinementIgnoresFilesystemRootAsAllowedRoot() throws {
     let confinement = MCPPathConfinement(fixedRoots: ["/"])
     #expect(throws: MCPPathConfinementError.self) {

@@ -26,6 +26,26 @@ enum WaxMCPServerMetadata {
     static let version = WaxReleaseInfo.version
 }
 
+/// The transport a `Server` serves. Behaviour that differs by transport
+/// reads it from here, never from the spelling of a connection key.
+enum MCPServedTransport: Sendable, Equatable {
+    case stdio
+    case http
+
+    /// A stdio server is launched by the host inside the workspace it serves,
+    /// so its working directory is an allowed path root. An HTTP server is
+    /// shared, so its working directory never is.
+    var includesProcessDirectory: Bool { self == .stdio }
+
+    /// Unique per process. The key is the auto-session's broker `run_id` and
+    /// transport conversation id, so a shared literal would put every stdio
+    /// server (one per editor window) into one session, and each one's exit
+    /// would close it under the others.
+    static func makeStdioConnectionKey() -> String {
+        "stdio-\(UUID().uuidString)"
+    }
+}
+
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
 struct WaxMCPServerCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -148,11 +168,13 @@ struct WaxMCPServerCommand: ParsableCommand {
         writeStderr("wax-mcp v\(serverVersion) starting")
         switch normalizedTransport {
         case "stdio":
+            let connectionKey = MCPServedTransport.makeStdioConnectionKey()
             let server = await makeServer(
                 version: serverVersion,
                 brokerConfiguration: brokerConfiguration,
                 structuredMemoryEnabled: structuredMemoryEnabled,
-                connectionKey: "stdio"
+                transport: .stdio,
+                connectionKey: connectionKey
             )
             let signalSources = installSignalHandlers {
                 await server.stop()
@@ -168,14 +190,14 @@ struct WaxMCPServerCommand: ParsableCommand {
             }
 
             _ = await MCPTransportTeardown.checkpointBoundTransportSession(
-                connectionKey: "stdio",
+                connectionKey: connectionKey,
                 reason: .stdioEOF,
                 perform: MCPTransportTeardown.boundedPerform(
                     configuration: brokerConfiguration
                 )
             )
-            MCPRootsProviderRegistry.shared.remove(key: "stdio")
-            MCPStickyAttributionRegistry.shared.remove(for: "stdio")
+            MCPRootsProviderRegistry.shared.remove(key: connectionKey)
+            MCPStickyAttributionRegistry.shared.remove(for: connectionKey)
             for source in signalSources { source.cancel() }
             await server.stop()
 
@@ -200,6 +222,7 @@ struct WaxMCPServerCommand: ParsableCommand {
                         version: serverVersion,
                         brokerConfiguration: brokerConfiguration,
                         structuredMemoryEnabled: structuredMemoryEnabled,
+                        transport: .http,
                         connectionKey: sessionID
                     )
                     return server
@@ -223,6 +246,7 @@ struct WaxMCPServerCommand: ParsableCommand {
         version: String,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool,
+        transport: MCPServedTransport,
         connectionKey: String?
     ) async -> Server {
         let server = Server(
@@ -252,6 +276,7 @@ struct WaxMCPServerCommand: ParsableCommand {
             on: server,
             brokerConfiguration: brokerConfiguration,
             structuredMemoryEnabled: structuredMemoryEnabled,
+            transport: transport,
             connectionKey: connectionKey,
             connectionContext: context
         )
