@@ -810,7 +810,14 @@ package actor MemoryOrchestrator {
         }
         // New writes are refused from here on; the flush must include the admitted ones.
         await waitForInFlightWrites()
-        try await flush()
+        // A failed flush must not keep the store open: the file lock is only released by
+        // `wax.close()`, and a handle that refuses writes fails this flush on every retry.
+        var flushError: (any Error)?
+        do {
+            try await flush()
+        } catch {
+            flushError = error
+        }
         if let enrichmentPipeline {
             do {
                 try await enrichmentPipeline.stop(timeout: config.enrichmentStopTimeout)
@@ -823,10 +830,15 @@ package actor MemoryOrchestrator {
             }
         }
         let sourceURL = await wax.fileURL()
-        let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
+        let maintenanceReport = flushError == nil ? await closeTimeLiveSetMaintenanceReport() : nil
         let sourceWalLastSequence = await wax.walStats().lastSeq
         await session.close()
-        try await wax.close()
+        do {
+            try await wax.close()
+        } catch {
+            throw flushError ?? error
+        }
+        if let flushError { throw flushError }
         if let maintenanceReport {
             do {
                 try Self.promoteValidatedLiveSetCandidateIfNeeded(

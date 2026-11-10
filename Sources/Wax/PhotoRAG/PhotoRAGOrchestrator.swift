@@ -246,9 +246,20 @@ package actor PhotoRAGOrchestrator {
     ///
     /// The orchestrator must not be used after `close()` returns.
     package func close() async throws {
-        try await flush()
+        // A failed flush must not keep the store open: only `wax.close()` releases the file lock.
+        var flushError: (any Error)?
+        do {
+            try await flush()
+        } catch {
+            flushError = error
+        }
         await session.close()
-        try await wax.close()
+        do {
+            try await wax.close()
+        } catch {
+            throw flushError ?? error
+        }
+        if let flushError { throw flushError }
     }
 
     static func dedupePhotoIDs(_ photoIDs: [PhotoID]) -> [PhotoID] {
