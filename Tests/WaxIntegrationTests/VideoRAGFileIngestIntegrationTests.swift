@@ -403,6 +403,81 @@ func videoRAGFailedReingestKeepsOnlyThePreviousVersion() async throws {
     }
 }
 
+private enum OverlapOutcome: Sendable, Equatable {
+    case secondIngestFinished
+    case secondIngestQueued
+}
+
+@Test
+func videoRAGOverlappingIngestsOfOneFileLeaveOneLiveVersion() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 60
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 1
+        config.vectorEnginePreference = .cpuOnly
+
+        // One keyframe embed per ingest. After arm(), the first embed (ingest A) parks.
+        let gate = ImageEmbedGate(blockedCall: 1)
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: GatedImageEmbedder(gate: gate),
+            transcriptProvider: TestTranscriptProvider()
+        )
+        let videoID = VideoID(source: .file, id: "clip")
+        let file = VideoFile(id: videoID, url: mp4Url)
+
+        try await rag.ingest(files: [file])
+        try #require(await liveVideoRootIDs(rag, videoID: videoID).count == 1)
+
+        await gate.arm()
+        let first = Task { try await rag.ingest(files: [file]) }
+        await gate.waitUntilParked()
+
+        // A is parked mid-tree. B must queue behind it rather than read the same previous root.
+        let second = Task { try await rag.ingest(files: [file]) }
+        let outcome: OverlapOutcome = await withTaskGroup(of: OverlapOutcome.self) { group in
+            group.addTask {
+                _ = await second.result
+                return .secondIngestFinished
+            }
+            group.addTask {
+                await rag.ingestMutex.waitUntilWaiting(atLeast: 1)
+                return .secondIngestQueued
+            }
+            let winner: OverlapOutcome = await group.next() ?? .secondIngestFinished
+            group.cancelAll()
+            // The loser may be waiting on B, which cannot finish until A is released.
+            await gate.release()
+            return winner
+        }
+        #expect(outcome == .secondIngestQueued)
+
+        try await first.value
+        try await second.value
+
+        let liveRoots: [UInt64] = await liveVideoRootIDs(rag, videoID: videoID)
+        #expect(liveRoots.count == 1)
+
+        let query = VideoQuery(
+            text: TestTranscriptProvider.token,
+            resultLimit: 5,
+            segmentLimitPerVideo: 5,
+            contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 2)
+        )
+        let ctx = try await rag.recall(query)
+        #expect(ctx.items.map(\.videoID) == [videoID])
+        try await rag.close()
+    }
+}
+
 private struct FailingTranscriptProvider: VideoTranscriptProvider {
     struct TranscriptUnavailable: Error {}
     let executionMode: ProviderExecutionMode = .onDeviceOnly

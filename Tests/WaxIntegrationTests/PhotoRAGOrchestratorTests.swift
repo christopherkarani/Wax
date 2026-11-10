@@ -469,3 +469,84 @@ func photoRAGFailedIngestKeepsPreviousVersionAndReindexesSurvivors() async throw
         try await orchestrator.close()
     }
 }
+
+private enum PhotoOverlapOutcome: Sendable, Equatable {
+    case secondIngestFinished
+    case secondIngestQueued
+}
+
+@Test
+func photoRAGOverlappingIngestsOfOneAssetLeaveOneLiveVersion() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let urlX = try writeTinyPhoto(near: storeURL, name: "overlap-x")
+        let urlY = try writeTinyPhoto(near: storeURL, name: "overlap-y")
+        defer {
+            try? FileManager.default.removeItem(at: urlX)
+            try? FileManager.default.removeItem(at: urlY)
+        }
+
+        var config = PhotoRAGConfig.default
+        config.includeThumbnailsInContext = false
+        config.includeRegionCropsInContext = false
+        config.enableOCR = false
+        config.enableRegionEmbeddings = false
+        config.ingestConcurrency = 1
+        config.vectorEnginePreference = .cpuOnly
+
+        // One image embed per photo. After arm(), call 1 is X and call 2 is Y in ingest A, so A
+        // parks on Y after X's new tree is written but before A rebuilds the index.
+        let gate = ImageEmbedGate(blockedCall: 2)
+        let orchestrator = try await PhotoRAGOrchestrator(
+            storeURL: storeURL,
+            config: config,
+            embedder: GatedImageEmbedder(gate: gate)
+        )
+        let idX = PhotoID(source: .file, id: "photo-x")
+        let idY = PhotoID(source: .file, id: "photo-y")
+        let fileX = PhotoFile(id: idX, url: urlX)
+        let fileY = PhotoFile(id: idY, url: urlY)
+
+        try await orchestrator.ingest(files: [fileX])
+        try #require(await livePhotoRootIDs(orchestrator, photoID: idX).count == 1)
+
+        await gate.arm()
+        let first = Task { try await orchestrator.ingest(files: [fileX, fileY]) }
+        await gate.waitUntilParked()
+
+        // B re-ingests X while A has not yet rebuilt the index. It must queue behind A rather
+        // than supersede the root A already retired.
+        let second = Task { try await orchestrator.ingest(files: [fileX]) }
+        let outcome: PhotoOverlapOutcome = await withTaskGroup(of: PhotoOverlapOutcome.self) { group in
+            group.addTask {
+                _ = await second.result
+                return .secondIngestFinished
+            }
+            group.addTask {
+                await orchestrator.ingestMutex.waitUntilWaiting(atLeast: 1)
+                return .secondIngestQueued
+            }
+            let winner: PhotoOverlapOutcome = await group.next() ?? .secondIngestFinished
+            group.cancelAll()
+            // The loser may be waiting on B, which cannot finish until A is released.
+            await gate.release()
+            return winner
+        }
+        #expect(outcome == .secondIngestQueued)
+
+        try await first.value
+        try await second.value
+
+        let liveRootsX: [UInt64] = await livePhotoRootIDs(orchestrator, photoID: idX)
+        let liveRootsY: [UInt64] = await livePhotoRootIDs(orchestrator, photoID: idY)
+        #expect(liveRootsX.count == 1)
+        #expect(liveRootsY.count == 1)
+
+        let budget = PhotoContextBudget(maxTextTokens: 200, maxImages: 0, maxRegions: 0, maxOCRLinesPerItem: 2)
+        let onlyX = try await orchestrator.recall(PhotoQuery(filters: PhotoFilters(assetIDs: [idX]), resultLimit: 5, contextBudget: budget))
+        #expect(onlyX.items.map(\.photoID) == [idX])
+
+        try await orchestrator.delete(photoID: idX)
+        #expect(await livePhotoRootIDs(orchestrator, photoID: idX).isEmpty)
+        try await orchestrator.close()
+    }
+}

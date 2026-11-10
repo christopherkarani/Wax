@@ -109,6 +109,8 @@ package actor VideoRAGOrchestrator {
     private let queryEmbeddingCache: EmbeddingMemoizer?
 
     var index = IndexState()
+    /// Serializes calls that write trees or commit, from the first write through the index rebuild.
+    package let ingestMutex = AsyncMutex()
 
     package init(
         storeURL: URL,
@@ -158,6 +160,12 @@ package actor VideoRAGOrchestrator {
     // MARK: - Delete / flush
 
     package func delete(videoID: VideoID) async throws {
+        try await ingestMutex.withLock {
+            try await self.deleteUnderLock(videoID: videoID)
+        }
+    }
+
+    private func deleteUnderLock(videoID: VideoID) async throws {
         guard let rootId = index.rootByVideoID[videoID] else { return }
 
         var toDelete: [UInt64] = [rootId]
@@ -174,7 +182,9 @@ package actor VideoRAGOrchestrator {
     }
 
     package func flush() async throws {
-        try await session.commit()
+        try await ingestMutex.withLock {
+            try await self.session.commit()
+        }
     }
 
     /// Flush pending writes, then close the session and the underlying store.

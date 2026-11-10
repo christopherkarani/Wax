@@ -94,6 +94,8 @@ package actor PhotoRAGOrchestrator {
 
     var index = IndexState()
     var inFlightPhotoIDs: Set<PhotoID> = []
+    /// Serializes calls that write trees or commit, from the first write through the index rebuild.
+    package let ingestMutex = AsyncMutex()
 
     package init(
         storeURL: URL,
@@ -147,6 +149,12 @@ package actor PhotoRAGOrchestrator {
 
     /// Delete all frames associated with a given ``PhotoID``.
     package func delete(photoID: PhotoID) async throws {
+        try await ingestMutex.withLock {
+            try await self.deleteUnderLock(photoID: photoID)
+        }
+    }
+
+    private func deleteUnderLock(photoID: PhotoID) async throws {
         guard let rootId = index.rootByPhotoID[photoID] else { return }
 
         var toDelete: [UInt64] = [rootId]
@@ -229,7 +237,9 @@ package actor PhotoRAGOrchestrator {
 
     /// Flush pending writes to disk.
     package func flush() async throws {
-        try await session.commit()
+        try await ingestMutex.withLock {
+            try await self.session.commit()
+        }
     }
 
     /// Flush pending writes, then close the session and the underlying store.

@@ -39,8 +39,10 @@ extension PhotoRAGOrchestrator {
                 return ids
             }
         }
-        try await ingest(assetIDs: ids)
-        try await writeSyncState(scope: scope, assetCount: ids.count)
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(assetIDs: ids)
+            try await self.writeSyncState(scope: scope, assetCount: ids.count)
+        }
         #else
         throw WaxError.io("Photos framework unavailable on this platform")
         #endif
@@ -59,6 +61,23 @@ extension PhotoRAGOrchestrator {
     /// This method enforces offline-only ingestion. If an asset’s bytes are not locally available
     /// (iCloud-only), it is indexed as metadata-only and marked degraded.
     package func ingest(assetIDs: [PhotoID]) async throws {
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(assetIDs: assetIDs)
+        }
+    }
+
+    /// Ingest local image files into the Photo RAG index.
+    package func ingest(files: [PhotoFile]) async throws {
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(files: files)
+        }
+    }
+
+    // MARK: - Ingest internals
+
+    /// Caller holds `ingestMutex`: each tree reads its previous root from the index, so a second
+    /// ingest must not start writing until the first has committed and rebuilt it.
+    private func ingestUnderLock(assetIDs: [PhotoID]) async throws {
         let uniqueAssetIDs = Self.photosLibraryIDs(assetIDs)
         guard !uniqueAssetIDs.isEmpty else { return }
 
@@ -94,8 +113,8 @@ extension PhotoRAGOrchestrator {
         try await rebuildIndex()
     }
 
-    /// Ingest local image files into the Photo RAG index.
-    package func ingest(files: [PhotoFile]) async throws {
+    /// Caller holds `ingestMutex`; see ``ingestUnderLock(assetIDs:)``.
+    private func ingestUnderLock(files: [PhotoFile]) async throws {
         let uniqueFiles = Self.dedupePhotoFiles(files)
         guard !uniqueFiles.isEmpty else { return }
 
@@ -128,8 +147,6 @@ extension PhotoRAGOrchestrator {
         try await session.commit()
         try await rebuildIndex()
     }
-
-    // MARK: - Ingest internals
 
     private func writeSyncState(scope: PhotoScope, assetCount: Int) async throws {
         let completedAtMs = Int64(Date().timeIntervalSince1970 * 1000)

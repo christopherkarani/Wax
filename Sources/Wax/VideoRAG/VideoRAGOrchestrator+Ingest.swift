@@ -38,12 +38,22 @@ extension VideoRAGOrchestrator {
                 return ids
             }
         }
-        try await ingest(photoAssetIDs: ids)
+        try await ingestMutex.withLock {
+            try await self.ingest(photoAssetIDs: ids)
+        }
     }
     #endif
 
     /// Ingest local file videos.
     package func ingest(files: [VideoFile]) async throws {
+        try await ingestMutex.withLock {
+            try await self.ingestUnderLock(files: files)
+        }
+    }
+
+    /// Caller holds `ingestMutex`: each tree reads its previous root from the index, so a second
+    /// ingest must not start writing until the first has committed and rebuilt it.
+    private func ingestUnderLock(files: [VideoFile]) async throws {
         let unique = Self.dedupeFiles(files)
         guard !unique.isEmpty else { return }
 
@@ -62,6 +72,7 @@ extension VideoRAGOrchestrator {
     }
 
     #if canImport(Photos)
+    /// Caller holds `ingestMutex`; see ``ingestUnderLock(files:)``.
     private func ingest(photoAssetIDs: [String]) async throws {
         let unique = Self.dedupeIDs(photoAssetIDs)
         guard !unique.isEmpty else { return }
