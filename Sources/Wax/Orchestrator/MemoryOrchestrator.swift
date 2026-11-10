@@ -25,6 +25,10 @@ package actor MemoryOrchestrator {
 
     let wax: Wax
     let config: OrchestratorConfig
+    /// Set for `.automatic` embedding: when the built-in provider cannot load, saves write
+    /// text-only (as while it loads) instead of throwing ``WaxError/missingEmbedder``.
+    /// Internal only because of the file split; immutable after init.
+    let savesTextOnlyWhenEmbedderUnavailable: Bool
     /// Internal only because of the file split; immutable after init.
     let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
@@ -131,8 +135,10 @@ package actor MemoryOrchestrator {
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
         initialEmbeddingStatus: EmbeddingStatus? = nil,
+        savesTextOnlyWhenEmbedderUnavailable: Bool = false,
         nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
+        self.savesTextOnlyWhenEmbedderUnavailable = savesTextOnlyWhenEmbedderUnavailable
         // Prewarm tokenizer in parallel with Wax file operations
         // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
         async let tokenizerPrewarm: Bool = { 

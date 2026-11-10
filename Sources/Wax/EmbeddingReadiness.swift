@@ -282,7 +282,8 @@ package enum EmbeddingReadinessBinding {
                 at: url,
                 config: config,
                 session: session,
-                waxOptions: waxOptions
+                waxOptions: waxOptions,
+                savesTextOnlyWhenEmbedderUnavailable: true
             )
         case .builtIn(let provider, let options):
             let config = config.sizingChunks(for: provider)
@@ -313,7 +314,8 @@ package enum EmbeddingReadinessBinding {
         at url: URL,
         config: OrchestratorConfig,
         session: EmbeddingReadinessSession,
-        waxOptions: WaxOptions
+        waxOptions: WaxOptions,
+        savesTextOnlyWhenEmbedderUnavailable: Bool = false
     ) async throws -> MemoryOrchestrator {
         let snapshot = await session.snapshot()
         let orchestrator = try await MemoryOrchestrator(
@@ -321,7 +323,8 @@ package enum EmbeddingReadinessBinding {
             config: config,
             embedder: snapshot.provider,
             waxOptions: waxOptions,
-            initialEmbeddingStatus: snapshot.status
+            initialEmbeddingStatus: snapshot.status,
+            savesTextOnlyWhenEmbedderUnavailable: savesTextOnlyWhenEmbedderUnavailable
         )
         let latest = await session.snapshot()
         switch latest.status {
