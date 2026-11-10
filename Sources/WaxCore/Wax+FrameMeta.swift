@@ -191,7 +191,8 @@ extension Wax {
 
     /// The entries of `frameMetasIncludingPending()` that staging the text index reads: every
     /// frame at or above `floor` (its coverage watermark), and the inactive (deleted or
-    /// superseded) frames below it, in id order. Copies only those, not every frame.
+    /// superseded) frames below it, in id order. Copies only those, not every frame. An open
+    /// frame import's frames follow, since its commit publishes the index staged from them.
     package func frameMetasForTextStaging(atOrAbove floor: UInt64) async -> [FrameMeta] {
         await withReadLock {
             let committedCount = UInt64(toc.frames.count)
@@ -225,11 +226,13 @@ extension Wax {
             let candidates = Array(Set(ids)).sorted()
 
             let metas = frameMetasIncludingPendingUnlocked(frameIds: candidates)
-            return candidates.compactMap { frameId -> FrameMeta? in
+            let staged = candidates.compactMap { frameId -> FrameMeta? in
                 guard let meta = metas[frameId] else { return nil }
                 guard frameId >= floor || meta.status == .deleted || meta.supersededBy != nil else { return nil }
                 return meta
             }
+            guard let frameImport else { return staged }
+            return staged + frameImport.frames.filter { $0.id >= floor }
         }
     }
 

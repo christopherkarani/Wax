@@ -116,6 +116,20 @@ extension FTS5SearchEngine {
         coverageRecorded = true
     }
 
+    /// The coverage watermark, to hand back to ``lowerCoverage(to:)`` when a commit that
+    /// staged a higher one fails.
+    package func coverageWatermark() -> UInt64 {
+        coveredBelowFrameId
+    }
+
+    /// Moves the watermark back down to `frameId` after the commit of frames it vouched for
+    /// failed; the next stage records the lowered value.
+    package func lowerCoverage(to frameId: UInt64) {
+        guard frameId < coveredBelowFrameId else { return }
+        coveredBelowFrameId = frameId
+        dirty = true
+    }
+
     private func indexedFrameIds(atOrAbove floor: UInt64) async throws -> Set<Int64> {
         let dbQueue = self.dbQueue
         let floorValue = try Self.toInt64(floor)

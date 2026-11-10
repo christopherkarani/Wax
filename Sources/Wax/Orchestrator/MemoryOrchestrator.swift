@@ -337,6 +337,11 @@ package actor MemoryOrchestrator {
         }
     }
 
+    /// Records that a commit set the store's binding. Internal only because of the file split.
+    func markMemoryBindingEnsured() {
+        hasEnsuredMemoryBinding = true
+    }
+
     /// Embed live searchable frames that have no vectors using the attached provider.
     ///
     /// Returns the number of frames newly embedded. Already-vectorized frames are
@@ -680,7 +685,8 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func flushSerialized() async throws {
+    /// Internal only because of the file split; call only while holding `flushMutex`.
+    func flushSerialized() async throws {
         if let enrichmentPipeline {
             let drained = try await enrichmentPipeline.waitUntilIdle(
                 bestEffortTimeout: config.enrichmentFlushDrainTimeout

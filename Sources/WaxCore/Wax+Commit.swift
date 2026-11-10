@@ -51,6 +51,11 @@ extension Wax {
         // for those cases; it should never be reached in normal crash-injection runs but
         // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
+        // Another thread may take the signal a little later on a busy machine; wait for it
+        // instead of reaching the safety net first.
+        for _ in 0..<1_000 {
+            usleep(10_000)
+        }
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
 #else
@@ -92,8 +97,9 @@ extension Wax {
         var vectorChanges: [PendingVectorChange]
     }
 
+    /// Applies the pending mutations, then `frameImport`'s frames and embeddings after them.
     /// Internal only because of the file split; call only while holding `opLock` for writing.
-    func applyPendingMutationsIntoTOC() throws -> AppliedPendingMutations {
+    func applyPendingMutationsIntoTOC(frameImport: FrameImport? = nil) throws -> AppliedPendingMutations {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
@@ -172,6 +178,16 @@ extension Wax {
                 }
                 vectorChanges.append(.remove(removal.frameId))
             }
+        }
+
+        if let frameImport {
+            guard frameImport.firstFrameId == UInt64(toc.frames.count + newFrames.count) else {
+                throw WaxError.invalidToc(
+                    reason: "frame import starts at \(frameImport.firstFrameId), expected \(toc.frames.count + newFrames.count)"
+                )
+            }
+            newFrames += frameImport.frames
+            vectorChanges += frameImport.embeddings.map(PendingVectorChange.put)
         }
 
         if !newFrames.isEmpty {

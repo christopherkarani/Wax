@@ -44,10 +44,14 @@ struct RememberDedupIndex {
         }
     }
 
-    /// Call after a commit applied every pending mutation to the TOC.
-    mutating func didCommit() {
+    /// Call after a commit applied every pending mutation to the TOC. `committed` are frames
+    /// the commit added without a pending put: a frame import's.
+    mutating func didCommit(appending committed: [FrameMeta] = []) {
         pendingFrames.removeAll(keepingCapacity: true)
         pendingRetiredIds.removeAll(keepingCapacity: true)
+        for frame in committed {
+            insert(frame)
+        }
     }
 
     /// Document ids carrying `contentHash`, newest first.

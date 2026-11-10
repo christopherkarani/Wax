@@ -10,7 +10,9 @@ import Wax
 // Phases (`--phase`):
 //   ingest  create a fresh store, save the first N passages one by one (calling flush()
 //           every --flush-every saves), flush, close. --save-batch N > 1 saves them
-//           through `save(contentsOf:)`, N passages per call.
+//           through `save(contentsOf:)`, N passages per call. --import loads all N in one
+//           atomic `importDocuments(_:)` call instead (--save-batch and --flush-every are
+//           ignored).
 //   query   open the existing store (cold open + first search), then run the warm query
 //           loop for each mode and score recall@10 against exact brute force.
 //   all     ingest, then query (the query phase reopens the store in the same process).
@@ -33,6 +35,7 @@ struct PerfOptions {
     var modes: [String] = ["vector", "hybrid"]
     var flushEvery = 1_000
     var saveBatch = 1
+    var importAll = false
 
     static func parse(_ args: ArraySlice<String>) throws -> PerfOptions {
         var options = PerfOptions()
@@ -59,6 +62,7 @@ struct PerfOptions {
             case "--modes": options.modes = try value(flag).split(separator: ",").map(String.init)
             case "--flush-every": options.flushEvery = try integer(flag)
             case "--save-batch": options.saveBatch = max(1, try integer(flag))
+            case "--import": options.importAll = true
             default: throw BenchError.usage("unknown flag \(flag)")
             }
         }
@@ -285,6 +289,8 @@ struct IngestResult: Encodable {
     let flushEvery: Int
     /// Passages per save call: 1 calls `save(_:metadata:)`, more call `save(contentsOf:)`.
     let saveBatch: Int
+    /// Whether every passage was loaded by one `importDocuments(_:)` call.
+    let importAll: Bool
     /// Wall time of the save loop, including the periodic flushes.
     let saveSeconds: Double
     /// Part of `saveSeconds` spent in the periodic flush() calls.
@@ -305,6 +311,7 @@ struct IngestResult: Encodable {
     enum CodingKeys: String, CodingKey {
         case docs
         case flushEvery = "flush_every", saveBatch = "save_batch", periodicFlushSeconds = "periodic_flush_seconds"
+        case importAll = "import"
         case saveSeconds = "save_seconds", flushSeconds = "flush_seconds", closeSeconds = "close_seconds"
         case docsPerSecond = "docs_per_second", perSave = "per_save"
         case perSaveMeanMsByDecile = "per_save_mean_ms_by_decile"
@@ -411,7 +418,14 @@ func runIngest(_ options: PerfOptions, dataset: PerfDataset, embedder: Precomput
     var periodicFlushMs = 0.0
     let start = ContinuousClock.now
     let texts = dataset.corpusTexts
-    for lower in stride(from: 0, to: texts.count, by: options.saveBatch) {
+    if options.importAll {
+        let saveStart = ContinuousClock.now
+        try await memory.importDocuments(texts.indices.map { (texts[$0], ["doc_id": String($0)]) })
+        saveMs.append(elapsedMs(since: saveStart))
+        let seconds = elapsedMs(since: start) / 1_000
+        perfLog("import \(texts.count)/\(options.count) (\(Int(Double(texts.count) / seconds)) docs/s)")
+    }
+    for lower in stride(from: 0, to: options.importAll ? 0 : texts.count, by: options.saveBatch) {
         let upper = min(lower + options.saveBatch, texts.count)
         let saveStart = ContinuousClock.now
         if options.saveBatch == 1 {
@@ -448,6 +462,7 @@ func runIngest(_ options: PerfOptions, dataset: PerfDataset, embedder: Precomput
         docs: options.count,
         flushEvery: options.flushEvery,
         saveBatch: options.saveBatch,
+        importAll: options.importAll,
         saveSeconds: saveSeconds,
         periodicFlushSeconds: periodicFlushMs / 1_000,
         flushSeconds: flushSeconds,
