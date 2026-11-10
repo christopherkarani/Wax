@@ -98,6 +98,7 @@ enum WaxRepoProcess {
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL? = nil,
+        environment: [String: String] = [:],
         timeout: TimeInterval = 10
     ) async throws -> Output {
         try await BlockingWork.run {
@@ -105,6 +106,7 @@ enum WaxRepoProcess {
                 executableURL: executableURL,
                 arguments: arguments,
                 currentDirectoryURL: currentDirectoryURL,
+                environment: environment,
                 timeout: timeout
             )
         }
@@ -114,12 +116,15 @@ enum WaxRepoProcess {
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL?,
+        environment: [String: String],
         timeout: TimeInterval
     ) throws -> Output {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
         process.currentDirectoryURL = currentDirectoryURL
+        // Overrides on top of the parent's environment, set on the child only.
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in override }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

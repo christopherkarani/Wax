@@ -46,7 +46,13 @@ enum GitLogParser {
         args.append("--")
 
         let output = try await runGit(args)
-        return parseOutput(output)
+        let commits = parseOutput(output)
+        // Empty output is an empty history. Output with no parsable commit
+        // is a failure, and callers must not treat it as "nothing to index".
+        guard !commits.isEmpty || output.allSatisfy(\.isWhitespace) else {
+            throw GitLogError.unparsableOutput
+        }
+        return commits
     }
 
     /// Returns the full diff for a single commit hash.
@@ -222,6 +228,7 @@ enum GitLogParser {
 enum GitLogError: LocalizedError, CustomStringConvertible, Sendable {
     case gitFailed(String)
     case invalidRevision(String)
+    case unparsableOutput
 
     var description: String { errorDescription ?? "git failed" }
 
@@ -231,6 +238,8 @@ enum GitLogError: LocalizedError, CustomStringConvertible, Sendable {
             return message
         case .invalidRevision(let value):
             return "Refusing non-hex git revision '\(value)'. Re-run with --full to rebuild the index checkpoint."
+        case .unparsableOutput:
+            return "git log produced output but no commits could be parsed from it; the existing index was left unchanged."
         }
     }
 }

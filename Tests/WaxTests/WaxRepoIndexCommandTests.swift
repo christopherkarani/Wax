@@ -13,18 +13,6 @@ import Testing
     #expect(closeRange.lowerBound < finalizeRange.lowerBound)
 }
 
-@Test func waxRepoFullReindexKeepsOutputsWhenNoCommitsAreIndexed() throws {
-    let source = try WaxRepoSource.load("Commands/IndexCommand.swift")
-
-    // A full reindex that parsed nothing has nothing to swap in, so the
-    // empty-history branch must return before touching the existing store.
-    let guardRange = try #require(source.range(of: "guard !commits.isEmpty else {"))
-    let returnRange = try #require(source.range(of: "return", range: guardRange.upperBound..<source.endIndex))
-    let emptyBranch = source[guardRange.upperBound..<returnRange.lowerBound]
-    #expect(!emptyBranch.contains("storePath"))
-    #expect(!emptyBranch.contains("lastHashFile"))
-}
-
 @Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
 func waxRepoIndexKeepsCommitWhoseDiffIsNotUTF8() async throws {
@@ -63,7 +51,7 @@ func waxRepoIndexKeepsCommitWhoseDiffIsNotUTF8() async throws {
 
 @Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
                 "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
-func waxRepoFullReindexWithNoCommitsKeepsExistingStore() async throws {
+func waxRepoFullReindexOfEmptyHistoryClearsExistingStore() async throws {
     let executable = try WaxRepoProcess.builtProductURL()
     let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-full-empty")
     defer { try? FileManager.default.removeItem(at: repo) }
@@ -105,9 +93,64 @@ func waxRepoFullReindexWithNoCommitsKeepsExistingStore() async throws {
         timeout: 15
     )
     #expect(fullIndex.status == 0, "full index failed: \(fullIndex.stderr)")
-    #expect(!fullIndex.stdout.contains("Found"), "full index output: \(fullIndex.stdout)")
-    #expect(FileManager.default.fileExists(atPath: storePath), "full reindex with no commits deleted the store")
-    #expect(FileManager.default.fileExists(atPath: hashPath), "full reindex with no commits deleted the checkpoint")
+    #expect(fullIndex.stdout.contains("No new commits to index."), "full index output: \(fullIndex.stdout)")
+    // Nothing indexable now, so the previous branch's commits must not stay searchable.
+    #expect(!FileManager.default.fileExists(atPath: storePath), "full reindex of an empty history kept the old store")
+    #expect(!FileManager.default.fileExists(atPath: hashPath), "full reindex of an empty history kept the old checkpoint")
+}
+
+@Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,
+                "Build with --traits default,WaxRepo on macOS 14+ to run WaxRepo executable smoke tests"))
+func waxRepoFullReindexFailsAndKeepsStoreWhenGitLogIsUnparsable() async throws {
+    let executable = try WaxRepoProcess.builtProductURL()
+    let repo = try await WaxRepoFixture.makeGitRepo(prefix: "wax-repo-unparsable-log")
+    defer { try? FileManager.default.removeItem(at: repo) }
+    try await WaxRepoFixture.addCommit(
+        to: repo,
+        fileName: "a.txt",
+        contents: "indexed content\n",
+        message: "Indexed commit"
+    )
+    let firstIndex = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only"],
+        timeout: 15
+    )
+    #expect(firstIndex.status == 0, "first index failed: \(firstIndex.stderr)")
+    let storePath = repo.appendingPathComponent(".wax-repo/store.wax").path
+    let hashPath = repo.appendingPathComponent(".wax-repo/last-indexed-hash").path
+    let storeBefore = try Data(contentsOf: URL(fileURLWithPath: storePath))
+    let hashBefore = try Data(contentsOf: URL(fileURLWithPath: hashPath))
+
+    // Lossy decoding means a real repository no longer yields output the
+    // parser cannot read, so a `git` shim on PATH answers `log` with junk
+    // and passes every other subcommand to the real git.
+    let shimDir = repo.appendingPathComponent(".git/wax-test-shim", isDirectory: true)
+    try FileManager.default.createDirectory(at: shimDir, withIntermediateDirectories: true)
+    let shim = shimDir.appendingPathComponent("git")
+    try """
+    #!/bin/sh
+    for arg in "$@"; do
+      if [ "$arg" = "log" ]; then
+        printf 'this is not git log output\\n'
+        exit 0
+      fi
+    done
+    exec /usr/bin/git "$@"
+    """.write(to: shim, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim.path)
+
+    let fullIndex = try await WaxRepoProcess.run(
+        executableURL: executable,
+        arguments: ["index", "--repo-path", repo.path, "--text-only", "--full"],
+        environment: ["PATH": "\(shimDir.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")"],
+        timeout: 15
+    )
+    #expect(fullIndex.status != 0, "unparsable git log must fail the index: \(fullIndex.stdout)")
+    #expect(fullIndex.stderr.contains("no commits could be parsed"), "stderr: \(fullIndex.stderr)")
+    #expect(!fullIndex.stdout.contains("No new commits to index."))
+    #expect(try Data(contentsOf: URL(fileURLWithPath: storePath)) == storeBefore)
+    #expect(try Data(contentsOf: URL(fileURLWithPath: hashPath)) == hashBefore)
 }
 
 @Test(.disabled(if: !waxRepoExecutableSmokeTestsEnabled,

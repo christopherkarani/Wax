@@ -75,9 +75,15 @@ struct IndexCommand: ParsableCommand {
             since: sinceHash
         )
 
-        // A full reindex that parsed nothing has nothing to swap in, so the
-        // existing store and checkpoint stay in place.
+        // Empty means git succeeded with nothing to index: GitLogParser throws
+        // when git printed output it could not parse. A full reindex of an
+        // empty history clears the old index rather than keep stale commits.
         guard !commits.isEmpty else {
+            try resetFullReindexOutputsIfNeeded(
+                full: full,
+                storePath: storePath,
+                lastHashFile: lastHashFile
+            )
             print("No new commits to index.")
             return
         }
@@ -156,6 +162,12 @@ private func checkpointHash(for commits: [GitCommit], maxCommits: Int) -> String
     return latestHash
 }
 
+private func resetFullReindexOutputsIfNeeded(full: Bool, storePath: URL, lastHashFile: URL) throws {
+    guard full else { return }
+    try removeItemIfExists(at: storePath)
+    try removeItemIfExists(at: lastHashFile)
+}
+
 private func finalizeFullReindex(
     tempStorePath: URL,
     storePath: URL,
@@ -216,6 +228,11 @@ private func finalizeFullReindex(
     if movedHashBackup {
         try? fileManager.removeItem(at: backupHashPath)
     }
+}
+
+private func removeItemIfExists(at url: URL) throws {
+    guard FileManager.default.fileExists(atPath: url.path) else { return }
+    try FileManager.default.removeItem(at: url)
 }
 
 #endif
