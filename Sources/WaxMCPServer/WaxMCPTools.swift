@@ -258,7 +258,10 @@ enum WaxMCPTools {
             )
             if !hadExplicitSession,
                shouldRetryInactiveBinding(name: params.name, response: response, sessionHint: sessionHint) {
-                clearStaleInjectedBinding(sessionHint: sessionHint)
+                clearStaleInjectedBinding(
+                    sessionHint: sessionHint,
+                    injectedSessionID: nonEmptyString(forwarded["session_id"]).flatMap(UUID.init(uuidString:))
+                )
                 forwarded.removeValue(forKey: "session_id")
                 do {
                     try await autoEnsureSessionIfNeeded(
@@ -422,8 +425,19 @@ final class MCPClientSessionHint: @unchecked Sendable {
     }
 
     func current() -> UUID? {
-        lock.lock()
-        defer { lock.unlock() }
+        lock.withLock { currentLocked() }
+    }
+
+    func currentOwnership() -> MCPMemoryOwnership? {
+        lock.withLock { currentOwnershipLocked() }
+    }
+
+    func connectionContext() -> MCPConnectionContext? {
+        lock.withLock { context }
+    }
+
+    /// Caller holds `lock`. This hint's binding, else the connection's in the registry.
+    private func currentLocked() -> UUID? {
         if let sessionID { return sessionID }
         if let connectionKey {
             return MCPBoundSessionRegistry.shared.current(for: connectionKey)
@@ -431,20 +445,13 @@ final class MCPClientSessionHint: @unchecked Sendable {
         return nil
     }
 
-    func currentOwnership() -> MCPMemoryOwnership? {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Caller holds `lock`.
+    private func currentOwnershipLocked() -> MCPMemoryOwnership? {
         if let ownership { return ownership }
         if let connectionKey {
             return MCPBoundSessionRegistry.shared.ownership(for: connectionKey)
         }
         return nil
-    }
-
-    func connectionContext() -> MCPConnectionContext? {
-        lock.lock()
-        defer { lock.unlock() }
-        return context
     }
 
     func transportKey() -> String? {
@@ -456,11 +463,11 @@ final class MCPClientSessionHint: @unchecked Sendable {
     /// wipe attribution that already resolved.
     func updateRoots(_ roots: [String]) {
         guard !roots.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        var updated = context ?? MCPConnectionContext(transportKey: connectionKey ?? "")
-        updated.mcpRoots = roots
-        context = updated
+        lock.withLock {
+            var updated = context ?? MCPConnectionContext(transportKey: connectionKey ?? "")
+            updated.mcpRoots = roots
+            context = updated
+        }
     }
 
     /// Fetch client roots when attribution needs them. Non-empty results are
@@ -480,22 +487,25 @@ final class MCPClientSessionHint: @unchecked Sendable {
     }
 
     private var hasCachedRoots: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return context?.mcpRoots.isEmpty == false
+        lock.withLock { context?.mcpRoots.isEmpty == false }
     }
 
+    /// Each branch reads and rebinds under one lock hold. A `session_end` that
+    /// checked the ID, released the lock and then cleared the binding could
+    /// otherwise wipe a `session_start` that landed in between.
     func remember(name: String, payload: AgentBrokerValue) {
         switch name {
         case "session_start", "session_resume", "session_open":
-            if let sessionID = Self.workingSessionID(from: payload) {
-                bind(sessionID, ownership: ownership ?? .transport)
+            if let started = Self.workingSessionID(from: payload) {
+                lock.withLock {
+                    bindLocked(started, ownership: currentOwnershipLocked() ?? .transport)
+                }
             }
         case "session_end", "session_close":
             if let ended = Self.workingSessionID(from: payload) {
-                let matches = lock.withLock { sessionID == ended }
-                if matches {
-                    bind(nil, ownership: nil)
+                lock.withLock {
+                    guard currentLocked() == ended else { return }
+                    bindLocked(nil, ownership: nil)
                 }
             }
         default:
@@ -504,10 +514,15 @@ final class MCPClientSessionHint: @unchecked Sendable {
     }
 
     func bind(_ sessionID: UUID?, ownership: MCPMemoryOwnership?) {
-        lock.lock()
+        lock.withLock { bindLocked(sessionID, ownership: ownership) }
+    }
+
+    /// Caller holds `lock`. The registry write stays inside it so the registry
+    /// and this hint cannot disagree after two binds race. The registry lock is
+    /// a leaf (`current()` already takes it under this lock), so the order is fixed.
+    private func bindLocked(_ sessionID: UUID?, ownership: MCPMemoryOwnership?) {
         self.sessionID = sessionID
         self.ownership = ownership
-        lock.unlock()
         if let connectionKey {
             MCPBoundSessionRegistry.shared.remember(
                 key: connectionKey,
@@ -520,6 +535,19 @@ final class MCPClientSessionHint: @unchecked Sendable {
     func clearBinding() {
         bind(nil, ownership: nil)
         if let connectionKey {
+            MCPAutoSessionCoordinatorStore.shared.remove(for: connectionKey)
+        }
+    }
+
+    /// Clears the binding only while it is still `stale`, in one lock hold, so a
+    /// session started after the stale one was injected is kept.
+    func clearBinding(ifBoundTo stale: UUID) {
+        let cleared = lock.withLock {
+            guard currentLocked() == stale else { return false }
+            bindLocked(nil, ownership: nil)
+            return true
+        }
+        if cleared, let connectionKey {
             MCPAutoSessionCoordinatorStore.shared.remove(for: connectionKey)
         }
     }
@@ -693,10 +721,12 @@ private extension WaxMCPTools {
         return ["remember", "recall", "memory_append"].contains(canonical)
     }
 
-    static func clearStaleInjectedBinding(sessionHint: MCPClientSessionHint?) {
-        guard let sessionID = sessionHint?.current() else { return }
-        MCPBoundSessionRegistry.shared.invalidate(sessionID: sessionID)
-        sessionHint?.clearBinding()
+    /// `injectedSessionID` is the session the failed call ran with. Only that
+    /// binding is cleared: a session started meanwhile on this connection stays.
+    static func clearStaleInjectedBinding(sessionHint: MCPClientSessionHint?, injectedSessionID: UUID?) {
+        guard let hint = sessionHint, let stale = injectedSessionID ?? hint.current() else { return }
+        MCPBoundSessionRegistry.shared.invalidate(sessionID: stale)
+        hint.clearBinding(ifBoundTo: stale)
     }
 
     /// Backward compat for pre-filters clients (e.g. v0.1.47) that send
