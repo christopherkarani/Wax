@@ -1048,6 +1048,20 @@ struct WaxCLIMemoryTests {
         #expect(tuning.computeUnitsOrder.map(\.rawValue) == ["cpuAndGPU", "cpuOnly"])
     }
 
+    @Test func embedderTimeoutIgnoresNonFiniteValuesAndConvertsHugeOnesWithoutTrapping() {
+        let defaultTimeout = CommandLineEmbedderRuntimeTuning.defaultTimeoutSeconds
+        for raw in ["inf", "infinity", "+inf", "nan"] {
+            let tuning = CommandLineEmbedderRuntimeTuning.fromEnvironment(["WAX_EMBEDDER_TIMEOUT_SECS": raw])
+            #expect(tuning.timeoutSeconds == defaultTimeout, "\(raw)")
+        }
+
+        let huge = CommandLineEmbedderRuntimeTuning.fromEnvironment(["WAX_EMBEDDER_TIMEOUT_SECS": "1e16"])
+        #expect(huge.timeoutSeconds == 1e16)
+        #expect(huge.timeoutDuration == .milliseconds(Int64.max))
+        #expect(CommandLineEmbedderRuntimeTuning(timeoutSeconds: .infinity).timeoutDuration == .milliseconds(Int64.max))
+        #expect(CommandLineEmbedderRuntimeTuning(timeoutSeconds: 1.5).timeoutDuration == .milliseconds(1_500))
+    }
+
     @Test func brokerConfigurationChangesWhenEmbedderTuningChanges() throws {
         let first = try AgentBrokerCLI.configuration(
             storePath: "~/Library/Application Support/Wax/a.wax",
