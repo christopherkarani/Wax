@@ -9,7 +9,7 @@ description: Benchmarking and performance auditing for the Wax repo. Use when ru
 
 Use this skill to benchmark Wax changes, isolate the hottest code path, and separate real regressions from noisy samples.
 
-The repo builds with Swift 6.1 and `StrictConcurrency` enabled, so audit for Swift 6.2 concurrency risks without assuming 6.2-only language mode.
+The repo builds with Swift 6.2 (`swift-tools-version: 6.2`) in Swift 6 language mode. Blocking work that must leave an actor uses `@concurrent` functions; `NonisolatedNonsendingByDefault` is not enabled, so do not assume it when auditing where async functions run.
 
 ## Workflow
 

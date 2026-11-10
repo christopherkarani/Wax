@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Behavior change: building Wax now needs Swift 6.2 or later (`swift-tools-version: 6.2`, Xcode 26). App deployment targets are unchanged (macOS 14 / iOS 17). The Homebrew formula's build dependency moves to Xcode 26.0, which needs macOS 15.6 or later to build from source.
+- File and PDF ingest and the Vision image description and OCR run in `@concurrent` functions instead of detached tasks, so cancelling the caller now reaches them and they run at the caller's priority.
+- `BinaryDecoder` reads integers in place instead of copying each one into a new `Data`, and decodes `Data` slices whose start index is not zero, which used to trap.
 - Fixed the broker corpus build leaving each source store open. Its close ran in an unstructured task that could be dropped, for example when the CLI exited; the close is now awaited before the next store is ingested, and a failed close is reported as an error.
 - Broker timeouts now use a monotonic clock: the daemon's idle timeout, request-read deadline and shutdown drain, and the client's startup, shutdown, peer-exit grace and response deadlines. A system clock change no longer cuts them short or stretches them.
 - Behavior change: on first open, the text index catches up on frames it had not indexed yet (frames recovered from the WAL after a crash, or written without a text index). The store's owning writer does this (`Memory`, the broker's long-term and live session stores) and commits it on close, so a `Memory` opened only to read can write once on close. Brief opens (corpus, ended-session, migration verification, Markdown export, direct-store CLI) and read-only sessions never write.

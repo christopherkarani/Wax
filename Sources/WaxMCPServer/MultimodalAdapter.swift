@@ -33,53 +33,53 @@ struct MultimodalAdapter: MultimodalEmbeddingProvider, Sendable {
     }
 
     func embed(image: CGImage) async throws -> [Float] {
-        let description = try await describe(image: image)
+        let description = try await Self.describe(image: image)
         return try await base.embed(description)
     }
 
-    private func describe(image: CGImage) async throws -> String {
+    /// Vision work is synchronous and heavy, so it runs on the concurrent pool.
+    @concurrent
+    private static func describe(image: CGImage) async throws -> String {
         #if canImport(Vision)
-        return await Task.detached(priority: .utility) {
-            var labels: [String] = []
-            var ocrText: [String] = []
+        var labels: [String] = []
+        var ocrText: [String] = []
 
-            let classifyRequest = VNClassifyImageRequest()
-            let textRequest = VNRecognizeTextRequest()
-            textRequest.recognitionLevel = .fast
-            textRequest.usesLanguageCorrection = false
+        let classifyRequest = VNClassifyImageRequest()
+        let textRequest = VNRecognizeTextRequest()
+        textRequest.recognitionLevel = .fast
+        textRequest.usesLanguageCorrection = false
 
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
-            // If Vision fails (e.g. unsupported format), fall through to a
-            // generic description rather than propagating to the caller.
-            do {
-                try handler.perform([classifyRequest, textRequest])
-            } catch {
-                return "image content"
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        // If Vision fails (e.g. unsupported format), fall through to a
+        // generic description rather than propagating to the caller.
+        do {
+            try handler.perform([classifyRequest, textRequest])
+        } catch {
+            return "image content"
+        }
+
+        if let observations = classifyRequest.results {
+            labels = observations
+                .filter { $0.confidence > MultimodalAdapter.minimumLabelConfidence }
+                .prefix(5)
+                .map(\.identifier)
+        }
+
+        if let observations = textRequest.results {
+            ocrText = observations.compactMap { observation in
+                observation.topCandidates(1).first?.string
             }
+        }
 
-            if let observations = classifyRequest.results {
-                labels = observations
-                    .filter { $0.confidence > MultimodalAdapter.minimumLabelConfidence }
-                    .prefix(5)
-                    .map(\.identifier)
-            }
+        let compactOCR = ocrText
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if let observations = textRequest.results {
-                ocrText = observations.compactMap { observation in
-                    observation.topCandidates(1).first?.string
-                }
-            }
-
-            let compactOCR = ocrText
-                .joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            let labelText = labels.isEmpty ? "unknown scene" : labels.joined(separator: ", ")
-            if compactOCR.isEmpty {
-                return "image labels: \(labelText)"
-            }
-            return "image labels: \(labelText). recognized text: \(compactOCR)"
-        }.value
+        let labelText = labels.isEmpty ? "unknown scene" : labels.joined(separator: ", ")
+        if compactOCR.isEmpty {
+            return "image labels: \(labelText)"
+        }
+        return "image labels: \(labelText). recognized text: \(compactOCR)"
         #else
         return "image content"
         #endif

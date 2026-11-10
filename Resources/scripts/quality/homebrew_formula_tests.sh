@@ -20,8 +20,14 @@ swift_tools_version="$(sed -nE 's#^// swift-tools-version: ([0-9]+\.[0-9]+).*#\1
   || fail "Homebrew formula version $formula_version does not match npm package version $package_version"
 
 [[ -n "$xcode_version" ]] || fail "could not extract Xcode dependency from Homebrew formula"
-if [[ "$swift_tools_version" == "6.1" && "$xcode_version" != "16.3" ]]; then
-  fail "Homebrew formula Xcode dependency $xcode_version does not satisfy Swift tools $swift_tools_version"
+# Oldest Xcode whose Swift compiler reads each swift-tools-version.
+case "$swift_tools_version" in
+  6.1) required_xcode="16.3" ;;
+  6.2) required_xcode="26.0" ;;
+  *) fail "no Xcode mapping for Swift tools $swift_tools_version; add one here" ;;
+esac
+if [[ "$xcode_version" != "$required_xcode" ]]; then
+  fail "Homebrew formula Xcode dependency $xcode_version does not satisfy Swift tools $swift_tools_version (needs $required_xcode)"
 fi
 
 if grep -q 'inreplace "Sources/WaxVectorSearchMiniLM/MiniLMEmbedder.swift"' "$FORMULA"; then

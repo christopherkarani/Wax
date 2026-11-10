@@ -164,7 +164,7 @@ assert_full_pass_rate() {
 require_swiftpm_traits() {
   if ! swift test --help | grep -q -- "--traits <traits>"; then
     echo "FAIL: current Swift toolchain does not support package traits (--traits)." >&2
-    echo "Install a Swift toolchain that supports package traits (for example Swift 6.1+)." >&2
+    echo "Install a Swift toolchain that supports package traits (Swift 6.2+)." >&2
     return 1
   fi
 }

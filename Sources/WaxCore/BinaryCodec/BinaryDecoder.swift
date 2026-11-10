@@ -15,7 +15,9 @@ package struct BinaryDecoder {
     private let limits: Limits
 
     package init(data: Data, limits: Limits = .init()) throws {
-        self.data = data
+        // Offsets below are relative to the first byte. A slice with a nonzero
+        // start index is rebased once so every read stays in bounds.
+        self.data = data.startIndex == 0 ? data : Data(data)
         self.limits = limits
     }
 
@@ -31,59 +33,52 @@ package struct BinaryDecoder {
         count >= 0 && count <= remainingByteCount / max(1, minimumElementBytes)
     }
 
-    private mutating func read(count: Int, context: String) throws -> Data {
+    private func requireAvailable(_ count: Int, context: String) throws {
         guard count >= 0 else {
             throw WaxError.decodingError(reason: "invalid read size \(count) (\(context))")
         }
-        guard cursor + count <= data.count else {
+        guard count <= remainingByteCount else {
             throw WaxError.decodingError(reason: "truncated buffer while reading \(context)")
         }
+    }
+
+    private mutating func read(count: Int, context: String) throws -> Data {
+        try requireAvailable(count, context: context)
         let range = cursor..<(cursor + count)
         cursor += count
         return data.subdata(in: range)
     }
 
+    /// Reads a little-endian integer in place, without copying its bytes out first.
+    private mutating func readInteger<T: FixedWidthInteger>(_ type: T.Type, context: String) throws -> T {
+        let size = MemoryLayout<T>.size
+        try requireAvailable(size, context: context)
+        let offset = cursor
+        let raw = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+        cursor += size
+        return T(littleEndian: raw)
+    }
+
     // MARK: - Primitives
 
     package mutating func decode(_ type: UInt8.Type) throws -> UInt8 {
-        let bytes = try read(count: 1, context: "UInt8")
-        return bytes[0]
+        try readInteger(UInt8.self, context: "UInt8")
     }
 
     package mutating func decode(_ type: UInt16.Type) throws -> UInt16 {
-        let bytes = try read(count: 2, context: "UInt16")
-        var raw: UInt16 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 2)
-        }
-        return UInt16(littleEndian: raw)
+        try readInteger(UInt16.self, context: "UInt16")
     }
 
     package mutating func decode(_ type: UInt32.Type) throws -> UInt32 {
-        let bytes = try read(count: 4, context: "UInt32")
-        var raw: UInt32 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 4)
-        }
-        return UInt32(littleEndian: raw)
+        try readInteger(UInt32.self, context: "UInt32")
     }
 
     package mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
-        let bytes = try read(count: 8, context: "UInt64")
-        var raw: UInt64 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 8)
-        }
-        return UInt64(littleEndian: raw)
+        try readInteger(UInt64.self, context: "UInt64")
     }
 
     package mutating func decode(_ type: Int64.Type) throws -> Int64 {
-        let bytes = try read(count: 8, context: "Int64")
-        var raw: Int64 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 8)
-        }
-        return Int64(littleEndian: raw)
+        try readInteger(Int64.self, context: "Int64")
     }
 
     // MARK: - Variable bytes
