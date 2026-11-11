@@ -318,17 +318,25 @@ extension MemoryOrchestrator {
         )
     }
 
+    /// Texts up to this many UTF-8 bytes are tokenized on the caller's thread. Tokenizing never
+    /// suspends and grows with the text: a long remember held a cooperative thread for hundreds
+    /// of milliseconds, so longer texts move to a private queue. For a short text that hop
+    /// cost more than the tokenizing and cut 100k-passage ingest by about 10%.
+    static let inlineChunkingMaxBytes = 4_096
+
     /// Internal only for tests.
     func ingestChunks(for content: String) async -> [String] {
         let strategy = config.chunking
         let fitsMiniLMInput = config.fitsChunksToMiniLMInput
-        // Tokenizing never suspends and grows with the text: a long remember held a
-        // cooperative thread for hundreds of milliseconds.
-        return await BlockingWork.runAsync {
+        let work: @Sendable () async -> [String] = {
             let chunks = await TextChunker.chunk(text: content, strategy: strategy)
             guard fitsMiniLMInput else { return chunks }
             return await MiniLMChunkSizing.fit(chunks)
         }
+        if content.utf8.count <= Self.inlineChunkingMaxBytes {
+            return await work()
+        }
+        return await BlockingWork.runAsync(work)
     }
 
     /// Document metadata a remember writes: the caller's keys, the content hash and the
