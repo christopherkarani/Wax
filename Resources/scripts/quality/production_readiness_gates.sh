@@ -9,18 +9,6 @@ cd "$ROOT_DIR"
 GATE_LOG_DIR="${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wax-gate.XXXXXX")}"
 mkdir -p "$GATE_LOG_DIR"
 
-# swift-testing's `--parallel` otherwise starts every test at once. On a 3-core macOS
-# runner the ~2,500 tests then wait in one cooperative-pool queue: a trivial test took
-# 36-54s to finish and 10s hang guards in readiness tests expired. Twice the cores keeps
-# wall time (575 WaxCoreTests: 13.4s unbounded, 13.7s at width 4 on 16 cores) and halves
-# CPU (71.6s to 37.8s user). Set the variable to override.
-if [[ -z "${SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH:-}" ]]; then
-  gate_cpu_count="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
-  SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH="$((2 * gate_cpu_count))"
-fi
-export SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH
-echo "GATE_TEST_PARALLELIZATION_WIDTH: $SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH"
-
 # Tests that started and never finished, in start order. A timed-out run otherwise shows
 # only its log tail, where a test that hung long before the timeout does not appear.
 # Handles swift-testing ("Test x() started." / "passed|failed after" / "skipped:") and
