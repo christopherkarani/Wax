@@ -16,20 +16,39 @@ private func runCaptured(
     arguments: [String],
     timeoutSeconds: TimeInterval? = nil
 ) async throws -> CapturedProcessOutput {
-    try await BlockingWork.run {
-        try ProcessRunner.runCaptured(command: command, arguments: arguments, timeoutSeconds: timeoutSeconds)
+    try await timedRunCaptured(command: command, arguments: arguments, timeoutSeconds: timeoutSeconds).output
+}
+
+/// Times `runCaptured` on the thread that runs it. Timed from the test body, the figure also
+/// held the wait to resume the test on a busy cooperative pool: 3-5 s in a parallel run.
+private func timedRunCaptured(
+    command: String,
+    arguments: [String],
+    timeoutSeconds: TimeInterval? = nil
+) async throws -> (output: CapturedProcessOutput, seconds: TimeInterval) {
+    let (result, seconds) = await BlockingWork.run { () -> (Result<CapturedProcessOutput, any Error>, TimeInterval) in
+        let started = Date()
+        let result = Result {
+            try ProcessRunner.runCaptured(command: command, arguments: arguments, timeoutSeconds: timeoutSeconds)
+        }
+        return (result, Date().timeIntervalSince(started))
     }
+    return (try result.get(), seconds)
 }
 
 @Suite("ProcessRunner")
 struct ProcessRunnerTests {
     @Test func runCapturedTimeoutThrowsOnSlowCommand() async throws {
-        let started = Date()
-        await #expect(throws: CLIError.self) {
-            _ = try await runCaptured(command: "/bin/sleep", arguments: ["30"], timeoutSeconds: 0.2)
+        let (result, seconds) = await BlockingWork.run { () -> (Result<CapturedProcessOutput, any Error>, TimeInterval) in
+            let started = Date()
+            let result = Result {
+                try ProcessRunner.runCaptured(command: "/bin/sleep", arguments: ["30"], timeoutSeconds: 0.2)
+            }
+            return (result, Date().timeIntervalSince(started))
         }
+        #expect(throws: CLIError.self) { try result.get() }
         // Must fail fast: well under the sleep duration.
-        #expect(Date().timeIntervalSince(started) < 10)
+        #expect(seconds < 10)
     }
 
     @Test func runCapturedTimeoutAllowsFastCommand() async throws {
@@ -78,13 +97,12 @@ struct ProcessRunnerTests {
     }
 
     @Test func runCapturedReturnsWhenABackgroundChildHoldsThePipes() async throws {
-        let started = Date()
-        let output = try await runCaptured(
+        let (output, seconds) = try await timedRunCaptured(
             command: "/bin/sh",
             arguments: ["-c", "sleep 20 & echo done"],
             timeoutSeconds: 2
         )
-        #expect(Date().timeIntervalSince(started) < 10)
+        #expect(seconds < 10)
         #expect(output.stdout.contains("done"))
     }
 
