@@ -8,7 +8,7 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
-  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while the built-in MiniLM provider loads (default `MiniLMEmbeddings` trait, iOS 18/macOS 15+), then live-attaches. Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
+  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while a built-in provider loads (iOS 18/macOS 15+), then live-attaches: e5 for a new store (default `E5Embeddings` trait), and for an existing store the built-in that wrote its vectors (a MiniLM store keeps MiniLM). Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
   - Opening waits for another process's lock on the store file for at most 30 seconds, then throws `WaxError.lockUnavailable`. Earlier releases waited indefinitely. Share one process (for example the MCP HTTP server) per store instead of opening it from several.
   - `Memory` owns the store it opens: if the text index is missing frames (after a crash, or frames written without one), opening indexes them and `close()` commits that. A store opened only to read can therefore still be written once on close.
 - `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
@@ -34,7 +34,7 @@ Source: `Sources/Wax/Memory.swift`
 
 `public enum EmbeddingSource: Sendable` — selects the embedder for a store:
 
-- `.automatic` — open immediately while the built-in MiniLM provider loads; live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
+- `.automatic` — open immediately while a built-in provider loads (e5 for a new store, the store's own built-in for an existing one); live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
 - `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is missing on this OS/build, or `BuiltInEmbeddingProviderError.timedOut` when compile exceeds `timeoutSeconds`.
 - `.custom(any EmbeddingProvider)` — bring your own embedder.
 

@@ -36,8 +36,8 @@ import Foundation
 import Wax
 
 func openDocsMemory() async throws -> Memory {
-    // Creates or opens the file. On iOS 18 / macOS 15+ MiniLM is wired automatically
-    // when the default package trait is enabled.
+    // Creates or opens the file. On iOS 18 / macOS 15+ a built-in embedder is wired
+    // automatically: e5 for a new store, or the one an existing store was written with.
     try await Memory(at: URL.documentsDirectory.appending(path: "memory.wax"))
 }
 ```

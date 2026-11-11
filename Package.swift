@@ -110,7 +110,7 @@ let package = Package(
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
     ],
     traits: [
-        .default(enabledTraits: ["MiniLMEmbeddings"]),
+        .default(enabledTraits: ["MiniLMEmbeddings", "E5Embeddings"]),
         .init(
             name: "MiniLMEmbeddings",
             description: "Includes the built-in MiniLM embedding provider",
@@ -381,6 +381,7 @@ let package = Package(
             resources: [.process("Fixtures")],
             swiftSettings: [
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
             ]
         ),
         .testTarget(

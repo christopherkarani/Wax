@@ -51,6 +51,8 @@ public actor Memory {
     /// Selects the embedding provider that backs vector search for a ``Memory`` store.
     public enum EmbeddingSource: Sendable {
         /// Prefer a built-in provider but open immediately while it loads.
+        /// A new store gets e5 (`E5Embeddings` trait, on by default). An existing store
+        /// keeps the built-in that wrote its vectors, so a MiniLM store stays on MiniLM.
         /// Hybrid search is text until compile finishes and this store live-attaches;
         /// ``vectorOnly`` throws until then. If the provider cannot activate, status is
         /// ``EmbeddingStatus/unavailable`` (the vector index remains). Inspect
@@ -418,11 +420,16 @@ public actor Memory {
         await orchestrator.setSearchSnapshotHoldForTesting(duration)
     }
 
+    /// The built-in `.automatic` chose for this store, or `nil` for other embedding sources.
+    package var automaticProviderForTesting: BuiltInEmbeddingProvider? {
+        orchestrator.automaticProvider
+    }
+
     private static func openRequest(for config: Config) -> EmbeddingOpenRequest {
         guard config.enableVectorSearch else { return .disabled }
         switch config.embedding {
         case .automatic:
-            return .automatic(.miniLM, .default)
+            return .automatic(.e5, .default)
         case .builtIn(let provider, let options):
             return .builtIn(provider, options)
         case .custom(let provider):

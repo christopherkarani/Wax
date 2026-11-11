@@ -22,12 +22,14 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// L2 normalization is baked into the CoreML graph (CLS extraction + L2 norm),
     /// so the caller (MemoryOrchestrator.embedOne) should NOT re-normalize.
     package nonisolated let normalize: Bool = false
-    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+    /// The identity a store records for vectors from this model.
+    package static let bindingIdentity = EmbeddingIdentity(
         provider: "Wax",
         model: "ArcticEmbedS",
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let identity: EmbeddingIdentity? = ArcticEmbedder.bindingIdentity
 
     private nonisolated let model: ArcticEmbeddings
 

@@ -23,7 +23,8 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAwareE
     /// L2 normalization is baked into the CoreML graph (mean pooling + L2 norm),
     /// so the caller (MemoryOrchestrator.embedOne) should NOT re-normalize.
     package nonisolated let normalize: Bool = false
-    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+    /// The identity a store records for vectors from this model.
+    package static let bindingIdentity = EmbeddingIdentity(
         provider: "Wax",
         // The suffix marks query/passage-prefixed vectors, so a store written by the earlier
         // unprefixed e5 build refuses to open instead of mixing two embedding spaces.
@@ -31,6 +32,7 @@ package actor E5Embedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAwareE
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let identity: EmbeddingIdentity? = E5Embedder.bindingIdentity
 
     private nonisolated let model: E5Embeddings
 

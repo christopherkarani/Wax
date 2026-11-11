@@ -136,7 +136,7 @@ public actor MyEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
 The WaxVectorSearchMiniLM module provides a ready-to-use on-device provider based on the all-MiniLM-L6-v2 model. See the WaxVectorSearchMiniLM documentation for details.
 
-Two more on-device CoreML providers are opt-in package traits. Select them through `BuiltInEmbeddingProvider` (for example `config.embedding = .builtIn(.e5)`):
+Two more on-device CoreML providers ship as package traits. `E5Embeddings` is on by default, and `Memory.Config.embedding = .automatic` gives new stores e5; `ArcticEmbeddings` is opt-in. Select one explicitly through `BuiltInEmbeddingProvider` (for example `config.embedding = .builtIn(.arctic)`):
 
 | Provider | Model | Trait | Pooling | License |
 |----------|-------|-------|---------|---------|

@@ -125,7 +125,7 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
             case .arctic:
                 "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
             case .e5:
-                "requires iOS 18/macOS 15 or later and the `E5Embeddings` package trait"
+                "requires iOS 18/macOS 15 or later and the default `E5Embeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
         case .timedOut(let provider):

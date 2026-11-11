@@ -25,6 +25,8 @@ package actor MemoryOrchestrator {
 
     let wax: Wax
     let config: OrchestratorConfig
+    /// The built-in chosen for this store when it was opened for `.automatic` embedding.
+    package let automaticProvider: BuiltInEmbeddingProvider?
     /// Internal only because of the file split; immutable after init.
     let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
@@ -128,6 +130,7 @@ package actor MemoryOrchestrator {
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
         initialEmbeddingStatus: EmbeddingStatus? = nil,
+        automaticNewStoreProvider: BuiltInEmbeddingProvider? = nil,
         nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
@@ -168,9 +171,24 @@ package actor MemoryOrchestrator {
         // Callers that pass `initialEmbeddingStatus` own the missing-provider rule
         // (index remains + unavailable / loading + live attach).
         let existingMemoryBinding = await wax.memoryBinding()
-        var resolvedConfig = config.sizingChunks(
-            forEmbedderModel: embedder?.identity?.model ?? existingMemoryBinding?.embeddingModel
-        )
+        // `.automatic` without a provider yet: the store's binding picks the built-in to load.
+        var automaticProvider: BuiltInEmbeddingProvider?
+        if let automaticNewStoreProvider, embedder == nil {
+            // Presence only: the manifest count avoids decoding the vector index at open.
+            let committedVectors = await wax.committedVecIndexManifest()?.vectorCount ?? 0
+            let pendingVectors = await wax.pendingEmbeddingMutations()
+            automaticProvider = AutomaticEmbedderChoice.provider(
+                binding: existingMemoryBinding,
+                storeHasVectors: committedVectors > 0 || !pendingVectors.isEmpty,
+                newStore: automaticNewStoreProvider,
+                available: BuiltInEmbeddingCompiler.bindingIdentities()
+            )
+        }
+        self.automaticProvider = automaticProvider
+        var resolvedConfig = automaticProvider.map { config.sizingChunks(for: $0) }
+            ?? config.sizingChunks(
+                forEmbedderModel: embedder?.identity?.model ?? existingMemoryBinding?.embeddingModel
+            )
         var lifecycle: EmbedderLifecycle
         if let initialEmbeddingStatus {
             lifecycle = Self.lifecycle(from: initialEmbeddingStatus, provider: embedder)
@@ -183,7 +201,7 @@ package actor MemoryOrchestrator {
             WaxDiagnostics.logSwallowed(
                 WaxError.io("vector search requested but no EmbeddingProvider configured"),
                 context: "MemoryOrchestrator init",
-                fallback: "text-only search; Memory(at:) auto-wires the built-in MiniLM embedder on iOS 18/macOS 15+"
+                fallback: "text-only search; Memory(at:) auto-wires a built-in embedder on iOS 18/macOS 15+"
             )
         } else if let embedder {
             lifecycle = .ready(

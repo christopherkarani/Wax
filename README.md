@@ -269,7 +269,7 @@ if let best = results.items.first {
 try await memory.close()
 ```
 
-`Memory(at:)` auto-configures the on-device MiniLM embedder on iOS 18 / macOS 15+ (default `MiniLMEmbeddings` trait). Hybrid search is text until the embedder attaches; `vectorOnly` throws. Check `results.diagnostics` and `memory.stats()`.
+`Memory(at:)` auto-configures an on-device embedder on iOS 18 / macOS 15+: e5-small-v2 for a new store, and for an existing store the built-in that wrote it (default `E5Embeddings` and `MiniLMEmbeddings` traits). Hybrid search is text until the embedder attaches; `vectorOnly` throws. Check `results.diagnostics` and `memory.stats()`.
 
 <details>
 <summary><strong>SwiftUI</strong></summary>
@@ -319,7 +319,7 @@ swift run WaxDemo --mode all
 | Mode | What it runs |
 |:-----|:-------------|
 | `memory` | Save → search → close → reopen → search |
-| `embeddings` | Built-in MiniLM + hybrid/vector search |
+| `embeddings` | Built-in embedder + hybrid/vector search |
 | `fm` | Foundation Models memory session (or a clear unavailable message) |
 | `all` | Default |
 
@@ -356,7 +356,7 @@ Cold open p95         9.2 ms
 
 Cold open is store open only. The built-in embedder's first CoreML compile is a separate one-time cost; later launches reuse the cached compiled model.
 
-Text search works with no embedder. Semantic search auto-configures MiniLM on iOS 18 / macOS 15+. The CLI and MCP server fail loud when hybrid/vector is requested without an embedder. The Swift SDK reports the mode that ran via `results.diagnostics`.
+Text search works with no embedder. Semantic search auto-configures a built-in embedder (e5 for new stores) on iOS 18 / macOS 15+. The CLI and MCP server fail loud when hybrid/vector is requested without an embedder. The Swift SDK reports the mode that ran via `results.diagnostics`.
 
 ---
 
@@ -417,7 +417,7 @@ WAL plus dual headers. The next open recovers.
 The engine can run via Rosetta. Metal vector acceleration and the `waxmcp` npm package target Apple Silicon. Build `wax-cli` from source on Intel.
 
 **I get "embedder unavailable" on hybrid search.**  
-Hybrid and vector need a local embedding model. Swift `Memory(at:)` loads MiniLM on iOS 18 / macOS 15+, or set `Memory.Config.embedding = .custom(...)`. Older OS: text-only or bring your own embedder. CLI/MCP fail loud; Swift reports the effective mode on `diagnostics`.
+Hybrid and vector need a local embedding model. Swift `Memory(at:)` loads a built-in embedder (e5 for new stores, MiniLM for MiniLM stores) on iOS 18 / macOS 15+, or set `Memory.Config.embedding = .custom(...)`. Older OS: text-only or bring your own embedder. CLI/MCP fail loud; Swift reports the effective mode on `diagnostics`.
 
 **Two agents time out on the same store.**  
 One writer. Start `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh` and point every host at `http://127.0.0.1:3000/mcp`.

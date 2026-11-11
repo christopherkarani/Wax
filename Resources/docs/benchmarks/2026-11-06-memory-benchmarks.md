@@ -18,7 +18,7 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
 | Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
 
-Wax leads every retrieval and QA benchmark here. With the opt-in e5-small-v2 embedder
+Wax leads every retrieval and QA benchmark here. With the e5-small-v2 embedder (the default for new stores)
 (33M parameters, against Contriever's 110M) and the opt-in MiniLM cross-encoder reranker
 (22 MB, on device), LongMemEval-S retrieval reaches 0.938 R_all@5 against Contriever's 0.902,
 and QA accuracy 89.4% against 87.7% over three reader and judge runs each (the lowest
@@ -78,7 +78,7 @@ Small embedders were scored through Wax hybrid search before any was converted t
 ML. On LongMemEval R_all@5: MiniLM 0.883, gte-small 0.883, e5-small-v2 0.883, bge-small
 0.885, bge-base 0.888. None beat Contriever by default. e5-small-v2 with the text weight
 lowered to 0.4 (`.hybrid(alpha: 0.4)`) reached 0.900, against Contriever's 0.902. It ships
-as the opt-in `E5Embeddings` trait (`7b1892861`); MiniLM stays the default.
+as the `E5Embeddings` trait (`7b1892861`). Since FP16 compute made it cheaper to embed than MiniLM, it is on by default, and `.automatic` gives new stores e5 while stores bound to MiniLM keep MiniLM.
 
 e5 was trained with `"query: "` before queries and `"passage: "` before passages, and the
 first build embedded both bare. With the prefixes (`802f8ffa8`), hybrid at text weight 0.4
@@ -374,7 +374,7 @@ Fixes on the branch, each with tests:
 ## Open issues
 
 1. **LongMemEval multi-session retrieval.** MiniLM trails Contriever by 9 points on
-   multi-session questions. The opt-in e5-small-v2 embedder at text weight 0.4 comes
+   multi-session questions. The e5-small-v2 embedder (default for new stores) at text weight 0.4 comes
    within 0.002 of Contriever overall (0.900 against 0.902). No small embedder tested
    beats it with Wax's default weights.
 2. **Hybrid tail latency.** Hybrid p95 is 14.8 ms at 100k, against 4.3 ms for vector

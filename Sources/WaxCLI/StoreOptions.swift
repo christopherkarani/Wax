@@ -28,7 +28,7 @@ struct VectorStoreOptions: ParsableArguments {
 
     @OptionGroup var runtime: EmbedderRuntimeOptions
 
-    @Option(name: .customLong("embedder"), help: "Embedder to use: minilm (default), arctic, or e5")
+    @Option(name: .customLong("embedder"), help: "Embedder for a new store: minilm (default), arctic, or e5. A store with vectors keeps the built-in that wrote them unless --require-vector is set")
     var embedder: EmbedderChoice = .minilm
 
     @Flag(
