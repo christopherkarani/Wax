@@ -236,6 +236,7 @@ package enum AgentBrokerClient {
         }
         onBrokerLaunched?(process.processIdentifier)
 
+        let launchedAt = ContinuousClock.now
         let deadline = ContinuousClock.Instant.deadline(afterSeconds: timeoutSeconds)
         var observedExitStatus: Int32?
         var observedStderr: String?
@@ -292,6 +293,9 @@ package enum AgentBrokerClient {
             return observedExitStatus == nil
         }
 
+        // Recorded before the cleanup below stops it. A broker still running at the
+        // deadline was slow or stuck; one that had exited crashed or lost a race.
+        let runningAtDeadline = process.isRunning
         await terminateLaunchedBroker(process)
 
         if let observedExitStatus, observedExitStatus != EXIT_SUCCESS {
@@ -312,8 +316,33 @@ package enum AgentBrokerClient {
             throw BrokerClientError(message)
         }
 
-        throw BrokerClientError("Timed out waiting for broker startup.")
+        throw BrokerClientError(Self.startupTimeoutMessage(
+            waited: launchedAt.duration(to: .now),
+            pid: process.processIdentifier,
+            runningAtDeadline: runningAtDeadline,
+            stderr: observedStderr
+        ))
         #endif
+    }
+
+    /// Says how long the start waited and whether the broker was still running, so a
+    /// timeout on a loaded host can be told from a broker that hung or crashed.
+    static func startupTimeoutMessage(
+        waited: Duration,
+        pid: pid_t,
+        runningAtDeadline: Bool,
+        stderr: String?
+    ) -> String {
+        let seconds = Double(waited.components.seconds)
+            + Double(waited.components.attoseconds) / 1_000_000_000_000_000_000
+        var message = "Timed out waiting for broker startup after \(String(format: "%.1f", seconds))s"
+        message += runningAtDeadline
+            ? " (broker \(pid) was running but never answered its socket)."
+            : " (broker \(pid) had exited)."
+        if let stderr = stderr?.trimmingCharacters(in: .whitespacesAndNewlines), !stderr.isEmpty {
+            message += " stderr: \(stderr.suffix(2_000))"
+        }
+        return message
     }
 
     /// Returns only after the launched broker has exited, so a cancelled or failed

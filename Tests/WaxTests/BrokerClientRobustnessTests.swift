@@ -21,6 +21,26 @@ import Darwin
         #expect(seconds == 7)
     }
 
+    /// A startup timeout says how long it waited and whether the broker was alive, so a
+    /// slow host reads differently from a broker that crashed.
+    @Test func startupTimeoutMessageSaysHowLongAndWhetherTheBrokerWasRunning() {
+        let slow = AgentBrokerClient.startupTimeoutMessage(
+            waited: .milliseconds(10_040),
+            pid: 4242,
+            runningAtDeadline: true,
+            stderr: nil
+        )
+        #expect(slow == "Timed out waiting for broker startup after 10.0s (broker 4242 was running but never answered its socket).")
+
+        let exited = AgentBrokerClient.startupTimeoutMessage(
+            waited: .seconds(3),
+            pid: 7,
+            runningAtDeadline: false,
+            stderr: "  lock held by another process\n"
+        )
+        #expect(exited == "Timed out waiting for broker startup after 3.0s (broker 7 had exited). stderr: lock held by another process")
+    }
+
     @Test func configuredSecondsAcceptsPositiveFiniteValues() {
         let configured = AgentBrokerClient.configuredSeconds(
             envKey: Self.envKey,
