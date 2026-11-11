@@ -19,7 +19,12 @@ import Testing
     func daemonSocketModeDropsASlowClientAndExitsCleanlyOnSIGTERM() async throws {
         let fixture = try DaemonFixture()
         defer { fixture.remove() }
-        let daemon = try fixture.launch(arguments: ["--socket-path", fixture.socketPath])
+        // Shutdown must drop the slow client. With the 5s read deadline, a loaded runner can
+        // answer it with a deadline error before the test gets to SIGTERM.
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: DaemonFixture.longReadDeadline
+        )
         defer { daemon.forceStop() }
         try await fixture.waitForSocket(daemon)
 
