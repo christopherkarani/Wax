@@ -13,10 +13,10 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.938 / 0.950** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.905 / 0.926 without the reranker | Contriever 0.902 / 0.927 | 0.742 / – |
 | LongMemEval-S QA | accuracy, mean of 3 runs | **89.4%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 5); task-averaged 90.2% | Contriever top 5: 87.7%; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
-| Systems, 100k passages | ingest | 13,826 docs/s with `importDocuments`; 4,864 saving one at a time | sqlite-vec 40,608; FAISS flat 1.24M (vectors only) | 136 docs/s |
+| Systems, 100k passages | ingest | 13,826 docs/s with `importDocuments`; 9,674 saving one at a time | sqlite-vec 43,584; FAISS flat 484k (vectors only); Chroma 2,541 | 136 docs/s |
 | Systems, 100k passages | disk | 308 MB with `importDocuments`; 417 MB saving one at a time | Chroma 408 MB (text + vectors) | 13.5 GB |
-| Systems, 100k passages | vector p95 | 4.4 ms | Chroma HNSW 1.4 ms | 64–97 ms |
-| Systems, 100k passages | cold open + first query | 482 ms | Chroma HNSW 384 ms | 840 ms |
+| Systems, 100k passages | vector p50 / p95 | **1.09** / 1.57 ms | Chroma HNSW 1.13 / 1.41 ms; FAISS flat 1.40 / 1.46 ms | 64–97 ms (p95) |
+| Systems, 100k passages | cold open + first query | **406 ms** | Chroma HNSW 511 ms | 840 ms |
 
 Wax leads every retrieval and QA benchmark here. With the e5-small-v2 embedder (the default for new stores)
 (33M parameters, against Contriever's 110M) and the opt-in MiniLM cross-encoder reranker
@@ -239,21 +239,20 @@ metadata; most competitors store vectors only.
 | sqlite-vec | 10,000 | 43,334 | 19 | 4 | 2.27 / 2.54 | 1.000 |
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
-| Wax `save` | 100,000 | 4,864 | 417 | 482 | 3.86 / 4.44 | 0.998 |
+| Wax `save` | 100,000 | 9,674 | 417 | 406 | 1.09 / 1.57 | 0.998 |
 | Wax `importDocuments` | 100,000 | 13,826 | 308 | – | – | 0.998 |
-| Chroma HNSW | 100,000 | 2,820 | 408 | 384 | 1.06 / 1.37 | 0.976 |
-| sqlite-vec | 100,000 | 40,608 | 192 | 27 | 26.3 / 28.9 | 1.000 |
-| usearch HNSW | 100,000 | 12,630 | 169 | 65 | 0.34 / 0.48 | 0.968 |
-| FAISS flat | 100,000 | 1,236,051 | 154 | 53 | 1.57 / 2.04 | 1.000 |
+| Chroma HNSW | 100,000 | 2,541 | 408 | 511 | 1.13 / 1.41 | 0.976 |
+| sqlite-vec | 100,000 | 43,584 | 192 | 27 | 24.8 / 26.2 | 1.000 |
+| usearch HNSW | 100,000 | 16,738 | 168 | 62 | 0.27 / 0.34 | 0.966 |
+| FAISS flat | 100,000 | 484,381 | 154 | 50 | 1.40 / 1.46 | 1.000 |
 | LanceDB IVF-PQ | 100,000 | 22,584 | 177 | 556 | 2.49 / 3.02 | 0.522 |
 
-Wax ingest and disk figures are medians of three runs on the final build at load average
-55–125, higher than the 30–57 of the competitor runs. Wax latency and open figures are the
-median of three query runs at load average 5.9 on the build before the last three changes
-below; on the loaded machine the final build matched or beat that build in back-to-back
-runs on the same store (vector p50 3.9 to 3.2 ms; text, hybrid and open unchanged). Wax
-hybrid search (text and vector lanes fused) at 100k: p50 5.7 ms, p95 14.8 ms, p99 17.8 ms
-(before `386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9).
+The 100k rows for Wax `save`, Chroma, sqlite-vec, usearch and FAISS flat were rerun
+together on 2026-11-11 at `7f857833c`, load average 5–12: Wax figures are medians of three
+fresh ingest-and-query passes, competitor figures are single runs. The `importDocuments`,
+LanceDB and 10k rows are from the earlier runs at load average 30–125. Wax hybrid search
+(text and vector lanes fused) at 100k: p50 4.6 ms, p95 14.8 ms, p99 18.9 ms (before
+`386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9).
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
 sqlite-vec 1.9 GB at 330 ms. Wax was not run at 1M (see open issues).
@@ -377,14 +376,15 @@ Fixes on the branch, each with tests:
    multi-session questions. The e5-small-v2 embedder (default for new stores) at text weight 0.4 comes
    within 0.002 of Contriever overall (0.900 against 0.902). No small embedder tested
    beats it with Wax's default weights.
-2. **Hybrid tail latency.** Hybrid p95 is 14.8 ms at 100k, against 4.3 ms for vector
+2. **Hybrid tail latency.** Hybrid p95 is 14.8 ms at 100k, against 1.6 ms for vector
    search. The OR fallback still scores every matching row. Going under 10 ms needs top-k
    pruning (MaxScore or WAND), which stock FTS5 cannot do: a custom `bm25` function or a
    separate inverted index.
 3. **Ingest against bulk-loading stores.** Commits now write text-index and vector deltas,
    but still rewrite and hash the whole table of contents (about 15% of commit work at
-   100k). Wax ingests 4,864 docs/s saving one at a time and 13,826 with `importDocuments`,
-   against 32k–1.2M for the vector-only stores. Wax was not run at 1M.
-4. **Cold open** is 482 ms at 100k, against 384 ms for Chroma. What remains is mostly the
-   vector segment's checksum and decode (about 150 ms) and the table-of-contents parse
-   (about 105 ms). Going lower needs lazy loading or per-chunk checksums.
+   100k). Wax ingests 9,674 docs/s saving one at a time and 13,826 with `importDocuments`,
+   against 17k–484k for the vector-only stores. Wax was not run at 1M.
+4. **Cold open** is 406 ms at 100k, ahead of Chroma's 511 ms but far behind the
+   vector-only stores (27–62 ms). What remains is mostly the vector segment's checksum and
+   decode and the table-of-contents parse. Going lower needs lazy loading or per-chunk
+   checksums.
