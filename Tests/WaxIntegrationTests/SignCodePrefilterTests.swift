@@ -110,38 +110,48 @@ private func queries(near rows: [[Float]], count: Int, seed: UInt64) -> [[Float]
 
 // MARK: - SignCodeIndex
 
-@Test("Sign-code shortlist keeps the true top 10 of embedding-like rows")
-func signCodeShortlistKeepsTrueTopTen() {
-    let dimensions = 128
-    let rows = embeddingLikeRows(count: 8_000, dimensions: dimensions, unitNorm: true, seed: 0x5157)
-    let index = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
-    #expect(index.count == rows.count)
+/// The recall checks below spend seconds of CPU (24 s for the 52k store in debug) without
+/// suspending. Run on the cooperative pool, each held one of a CI runner's three threads
+/// and starved every other test, so they run on a GCD thread and return what to check.
+private func offCooperativePool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await BlockingWork.run(work)
+}
 
+private struct ShortlistRecall: Sendable {
+    var indexCount = 0
+    var shortlistSizes: [Int] = []
     var found = 0
-    let probes = queries(near: rows, count: 40, seed: 0x5158)
+    var probeCount = 0
+    var recall: Double { Double(found) / Double(probeCount * 10) }
+}
+
+private func shortlistRecall(rowCount: Int, unitNorm: Bool, seed: UInt64) -> ShortlistRecall {
+    let dimensions = 128
+    let rows = embeddingLikeRows(count: rowCount, dimensions: dimensions, unitNorm: unitNorm, seed: seed)
+    let index = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
+    var result = ShortlistRecall(indexCount: index.count)
+    let probes = queries(near: rows, count: 40, seed: seed + 1)
+    result.probeCount = probes.count
     for query in probes {
         let shortlist = Set(index.candidates(for: query, limit: SignCodeIndex.candidateCount(topK: 10)))
-        #expect(shortlist.count == SignCodeIndex.minCandidates)
-        found += exactTopRows(rows, query: query, k: 10).filter(shortlist.contains).count
+        result.shortlistSizes.append(shortlist.count)
+        result.found += exactTopRows(rows, query: query, k: 10).filter(shortlist.contains).count
     }
-    let recall = Double(found) / Double(probes.count * 10)
-    #expect(recall >= 0.99, "shortlist recall@10 \(recall)")
+    return result
+}
+
+@Test("Sign-code shortlist keeps the true top 10 of embedding-like rows")
+func signCodeShortlistKeepsTrueTopTen() async {
+    let result = await offCooperativePool { shortlistRecall(rowCount: 8_000, unitNorm: true, seed: 0x5157) }
+    #expect(result.indexCount == 8_000)
+    #expect(result.shortlistSizes.allSatisfy { $0 == SignCodeIndex.minCandidates }, "\(result.shortlistSizes)")
+    #expect(result.recall >= 0.99, "shortlist recall@10 \(result.recall)")
 }
 
 @Test("Sign-code shortlist scales magnitudes for unnormalized dot product")
-func signCodeShortlistHandlesUnnormalizedRows() {
-    let dimensions = 128
-    let rows = embeddingLikeRows(count: 8_000, dimensions: dimensions, unitNorm: false, seed: 0xD07)
-    let index = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
-
-    var found = 0
-    let probes = queries(near: rows, count: 40, seed: 0xD08)
-    for query in probes {
-        let shortlist = Set(index.candidates(for: query, limit: SignCodeIndex.candidateCount(topK: 10)))
-        found += exactTopRows(rows, query: query, k: 10).filter(shortlist.contains).count
-    }
-    let recall = Double(found) / Double(probes.count * 10)
-    #expect(recall >= 0.99, "shortlist recall@10 \(recall)")
+func signCodeShortlistHandlesUnnormalizedRows() async {
+    let result = await offCooperativePool { shortlistRecall(rowCount: 8_000, unitNorm: false, seed: 0xD07) }
+    #expect(result.recall >= 0.99, "shortlist recall@10 \(result.recall)")
 }
 
 @Test("Sign-code index edits match an index encoded from the final rows")
@@ -172,29 +182,45 @@ func signCodeIndexEditsMatchFreshEncoding() {
     #expect(index.candidates(for: replacement, limit: 1) == [42])
 }
 
-@Test("Sign-code shortlist is the same over any number of parallel slices")
-func signCodeShortlistAcrossSlices() {
-    // Large enough that the default picks several slices.
-    let dimensions = 128
-    let rows = embeddingLikeRows(count: 52_000, dimensions: dimensions, unitNorm: true, seed: 0x511CE)
-    let index = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
-    let limit = SignCodeIndex.candidateCount(topK: 10)
-
+private struct SliceAgreement: Sendable {
+    var limit = 0
+    var singleCounts: [Int] = []
+    var distinctCounts: [Int] = []
+    /// Per probe: slice counts (0 = the default) whose shortlist differed from one slice.
+    var mismatchedSlices: [[Int]] = []
     var found = 0
-    let probes = queries(near: rows, count: 20, seed: 0x511CF)
-    for query in probes {
-        let single = index.candidates(for: query, limit: limit, slices: 1)
-        #expect(single.count == limit)
-        #expect(Set(single).count == limit, "shortlist rows are distinct")
-        for slices in [2, 3, 7] {
-            #expect(Set(index.candidates(for: query, limit: limit, slices: slices)) == Set(single))
+    var probeCount = 0
+    var recall: Double { Double(found) / Double(probeCount * 10) }
+}
+
+@Test("Sign-code shortlist is the same over any number of parallel slices")
+func signCodeShortlistAcrossSlices() async {
+    let result = await offCooperativePool { () -> SliceAgreement in
+        // Large enough that the default picks several slices.
+        let dimensions = 128
+        let rows = embeddingLikeRows(count: 52_000, dimensions: dimensions, unitNorm: true, seed: 0x511CE)
+        let index = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
+        var result = SliceAgreement(limit: SignCodeIndex.candidateCount(topK: 10))
+        let probes = queries(near: rows, count: 20, seed: 0x511CF)
+        result.probeCount = probes.count
+        for query in probes {
+            let single = index.candidates(for: query, limit: result.limit, slices: 1)
+            result.singleCounts.append(single.count)
+            result.distinctCounts.append(Set(single).count)
+            var mismatched = [2, 3, 7].filter { slices in
+                Set(index.candidates(for: query, limit: result.limit, slices: slices)) != Set(single)
+            }
+            if Set(index.candidates(for: query, limit: result.limit)) != Set(single) { mismatched.append(0) }
+            result.mismatchedSlices.append(mismatched)
+            result.found += exactTopRows(rows, query: query, k: 10).filter(Set(single).contains).count
         }
-        #expect(Set(index.candidates(for: query, limit: limit)) == Set(single))
-        found += exactTopRows(rows, query: query, k: 10).filter(Set(single).contains).count
+        return result
     }
+    #expect(result.singleCounts.allSatisfy { $0 == result.limit }, "\(result.singleCounts)")
+    #expect(result.distinctCounts.allSatisfy { $0 == result.limit }, "shortlist rows are distinct")
+    #expect(result.mismatchedSlices.allSatisfy { $0.isEmpty }, "\(result.mismatchedSlices)")
     // Denser than the 8k store, so the 256-row shortlist covers less of each neighborhood.
-    let recall = Double(found) / Double(probes.count * 10)
-    #expect(recall >= 0.98, "shortlist recall@10 \(recall)")
+    #expect(result.recall >= 0.98, "shortlist recall@10 \(result.recall)")
 }
 
 @Test("Sign-code shortlist size grows with topK above its floor")

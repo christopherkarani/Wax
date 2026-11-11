@@ -754,7 +754,7 @@ struct WaxCLIMemoryTests {
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
 
-        let responseLine = try sendBrokerSocketRequest(
+        let responseLine = try await sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
             timeoutSeconds: 3
@@ -809,14 +809,14 @@ struct WaxCLIMemoryTests {
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
-        try waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
+        try await waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
 
         // Well inside the idle timeout measured from that close; the old
         // last-accept baseline exited within one 200ms poll slice.
         try await Task.sleep(for: .milliseconds(600))
         #expect(process.isRunning, "daemon exited as soon as its long-lived client left")
 
-        let responseLine = try sendBrokerSocketRequest(
+        let responseLine = try await sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
             timeoutSeconds: 3
@@ -825,8 +825,14 @@ struct WaxCLIMemoryTests {
         #expect(response.ok)
     }
 
-    /// Reads and discards until the peer closes `fd`. The bound only catches a hang.
-    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) throws {
+    /// Reads and discards until the peer closes `fd`. The bound only catches a hang. The wait
+    /// runs on a GCD thread: it outlasts the daemon's read deadline, and on the cooperative
+    /// pool it held one of a CI runner's three threads that long.
+    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) async throws {
+        try await BlockingWork.run { try waitForPeerCloseBlocking(fd: fd, timeoutSeconds: timeoutSeconds) }
+    }
+
+    private func waitForPeerCloseBlocking(fd: Int32, timeoutSeconds: Int32) throws {
         var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -2168,7 +2174,19 @@ struct WaxCLIMemoryTests {
         return fd
     }
 
+    /// The round trip polls for the reply for up to `timeoutSeconds`, so it runs on a GCD
+    /// thread rather than holding a cooperative one.
     private func sendBrokerSocketRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double
+    ) async throws -> String {
+        try await BlockingWork.run {
+            try sendBrokerSocketRequestBlocking(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        }
+    }
+
+    private func sendBrokerSocketRequestBlocking(
         _ request: AgentBrokerRequest,
         socketPath: String,
         timeoutSeconds: Double
