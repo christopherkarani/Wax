@@ -15,6 +15,8 @@ package struct BinaryDecoder {
     private let limits: Limits
 
     package init(data: Data, limits: Limits = .init()) throws {
+        // `cursor` counts from the first byte. A slice keeps its parent's indices,
+        // so absolute positions add `startIndex` instead of copying the buffer.
         self.data = data
         self.limits = limits
     }

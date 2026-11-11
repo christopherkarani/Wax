@@ -60,7 +60,7 @@ Edit one path.
 
 ## Toolchain and Verification
 
-- Swift 6.1+ package traits. Default trait: `MiniLMEmbeddings`. Opt-in: `ArcticEmbeddings`, `E5Embeddings`, `MCPServer`, `WaxRepo`. Linux CI uses Swift 6.2.
+- Swift 6.2+ (`swift-tools-version: 6.2`; `@concurrent` needs it). Package traits. Default traits: `MiniLMEmbeddings`, `E5Embeddings`. Opt-in: `ArcticEmbeddings`, `MCPServer`, `WaxRepo`. Linux CI uses Swift 6.2.
 - Day-to-day: `swift test --filter <TestTargetOrCase>`. MCP process tests require `--traits MCPServer`. MiniLM/Arctic/e5 suites stay skipped unless `WAX_TEST_MINILM=1` / `WAX_TEST_ARCTIC=1` / `WAX_TEST_E5=1`.
 - Do not start with unfiltered `swift test` — it pulls benches. PR gate: `bash Resources/scripts/quality/production_readiness_gates.sh full` (skips soak/burn benches). CI also runs `opt-in-configs` (MiniLM inference + `--traits WaxRepo`); Arctic stays opt-in.
 - Tests must not `setenv`/`unsetenv`: `--parallel` runs suites concurrently. Inject an `environment:` dictionary into the code under test (or into a spawned `Process`). Assert ordering/events, not tight wall-clock bounds.

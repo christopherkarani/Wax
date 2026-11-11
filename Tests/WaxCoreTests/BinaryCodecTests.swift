@@ -383,3 +383,44 @@ import Testing
     var decoder = try BinaryDecoder(data: data)
     #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
 }
+
+/// A `Data` slice keeps its parent's indices; decoding must read from the
+/// slice's first byte, not from absolute index 0.
+@Test func decodesFromDataSliceWithNonzeroStartIndex() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt8(7))
+    encoder.encode(UInt16(0xBEEF))
+    encoder.encode(UInt32(0xDEADBEEF))
+    encoder.encode(UInt64(0x0102_0304_0506_0708))
+    encoder.encode(Int64(-42))
+    try encoder.encode("slice")
+
+    let padded = Data([0xFF, 0xFF, 0xFF]) + encoder.data
+    let slice = padded.dropFirst(3)
+    #expect(slice.startIndex == 3)
+
+    var decoder = try BinaryDecoder(data: slice)
+    #expect(try decoder.decode(UInt8.self) == 7)
+    #expect(try decoder.decode(UInt16.self) == 0xBEEF)
+    #expect(try decoder.decode(UInt32.self) == 0xDEADBEEF)
+    #expect(try decoder.decode(UInt64.self) == 0x0102_0304_0506_0708)
+    #expect(try decoder.decode(Int64.self) == -42)
+    #expect(try decoder.decode(String.self) == "slice")
+    try decoder.finalize()
+}
+
+/// Integers sit at odd offsets in the format; reads must not assume alignment.
+@Test func decodesUnalignedIntegers() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt8(1))
+    encoder.encode(UInt64.max - 1)
+    encoder.encode(UInt8(2))
+    encoder.encode(UInt32(0x0A0B_0C0D))
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    #expect(try decoder.decode(UInt8.self) == 1)
+    #expect(try decoder.decode(UInt64.self) == UInt64.max - 1)
+    #expect(try decoder.decode(UInt8.self) == 2)
+    #expect(try decoder.decode(UInt32.self) == 0x0A0B_0C0D)
+    try decoder.finalize()
+}
