@@ -94,18 +94,9 @@ package actor WaxSession {
         self.writerLeaseId = acquiredWriterLeaseId
 
         do {
-            let resolvedTextEngine: FTS5SearchEngine? = if config.enableTextSearch || config.enableStructuredMemory {
-                try await FTS5SearchEngine.load(from: wax)
-            } else {
-                nil
-            }
-            // Frames can be durable (WAL replay, or a store commit without a staged lex index)
-            // before the text index that covers them; the owning writer indexes what a crash
-            // left behind.
-            if case .readWrite = mode, config.catchUpTextIndexOnOpen, config.enableTextSearch,
-               let resolvedTextEngine {
-                try await resolvedTextEngine.catchUpUnindexedFrames(await wax.frameMetasIncludingPending())
-            }
+            // The text and vector indexes load from separate committed images under read
+            // locks, so the text load runs alongside the vector load instead of before it.
+            async let loadingTextEngine = Self.loadTextEngine(wax: wax, config: config)
 
             let resolvedConcreteVectorEngine: ConcreteVectorEngine?
             let resolvedLastPendingEmbeddingSequence: UInt64?
@@ -131,6 +122,15 @@ package actor WaxSession {
                 resolvedLastPendingEmbeddingSequence = nil
             }
 
+            let resolvedTextEngine = try await loadingTextEngine
+            // Frames can be durable (WAL replay, or a store commit without a staged lex index)
+            // before the text index that covers them; the owning writer indexes what a crash
+            // left behind.
+            if case .readWrite = mode, config.catchUpTextIndexOnOpen, config.enableTextSearch,
+               let resolvedTextEngine {
+                try await resolvedTextEngine.catchUpUnindexedFrames(await wax.frameMetasIncludingPending())
+            }
+
             self.textEngine = resolvedTextEngine
             self.concreteVectorEngine = resolvedConcreteVectorEngine
             self.lastPendingEmbeddingSequence = resolvedLastPendingEmbeddingSequence
@@ -141,6 +141,11 @@ package actor WaxSession {
             }
             throw error
         }
+    }
+
+    private static func loadTextEngine(wax: Wax, config: Config) async throws -> FTS5SearchEngine? {
+        guard config.enableTextSearch || config.enableStructuredMemory else { return nil }
+        return try await FTS5SearchEngine.load(from: wax)
     }
 
     deinit {
