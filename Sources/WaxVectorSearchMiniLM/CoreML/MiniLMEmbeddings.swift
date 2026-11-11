@@ -112,7 +112,8 @@ package final class MiniLMEmbeddings {
         timeout: Duration
     ) async throws -> MiniLMEmbeddings {
         try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM model load") {
-            try MiniLMEmbeddings(configuration: configuration, overrides: overrides)
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run { try MiniLMEmbeddings(configuration: configuration, overrides: overrides) }
         }
     }
 

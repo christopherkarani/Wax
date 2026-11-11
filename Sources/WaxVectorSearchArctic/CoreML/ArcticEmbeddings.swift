@@ -116,7 +116,8 @@ package final class ArcticEmbeddings {
         // Before the timeout: a refusal must not wait on a busy cooperative pool.
         try refuseUnsupportedComputeUnits(configuration, overrides: overrides)
         return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic model load") {
-            try ArcticEmbeddings(configuration: configuration, overrides: overrides)
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run { try ArcticEmbeddings(configuration: configuration, overrides: overrides) }
         }
     }
 

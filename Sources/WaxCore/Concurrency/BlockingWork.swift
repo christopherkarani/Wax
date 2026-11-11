@@ -45,4 +45,34 @@ package enum BlockingWork {
             }
         }
     }
+
+    /// Runs async work whose synchronous stretches never suspend, such as tokenizing a
+    /// long text through an actor, on a private serial queue. Under the task executor
+    /// preference, the closure's nonisolated code and the default actors it calls run
+    /// there instead of on the cooperative pool. Before macOS 15 it runs inline.
+    package static func runAsync<T: Sendable>(
+        _ work: @Sendable () async -> T
+    ) async -> T {
+        if #available(macOS 15.0, iOS 18.0, *) {
+            return await withTaskExecutorPreference(SerialQueueExecutor(queue: queue())) {
+                await work()
+            }
+        }
+        return await work()
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+private final class SerialQueueExecutor: TaskExecutor {
+    private let queue: DispatchQueue
+
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedTaskExecutor()
+        queue.async { job.runSynchronously(on: executor) }
+    }
 }

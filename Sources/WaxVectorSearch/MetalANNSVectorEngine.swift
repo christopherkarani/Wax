@@ -446,13 +446,25 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private func insertIntoIndex(_ records: [VectorRecord<UInt64>]) async {
         guard let index, !records.isEmpty else { return }
         do {
-            if records.count == 1, let record = records.first {
-                try await index.insert(record)
+            // An insert runs MetalANNS's graph repair (a local NNDescent pass that never
+            // suspends), so it runs off the cooperative pool like a build.
+            if #available(macOS 15.0, iOS 18.0, *) {
+                try await withTaskExecutorPreference(GraphBuildExecutor()) {
+                    try await Self.insert(records, into: index)
+                }
             } else {
-                try await index.batchInsert(records)
+                try await Self.insert(records, into: index)
             }
         } catch {
             invalidateIndex()
+        }
+    }
+
+    private static func insert(_ records: [VectorRecord<UInt64>], into index: ReadyIndex) async throws {
+        if records.count == 1, let record = records.first {
+            try await index.insert(record)
+        } else {
+            try await index.batchInsert(records)
         }
     }
 
@@ -650,7 +662,8 @@ private extension VectorMetric {
     }
 }
 
-/// Runs one graph build's jobs on a serial dispatch queue instead of the cooperative pool.
+/// Runs one graph build's (or insert's) jobs on a serial dispatch queue instead of the
+/// cooperative pool.
 ///
 /// NNDescent's CPU build is one loop inside MetalANNS's `GraphIndex` actor that never
 /// suspends. On the pool it held a thread for seconds; on a 3-core CI runner that starved

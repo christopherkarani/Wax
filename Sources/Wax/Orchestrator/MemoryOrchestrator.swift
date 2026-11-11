@@ -289,11 +289,15 @@ package actor MemoryOrchestrator {
         if let enrichmentPipeline {
             let session = self.session
             await enrichmentPipeline.start { task in
-                EnrichmentResult(
-                    frameId: task.frameId,
-                    keywords: KeywordExtractor.extract(from: task.text),
-                    entities: EntityExtractor.extract(from: task.text)
-                )
+                // Extraction is synchronous CPU work that grows with the chunk; on a
+                // cooperative thread a long chunk stalls every other task in the process.
+                await BlockingWork.run {
+                    EnrichmentResult(
+                        frameId: task.frameId,
+                        keywords: KeywordExtractor.extract(from: task.text),
+                        entities: EntityExtractor.extract(from: task.text)
+                    )
+                }
             } resultHandler: { result in
                 try await Self.persistEnrichmentResult(result, in: session)
             }
@@ -812,10 +816,14 @@ package actor MemoryOrchestrator {
         try await wax.close()
         if let maintenanceReport {
             do {
-                try Self.promoteValidatedLiveSetCandidateIfNeeded(
-                    maintenanceReport,
-                    sourceURL: sourceURL
-                )
+                // File swaps, fsyncs and a footer scan of up to 32 MiB: blocking work that
+                // held a cooperative thread for the whole promotion.
+                try await BlockingWork.run {
+                    try Self.promoteValidatedLiveSetCandidateIfNeeded(
+                        maintenanceReport,
+                        sourceURL: sourceURL
+                    )
+                }
             } catch {
                 WaxDiagnostics.logSwallowed(
                     error,

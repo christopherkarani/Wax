@@ -48,11 +48,14 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
         timeout: Duration
     ) async throws -> MiniLMReranker {
         try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM reranker model load") {
-            try MiniLMReranker(
-                model: MiniLMRerankerModel.bundled(computeUnits: computeUnits),
-                tokenizer: BertTokenizer(),
-                batchSize: batchSize
-            )
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run {
+                try MiniLMReranker(
+                    model: MiniLMRerankerModel.bundled(computeUnits: computeUnits),
+                    tokenizer: BertTokenizer(),
+                    batchSize: batchSize
+                )
+            }
         }
     }
 

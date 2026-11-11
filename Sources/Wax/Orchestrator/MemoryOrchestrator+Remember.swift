@@ -320,9 +320,15 @@ extension MemoryOrchestrator {
 
     /// Internal only for tests.
     func ingestChunks(for content: String) async -> [String] {
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
-        guard config.fitsChunksToMiniLMInput else { return chunks }
-        return await MiniLMChunkSizing.fit(chunks)
+        let strategy = config.chunking
+        let fitsMiniLMInput = config.fitsChunksToMiniLMInput
+        // Tokenizing never suspends and grows with the text: a long remember held a
+        // cooperative thread for hundreds of milliseconds.
+        return await BlockingWork.runAsync {
+            let chunks = await TextChunker.chunk(text: content, strategy: strategy)
+            guard fitsMiniLMInput else { return chunks }
+            return await MiniLMChunkSizing.fit(chunks)
+        }
     }
 
     /// Document metadata a remember writes: the caller's keys, the content hash and the

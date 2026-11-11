@@ -116,7 +116,8 @@ package final class E5Embeddings {
         // Before the timeout: a refusal must not wait on a busy cooperative pool.
         try refuseUnsupportedComputeUnits(configuration, overrides: overrides)
         return try await AsyncTimeout.run(timeout: timeout, operation: "E5 model load") {
-            try E5Embeddings(configuration: configuration, overrides: overrides)
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run { try E5Embeddings(configuration: configuration, overrides: overrides) }
         }
     }
 
