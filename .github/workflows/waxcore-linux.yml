@@ -8,19 +8,20 @@ on:
 jobs:
   waxcore-linux:
     runs-on: ubuntu-latest
+    # The official image carries the toolchain. setup-swift verified its download by
+    # refreshing keys from keyserver.ubuntu.com on every run, and failed whenever the
+    # keyserver did.
+    container: swift:6.2-noble
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
-        with:
-          swift-version: "6.2"
-
       - name: Install Linux codec dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev
+          apt-get update
+          # python3 and procps (pkill) are for the SIGTERM smoke script; the
+          # runner image had them, the Swift image may not.
+          apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev python3 procps
 
       # GRDB 7 SPM imports the GRDBSQLite system library (libsqlite3-dev).
       # -DGRDBCUSTOMSQLITE selects GRDB's empty custom-framework import and
