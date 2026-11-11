@@ -903,3 +903,35 @@ func nonFiniteDistanceScoresBelowEveryFiniteScore(metric: VectorMetric) {
         #expect(hits.map(\.score) == expected.map(\.score), "topK \(topK)")
     }
 }
+
+private actor QueueLabelRecorder {
+    private(set) var labels: [String] = []
+    func record(_ label: String) { labels.append(label) }
+}
+
+/// NNDescent's CPU build is one loop that never suspends. On the cooperative pool it held a
+/// thread for seconds, which on a 3-core CI runner starved every other task in the process.
+@Test(
+    "MetalANNS graph builds run on their own dispatch queue, not the cooperative pool",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSGraphBuildRunsOffTheCooperativePool() async throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
+    let dimensions = 16
+    let base = makeDataset(count: 64, dimensions: dimensions, seed: 0x600D)
+    let recorder = QueueLabelRecorder()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .cosine,
+        dimensions: dimensions,
+        searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
+        graphBuildHook: {
+            await recorder.record(String(cString: __dispatch_queue_get_label(nil)))
+        }
+    )
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    _ = try await metalANNS.search(vector: base.vectors[0], topK: 5)
+    await metalANNS.waitForPendingGraphBuild()
+    let labels = await recorder.labels
+    #expect(labels == [MetalANNSVectorEngine.graphBuildQueueLabel], "\(labels)")
+}

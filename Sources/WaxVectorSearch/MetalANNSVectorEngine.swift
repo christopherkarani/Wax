@@ -15,6 +15,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
 
     /// Runs at the start of every graph build. Test seam for holding or failing a build.
     package typealias GraphBuildHook = @Sendable () async throws -> Void
+    /// The dispatch queue label graph builds run on (`GraphBuildExecutor`).
+    package static let graphBuildQueueLabel = "com.wax.metalanns.graph-build"
 
     private typealias ReadyIndex = VectorIndex<UInt64, VectorIndexState.Ready>
 
@@ -565,6 +567,27 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         configuration: IndexConfiguration,
         hook: GraphBuildHook?
     ) async -> Result<ReadyIndex, any Error> {
+        guard #available(macOS 15.0, iOS 18.0, *) else {
+            return await buildGraphOnCurrentExecutor(
+                flatVectors: flatVectors, dimension: dimension, ids: ids,
+                configuration: configuration, hook: hook
+            )
+        }
+        return await withTaskExecutorPreference(GraphBuildExecutor()) {
+            await buildGraphOnCurrentExecutor(
+                flatVectors: flatVectors, dimension: dimension, ids: ids,
+                configuration: configuration, hook: hook
+            )
+        }
+    }
+
+    private static func buildGraphOnCurrentExecutor(
+        flatVectors: [Float],
+        dimension: Int,
+        ids: [UInt64],
+        configuration: IndexConfiguration,
+        hook: GraphBuildHook?
+    ) async -> Result<ReadyIndex, any Error> {
         // Cancellation is checked before the build only: a GPU build already in progress
         // runs to completion, and a finished graph is still worth installing.
         do {
@@ -624,6 +647,24 @@ private extension VectorMetric {
         case .l2:
             return .l2
         }
+    }
+}
+
+/// Runs one graph build's jobs on a serial dispatch queue instead of the cooperative pool.
+///
+/// NNDescent's CPU build is one loop inside MetalANNS's `GraphIndex` actor that never
+/// suspends. On the pool it held a thread for seconds; on a 3-core CI runner that starved
+/// every other task in the process, so trivial awaits waited tens of seconds. Under a task
+/// executor preference, nonisolated async code and default actors such as `GraphIndex` run
+/// here. Each build gets its own queue, which GCD always gives a thread.
+@available(macOS 15.0, iOS 18.0, *)
+private final class GraphBuildExecutor: TaskExecutor {
+    private let queue = DispatchQueue(label: MetalANNSVectorEngine.graphBuildQueueLabel)
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedTaskExecutor()
+        queue.async { job.runSynchronously(on: executor) }
     }
 }
 #endif
