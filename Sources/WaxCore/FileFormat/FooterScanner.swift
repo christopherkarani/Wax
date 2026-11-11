@@ -244,7 +244,7 @@ package enum FooterScanner {
         guard upper >= lower else { return [] }
         let first = Constants.footerMagic[Constants.footerMagic.startIndex]
         let base = bytes.startIndex
-        return bytes.withUnsafeBytes { raw in
+        return bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [Int] in
             var positions: [Int] = []
             var pos = upper
             while pos >= lower {
