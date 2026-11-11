@@ -904,6 +904,7 @@ func nonFiniteDistanceScoresBelowEveryFiniteScore(metric: VectorMetric) {
     }
 }
 
+#if canImport(Metal) && canImport(MetalANNS)
 private actor QueueLabelRecorder {
     private(set) var labels: [String] = []
     func record(_ label: String) { labels.append(label) }
@@ -935,3 +936,4 @@ func metalANNSGraphBuildRunsOffTheCooperativePool() async throws {
     let labels = await recorder.labels
     #expect(labels == [MetalANNSVectorEngine.graphBuildQueueLabel], "\(labels)")
 }
+#endif
