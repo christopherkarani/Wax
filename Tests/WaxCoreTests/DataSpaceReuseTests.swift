@@ -16,7 +16,17 @@ private func liveVectorBytes(count: Int, dimension: Int) -> Int {
 }
 
 private func lexBlob(docCount: Int, round: Int) -> Data {
-    Data((0..<(docCount * 600)).map { UInt8(truncatingIfNeeded: $0 &+ round) })
+    // A pointer loop: in debug builds `(0..<count).map` looks up generic metadata on every
+    // byte, which made these blobs seconds of work on a cooperative thread that never yields.
+    let count = docCount * 600
+    return Data([UInt8](unsafeUninitializedCapacity: count) { bytes, initialized in
+        var index = 0
+        while index < count {
+            bytes[index] = UInt8(truncatingIfNeeded: index &+ round)
+            index += 1
+        }
+        initialized = count
+    })
 }
 
 private func payload(_ index: Int) -> Data {

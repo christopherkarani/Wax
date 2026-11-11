@@ -135,8 +135,39 @@ private func expectSameHits(
     }
 }
 
+/// Runs `body` with its nonisolated async code and default actors (`Wax`, the engines) on a
+/// serial dispatch queue instead of the cooperative pool. Each step here writes or merges tens
+/// of thousands of vectors inside one `Wax` call; on the pool that held a thread for seconds at a
+/// time, so a parallel run on a 3-core CI runner starved every other test.
+private func offCooperativePool(_ body: () async throws -> Void) async throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else {
+        try await body()
+        return
+    }
+    try await withTaskExecutorPreference(SerialQueueTaskExecutor()) {
+        try await body()
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+private final class SerialQueueTaskExecutor: TaskExecutor {
+    private let queue = DispatchQueue(label: "com.wax.tests.vector-run-identity")
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedTaskExecutor()
+        queue.async { job.runSynchronously(on: executor) }
+    }
+}
+
 @Test(arguments: [VectorMetric.cosine, VectorMetric.dot])
 func searchesOverReloadedVectorRunsMatchAnInMemoryEngine(metric: VectorMetric) async throws {
+    try await offCooperativePool {
+        try await searchReloadedVectorRuns(metric: metric)
+    }
+}
+
+private func searchReloadedVectorRuns(metric: VectorMetric) async throws {
     var random = IdentityRandom(seed: metric == .cosine ? 11 : 12)
     let steps = identitySteps(random: &random)
     let queries = (0..<40).map { _ in random.vector() }

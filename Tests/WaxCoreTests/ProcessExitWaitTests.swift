@@ -6,24 +6,45 @@ import Testing
 /// `Process.waitForExit(timeout:)` returns for a child that is already gone,
 /// reports its status, and kills one that will not exit instead of waiting on it.
 @Suite struct ProcessExitWaitTests {
-    @Test func returnsTheStatusOfAChildThatHasAlreadyExited() throws {
-        let process = try launch("exit 3")
-        try waitUntilReaped(process)
-        #expect(process.waitForExit(timeout: 5) == 3)
+    private struct NeverReaped: Error, CustomStringConvertible {
+        var description: String { "the child was never reaped" }
     }
 
-    @Test func waitsForAChildThatExitsBeforeTheDeadline() throws {
-        let process = try launch("sleep 0.2; exit 4")
-        #expect(process.waitForExit(timeout: 30) == 4)
+    // The waits poll with usleep, so they run on a GCD thread, not a cooperative one.
+
+    @Test func returnsTheStatusOfAChildThatHasAlreadyExited() async throws {
+        let status = try await BlockingWork.run { () throws -> Int32? in
+            let process = try launch("exit 3")
+            try waitUntilReaped(process)
+            return process.waitForExit(timeout: 5)
+        }
+        #expect(status == 3)
     }
 
-    @Test func killsAChildThatWillNotExit() throws {
+    @Test func waitsForAChildThatExitsBeforeTheDeadline() async throws {
+        let status = try await BlockingWork.run { () throws -> Int32? in
+            try launch("sleep 0.2; exit 4").waitForExit(timeout: 30)
+        }
+        #expect(status == 4)
+    }
+
+    @Test func killsAChildThatWillNotExit() async throws {
         // Runs far past the wait, and is reaped once killed.
-        let process = try launch("exec sleep 60")
-        #expect(process.waitForExit(timeout: 0.2) == nil)
-        #expect(!process.isRunning, "the child outlived the wait")
-        #expect(process.terminationReason == .uncaughtSignal)
-        #expect(process.terminationStatus == SIGKILL)
+        let (status, isRunning, diedOfSignal, terminationStatus) = try await BlockingWork.run {
+            () throws -> (Int32?, Bool, Bool, Int32) in
+            let process = try launch("exec sleep 60")
+            let status = process.waitForExit(timeout: 0.2)
+            return (
+                status,
+                process.isRunning,
+                process.terminationReason == .uncaughtSignal,
+                process.terminationStatus
+            )
+        }
+        #expect(status == nil)
+        #expect(!isRunning, "the child outlived the wait")
+        #expect(diedOfSignal)
+        #expect(terminationStatus == SIGKILL)
     }
 
     /// The kill at the deadline is skipped once Foundation has reaped the
@@ -55,7 +76,7 @@ import Testing
     private func waitUntilReaped(_ process: Process) throws {
         let deadline = Date().addingTimeInterval(30)
         while process.isRunning {
-            try #require(Date() < deadline, "the child was never reaped")
+            guard Date() < deadline else { throw NeverReaped() }
             usleep(10_000)
         }
     }

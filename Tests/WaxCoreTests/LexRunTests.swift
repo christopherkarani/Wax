@@ -14,9 +14,16 @@ private func image(pages: Int, versions: [Int: Int] = [:], tailBytes: Int? = nil
     for index in 0..<pages {
         let version = versions[index] ?? 0
         let length = index == pages - 1 ? (tailBytes ?? pageSize) : pageSize
-        var page = [UInt8](repeating: 0, count: length)
-        for offset in 0..<length {
-            page[offset] = UInt8(truncatingIfNeeded: index &* 31 &+ offset &* 7 &+ version &* 101)
+        // A pointer loop: in debug builds a `for offset in 0..<length` subscript loop looks up
+        // generic metadata on every byte, which made these images seconds of work on a
+        // cooperative thread that never yields.
+        let page = [UInt8](unsafeUninitializedCapacity: length) { bytes, initialized in
+            var offset = 0
+            while offset < length {
+                bytes[offset] = UInt8(truncatingIfNeeded: index &* 31 &+ offset &* 7 &+ version &* 101)
+                offset += 1
+            }
+            initialized = length
         }
         data.append(contentsOf: page)
     }
