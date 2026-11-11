@@ -651,7 +651,10 @@ private final class SocketClient: @unchecked Sendable {
     func startTrickle(everyMicroseconds interval: useconds_t) -> Trickle {
         let trickle = Trickle()
         let fd = fd
-        DispatchQueue.global().async {
+        // Its own serial queue, not `.global()`: GCD runs `.global()` work only as fast as the
+        // cores allow, so on a busy 3-core runner the loop could wait past the test's
+        // 2-minute limit to start, and `stop()` waited for it to finish.
+        DispatchQueue(label: "com.wax.tests.trickle").async {
             while !trickle.isStopped {
                 _ = write(fd, " ", 1)
                 usleep(interval)
