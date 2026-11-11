@@ -63,21 +63,36 @@ private func miniLMInputTokens(_ text: String, tokenizer: BertTokenizer) -> Int 
             config: config,
             embedder: IdentityEmbedder(model: "MiniLMAll-mean")
         )
-        let tokenizer = try BertTokenizer()
+        var chunked: [(text: String, chunks: [String])] = []
         for text in ChunkCorpus.texts {
             let chunks = await memory.ingestChunks(for: text)
             #expect(chunks.count > 1)
-            for chunk in chunks {
-                let tokens = miniLMInputTokens(chunk, tokenizer: tokenizer)
-                #expect(tokens <= MiniLMChunkSizing.inputTokenLimit, "chunk of \(tokens) tokens: \(chunk.prefix(80))")
-            }
-            // Fitting re-splits; it never drops text.
-            let joined = chunks.joined()
-            for word in Set(ChunkCorpus.words(text)) {
-                #expect(joined.contains(word), "lost \(word)")
-            }
+            chunked.append((text, chunks))
         }
         try await memory.close()
+
+        // Tokenizing and scanning ~15k words is CPU-bound, so it runs on a private queue
+        // rather than holding a cooperative thread.
+        let checked = chunked
+        let problems = try await BlockingWork.run { () throws -> [String] in
+            let tokenizer = try BertTokenizer()
+            var problems: [String] = []
+            for (text, chunks) in checked {
+                for chunk in chunks {
+                    let tokens = miniLMInputTokens(chunk, tokenizer: tokenizer)
+                    if tokens > MiniLMChunkSizing.inputTokenLimit {
+                        problems.append("chunk of \(tokens) tokens: \(chunk.prefix(80))")
+                    }
+                }
+                // Fitting re-splits; it never drops text.
+                let joined = chunks.joined()
+                for word in Set(ChunkCorpus.words(text)) where !joined.contains(word) {
+                    problems.append("lost \(word)")
+                }
+            }
+            return problems
+        }
+        #expect(problems.isEmpty, "\(problems.prefix(10))")
     }
 }
 

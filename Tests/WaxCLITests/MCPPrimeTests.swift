@@ -614,11 +614,15 @@ struct MCPPrimeTests {
         )
         let started = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
         #expect(started)
-        defer {
-            try? AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: configuration)
+        // The shutdown polls with Thread.sleep, so it runs on a private queue, not in a
+        // `defer` on this cooperative thread.
+        let shutDown: @Sendable () async -> Void = {
+            _ = try? await BlockingWork.run {
+                try AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: configuration)
+            }
         }
-
-        let remembered = try AgentBrokerClient.probe(
+        do {
+            let remembered = try await AgentBrokerClient.probeOffPool(
                 request: AgentBrokerRequest(
                     command: "remember",
                     arguments: [
@@ -631,11 +635,10 @@ struct MCPPrimeTests {
                 configuration: configuration,
                 timeoutSeconds: 8
             )
-        let rememberedOK = try #require(remembered)
-        #expect(rememberedOK.ok)
+            let rememberedOK = try #require(remembered)
+            #expect(rememberedOK.ok)
 
-        let outcome = MCPPrimeRunner.run(
-            MCPPrimeRunner.Request(
+            let primeRequest = MCPPrimeRunner.Request(
                 host: "claude",
                 cwd: root.path,
                 includePerson: false,
@@ -646,14 +649,20 @@ struct MCPPrimeTests {
                 embedderChoice: "minilm",
                 configuration: configuration
             )
-        )
-        #expect(outcome.exitCode == 0)
-        #expect(outcome.stderr.isEmpty)
-        #expect(outcome.stdout.contains("Prime must reuse the long-lived broker socket."))
+            // The prime waits on the broker socket; keep that wait off the cooperative pool.
+            let outcome = await BlockingWork.run { MCPPrimeRunner.run(primeRequest) }
+            #expect(outcome.exitCode == 0)
+            #expect(outcome.stderr.isEmpty)
+            #expect(outcome.stdout.contains("Prime must reuse the long-lived broker socket."))
 
-        let reused = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
-        #expect(reused == false)
-        #expect(FileManager.default.fileExists(atPath: socket.path))
+            let reused = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+            #expect(reused == false)
+            #expect(FileManager.default.fileExists(atPath: socket.path))
+        } catch {
+            await shutDown()
+            throw error
+        }
+        await shutDown()
     }
 }
 

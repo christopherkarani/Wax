@@ -77,46 +77,36 @@ enum GitLogParser {
     private static let exitAfterEOFTimeoutSeconds: TimeInterval = 30
 
     private static func runGit(_ arguments: [String]) async throws -> String {
-        // Move blocking I/O off the Swift cooperative thread pool.
-        // readDataToEndOfFile() and waitUntilExit() both block their calling thread;
-        // running them on a DispatchQueue.global() thread prevents starving async work.
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = arguments
+        // readDataToEndOfFile() and waitUntilExit() block their thread, so git runs on a
+        // private serial queue: off the cooperative pool, and not queued behind other
+        // work on a shared global queue.
+        try await BlockingWork.run { () throws -> String in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = arguments
 
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
 
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
+            try process.run()
 
-                // Drain stdout and stderr together before waiting: either
-                // pipe fills at ~64 KB and blocks git if left unread.
-                let captured = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe).wait()
-                // Both pipes are closed, so git is exiting; the bound only
-                // stops a wedged wait.
-                guard process.waitForExit(timeout: exitAfterEOFTimeoutSeconds) != nil else {
-                    continuation.resume(throwing: GitLogError.gitFailed("git did not exit after closing its output"))
-                    return
-                }
-                guard process.terminationStatus == 0 else {
-                    let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
-                    let message = stderr.isEmpty ? "git exited with \(process.terminationStatus)" : stderr
-                    continuation.resume(throwing: GitLogError.gitFailed(message))
-                    return
-                }
-
-                let output = String(data: captured.stdout, encoding: .utf8) ?? ""
-                continuation.resume(returning: output)
+            // Drain stdout and stderr together before waiting: either
+            // pipe fills at ~64 KB and blocks git if left unread.
+            let captured = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe).wait()
+            // Both pipes are closed, so git is exiting; the bound only
+            // stops a wedged wait.
+            guard process.waitForExit(timeout: exitAfterEOFTimeoutSeconds) != nil else {
+                throw GitLogError.gitFailed("git did not exit after closing its output")
             }
+            guard process.terminationStatus == 0 else {
+                let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
+                let message = stderr.isEmpty ? "git exited with \(process.terminationStatus)" : stderr
+                throw GitLogError.gitFailed(message)
+            }
+
+            return String(data: captured.stdout, encoding: .utf8) ?? ""
         }
     }
 
