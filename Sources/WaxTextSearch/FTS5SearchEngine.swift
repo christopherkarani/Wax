@@ -117,39 +117,45 @@ package actor FTS5SearchEngine {
     ) throws -> FTS5SearchEngine {
         let io = BlockingIOExecutor(label: "com.wax.fts", qos: .userInitiated)
         let config = makeConfiguration()
-        let storeDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wax-fts5-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
-        let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
-        FileManager.default.createFile(atPath: dbURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dbURL)
-        try handle.write(contentsOf: data)
-        try handle.close()
+        let storeDirectory = try FTS5BackingDirectory.make()
+        do {
+            let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
+            FileManager.default.createFile(atPath: dbURL.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: dbURL)
+            try handle.write(contentsOf: data)
+            try handle.close()
 
-        let queue = try DatabaseQueue(path: dbURL.path, configuration: config)
-        try queue.writeWithoutTransaction { db in
-            try FTS5Schema.validateOrUpgrade(in: db)
+            let queue = try DatabaseQueue(path: dbURL.path, configuration: config)
+            try queue.writeWithoutTransaction { db in
+                try FTS5Schema.validateOrUpgrade(in: db)
+            }
+            let (count, coveredBelowFrameId) = try queue.read { db in
+                let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
+                return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
+            }
+            let docCount = UInt64(max(0, count))
+            return FTS5SearchEngine(
+                dbQueue: queue,
+                io: io,
+                backingStoreDirectory: storeDirectory,
+                docCount: docCount,
+                dirty: false,
+                coveredBelowFrameId: coveredBelowFrameId,
+                databaseURL: dbURL,
+                searchFanOut: searchFanOut
+            )
+        } catch {
+            // No engine owns the directory yet, so its deinit cannot remove it.
+            try? FileManager.default.removeItem(at: storeDirectory)
+            throw error
         }
-        let (count, coveredBelowFrameId) = try queue.read { db in
-            let count = try Int64.fetchOne(db, sql: "SELECT COUNT(*) FROM frame_mapping") ?? 0
-            return (count, try FTS5Coverage.coveredBelowFrameId(in: db))
-        }
-        let docCount = UInt64(max(0, count))
-        return FTS5SearchEngine(
-            dbQueue: queue,
-            io: io,
-            backingStoreDirectory: storeDirectory,
-            docCount: docCount,
-            dirty: false,
-            coveredBelowFrameId: coveredBelowFrameId,
-            databaseURL: dbURL,
-            searchFanOut: searchFanOut
-        )
     }
 
     package static func load(from wax: Wax) async throws -> FTS5SearchEngine {
         if let bytes = try await wax.readCommittedLexIndexBytes() {
-            return try FTS5SearchEngine.deserialize(from: bytes)
+            // Writing the image to disk and opening SQLite block for tens of milliseconds
+            // at 100k documents, so they run off the cooperative pool.
+            return try await BlockingWork.run { try FTS5SearchEngine.deserialize(from: bytes) }
         }
         return try FTS5SearchEngine.inMemory()
     }
