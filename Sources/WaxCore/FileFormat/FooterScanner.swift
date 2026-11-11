@@ -27,8 +27,7 @@ package enum FooterScanner {
 
         var best: FooterSlice?
 
-        for pos in stride(from: bytes.count - footerSize, through: scanStart, by: -1) {
-            guard bytes[pos] == Constants.footerMagic[0] else { continue }
+        for pos in magicCandidates(in: bytes, from: bytes.count - footerSize, downTo: scanStart) {
             let magicEnd = pos + Constants.footerMagic.count
             guard magicEnd <= bytes.count else { continue }
             guard bytes[pos..<magicEnd] == Constants.footerMagic else { continue }
@@ -193,8 +192,7 @@ package enum FooterScanner {
 
         var best: (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)?
 
-        for localPos in stride(from: window.count - footerSize, through: 0, by: -1) {
-            guard window[localPos] == Constants.footerMagic[0] else { continue }
+        for localPos in magicCandidates(in: window, from: window.count - footerSize, downTo: 0) {
             let magicEnd = localPos + Constants.footerMagic.count
             guard magicEnd <= window.count else { continue }
             guard window[localPos..<magicEnd] == Constants.footerMagic else { continue }
@@ -236,6 +234,27 @@ package enum FooterScanner {
         }
 
         return best
+    }
+
+    /// Offsets in `bytes` that hold the footer magic's first byte, from `upper` down to
+    /// `lower` (both inclusive). A raw pointer loop: in debug builds a `stride` loop that
+    /// subscripts `Data` looks up generic metadata on every byte, and footer-scanning tests
+    /// ran 4-6x slower with it.
+    private static func magicCandidates(in bytes: Data, from upper: Int, downTo lower: Int) -> [Int] {
+        guard upper >= lower else { return [] }
+        let first = Constants.footerMagic[Constants.footerMagic.startIndex]
+        let base = bytes.startIndex
+        return bytes.withUnsafeBytes { raw in
+            var positions: [Int] = []
+            var pos = upper
+            while pos >= lower {
+                if raw[pos - base] == first {
+                    positions.append(pos)
+                }
+                pos -= 1
+            }
+            return positions
+        }
     }
 
     private static func tocHashMatches(
