@@ -240,6 +240,9 @@ final class WALCompactionBenchmarks: XCTestCase {
         var disabledSamples: [Double] = []
         var enabledSamples: [Double] = []
         var enabledSnapshotHits = 0
+        var enabledFooterScans = 0
+        var disabledSnapshotHits = 0
+        var disabledFooterScans = 0
         for round in 0..<Self.replayGuardrailRounds {
             let order: [Bool] = round.isMultiple(of: 2) ? [false, true] : [true, false]
             for snapshotEnabled in order {
@@ -251,8 +254,11 @@ final class WALCompactionBenchmarks: XCTestCase {
                 if snapshotEnabled {
                     enabledSamples.append(sample.summary.meanMs)
                     enabledSnapshotHits += sample.snapshotHits
+                    enabledFooterScans += sample.footerScans
                 } else {
                     disabledSamples.append(sample.summary.meanMs)
+                    disabledSnapshotHits += sample.snapshotHits
+                    disabledFooterScans += sample.footerScans
                 }
             }
         }
@@ -263,25 +269,32 @@ final class WALCompactionBenchmarks: XCTestCase {
         let disabledMedian: Double = disabledSamples.sorted()[disabledSamples.count / 2]
         let medianIncrease: Double = pairedIncreases.sorted()[pairedIncreases.count / 2]
         // A snapshot hit skips both the WAL replay scan and the scan of the file tail for the
-        // newest footer, which together are most of the first reopen after the crash (debug
-        // build: about 118 ms against 520 ms). Requiring at least half the reopen time back fails
-        // when either skip is lost.
-        let increaseBudget: Double = -0.5 * disabledMedian
+        // newest footer. The counters below check each skip exactly; the timing check only has
+        // to catch a snapshot path that grew expensive work of its own. It once required half
+        // the reopen time back, when the debug footer scan read the tail a byte at a time
+        // (CI: 620–835 ms full replay against about 150 ms). Since that scan got fast in
+        // `a95cccb84`, full replay takes about 270–340 ms on CI and the snapshot saves 46–58%
+        // there (60% locally), so half no longer separated a regression from runner noise.
+        let increaseBudget: Double = -0.25 * disabledMedian
 
         print(
             "🧪 WAL replay snapshot guardrail (\(Self.replayGuardrailRounds) paired rounds): "
                 + "median increase=\(medianIncrease.formatMs) (budget \(increaseBudget.formatMs)) "
                 + "disabled=\(disabledSamples.map(\.formatMs)) "
                 + "enabled=\(enabledSamples.map(\.formatMs)) "
-                + "snapshot_hits=\(enabledSnapshotHits)"
+                + "snapshot_hits=\(enabledSnapshotHits) footer_scans=\(enabledFooterScans)/\(disabledFooterScans)"
         )
 
-        // Snapshot hits do not depend on timing, so every enabled reopen must hit.
+        // None of these depend on timing. Every enabled reopen skips both the replay and the
+        // tail scan; every disabled one does both, so the fixture still exercises what is skipped.
         XCTAssertEqual(enabledSnapshotHits, Self.replayGuardrailRounds)
+        XCTAssertEqual(enabledFooterScans, 0, "a snapshot hit must not scan the file tail for the newest footer")
+        XCTAssertEqual(disabledSnapshotHits, 0)
+        XCTAssertEqual(disabledFooterScans, Self.replayGuardrailRounds)
         XCTAssertLessThanOrEqual(
             medianIncrease,
             increaseBudget,
-            "snapshot reopen must take at most half the full-replay reopen time"
+            "snapshot reopen must take at most three quarters of the full-replay reopen time"
         )
     }
 
@@ -344,11 +357,12 @@ final class WALCompactionBenchmarks: XCTestCase {
         at url: URL,
         iterations: Int,
         options: WaxOptions
-    ) async throws -> (summary: WALCompactionLatencySummary, snapshotHits: Int) {
+    ) async throws -> (summary: WALCompactionLatencySummary, snapshotHits: Int, footerScans: Int) {
         let clock = ContinuousClock()
         var samples: [Double] = []
         samples.reserveCapacity(iterations)
         var snapshotHits = 0
+        var footerScans = 0
 
         for _ in 0..<iterations {
             let start = clock.now
@@ -359,10 +373,13 @@ final class WALCompactionBenchmarks: XCTestCase {
             if stats.replaySnapshotHitCount > 0 {
                 snapshotHits += 1
             }
+            if stats.replayFooterScanCount > 0 {
+                footerScans += 1
+            }
             try await wax.close()
         }
 
-        return (WALCompactionLatencySummary.from(samples: samples), snapshotHits)
+        return (WALCompactionLatencySummary.from(samples: samples), snapshotHits, footerScans)
     }
 }
 
