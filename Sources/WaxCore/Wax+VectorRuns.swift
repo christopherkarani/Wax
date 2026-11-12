@@ -716,19 +716,25 @@ extension Wax {
     /// those runs (`addedGeneration` equal to its generation) match their checksums; otherwise
     /// the next newest candidate is taken, and that commit's WAL records replay as pending. Runs
     /// of older generations were synced by their own commits.
+    /// `decoded` is a candidate's TOC that the caller already decoded, used instead of
+    /// decoding that candidate again (the footer, which holds the TOC hash, must match).
     /// Internal only because of the file split; call from `open` and `verify` only.
     static func newestWholeCommit(
         _ candidates: [FooterSlice],
         headerFooterOffset: UInt64,
         headerGeneration: UInt64,
-        file: FDFile
+        file: FDFile,
+        decoded: (slice: FooterSlice, toc: WaxTOC)? = nil
     ) throws -> (footer: FooterSlice, toc: WaxTOC) {
         var remaining = candidates
         while let first = remaining.first {
             let newest = remaining.dropFirst().reduce(first) {
                 newerFooter($0, $1, headerFooterOffset: headerFooterOffset)
             }
-            let toc = try WaxTOC.decode(from: newest)
+            let reusable = decoded.flatMap {
+                $0.slice.footerOffset == newest.footerOffset && $0.slice.footer == newest.footer ? $0.toc : nil
+            }
+            let toc = try reusable ?? WaxTOC.decode(from: newest)
             let namedByHeader = newest.footerOffset == headerFooterOffset
                 && newest.footer.generation == headerGeneration
             if namedByHeader || indexRunsWritten(by: newest.footer.generation, in: toc, file: file) {

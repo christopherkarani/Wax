@@ -105,6 +105,29 @@ package enum FooterScanner {
     }
 
     package static func findFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+        guard let slice = try readFooter(at: footerOffset, in: fileURL, limits: limits) else { return nil }
+        return slice.footer.hashMatches(tocBytes: slice.tocBytes) ? slice : nil
+    }
+
+    /// ``findFooter(at:in:limits:)``, decoding the TOC while its hash is checked: at 100k
+    /// frames each takes tens of milliseconds of an open. The decode is bounds-checked, so it
+    /// is safe on bytes the hash may yet reject. `toc` is `nil` when the decode threw;
+    /// decoding the slice again throws the same error.
+    package static func findFooterDecodingToc(
+        at footerOffset: UInt64,
+        in fileURL: URL,
+        limits: Limits = .init()
+    ) throws -> (slice: FooterSlice, toc: WaxTOC?)? {
+        guard let slice = try readFooter(at: footerOffset, in: fileURL, limits: limits) else { return nil }
+        let work = HashAndDecode(slice)
+        // The calling thread runs an iteration too, so both finish even with no worker free.
+        DispatchQueue.concurrentPerform(iterations: 2) { work.run(iteration: $0) }
+        guard work.hashMatches else { return nil }
+        return (slice, work.decodedToc)
+    }
+
+    /// The footer at `footerOffset` and the TOC bytes before it, not yet checked against its hash.
+    private static func readFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 
@@ -122,7 +145,6 @@ package enum FooterScanner {
         let tocOffset = footerOffset - footer.tocLen
         // Read the TOC once and check it in memory; the caller decodes these same bytes.
         let tocBytes = try file.readExactly(length: Int(footer.tocLen), at: tocOffset)
-        guard footer.hashMatches(tocBytes: tocBytes) else { return nil }
         return FooterSlice(
             footerOffset: footerOffset,
             tocOffset: tocOffset,
@@ -289,5 +311,27 @@ package enum FooterScanner {
         let computed = hasher.finalize()
 
         return computed == storedChecksum && computed == expectedHash
+    }
+}
+
+/// A footer's hash check and TOC decode, run as two `concurrentPerform` iterations.
+///
+/// `@unchecked Sendable`: iteration 0 writes only `hashMatches` and iteration 1 only `decodedToc`,
+/// and both are read after `concurrentPerform` returns.
+private final class HashAndDecode: @unchecked Sendable {
+    let slice: FooterSlice
+    var hashMatches = false
+    var decodedToc: WaxTOC?
+
+    init(_ slice: FooterSlice) {
+        self.slice = slice
+    }
+
+    func run(iteration: Int) {
+        if iteration == 0 {
+            hashMatches = slice.footer.hashMatches(tocBytes: slice.tocBytes)
+        } else {
+            decodedToc = try? WaxTOC.decode(from: slice)
+        }
     }
 }

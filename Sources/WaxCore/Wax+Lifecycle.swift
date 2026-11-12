@@ -321,7 +321,9 @@ extension Wax {
 
             let headerFooterOffset = header.footerOffset
 
-            let fastFooter = try FooterScanner.findFooter(at: header.footerOffset, in: url)
+            // The TOC decodes while its hash is checked; the commit chosen below reuses it.
+            let fastFooterRead = try FooterScanner.findFooterDecodingToc(at: header.footerOffset, in: url)
+            let fastFooter = fastFooterRead?.slice
             // The other page names an older commit, or the same one when the selected page only
             // added a recovery fence. An older commit's footer can end the file when a crash came
             // before the newest commit truncated the tail; it is read only when needed.
@@ -401,7 +403,8 @@ extension Wax {
                 footerCandidates,
                 headerFooterOffset: headerFooterOffset,
                 headerGeneration: selectedHeaderFileGeneration,
-                file: file
+                file: file,
+                decoded: fastFooterRead.flatMap { read in read.toc.map { (read.slice, $0) } }
             )
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
