@@ -98,9 +98,8 @@ extension Wax {
                 }
                 current.payloadRanges.append(range)
             }
-            current.frames += frames
+            storeFrameImportLocked(&current) { $0.frames += frames }
             dirty = true
-            frameImport = current
             return frames.map(\.id)
         }
     }
@@ -118,6 +117,8 @@ extension Wax {
                 ?? toc.indexes.vec?.dimension
                 ?? vectorConfiguration?.dimension
             var dimension = expected
+            var added: [PutEmbedding] = []
+            added.reserveCapacity(frameIds.count)
             for (frameId, vector) in zip(frameIds, vectors) {
                 guard frameId < current.nextFrameId else {
                     throw WaxError.invalidToc(reason: "importEmbeddings references unknown frameId \(frameId) (known < \(current.nextFrameId))")
@@ -138,10 +139,22 @@ extension Wax {
                     )
                 }
                 dimension = vectorDimension
-                current.embeddings.append(PutEmbedding(frameId: frameId, dimension: vectorDimension, vector: vector))
+                added.append(PutEmbedding(frameId: frameId, dimension: vectorDimension, vector: vector))
             }
-            frameImport = current
+            storeFrameImportLocked(&current) { $0.embeddings += added }
         }
+    }
+
+    /// Applies `append` to `current` and stores it as the open import. `current` was copied
+    /// from `frameImport`, so the two share their arrays until one changes: appending while
+    /// `frameImport` still holds them copies every frame (or embedding) written so far, which
+    /// made a 100k import's batches grow from 4 to 14 ms each. Releasing `frameImport` first
+    /// leaves `current` the only owner, so the append grows the arrays in place. Called after
+    /// every step that can throw, so a throw still leaves the import as it was.
+    private func storeFrameImportLocked(_ current: inout FrameImport, append: (inout FrameImport) -> Void) {
+        frameImport = nil
+        append(&current)
+        frameImport = current
     }
 
     /// Publishes the open import in one commit with whatever text index and vector
