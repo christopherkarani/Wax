@@ -18,6 +18,28 @@ struct VecRunTable {
         self.dimension = dimension
     }
 
+    /// The table after applying `run` to an empty one, holding the run's arrays instead of
+    /// copying them. A decoded run's rows are distinct (`VecRunCodec` checks); a run with a
+    /// repeated row is applied row by row instead.
+    init(adopting run: VecRun) {
+        self.init(dimension: Int(run.dimension))
+        var positions: [UInt64: Int] = [:]
+        positions.reserveCapacity(run.frameIds.count)
+        for (row, frameId) in run.frameIds.enumerated() {
+            guard positions.updateValue(row, forKey: frameId) == nil else {
+                apply(run)
+                return
+            }
+        }
+        for frameId in run.tombstones where positions[frameId] == nil {
+            tombstones.insert(frameId)
+        }
+        self.positions = positions
+        frameIds = run.frameIds
+        vectors = run.vectors
+        live = Array(repeating: true, count: run.frameIds.count)
+    }
+
     /// Makes room for `rows` rows, so applying runs that add them does not regrow (and copy)
     /// the vectors and positions as they go.
     mutating func reserveCapacity(rows: Int) {

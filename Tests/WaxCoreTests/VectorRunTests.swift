@@ -656,3 +656,83 @@ private struct RunTestRandom {
     let repeated = Array(repeating: run(rows: 1_000, bytes: 1_000 * rowBytes), count: 50)
     #expect(Wax.rowCapacity(of: repeated, dimension: 4, dataBytes: 2_000 * rowBytes) == 2_000)
 }
+
+/// A table made from one run holds what applying that run to an empty table holds: rows in
+/// order, tombstones a row does not re-add, and (for a run built in memory with a repeated
+/// row) the later vector in the first row.
+private let runsToAdopt: [VecRun] = [
+    VecRun(dimension: 2, similarity: .dot, frameIds: [9, 3, 4], vectors: [1, 2, 3, 4, 5, 6], tombstones: [5, 7]),
+    VecRun(dimension: 2, similarity: .dot, frameIds: [], vectors: [], tombstones: [8]),
+    VecRun(dimension: 1, similarity: .cosine, frameIds: [2, 6, 2], vectors: [1, 2, 3], tombstones: [6]),
+]
+
+@Test(arguments: runsToAdopt)
+func vecRunTableMadeFromOneRunMatchesApplyingIt(_ run: VecRun) {
+    var applied = VecRunTable(dimension: Int(run.dimension))
+    applied.apply(run)
+    let adopted = VecRunTable(adopting: run)
+    #expect(adopted.dimension == applied.dimension)
+    #expect(adopted.frameIds == applied.frameIds)
+    #expect(adopted.vectors == applied.vectors)
+    #expect(adopted.liveCount == applied.liveCount)
+    #expect(adopted.tombstones == applied.tombstones)
+    #expect(adopted.compacted() == applied.compacted())
+    // Later runs apply to it as to the applied table.
+    let next = VecRun(
+        dimension: run.dimension,
+        similarity: run.similarity,
+        frameIds: [3, 11],
+        vectors: Array(repeating: 9, count: 2 * Int(run.dimension)),
+        tombstones: [9]
+    )
+    var adoptedThenNext = adopted
+    adoptedThenNext.apply(next)
+    applied.apply(next)
+    #expect(adoptedThenNext.compacted() == applied.compacted())
+    #expect(adoptedThenNext.tombstones == applied.tombstones)
+}
+
+/// A store whose vectors are one run, large enough to be hashed and decoded at once, reopens
+/// with its vectors, and fails the read with a checksum mismatch when the run is damaged in
+/// its vectors (which only the hash sees) or its magic (which the decode also rejects).
+@Test(arguments: [false, true])
+func aDamagedOnlyRunFailsTheCommittedVectorRead(damageHeader: Bool) async throws {
+    try await TempFiles.withTempFile { url in
+        let dimension = 384
+        let count = Wax.concurrentVecRunVerifyBytes / (dimension * 4) + 10
+        let wax = try await Wax.create(at: url)
+        try await putFrames(wax, count: count)
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(dimension), similarity: .dot)
+        let ids = (0..<count).map(UInt64.init)
+        try await wax.putEmbeddingBatch(frameIds: ids, vectors: ids.map { vector(Int($0), dimension: dimension) })
+        try await wax.commit()
+        let manifest = try #require(await wax.committedVecIndexManifest())
+        #expect(manifest.runs.count == 1)
+        let run = try #require(manifest.runs.first)
+        #expect(run.bytesLength >= UInt64(Wax.concurrentVecRunVerifyBytes))
+        try await wax.close()
+
+        let intact = try await Wax.open(at: url)
+        let map = try await committedMap(intact)
+        #expect(map.count == count)
+        #expect(map[UInt64(count - 1)] == vector(count - 1, dimension: dimension))
+        try await intact.close()
+
+        let offset = run.bytesOffset + (damageHeader ? 0 : run.bytesLength / 2)
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seek(toOffset: offset)
+        let original = try #require(try handle.read(upToCount: 1)?.first)
+        try handle.seek(toOffset: offset)
+        try handle.write(contentsOf: Data([original ^ 0xFF]))
+        try handle.close()
+
+        let reopened = try await Wax.open(at: url)
+        await #expect {
+            _ = try await reopened.readCommittedVectors()
+        } throws: { error in
+            guard case WaxError.checksumMismatch = error else { return false }
+            return true
+        }
+        try await reopened.close()
+    }
+}

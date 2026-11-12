@@ -565,15 +565,27 @@ extension Wax {
         let lengths: [Int] = try runs.map { (run: VecRunManifest) -> Int in
             try checkedReadLength(offset: run.bytesOffset, length: run.bytesLength, what: "vec index")
         }
+        let file = self.file
+        let dimension = manifest.dimension
+        let similarity = manifest.similarity
+        // One run applied to an empty table is the table: it takes the run's arrays instead
+        // of copying them (154 MB for a 100k-document import, which writes one run).
+        if runs.count == 1, table.rowCount == 0, table.tombstones.isEmpty {
+            table = VecRunTable(adopting: try await Self.readVerifiedVecRun(
+                runs[0],
+                length: lengths[0],
+                dimension: dimension,
+                similarity: similarity,
+                file: file
+            ))
+            return
+        }
         let dataStart = header.walOffset + header.walSize
         table.reserveCapacity(rows: table.rowCount + Self.rowCapacity(
             of: runs,
             dimension: manifest.dimension,
             dataBytes: header.footerOffset > dataStart ? header.footerOffset - dataStart : 0
         ))
-        let file = self.file
-        let dimension = manifest.dimension
-        let similarity = manifest.similarity
         try await withThrowingTaskGroup(of: (index: Int, run: VecRun).self) { group in
             var nextToLaunch = 0
             func launchNext() {
@@ -628,8 +640,11 @@ extension Wax {
     /// to 263 ms for 60 MB more peak memory; four saved 5 ms more for another 90 MB.
     static let concurrentVecRunReads = 2
 
+    /// Runs of at least this many bytes decode while their SHA-256 is checked.
+    static let concurrentVecRunVerifyBytes = 4 << 20
+
     /// Reads one run's bytes, checks their SHA-256 and decodes them, all on a blocking-work
-    /// thread: hashing a 23 MB run takes about 8 ms.
+    /// thread: hashing a 23 MB run takes about 8 ms, and a 154 MB run 58 ms.
     private static func readVerifiedVecRun(
         _ run: VecRunManifest,
         length: Int,
@@ -639,10 +654,7 @@ extension Wax {
     ) async throws -> VecRun {
         try await BlockingWork.run { () throws -> VecRun in
             let bytes = try file.readExactly(length: length, at: run.bytesOffset)
-            guard SHA256Checksum.digest(bytes) == run.checksum else {
-                throw WaxError.checksumMismatch("vec index checksum mismatch")
-            }
-            let decoded = try VecRunCodec.decode(bytes)
+            let decoded = try verifiedVecRun(bytes, checksum: run.checksum)
             guard decoded.dimension == dimension, decoded.similarity == similarity else {
                 throw WaxError.invalidToc(reason: "vec run dimension or similarity differs from its manifest")
             }
@@ -653,6 +665,29 @@ extension Wax {
             }
             return decoded
         }
+    }
+
+    /// The run `bytes` hold, once their SHA-256 matches `checksum`. A run of at least
+    /// `concurrentVecRunVerifyBytes` decodes while it is hashed: the decode is bounds-checked,
+    /// so it is safe on bytes the hash may yet reject, and a mismatch is reported before any
+    /// decode error, as when the decode waited for the hash.
+    private static func verifiedVecRun(_ bytes: Data, checksum: Data) throws -> VecRun {
+        guard bytes.count >= concurrentVecRunVerifyBytes else {
+            guard SHA256Checksum.digest(bytes) == checksum else {
+                throw WaxError.checksumMismatch("vec index checksum mismatch")
+            }
+            return try VecRunCodec.decode(bytes)
+        }
+        let work = VecRunHashAndDecode(bytes)
+        // The calling thread runs an iteration too, so both finish even with no worker free.
+        DispatchQueue.concurrentPerform(iterations: 2) { work.run(iteration: $0) }
+        guard work.digest == checksum else {
+            throw WaxError.checksumMismatch("vec index checksum mismatch")
+        }
+        guard let decoded = work.decoded else {
+            throw WaxError.invalidToc(reason: "vec run decode did not run")
+        }
+        return try decoded.get()
     }
 
     /// `length` as an `Int`, once the range is checked to lie in the data region.
@@ -780,5 +815,27 @@ extension Wax {
             else { return false }
         }
         return true
+    }
+}
+
+/// A vector run's hash check and decode, run as two `concurrentPerform` iterations.
+///
+/// `@unchecked Sendable`: iteration 0 writes only `digest` and iteration 1 only `decoded`, and
+/// both are read after `concurrentPerform` returns.
+private final class VecRunHashAndDecode: @unchecked Sendable {
+    let bytes: Data
+    var digest: Data?
+    var decoded: Result<VecRun, any Error>?
+
+    init(_ bytes: Data) {
+        self.bytes = bytes
+    }
+
+    func run(iteration: Int) {
+        if iteration == 0 {
+            digest = SHA256Checksum.digest(bytes)
+        } else {
+            decoded = Result { try VecRunCodec.decode(bytes) }
+        }
     }
 }
