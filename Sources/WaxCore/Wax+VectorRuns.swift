@@ -160,9 +160,7 @@ extension Wax {
             guard let manifest = toc.indexes.vec else { return nil }
             committedVecIndexReads &+= 1
             var table = VecRunTable(dimension: Int(manifest.dimension))
-            for run in manifest.runs {
-                table.apply(try await readVecRunLocked(run, of: manifest))
-            }
+            try await applyVecRunsLocked(manifest.runs, of: manifest, to: &table)
             let rows = table.compacted()
             return Self.droppingNonFiniteRows(
                 CommittedVectors(
@@ -545,25 +543,101 @@ extension Wax {
     }
 
     private func readVecRunLocked(_ run: VecRunManifest, of manifest: VecIndexManifest) async throws -> VecRun {
-        let bytes = try await readVerifiedLocked(
-            offset: run.bytesOffset,
-            length: run.bytesLength,
-            checksum: run.checksum,
-            what: "vec index"
+        let length = try checkedReadLength(offset: run.bytesOffset, length: run.bytesLength, what: "vec index")
+        return try await Self.readVerifiedVecRun(
+            run,
+            length: length,
+            dimension: manifest.dimension,
+            similarity: manifest.similarity,
+            file: file
         )
-        let decoded = try VecRunCodec.decode(bytes)
-        guard decoded.dimension == manifest.dimension, decoded.similarity == manifest.similarity else {
-            throw WaxError.invalidToc(reason: "vec run dimension or similarity differs from its manifest")
-        }
-        guard UInt64(decoded.frameIds.count) == run.rowCount,
-              UInt64(decoded.tombstones.count) == run.tombstoneCount
-        else {
-            throw WaxError.invalidToc(reason: "vec run row or tombstone count differs from its manifest")
-        }
-        return decoded
     }
 
-    private func readVerifiedLocked(offset: UInt64, length: UInt64, checksum: Data, what: String) async throws -> Data {
+    /// Reads, verifies and decodes `runs`, up to `concurrentVecRunReads` at a time, and
+    /// applies them to `table` in manifest order, since a later run overrides an earlier one.
+    /// A 100k store of 384-dimension rows holds about a dozen runs of up to 23 MB, each about
+    /// 3 ms to read and 8 ms to hash, so reading them one after another was most of an open.
+    private func applyVecRunsLocked(
+        _ runs: [VecRunManifest],
+        of manifest: VecIndexManifest,
+        to table: inout VecRunTable
+    ) async throws {
+        let lengths: [Int] = try runs.map { (run: VecRunManifest) -> Int in
+            try checkedReadLength(offset: run.bytesOffset, length: run.bytesLength, what: "vec index")
+        }
+        let file = self.file
+        let dimension = manifest.dimension
+        let similarity = manifest.similarity
+        try await withThrowingTaskGroup(of: (index: Int, run: VecRun).self) { group in
+            var nextToLaunch = 0
+            func launchNext() {
+                guard nextToLaunch < runs.count else { return }
+                let index = nextToLaunch
+                let run = runs[index]
+                let length = lengths[index]
+                group.addTask { () async throws -> (index: Int, run: VecRun) in
+                    let decoded = try await Self.readVerifiedVecRun(
+                        run,
+                        length: length,
+                        dimension: dimension,
+                        similarity: similarity,
+                        file: file
+                    )
+                    return (index, decoded)
+                }
+                nextToLaunch += 1
+            }
+            for _ in 0..<Self.concurrentVecRunReads {
+                launchNext()
+            }
+            // Runs finish out of order; hold each until the ones before it are applied.
+            var finished: [Int: VecRun] = [:]
+            var nextToApply = 0
+            while let done = try await group.next() {
+                finished[done.index] = done.run
+                while let run = finished.removeValue(forKey: nextToApply) {
+                    table.apply(run)
+                    nextToApply += 1
+                }
+                launchNext()
+            }
+        }
+    }
+
+    /// At most this many runs are read and hashed at once, which bounds the bytes in flight
+    /// (about two copies of each run while it decodes). At 100k, two took the open from 322
+    /// to 263 ms for 60 MB more peak memory; four saved 5 ms more for another 90 MB.
+    static let concurrentVecRunReads = 2
+
+    /// Reads one run's bytes, checks their SHA-256 and decodes them, all on a blocking-work
+    /// thread: hashing a 23 MB run takes about 8 ms.
+    private static func readVerifiedVecRun(
+        _ run: VecRunManifest,
+        length: Int,
+        dimension: UInt32,
+        similarity: VecSimilarity,
+        file: FDFile
+    ) async throws -> VecRun {
+        try await BlockingWork.run { () throws -> VecRun in
+            let bytes = try file.readExactly(length: length, at: run.bytesOffset)
+            guard SHA256Checksum.digest(bytes) == run.checksum else {
+                throw WaxError.checksumMismatch("vec index checksum mismatch")
+            }
+            let decoded = try VecRunCodec.decode(bytes)
+            guard decoded.dimension == dimension, decoded.similarity == similarity else {
+                throw WaxError.invalidToc(reason: "vec run dimension or similarity differs from its manifest")
+            }
+            guard UInt64(decoded.frameIds.count) == run.rowCount,
+                  UInt64(decoded.tombstones.count) == run.tombstoneCount
+            else {
+                throw WaxError.invalidToc(reason: "vec run row or tombstone count differs from its manifest")
+            }
+            return decoded
+        }
+    }
+
+    /// `length` as an `Int`, once the range is checked to lie in the data region.
+    private func checkedReadLength(offset: UInt64, length: UInt64, what: String) throws -> Int {
         let dataStart = header.walOffset + header.walSize
         guard offset >= dataStart else {
             throw WaxError.invalidToc(reason: "\(what) below data region")
@@ -574,6 +648,11 @@ extension Wax {
         guard length <= UInt64(Int.max) else {
             throw WaxError.io("\(what) size exceeds Int.max: \(length)")
         }
+        return Int(length)
+    }
+
+    private func readVerifiedLocked(offset: UInt64, length: UInt64, checksum: Data, what: String) async throws -> Data {
+        _ = try checkedReadLength(offset: offset, length: length, what: what)
         let file = self.file
         let bytes = try await io.run {
             try file.readExactly(length: Int(length), at: offset)

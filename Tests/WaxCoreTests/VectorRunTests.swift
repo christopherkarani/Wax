@@ -114,6 +114,42 @@ private func headerFormatVersions(_ url: URL) throws -> [UInt16] {
     }
 }
 
+/// Runs are read and verified concurrently; a damaged run that is neither first nor last
+/// must still fail the read with a checksum mismatch.
+@Test func aDamagedMiddleRunFailsTheCommittedVectorRead() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        try await putFrames(wax, count: 30)
+        try await wax.setVectorIndexConfiguration(dimension: 4, similarity: .cosine)
+        for batch in 0..<3 {
+            let ids = (batch * 10..<(batch + 1) * 10).map(UInt64.init)
+            try await wax.putEmbeddingBatch(frameIds: ids, vectors: ids.map { vector(Int($0)) })
+            try await wax.commit()
+        }
+        let manifest = try #require(await wax.committedVecIndexManifest())
+        #expect(manifest.runs.count == 3)
+        let middle = manifest.runs[1]
+        #expect(try await committedMap(wax).count == 30)
+        try await wax.close()
+
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seek(toOffset: middle.bytesOffset + middle.bytesLength / 2)
+        let original = try #require(try handle.read(upToCount: 1)?.first)
+        try handle.seek(toOffset: middle.bytesOffset + middle.bytesLength / 2)
+        try handle.write(contentsOf: Data([original ^ 0xFF]))
+        try handle.close()
+
+        let reopened = try await Wax.open(at: url)
+        await #expect {
+            _ = try await reopened.readCommittedVectors()
+        } throws: { error in
+            guard case WaxError.checksumMismatch = error else { return false }
+            return true
+        }
+        try await reopened.close()
+    }
+}
+
 @Test func committedVectorsApplyReplacementsRemovalsAndReAdds() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
