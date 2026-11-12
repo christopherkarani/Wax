@@ -565,6 +565,12 @@ extension Wax {
         let lengths: [Int] = try runs.map { (run: VecRunManifest) -> Int in
             try checkedReadLength(offset: run.bytesOffset, length: run.bytesLength, what: "vec index")
         }
+        let dataStart = header.walOffset + header.walSize
+        table.reserveCapacity(rows: table.rowCount + Self.rowCapacity(
+            of: runs,
+            dimension: manifest.dimension,
+            dataBytes: header.footerOffset > dataStart ? header.footerOffset - dataStart : 0
+        ))
         let file = self.file
         let dimension = manifest.dimension
         let similarity = manifest.similarity
@@ -602,6 +608,19 @@ extension Wax {
                 launchNext()
             }
         }
+    }
+
+    /// Rows `runs` add, for reserving a table: at most what each run's bytes and, all
+    /// together, the `dataBytes` of the data region can hold. Row counts are decoded and
+    /// runs can repeat, while each run's byte length was checked against the data region.
+    static func rowCapacity(of runs: [VecRunManifest], dimension: UInt32, dataBytes: UInt64) -> Int {
+        let rowBytes = UInt64(max(1, dimension)) * UInt64(MemoryLayout<Float>.size)
+        var rows: UInt64 = 0
+        for run in runs {
+            let (sum, overflow) = rows.addingReportingOverflow(min(run.rowCount, run.bytesLength / rowBytes))
+            rows = overflow ? .max : sum
+        }
+        return Int(min(rows, dataBytes / rowBytes, UInt64(Int.max) / rowBytes))
     }
 
     /// At most this many runs are read and hashed at once, which bounds the bytes in flight

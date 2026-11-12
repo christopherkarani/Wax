@@ -18,6 +18,18 @@ struct VecRunTable {
         self.dimension = dimension
     }
 
+    /// Makes room for `rows` rows, so applying runs that add them does not regrow (and copy)
+    /// the vectors and positions as they go.
+    mutating func reserveCapacity(rows: Int) {
+        frameIds.reserveCapacity(rows)
+        vectors.reserveCapacity(rows * dimension)
+        live.reserveCapacity(rows)
+        positions.reserveCapacity(rows)
+    }
+
+    /// Rows held, dead ones included.
+    var rowCount: Int { frameIds.count }
+
     var liveCount: Int { positions.count }
 
     mutating func apply(_ run: VecRun) {

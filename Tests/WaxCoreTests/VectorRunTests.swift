@@ -638,3 +638,21 @@ private struct RunTestRandom {
         return z ^ (z >> 31)
     }
 }
+
+/// Reserving a vector table for a store's runs takes the row counts the runs claim, but
+/// never more rows than their bytes, or the data region, can hold.
+@Test func vecRunRowCapacityIsBoundedByTheRunsBytes() {
+    func run(rows: UInt64, bytes: UInt64) -> VecRunManifest {
+        VecRunManifest(
+            bytesOffset: 0, bytesLength: bytes, checksum: Data(repeating: 0, count: 32),
+            rowCount: rows, tombstoneCount: 0, level: 0, addedGeneration: 0, keysChecksum: nil
+        )
+    }
+    let rowBytes: UInt64 = 4 * 4
+    let honest = [run(rows: 10, bytes: 10 * rowBytes + 64), run(rows: 3, bytes: 3 * rowBytes + 64)]
+    #expect(Wax.rowCapacity(of: honest, dimension: 4, dataBytes: 1 << 20) == 13)
+    // A row count its bytes cannot hold, and counts that would overflow, are capped.
+    #expect(Wax.rowCapacity(of: [run(rows: .max, bytes: 5 * rowBytes)], dimension: 4, dataBytes: 1 << 20) == 5)
+    let repeated = Array(repeating: run(rows: 1_000, bytes: 1_000 * rowBytes), count: 50)
+    #expect(Wax.rowCapacity(of: repeated, dimension: 4, dataBytes: 2_000 * rowBytes) == 2_000)
+}
