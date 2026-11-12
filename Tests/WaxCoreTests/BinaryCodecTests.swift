@@ -359,6 +359,31 @@ import Testing
     #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
 }
 
+/// ASCII strings take a fast path. Its edges are NUL, 0x7F and the empty string, and a
+/// non-ASCII byte anywhere, the last byte included, must still reach UTF-8 validation.
+@Test func asciiStringsRoundtripAndATrailingInvalidByteThrows() throws {
+    let values = ["", "a", "\u{0}nul", "del\u{7F}", "source", String(repeating: "x", count: 1_000)]
+    var encoder = BinaryEncoder()
+    for value in values {
+        try encoder.encode(value)
+    }
+    var decoder = try BinaryDecoder(data: encoder.data)
+    for value in values {
+        #expect(try decoder.decode(String.self) == value)
+    }
+    try decoder.finalize()
+
+    for prefixLength in [0, 1, 15, 16, 63] {
+        let bytes = [UInt8](repeating: 0x61, count: prefixLength) + [0xFF]
+        var invalid = BinaryEncoder()
+        invalid.encode(UInt32(bytes.count))
+        var data = invalid.data
+        data.append(contentsOf: bytes)
+        var invalidDecoder = try BinaryDecoder(data: data)
+        #expect(throws: WaxError.self, "prefix \(prefixLength)") { _ = try invalidDecoder.decode(String.self) }
+    }
+}
+
 @Test func multibyteAndReplacementCharacterStringsRoundtrip() throws {
     let values = ["naïve café ☕️ 日本語 🧠", "literal \u{FFFD} replacement", "\u{FEFF}leading BOM"]
     var encoder = BinaryEncoder()

@@ -113,6 +113,17 @@ package struct BinaryDecoder {
 
     private static func validatedUTF8(_ raw: UnsafeRawBufferPointer) -> String? {
         let bytes = raw.assumingMemoryBound(to: UInt8.self)
+        // Pure ASCII is valid UTF-8 and never repaired, so the specialized decode returns its
+        // exact bytes. Most stored strings (metadata keys, ids, kinds) are ASCII, and this
+        // skips the generic validating initializer, whose per-call metadata lookup was a third
+        // of frame decoding when an open decodes the table of contents (100k frames).
+        var combined: UInt8 = 0
+        for byte in bytes {
+            combined |= byte
+        }
+        if combined < 0x80 {
+            return String(decoding: bytes, as: UTF8.self)
+        }
         if #available(macOS 15, iOS 18, watchOS 11, tvOS 18, visionOS 2, *) {
             return String(validating: bytes, as: UTF8.self)
         }
