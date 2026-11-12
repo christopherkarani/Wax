@@ -33,6 +33,51 @@ package struct BinaryDecoder {
         count >= 0 && count <= remainingByteCount / max(1, minimumElementBytes)
     }
 
+    /// Offset of the next unread byte from the start of `data`.
+    package var position: Int { cursor }
+
+    /// Moves to `position`, an offset from the start of `data` that an earlier pass over the
+    /// same bytes reported.
+    package mutating func seek(to position: Int) throws {
+        guard position >= 0, position <= data.count else {
+            throw WaxError.decodingError(reason: "seek to \(position) outside buffer of \(data.count) bytes")
+        }
+        cursor = position
+    }
+
+    /// A decoder with the same limits over a copy of the bytes at `range` (offsets from the
+    /// start of `data`), with storage of its own, positioned at its first byte. `range` must
+    /// lie within `data`.
+    package func copying(_ range: Range<Int>) -> BinaryDecoder {
+        precondition(range.lowerBound >= 0 && range.upperBound <= data.count, "range outside buffer")
+        let start = data.startIndex
+        return BinaryDecoder(
+            copiedData: data.subdata(in: (start + range.lowerBound)..<(start + range.upperBound)),
+            limits: limits
+        )
+    }
+
+    private init(copiedData: Data, limits: Limits) {
+        self.data = copiedData
+        self.limits = limits
+    }
+
+    /// Consumes `count` bytes without reading them.
+    package mutating func skip(byteCount count: Int) throws {
+        _ = try advance(by: count, context: "skipped bytes[\(count)]")
+    }
+
+    /// Consumes a length-prefixed string or byte run without decoding it.
+    package mutating func skipLengthPrefixed(maxBytes: Int? = nil) throws {
+        let length = try decodeLength(maxBytes: maxBytes ?? limits.maxStringBytes)
+        try skip(byteCount: length)
+    }
+
+    /// Reads an optional's presence tag: `true` when a value follows.
+    package mutating func decodePresence() throws -> Bool {
+        try decodeOptionalIsPresent()
+    }
+
     /// Consumes `count` bytes and returns their offset from the start of `data`.
     /// Decoding a TOC calls this tens of times per frame, so `context` is built only on error.
     private mutating func advance(by count: Int, context: @autoclosure () -> String) throws -> Int {

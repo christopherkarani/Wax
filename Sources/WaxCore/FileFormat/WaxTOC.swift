@@ -238,11 +238,7 @@ package struct WaxTOC: Equatable, Sendable {
         guard decoder.canFit(count: frameCount, minimumElementBytes: FrameMeta.minimumEncodedSize) else {
             throw WaxError.invalidToc(reason: "frame count \(frameCount) exceeds remaining bytes (\(decoder.remainingByteCount))")
         }
-        var frames: [FrameMeta] = []
-        frames.reserveCapacity(frameCount)
-        for _ in 0..<frameCount {
-            frames.append(try FrameMeta.decode(from: &decoder))
-        }
+        let frames = try decodeFrames(count: frameCount, from: &decoder)
         for (index, frame) in frames.enumerated() {
             let expected = UInt64(index)
             guard frame.id == expected else {
