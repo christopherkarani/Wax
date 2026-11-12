@@ -89,3 +89,23 @@ func activeSurrogateSourceFramesReturnsOnlyCommittedEligibleChunks() async throw
 
     try await wax.close()
 }
+
+/// Text with nothing to trim is returned as stored; padded text is still trimmed.
+@Test
+func activeSurrogateSourceFramesTrimsPaddedText() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let texts = ["plain text", "  leading", "trailing\n", "\u{00A0}no-break\u{2003}", "in  side", "\t", "x"]
+    for text in texts {
+        _ = try await wax.put(Data(text.utf8), options: FrameMetaSubset(role: .chunk, searchText: text))
+    }
+    try await wax.commit()
+
+    let sources = await wax.activeSurrogateSourceFrames()
+    #expect(sources.map(\.searchText) == ["plain text", "leading", "trailing", "no-break", "in  side", "x"])
+    #expect(sources.map(\.id) == [0, 1, 2, 3, 4, 6])
+
+    try await wax.close()
+}

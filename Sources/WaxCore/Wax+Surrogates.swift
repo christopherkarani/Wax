@@ -59,11 +59,16 @@ extension Wax {
     }
 
     private static func embeddableText(of frame: FrameMeta) -> String? {
-        guard let searchText = frame.searchText?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !searchText.isEmpty else {
-            return nil
+        guard let text = frame.searchText else { return nil }
+        // Trimming builds a new string; text that neither starts nor ends with whitespace
+        // trims to itself, and an open checks this for every frame (100k at a time).
+        let whitespace = CharacterSet.whitespacesAndNewlines
+        if let first = text.unicodeScalars.first, let last = text.unicodeScalars.last,
+           !whitespace.contains(first), !whitespace.contains(last) {
+            return text
         }
-        return searchText
+        let trimmed = text.trimmingCharacters(in: whitespace)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     package func surrogateFrameId(sourceFrameId: UInt64) async -> UInt64? {
