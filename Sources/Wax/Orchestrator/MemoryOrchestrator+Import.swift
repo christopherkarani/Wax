@@ -133,9 +133,11 @@ extension MemoryOrchestrator {
             let window = documents[start..<min(start + Self.importWindowSize, documents.count)]
             var frames: [ImportFrame] = []
             var repairEmbeddings: [(frameId: UInt64, text: String)] = []
-            for document in window {
+            let windowChunks = await ingestChunks(forEach: window.map(\.text))
+            for (document, chunks) in zip(window, windowChunks) {
                 let id = try await planImport(
                     document,
+                    chunks: chunks,
                     firstFrameId: nextFrameId + UInt64(frames.count),
                     attached: attached,
                     seen: &seen,
@@ -159,8 +161,10 @@ extension MemoryOrchestrator {
 
     /// Appends the frames `document` adds to `frames` (numbered from `firstFrameId`), and
     /// returns its frame ID: what ``remember(_:metadata:)`` would return for it now.
+    /// `chunks` is `ingestChunks(for: document.text)`, chunked with the rest of the window.
     private func planImport(
         _ document: (text: String, metadata: [String: String]),
+        chunks: [String],
         firstFrameId: UInt64,
         attached: (any EmbeddingProvider)?,
         seen: inout [ImportKey: UInt64],
@@ -174,7 +178,6 @@ extension MemoryOrchestrator {
         let key = ImportKey(contentHash: contentHash, docMeta: docMeta)
         if let earlier = seen[key] { return earlier }
 
-        let chunks = await ingestChunks(for: document.text)
         if let existing = await wax.rememberDedupProbe(
             contentHash: contentHash,
             metadata: docMeta.entries,

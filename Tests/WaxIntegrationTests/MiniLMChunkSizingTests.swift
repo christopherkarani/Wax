@@ -135,7 +135,7 @@ func miniLMVectorSearchFindsAFactPastTheOldChunkWindow() async throws {
         let counter = try await TokenCounter.shared()
         let filler = "The committee reviewed the quarterly budget spreadsheet and approved the travel line items."
         var head: [String] = []
-        while await counter.encode(head.joined(separator: " ")).count < 280 {
+        while counter.encode(head.joined(separator: " ")).count < 280 {
             head.append(filler)
         }
         let fact = "The lighthouse keeper's orange cat is named Biscuit and sleeps on the warm lamp housing."
@@ -189,6 +189,35 @@ func miniLMVectorSearchFindsAFactPastTheOldChunkWindow() async throws {
         #expect(await memory.runtimeStats().embeddingStatus == .loading)
         #expect(await memory.config.chunking == MiniLMChunkSizing.chunking)
         #expect(await memory.config.fitsChunksToMiniLMInput)
+        try await memory.close()
+    }
+}
+
+/// Imports chunk a window of documents concurrently; each text must get exactly the chunks
+/// it gets alone, in input order, for short, empty, multi-chunk and off-thread (long) texts.
+@Test func concurrentChunkingMatchesChunkingEachTextAlone() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.requireOnDeviceProviders = false
+        let memory = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: IdentityEmbedder(model: "MiniLMAll-mean")
+        )
+        var texts: [String] = ["", "short note", "  padded  "]
+        for index in 0..<60 {
+            texts.append("Passage \(index): " + String(repeating: "the quarterly budget review, item \(index). ", count: index % 7 + 1))
+        }
+        texts += ChunkCorpus.texts
+        texts.append("last")
+
+        let together = await memory.ingestChunks(forEach: texts)
+        var alone: [[String]] = []
+        for text in texts {
+            alone.append(await memory.ingestChunks(for: text))
+        }
+        #expect(together == alone)
+        #expect(together.contains { $0.count > 1 })
         try await memory.close()
     }
 }

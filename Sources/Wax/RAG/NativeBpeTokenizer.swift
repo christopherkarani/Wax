@@ -77,14 +77,16 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         if bytes.isEmpty { return }
 
         let data = Data(bytes)
-        if let cached = bpeCache.get(data) {
-            tokens.append(contentsOf: cached)
+        // Most pieces are one token. The vocabulary is immutable, so looking it up first
+        // takes no lock: chunkers encoding in parallel queued on the cache lock for every
+        // piece, and ran slower than one chunker alone.
+        if let token = encoder[data] {
+            tokens.append(token)
             return
         }
 
-        if let token = encoder[data] {
-            bpeCache.set(data, [token])
-            tokens.append(token)
+        if let cached = bpeCache.get(data) {
+            tokens.append(contentsOf: cached)
             return
         }
 

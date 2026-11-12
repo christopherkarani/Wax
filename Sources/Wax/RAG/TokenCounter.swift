@@ -137,12 +137,14 @@ package actor TokenCounter {
         return (truncated, count(truncated))
     }
 
-    package func encode(_ text: String) -> [UInt32] {
+    /// Nonisolated: the tokenizer is safe for concurrent reads, so chunkers encoding in
+    /// parallel do not queue on this actor.
+    nonisolated package func encode(_ text: String) -> [UInt32] {
         let capped = Self.cappedUTF8Prefix(text, maxBytes: Self.maxTokenizationBytes)
         return tokenizer.encode(capped)
     }
 
-    package func decode(_ tokens: [UInt32]) -> String {
+    nonisolated package func decode(_ tokens: [UInt32]) -> String {
         tokenizer.decode(tokens)
     }
 
