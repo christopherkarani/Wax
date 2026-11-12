@@ -110,10 +110,13 @@ package enum LoadedVectorSearchEngine: Sendable {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> LoadedVectorSearchEngine {
+        // Both kinds load the same committed vectors, read (and checksummed) once. The read
+        // starts first because choosing the kind can create the Metal device, about 30 ms the
+        // first time in a process.
+        async let committedRead = wax.readCommittedVectors()
         let projectedCount = try await projectedVectorCount(for: wax, fallbackDimensions: dimensions)
         let selectedKind = try resolveKind(projectedVectorCount: projectedCount, preference: preference)
-        // Read (and checksum) the runs once, after choosing the kind.
-        let committed = try await wax.readCommittedVectors()
+        let committed = try await committedRead
 
         switch selectedKind {
         case .accelerate:
