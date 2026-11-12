@@ -11,6 +11,6 @@ import Testing
     #expect(Constants.walRecordHeaderSize == 48)
     #expect(Constants.footerMagic == "WAX1FOOT".data(using: .utf8)!)
     #expect(Constants.specMajor == 3)
-    #expect(Constants.specMinor == 0)
-    #expect(Constants.specVersion == 0x0300)
+    #expect(Constants.specMinor == 1)
+    #expect(Constants.specVersion == 0x0301)
 }

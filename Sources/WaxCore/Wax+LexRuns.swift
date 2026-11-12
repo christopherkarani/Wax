@@ -283,7 +283,8 @@ extension Wax {
         imageLength: Int,
         generation: UInt64
     ) async throws -> (manifest: LexRunManifest, entry: SegmentCatalogEntry) {
-        let checksum = SHA256Checksum.digest(bytes)
+        let checksumChunkBytes = RunChecksum.treeChunkBytes
+        let checksum = RunChecksum.digest(bytes, chunkBytes: checksumChunkBytes)
         let length = UInt64(bytes.count)
         let offset = allocateDataLocked(length: length)
         let file = self.file
@@ -303,7 +304,8 @@ extension Wax {
             bytesLength: length,
             checksum: checksum,
             addedGeneration: generation,
-            imageLength: UInt64(imageLength)
+            imageLength: UInt64(imageLength),
+            checksumChunkBytes: checksumChunkBytes
         )
         return (manifest, entry)
     }
@@ -361,7 +363,7 @@ extension Wax {
             throw WaxError.invalidToc(reason: "lex run exceeds footer offset")
         }
         let bytes = try file.readExactly(length: Int(run.bytesLength), at: run.bytesOffset)
-        guard SHA256Checksum.digest(bytes) == run.checksum else {
+        guard RunChecksum.digest(bytes, chunkBytes: run.checksumChunkBytes) == run.checksum else {
             throw WaxError.checksumMismatch("lex index checksum mismatch")
         }
         return bytes

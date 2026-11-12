@@ -449,7 +449,8 @@ extension Wax {
     private func writeVecRunLocked(_ run: VecRun, level: UInt8, generation: UInt64) async throws -> VecRunManifest {
         let bytes = try VecRunCodec.encode(run)
         let keysOffset = try VecRunCodec.keysOffset(rowCount: UInt64(run.frameIds.count), dimension: run.dimension)
-        let checksum = SHA256Checksum.digest(bytes)
+        let checksumChunkBytes = RunChecksum.treeChunkBytes
+        let checksum = RunChecksum.digest(bytes, chunkBytes: checksumChunkBytes)
         let keysChecksum = bytes.withUnsafeBytes { raw in
             var hasher = SHA256Checksum()
             hasher.update(UnsafeRawBufferPointer(rebasing: raw[Int(keysOffset)...]))
@@ -477,7 +478,8 @@ extension Wax {
             tombstoneCount: UInt64(run.tombstones.count),
             level: level,
             addedGeneration: generation,
-            keysChecksum: keysChecksum
+            keysChecksum: keysChecksum,
+            checksumChunkBytes: checksumChunkBytes
         )
     }
 
@@ -520,6 +522,7 @@ extension Wax {
                     offset: run.bytesOffset + keysOffset,
                     length: run.bytesLength - keysOffset,
                     checksum: keysChecksum,
+                    checksumChunkBytes: nil,
                     what: "vec run keys"
                 )
                 let decoded = try VecRunCodec.decodeKeys(bytes, rowCount: run.rowCount, tombstoneCount: run.tombstoneCount)
@@ -529,6 +532,7 @@ extension Wax {
                     offset: run.bytesOffset,
                     length: run.bytesLength,
                     checksum: run.checksum,
+                    checksumChunkBytes: run.checksumChunkBytes,
                     what: "vec run"
                 )
                 let keyBytes = bytes.subdata(in: Int(keysOffset)..<bytes.count)
@@ -640,11 +644,12 @@ extension Wax {
     /// to 263 ms for 60 MB more peak memory; four saved 5 ms more for another 90 MB.
     static let concurrentVecRunReads = 2
 
-    /// Runs of at least this many bytes decode while their SHA-256 is checked.
+    /// Runs of at least this many bytes decode while their checksum is checked.
     static let concurrentVecRunVerifyBytes = 4 << 20
 
-    /// Reads one run's bytes, checks their SHA-256 and decodes them, all on a blocking-work
-    /// thread: hashing a 23 MB run takes about 8 ms, and a 154 MB run 58 ms.
+    /// Reads one run's bytes, checks their checksum and decodes them, all on a blocking-work
+    /// thread. A whole-run SHA-256 takes about 8 ms for a 23 MB run and 58 ms for a 154 MB
+    /// run; a tree checksum hashes the chunks on all cores.
     private static func readVerifiedVecRun(
         _ run: VecRunManifest,
         length: Int,
@@ -654,7 +659,7 @@ extension Wax {
     ) async throws -> VecRun {
         try await BlockingWork.run { () throws -> VecRun in
             let bytes = try file.readExactly(length: length, at: run.bytesOffset)
-            let decoded = try verifiedVecRun(bytes, checksum: run.checksum)
+            let decoded = try verifiedVecRun(bytes, checksum: run.checksum, checksumChunkBytes: run.checksumChunkBytes)
             guard decoded.dimension == dimension, decoded.similarity == similarity else {
                 throw WaxError.invalidToc(reason: "vec run dimension or similarity differs from its manifest")
             }
@@ -667,21 +672,21 @@ extension Wax {
         }
     }
 
-    /// The run `bytes` hold, once their SHA-256 matches `checksum`. A run of at least
-    /// `concurrentVecRunVerifyBytes` decodes while it is hashed: the decode is bounds-checked,
-    /// so it is safe on bytes the hash may yet reject, and a mismatch is reported before any
-    /// decode error, as when the decode waited for the hash.
-    private static func verifiedVecRun(_ bytes: Data, checksum: Data) throws -> VecRun {
+    /// The run `bytes` hold, once their checksum (see ``RunChecksum``) matches `checksum`. A
+    /// run of at least `concurrentVecRunVerifyBytes` decodes while it is hashed: the decode is
+    /// bounds-checked, so it is safe on bytes the hash may yet reject, and a mismatch is
+    /// reported before any decode error, as when the decode waited for the hash.
+    static func verifiedVecRun(_ bytes: Data, checksum: Data, checksumChunkBytes: UInt32?) throws -> VecRun {
         guard bytes.count >= concurrentVecRunVerifyBytes else {
-            guard SHA256Checksum.digest(bytes) == checksum else {
+            guard RunChecksum.digest(bytes, chunkBytes: checksumChunkBytes) == checksum else {
                 throw WaxError.checksumMismatch("vec index checksum mismatch")
             }
             return try VecRunCodec.decode(bytes)
         }
-        let work = VecRunHashAndDecode(bytes)
-        // The calling thread runs an iteration too, so both finish even with no worker free.
-        DispatchQueue.concurrentPerform(iterations: 2) { work.run(iteration: $0) }
-        guard work.digest == checksum else {
+        let work = VecRunHashAndDecode(bytes, checksumChunkBytes: checksumChunkBytes)
+        // The calling thread runs iterations too, so all finish even with no worker free.
+        DispatchQueue.concurrentPerform(iterations: work.iterations) { work.run(iteration: $0) }
+        guard work.digest() == checksum else {
             throw WaxError.checksumMismatch("vec index checksum mismatch")
         }
         guard let decoded = work.decoded else {
@@ -705,13 +710,19 @@ extension Wax {
         return Int(length)
     }
 
-    private func readVerifiedLocked(offset: UInt64, length: UInt64, checksum: Data, what: String) async throws -> Data {
+    private func readVerifiedLocked(
+        offset: UInt64,
+        length: UInt64,
+        checksum: Data,
+        checksumChunkBytes: UInt32?,
+        what: String
+    ) async throws -> Data {
         _ = try checkedReadLength(offset: offset, length: length, what: what)
         let file = self.file
         let bytes = try await io.run {
             try file.readExactly(length: Int(length), at: offset)
         }
-        guard SHA256Checksum.digest(bytes) == checksum else {
+        guard RunChecksum.digest(bytes, chunkBytes: checksumChunkBytes) == checksum else {
             throw WaxError.checksumMismatch("\(what) checksum mismatch")
         }
         return bytes
@@ -801,41 +812,69 @@ extension Wax {
 
     /// Whether every vector and lex run `generation` wrote matches its checksum.
     private static func indexRunsWritten(by generation: UInt64, in toc: WaxTOC, file: FDFile) -> Bool {
-        var written: [(offset: UInt64, length: UInt64, checksum: Data)] = []
+        var written: [(offset: UInt64, length: UInt64, checksum: Data, chunkBytes: UInt32?)] = []
         for run in toc.indexes.vec?.runs ?? [] where run.addedGeneration == generation {
-            written.append((run.bytesOffset, run.bytesLength, run.checksum))
+            written.append((run.bytesOffset, run.bytesLength, run.checksum, run.checksumChunkBytes))
         }
         for run in toc.indexes.lex?.runs ?? [] where run.addedGeneration == generation {
-            written.append((run.bytesOffset, run.bytesLength, run.checksum))
+            written.append((run.bytesOffset, run.bytesLength, run.checksum, run.checksumChunkBytes))
         }
         for run in written {
             guard run.length <= UInt64(Int.max),
                   let bytes = try? file.readExactly(length: Int(run.length), at: run.offset),
-                  SHA256Checksum.digest(bytes) == run.checksum
+                  RunChecksum.digest(bytes, chunkBytes: run.chunkBytes) == run.checksum
             else { return false }
         }
         return true
     }
 }
 
-/// A vector run's hash check and decode, run as two `concurrentPerform` iterations.
+/// A vector run's checksum and decode, run as `concurrentPerform` iterations: iteration 0
+/// decodes, and each other one hashes the whole run (no chunk size) or one chunk.
 ///
-/// `@unchecked Sendable`: iteration 0 writes only `digest` and iteration 1 only `decoded`, and
-/// both are read after `concurrentPerform` returns.
+/// `@unchecked Sendable`: iteration 0 writes only `decoded`, and each other iteration only its
+/// own 32 bytes of `digests`; both are read after `concurrentPerform` returns.
 private final class VecRunHashAndDecode: @unchecked Sendable {
     let bytes: Data
-    var digest: Data?
+    let chunkBytes: Int?
+    let iterations: Int
+    private let digests: UnsafeMutableRawBufferPointer
     var decoded: Result<VecRun, any Error>?
 
-    init(_ bytes: Data) {
+    init(_ bytes: Data, checksumChunkBytes: UInt32?) {
         self.bytes = bytes
+        let chunkBytes = checksumChunkBytes.map { Int($0) }
+        let hashes = chunkBytes.map { RunChecksum.chunkCount(byteCount: bytes.count, chunkBytes: $0) } ?? 1
+        self.chunkBytes = chunkBytes
+        iterations = 1 + hashes
+        digests = UnsafeMutableRawBufferPointer.allocate(byteCount: hashes * 32, alignment: 1)
+        digests.initializeMemory(as: UInt8.self, repeating: 0)
+    }
+
+    deinit {
+        digests.deallocate()
     }
 
     func run(iteration: Int) {
-        if iteration == 0 {
-            digest = SHA256Checksum.digest(bytes)
-        } else {
+        guard iteration > 0 else {
             decoded = Result { try VecRunCodec.decode(bytes) }
+            return
         }
+        bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            if let chunkBytes {
+                RunChecksum.writeChunkDigest(iteration - 1, of: raw, chunkBytes: chunkBytes, to: digests)
+            } else {
+                let digest = RunChecksum.digest(raw, chunkBytes: nil)
+                digest.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
+                    digests.copyMemory(from: source)
+                }
+            }
+        }
+    }
+
+    /// The run's checksum, once every iteration has run.
+    func digest() -> Data {
+        guard chunkBytes != nil else { return Data(digests) }
+        return RunChecksum.root(of: UnsafeRawBufferPointer(digests))
     }
 }
