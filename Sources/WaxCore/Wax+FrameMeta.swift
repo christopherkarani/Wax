@@ -41,21 +41,25 @@ extension Wax {
         fallbackMetadataValue: String
     ) async -> FrameMeta? {
         await withReadLock {
-            var latest: FrameMeta?
+            // Fields are read in place: binding each frame to a local copied and released its
+            // strings, about 10 ms of a 100k store's open that found no system frame.
+            let frames = toc.frames
+            var latest: Int?
 
-            for frame in toc.frames {
-                guard frame.status == .active, frame.supersededBy == nil, frame.role == .system else {
+            for index in frames.indices {
+                guard frames[index].role == .system, frames[index].status == .active,
+                      frames[index].supersededBy == nil else {
                     continue
                 }
-                guard frame.kind == kind
-                    || frame.metadata?.entries[fallbackMetadataKey] == fallbackMetadataValue else {
+                guard frames[index].kind == kind
+                    || frames[index].metadata?.entries[fallbackMetadataKey] == fallbackMetadataValue else {
                     continue
                 }
-                guard latest?.timestamp ?? .min < frame.timestamp else { continue }
-                latest = frame
+                guard latest.map({ frames[$0].timestamp }) ?? .min < frames[index].timestamp else { continue }
+                latest = index
             }
 
-            return latest
+            return latest.map { frames[$0] }
         }
     }
 
@@ -112,7 +116,7 @@ extension Wax {
                     if supersede.supersedingId < UInt64(visibleFrames.count) {
                         visibleFrames[Int(supersede.supersedingId)].supersedes = supersede.supersededId
                     }
-                case .putEmbedding:
+                case .putEmbedding, .removeEmbedding:
                     continue
                 }
             }
@@ -182,10 +186,112 @@ extension Wax {
 
     package func frameMetasIncludingPending() async -> [FrameMeta] {
         await withReadLock {
-            let frameIds = frameIdsTouchedByCommittedOrPendingFramesUnlocked()
-            let metas = frameMetasIncludingPendingUnlocked(frameIds: frameIds)
-            return metas.values.sorted { $0.id < $1.id }
+            // Committed ids are dense and in order (the TOC decode checks it), so with nothing
+            // pending the merge below would rebuild `toc.frames`. It runs on every open.
+            guard !pendingMutations.isEmpty else { return toc.frames }
+            return allFrameMetasIncludingPendingUnlocked()
         }
+    }
+
+    /// The entries of `frameMetasIncludingPending()` that staging the text index reads: every
+    /// frame at or above `floor` (its coverage watermark), and the inactive (deleted or
+    /// superseded) frames below it, in id order. Copies only those, not every frame. An open
+    /// frame import's frames follow, since its commit publishes the index staged from them.
+    package func frameMetasForTextStaging(atOrAbove floor: UInt64) async -> [FrameMeta] {
+        await withReadLock {
+            let committedCount = UInt64(toc.frames.count)
+            let scanEnd = Int(min(floor, committedCount))
+            var ids: [UInt64] = []
+            toc.frames.withUnsafeBufferPointer { frames in
+                for index in 0..<scanEnd where frames[index].status == .deleted || frames[index].supersededBy != nil {
+                    ids.append(UInt64(index))
+                }
+            }
+            // Pending mutations can change frames below the floor, and add frames past the
+            // committed ones.
+            var pendingIds: [UInt64] = []
+            for mutation in pendingMutations {
+                switch mutation.entry {
+                case .putFrame(let put):
+                    pendingIds.append(put.frameId)
+                case .deleteFrame(let delete):
+                    pendingIds.append(delete.frameId)
+                case .supersedeFrame(let supersede):
+                    pendingIds.append(supersede.supersededId)
+                    pendingIds.append(supersede.supersedingId)
+                case .putEmbedding, .removeEmbedding:
+                    continue
+                }
+            }
+            if floor < committedCount {
+                ids.append(contentsOf: floor..<committedCount)
+            }
+            ids.append(contentsOf: pendingIds.filter { $0 < floor || $0 >= committedCount })
+            let candidates = Array(Set(ids)).sorted()
+
+            let metas = frameMetasIncludingPendingUnlocked(frameIds: candidates)
+            let staged = candidates.compactMap { frameId -> FrameMeta? in
+                guard let meta = metas[frameId] else { return nil }
+                guard frameId >= floor || meta.status == .deleted || meta.supersededBy != nil else { return nil }
+                return meta
+            }
+            guard let frameImport else { return staged }
+            return staged + frameImport.frames.filter { $0.id >= floor }
+        }
+    }
+
+    /// Committed frames with pending mutations applied, then pending puts, in id order.
+    ///
+    /// Same result as `frameMetasIncludingPendingUnlocked(frameIds:)` over every committed and
+    /// pending id, without building a dictionary over the whole store: every commit stages
+    /// the text index from this list, so its cost is paid once per commit.
+    private func allFrameMetasIncludingPendingUnlocked() -> [FrameMeta] {
+        var committed = toc.frames
+        let committedCount = UInt64(committed.count)
+        var pending: [UInt64: FrameMeta] = [:]
+
+        func update(_ frameId: UInt64, _ body: (inout FrameMeta) -> Void) {
+            if frameId < committedCount {
+                body(&committed[Int(frameId)])
+            } else if var meta = pending[frameId] {
+                body(&meta)
+                pending[frameId] = meta
+            }
+        }
+
+        let ordered = pendingMutations.sorted { $0.sequence < $1.sequence }
+        for mutation in ordered {
+            switch mutation.entry {
+            case .putFrame(let put):
+                guard let pendingMeta = try? FrameMeta.fromPut(put) else { continue }
+                if put.frameId < committedCount {
+                    committed[Int(put.frameId)] = pendingMeta
+                } else {
+                    pending[put.frameId] = pendingMeta
+                }
+            case .deleteFrame(let delete):
+                update(delete.frameId) { $0.status = .deleted }
+            case .supersedeFrame(let supersede):
+                guard supersede.supersededId != supersede.supersedingId else { continue }
+                update(supersede.supersededId) { meta in
+                    if meta.supersededBy == nil || meta.supersededBy == supersede.supersedingId {
+                        meta.supersededBy = supersede.supersedingId
+                    }
+                }
+                update(supersede.supersedingId) { meta in
+                    if meta.supersedes == nil {
+                        meta.supersedes = supersede.supersededId
+                    }
+                }
+            case .putEmbedding, .removeEmbedding:
+                continue
+            }
+        }
+
+        guard !pending.isEmpty else { return committed }
+        committed.reserveCapacity(committed.count + pending.count)
+        committed.append(contentsOf: pending.values.sorted { $0.id < $1.id })
+        return committed
     }
 
     package func frameMeta(frameId: UInt64) async throws -> FrameMeta {
@@ -262,30 +368,12 @@ extension Wax {
                     }
                 }
 
-            case .putEmbedding:
+            case .putEmbedding, .removeEmbedding:
                 continue
             }
         }
 
         return metas
-    }
-
-    private func frameIdsTouchedByCommittedOrPendingFramesUnlocked() -> [UInt64] {
-        var frameIds = Set(toc.frames.map(\.id))
-        for mutation in pendingMutations {
-            switch mutation.entry {
-            case .putFrame(let put):
-                frameIds.insert(put.frameId)
-            case .deleteFrame(let delete):
-                frameIds.insert(delete.frameId)
-            case .supersedeFrame(let supersede):
-                frameIds.insert(supersede.supersededId)
-                frameIds.insert(supersede.supersedingId)
-            case .putEmbedding:
-                continue
-            }
-        }
-        return Array(frameIds)
     }
 
     /// Live frames that should have vectors when a provider is active.
@@ -310,7 +398,13 @@ extension Wax {
 
     package func timeline(_ query: TimelineQuery) async -> [FrameMeta] {
         await withReadLock {
-            TimelineQuery.filter(frames: toc.frames, query: query)
+            timelineScans &+= 1
+            return TimelineQuery.filter(frames: toc.frames, query: query)
         }
+    }
+
+    /// Timeline scans (each one walks every frame) since this handle opened.
+    package func timelineScansForTesting() async -> UInt64 {
+        await withReadLock { timelineScans }
     }
 }

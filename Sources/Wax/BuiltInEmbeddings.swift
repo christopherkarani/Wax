@@ -8,6 +8,9 @@ public enum BuiltInEmbeddingProvider: String, CaseIterable, Sendable, Equatable,
     case miniLM = "minilm"
     /// The Snowflake Arctic Embed Small CoreML embedding provider.
     case arctic
+    /// The `intfloat/e5-small-v2` CoreML embedding provider. Prepends `"query: "` to search
+    /// queries and `"passage: "` to stored text, the prefixes the model was trained with.
+    case e5
 
     package var commandLineChoice: String {
         rawValue
@@ -19,6 +22,9 @@ public enum BuiltInEmbeddingComputeUnit: String, CaseIterable, Sendable, Equatab
     /// Run inference on the CPU only.
     case cpuOnly
     /// Prefer CPU and GPU execution.
+    ///
+    /// Arctic and e5 refuse this: their range input shapes keep the GPU load in MPSGraph
+    /// shape solving for minutes. They skip it and move on to the next compute unit.
     case cpuAndGPU
     /// Prefer CPU and Apple Neural Engine execution.
     case cpuAndNeuralEngine
@@ -118,6 +124,8 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
                 "requires iOS 18/macOS 15 or later and the default `MiniLMEmbeddings` package trait"
             case .arctic:
                 "requires iOS 18/macOS 15 or later and the `ArcticEmbeddings` package trait"
+            case .e5:
+                "requires iOS 18/macOS 15 or later and the default `E5Embeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
         case .timedOut(let provider):

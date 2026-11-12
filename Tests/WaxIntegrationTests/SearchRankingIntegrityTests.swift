@@ -257,10 +257,33 @@ func saveReturnsFrameIDUsableForDelete() async throws {
 // MARK: - Vector coverage must not swallow decode errors
 
 @Test
-func corruptVectorSegmentThrowsInsteadOfReportingNoVectors() {
-    #expect(throws: (any Error).self) {
-        _ = try MemoryOrchestrator.vecSegmentFrameIds(bytes: Data([0x01, 0x02, 0x03]))
+func corruptVectorSegmentThrowsInsteadOfReportingNoVectors() async throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-corrupt-vector-keys-\(UUID().uuidString)")
+        .appendingPathExtension("wax")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("frame".utf8))
+    try await wax.setVectorIndexConfiguration(dimension: 2, similarity: .cosine)
+    try await wax.putEmbedding(frameId: 0, vector: [1, 0])
+    try await wax.commit()
+    let run = try #require(await wax.committedVecIndexManifest()?.runs.first)
+    try await wax.close()
+
+    // Corrupt the run's last key byte: coverage reads only the keys.
+    let handle = try FileHandle(forUpdating: url)
+    let offset = run.bytesOffset + run.bytesLength - 1
+    try handle.seek(toOffset: offset)
+    let byte = try #require(try handle.read(upToCount: 1))
+    try handle.seek(toOffset: offset)
+    try handle.write(contentsOf: Data([byte[0] ^ 0xFF]))
+    try handle.close()
+
+    let reopened = try await Wax.open(at: url)
+    await #expect(throws: (any Error).self) {
+        _ = try await reopened.committedVectorFrameIds()
     }
+    try? await reopened.close()
 }
 
 private struct CoverageReadFailure: Error {}

@@ -80,6 +80,11 @@ package enum UnifiedRanking {
         guard !queryTerms.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
         guard cappedWindow > 1 else { return results }
+        // Only text-lane hits are lifted, so a window without one (any vector-only search)
+        // comes back unchanged; skip tokenizing its previews.
+        guard results.prefix(cappedWindow).contains(where: { $0.sources.contains(.text) }) else {
+            return results
+        }
 
         let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
         struct Scored {
@@ -167,6 +172,9 @@ package enum UnifiedRanking {
         combined.append(contentsOf: results.dropFirst(cappedWindow))
         return combined
     }
+
+    /// Weight of intent signals relative to the fused retrieval score.
+    package static let intentSignalScale: Float = 0.02
 
     package static func intentAwareRerank(
         results: [SearchResponse.Result],
@@ -344,11 +352,16 @@ package enum UnifiedRanking {
             return total
         }
 
+        // The signals above are sized in whole points, but fused RRF scores are
+        // about 1/(k + rank), roughly 0.1 at rank 1. At full size a date literal
+        // or an entity hit outranks every retrieval signal in the window, so the
+        // signals are scaled down to break near-ties between retrieved results.
         var scoredHead: [(index: Int, score: Float)] = []
         scoredHead.reserveCapacity(cappedWindow)
         for index in 0..<cappedWindow {
             let result = results[index]
-            scoredHead.append((index: index, score: compositeScore(for: result)))
+            let signal = compositeScore(for: result) - result.score
+            scoredHead.append((index: index, score: result.score + signal * intentSignalScale))
         }
         scoredHead.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }

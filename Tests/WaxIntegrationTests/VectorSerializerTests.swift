@@ -125,6 +125,31 @@ import WaxCore
     }
 }
 
+/// The flat segment is written into one exact-size buffer; its bytes must stay
+/// header, vectors, frame-id byte count, frame ids.
+@Test func flatVectorSerializationKeepsSegmentLayout() throws {
+    let vectors: [Float] = [1.0, -2.5, 0.25, 3.0, 4.5, -0.125]
+    let frameIds: [UInt64] = [9, 2, 0x0102_0304_0506_0708]
+    let data = try VectorSerializer.serializeFlatVectors(vectors, frameIds: frameIds, metric: .cosine, dimensions: 2)
+
+    let vectorBytes = vectors.withUnsafeBufferPointer { Data(buffer: $0) }
+    let frameIdBytes = frameIds.withUnsafeBufferPointer { Data(buffer: $0) }
+    var frameIdLength = UInt64(frameIdBytes.count).littleEndian
+    let lengthBytes = withUnsafeBytes(of: &frameIdLength) { Data($0) }
+
+    #expect(data.count == 36 + vectorBytes.count + 8 + frameIdBytes.count)
+    #expect(data.subdata(in: 36..<(36 + vectorBytes.count)) == vectorBytes)
+    #expect(data.subdata(in: (36 + vectorBytes.count)..<(44 + vectorBytes.count)) == lengthBytes)
+    #expect(data.suffix(frameIdBytes.count) == frameIdBytes)
+    guard case .metal(let info, let decodedVectors, let decodedFrameIds) = try VectorSerializer.decodeVecSegment(from: data) else {
+        Issue.record("flat segment did not decode")
+        return
+    }
+    #expect(info.vectorCount == 3)
+    #expect(decodedVectors == vectors)
+    #expect(decodedFrameIds == frameIds)
+}
+
 @Test func metalSegmentDecodeRejectsDuplicateFrameIds() throws {
     let data = buildMetalSegment(
         vectors: [1.0, 0.0, 0.0, 1.0],

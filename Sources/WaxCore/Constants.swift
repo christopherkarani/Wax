@@ -12,11 +12,16 @@ package enum Constants {
 
     // MARK: - Version
 
-    package static let specMajor: UInt8 = 1
+    package static let specMajor: UInt8 = 3
     package static let specMinor: UInt8 = 0
 
     /// Packed major/minor: `(major << 8) | minor` (little-endian on disk).
     package static let specVersion: UInt16 = (UInt16(specMajor) << 8) | UInt16(specMinor)
+
+    /// Header page versions this build opens: 1.0 (one whole-index vector blob), 2.0 (vector
+    /// runs, one whole lex blob) and 3.0 (lex runs). An older file's first commit here
+    /// rewrites both header pages as 3.0, which older builds refuse.
+    package static let supportedSpecVersions: Set<UInt16> = [0x0100, 0x0200, specVersion]
 
     // MARK: - Sizes
 
@@ -31,6 +36,9 @@ package enum Constants {
 
     /// Footer size: 64 bytes (v1 footer includes `wal_committed_seq`)
     package static let footerSize: UInt64 = 64
+    /// Footer generations a session may use: its recovery fence's ceiling lies this far above
+    /// its fence (see `WaxHeaderPage.RecoveryFence`).
+    static let generationsPerSession: UInt64 = 1 << 32
 
     /// WAL record header size: 48 bytes (fixed for Wax v1).
     package static let walRecordHeaderSize: UInt64 = 48
@@ -60,6 +68,7 @@ package enum Constants {
     package static let maxArrayCount: Int = 10_000_000
     package static let maxEmbeddingDimensions: Int = 1_000_000
 
-    package static let maxTocBytes: UInt64 = 64 * 1024 * 1024
+    /// About 560 bytes per frame, so roughly 950k frames. Commits refuse a larger TOC.
+    package static let maxTocBytes: UInt64 = 512 * 1024 * 1024
     package static let maxFooterScanBytes: UInt64 = 32 * 1024 * 1024
 }

@@ -11,7 +11,6 @@ package actor WaxVectorSearchSession {
     package let dimensions: Int
     private let concreteEngine: ConcreteVectorEngine
     private var lastPendingEmbeddingSequence: UInt64?
-    private var pendingRemovedFrameIds: Set<UInt64> = []
 
     package init(
         wax: Wax,
@@ -36,13 +35,13 @@ package actor WaxVectorSearchSession {
 
     package func add(frameId: UInt64, vector: [Float]) async throws {
         try await addToEngine(frameId: frameId, vector: vector)
-        pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: vector)
     }
 
+    /// Removes the frame's vector durably: the removal is in the WAL and the next commit's run.
     package func remove(frameId: UInt64) async throws {
+        try await wax.removeEmbedding(frameId: frameId)
         try await removeFromEngine(frameId: frameId)
-        pendingRemovedFrameIds.insert(frameId)
     }
 
     package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
@@ -79,7 +78,6 @@ package actor WaxVectorSearchSession {
 
         let frameId = try await wax.put(content, options: merged, compression: compression)
         try await addToEngine(frameId: frameId, vector: embedding)
-        pendingRemovedFrameIds.remove(frameId)
         try await wax.putEmbedding(frameId: frameId, vector: embedding)
         return frameId
     }
@@ -122,9 +120,6 @@ package actor WaxVectorSearchSession {
 
         let frameIds = try await wax.putBatch(contents, options: mergedOptions, compression: compression)
         try await addBatchToEngine(frameIds: frameIds, vectors: embeddings)
-        for frameId in frameIds {
-            pendingRemovedFrameIds.remove(frameId)
-        }
         try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: embeddings)
         return frameIds
     }
@@ -147,25 +142,22 @@ package actor WaxVectorSearchSession {
         lastPendingEmbeddingSequence = try await Self.syncPendingEmbeddings(
             wax: wax,
             into: concreteEngine,
-            watermark: lastPendingEmbeddingSequence,
-            removedFrameIds: pendingRemovedFrameIds
+            watermark: lastPendingEmbeddingSequence
         )
         try await stageEngineForCommit()
-        pendingRemovedFrameIds.removeAll(keepingCapacity: true)
     }
 
-    /// Single owner of vector-index watermark advance + ghost-frame removal bookkeeping,
-    /// shared by ``WaxVectorSearchSession`` and ``WaxSession``.
+    /// Single owner of vector-index watermark advance, shared by ``WaxVectorSearchSession``
+    /// and ``WaxSession``.
     ///
-    /// Syncs pending embeddings into `engine` since `watermark` (replaying the full log when
-    /// the store rolled back), then re-applies `removedFrameIds` so pending putEmbedding cannot
-    /// resurrect deleted frames. Returns the advanced watermark; on throw no caller state moves.
-    /// Callers re-stage the engine themselves and clear their ghost set only after success.
+    /// Syncs the pending vector changes since `watermark` into `engine` (replaying the full
+    /// log when the store rolled back): each frame's last embedding, and its removal when the
+    /// frame's last change removed it. Returns the advanced watermark; on throw no caller
+    /// state moves.
     static func syncPendingEmbeddings(
         wax: Wax,
         into engine: LoadedVectorSearchEngine,
-        watermark: UInt64?,
-        removedFrameIds: Set<UInt64> = []
+        watermark: UInt64?
     ) async throws -> UInt64? {
         var snapshot = await wax.pendingEmbeddingMutations(since: watermark)
         if let latest = snapshot.latestSequence,
@@ -179,7 +171,7 @@ package actor WaxVectorSearchSession {
                 vectors: snapshot.embeddings.map(\.vector)
             )
         }
-        for frameId in removedFrameIds {
+        for frameId in snapshot.removedFrameIds {
             try await engine.remove(frameId: frameId)
         }
         return snapshot.latestSequence
@@ -202,7 +194,7 @@ package actor WaxVectorSearchSession {
     }
 
     private func stageEngineForCommit() async throws {
-        try await concreteEngine.stageForCommit(into: wax, syncedThrough: lastPendingEmbeddingSequence)
+        try await concreteEngine.stageForCommit(into: wax)
     }
 }
 

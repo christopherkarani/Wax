@@ -1,19 +1,18 @@
 import Testing
 import Wax
 
-@Test func factualQueryFavorsBM25() {
-    let weights = AdaptiveFusionConfig.default.weights(for: .factual)
-    #expect(weights.bm25 > weights.vector)
+// Equal lane weights beat the old per-type split on LongMemEval and LoCoMo
+// retrieval: the classifier's guess is wrong often enough to cost recall.
+@Test(arguments: QueryType.allCases)
+func textAndVectorLanesWeighEqually(queryType: QueryType) {
+    let weights = AdaptiveFusionConfig.default.weights(for: queryType)
+    #expect(weights.bm25 == weights.vector)
 }
 
-@Test func semanticQueryFavorsVector() {
-    let weights = AdaptiveFusionConfig.default.weights(for: .semantic)
-    #expect(weights.vector > weights.bm25)
-}
-
-@Test func temporalQueryIncludesTimeWeight() {
+@Test func temporalQueryAddsRecencyBelowRelevance() {
     let weights = AdaptiveFusionConfig.default.weights(for: .temporal)
-    #expect(weights.temporal > 0.3)
+    #expect(weights.temporal > 0)
+    #expect(weights.temporal < weights.bm25)
 }
 
 @Test func exploratoryQueryIsBalanced() {
@@ -21,10 +20,8 @@ import Wax
     #expect(abs(weights.bm25 - weights.vector) <= 0.1)
 }
 
-@Test func identifierQueryUsesLexicalFirstWeights() {
+@Test func identifierQueryIsNotExploratory() {
     let queryType = RuleBasedQueryClassifier.classify("7f3a91")
-    let weights = AdaptiveFusionConfig.default.weights(for: queryType)
     #expect(queryType != .exploratory)
-    #expect(weights.bm25 > weights.vector)
 }
 

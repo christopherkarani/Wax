@@ -66,11 +66,22 @@ package struct PutEmbedding: Equatable, Sendable {
     }
 }
 
+/// Removes a frame's vector: from the committed vectors once committed, and from any
+/// embedding written before it in the WAL.
+package struct RemoveEmbedding: Equatable, Sendable {
+    package var frameId: UInt64
+
+    package init(frameId: UInt64) {
+        self.frameId = frameId
+    }
+}
+
 package enum WALEntry: Equatable, Sendable {
     case putFrame(PutFrame)
     case deleteFrame(DeleteFrame)
     case supersedeFrame(SupersedeFrame)
     case putEmbedding(PutEmbedding)
+    case removeEmbedding(RemoveEmbedding)
 }
 
 package struct PendingMutation: Equatable, Sendable {

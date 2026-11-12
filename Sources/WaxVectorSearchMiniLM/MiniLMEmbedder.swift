@@ -27,7 +27,8 @@ extension MiniLMEmbeddings: MiniLMEmbeddingModel {}
 package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
     package nonisolated let dimensions: Int = 384
     package nonisolated let normalize: Bool = true
-    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+    /// The identity a store records for vectors from this model.
+    package static let bindingIdentity = EmbeddingIdentity(
         provider: "Wax",
         // "-mean": sentence-transformers mean pooling (#257). Stores bound to the old
         // "MiniLMAll" pooler vectors are re-embedded on open, not reused.
@@ -35,6 +36,7 @@ package actor MiniLMEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let identity: EmbeddingIdentity? = MiniLMEmbedder.bindingIdentity
 
     private nonisolated let model: any MiniLMEmbeddingModel
     

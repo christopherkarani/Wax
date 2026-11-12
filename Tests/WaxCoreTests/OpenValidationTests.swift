@@ -85,10 +85,17 @@ import Testing
     var toc = WaxTOC.emptyV1()
     toc.indexes.lex = LexIndexManifest(
         docCount: 0,
-        bytesOffset: dataStart,
-        bytesLength: 1,
-        checksum: Data(repeating: 0xAA, count: 32),
-        version: 1
+        version: 1,
+        pageSize: 0,
+        runs: [
+            LexRunManifest(
+                bytesOffset: dataStart,
+                bytesLength: 1,
+                checksum: Data(repeating: 0xAA, count: 32),
+                addedGeneration: 0,
+                imageLength: 1
+            ),
+        ]
     )
     toc.segmentCatalog = SegmentCatalog(entries: []) // missing matching lex segment entry
 
@@ -140,4 +147,30 @@ import Testing
             return
         }
     }
+}
+
+/// Range owners are named only when an overlap is reported; the message still names both.
+@Test func tocRangeValidationNamesBothOwnersOfAnOverlap() throws {
+    func frame(_ id: UInt64, offset: UInt64) -> FrameMeta {
+        FrameMeta(
+            id: id,
+            timestamp: 123,
+            payloadOffset: offset,
+            payloadLength: 8,
+            checksum: Data(repeating: 0xAA, count: 32),
+            canonicalEncoding: .plain,
+            canonicalLength: nil,
+            storedChecksum: Data(repeating: 0xBB, count: 32)
+        )
+    }
+    var toc = WaxTOC.emptyV1()
+    toc.frames = [frame(0, offset: 100), frame(1, offset: 104)]
+    do {
+        try Wax.validateTocRanges(toc, dataStart: 100, dataEnd: 200)
+        Issue.record("overlapping frames passed validation")
+    } catch WaxError.invalidToc(let reason) {
+        #expect(reason == "data overlap between frame 0 and frame 1")
+    }
+    toc.frames = [frame(0, offset: 100), frame(1, offset: 108)]
+    try Wax.validateTocRanges(toc, dataStart: 100, dataEnd: 200)
 }

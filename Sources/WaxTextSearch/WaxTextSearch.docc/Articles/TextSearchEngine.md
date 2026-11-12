@@ -73,7 +73,7 @@ string (`AND` / `OR` / `NOT` / `NEAR`) must be stripped by the planner, not forw
 
 ### BM25 Scoring
 
-SQLite FTS5's built-in `bm25()` function provides Okapi BM25 ranking. The engine inverts the raw rank (which is "lower is better") so that returned scores follow a "higher is better" convention. Scores typically range from 0 to 100+, depending on term frequency and document length.
+SQLite FTS5's built-in `bm25()` function provides Okapi BM25 ranking. Scores are in `0...1`, higher is better. The best hit's score is a saturating function of its BM25 relevance; every other hit gets that score times its share of the best hit's relevance. (When every query term is too common to carry IDF, which FTS5 clamps to 1e-6, each hit keeps its own saturated score.) That keeps BM25's order and spacing in the score, so rerankers that add small signals to it break near-ties instead of overriding the ranking. A hit's score does not depend on `topK`.
 
 ## Structured Memory
 
@@ -100,6 +100,8 @@ try await engine.stageForCommit(into: waxStore, compact: false)
 ```
 
 The `compact` flag runs `VACUUM` to reclaim unused space before serialization.
+
+`stageForCommit` hands the store the database image, without a copy for an in-memory engine. The store compares it page by page with the committed image and commits only the changed pages, as a delta run after the committed ones. When the deltas would hold more than a quarter of the image, or number 32, the commit writes the whole image as a new base instead.
 
 ## Schema
 

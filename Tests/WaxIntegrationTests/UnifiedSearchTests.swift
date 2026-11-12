@@ -114,7 +114,7 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
         let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         let vec = try await wax.enableVectorSearch(dimensions: 4)
 
-        let id0 = try await vec.putWithEmbedding(Data("Swift programming".utf8), embedding: [0.0, 0.0, 0.0, 1.0])
+        let id0 = try await wax.put(Data("Swift programming".utf8))
         try await text.indexText(frameId: id0, text: "Swift programming")
 
         let id1 = try await vec.putWithEmbedding(Data("Swift is fast".utf8), embedding: [1.0, 0.0, 0.0, 0.0])
@@ -308,6 +308,57 @@ private actor DeterministicVectorResultsEngine: VectorSearchEngine {
 
         #expect(response.results.map(\.frameId) == [evidenceFrame])
         #expect(response.results.first?.sources == [.structured])
+
+        await session.close()
+        try await wax.close()
+    }
+}
+
+/// A search that finds no entity alias must not hide entities written after it.
+@Test func structuredSearchSeesEntitiesAddedAfterASearchFoundNone() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        var config = WaxSession.Config()
+        config.enableVectorSearch = false
+        let session = try await wax.openSession(.readWrite(.fail), config: config)
+
+        let evidenceFrame = try await session.put(
+            Data("Structured evidence payload without the entity alias.".utf8),
+            options: FrameMetaSubset(searchText: "Structured evidence payload")
+        )
+        try await session.indexText(frameId: evidenceFrame, text: "Structured evidence payload")
+        try await session.commit()
+
+        let request = try SearchRequest(query: "F031SubjectAlice", lane: .textOnly, topK: 5, asOfMs: .max)
+        let before = try await session.search(request)
+        #expect(before.results.isEmpty)
+
+        _ = try await session.upsertEntity(
+            key: EntityKey("person:f031-alice"),
+            kind: "person",
+            aliases: ["F031SubjectAlice"],
+            nowMs: 1_000
+        )
+        _ = try await session.assertFact(
+            subject: EntityKey("person:f031-alice"),
+            predicate: PredicateKey("status"),
+            object: .string("active"),
+            valid: StructuredTimeRange(fromMs: 0),
+            system: StructuredTimeRange(fromMs: 1_000),
+            evidence: [
+                StructuredEvidence(
+                    sourceFrameId: evidenceFrame,
+                    extractorId: "test",
+                    extractorVersion: "1",
+                    confidence: 1,
+                    assertedAtMs: 1_000
+                ),
+            ]
+        )
+
+        let after = try await session.search(request)
+        #expect(after.results.map(\.frameId) == [evidenceFrame])
+        #expect(after.results.first?.sources == [.structured])
 
         await session.close()
         try await wax.close()
@@ -660,7 +711,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
                 return
             }
             let message = error.errorDescription ?? ""
-            #expect(message.contains("vector index must be staged before committing embeddings"))
+            #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
     }
 }
@@ -1086,7 +1137,7 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let response = try await wax.search(
             SearchRequest(
                 query: query,
-                lane: .hybrid(alpha: 0.3, embedding: [1.0, 0.0, 0.0, 0.0]),
+                lane: .hybrid(alpha: 0.5, embedding: [1.0, 0.0, 0.0, 0.0]),
                 vectorEnginePreference: .cpuOnly,
                 topK: 2,
                 enableRankingDiagnostics: true,
@@ -1561,12 +1612,13 @@ func metalVectorSearchNormalizesNonNormalizedQueryEmbedding() async throws {
         let textResult = try #require(byID[textHit])
         let vectorResult = try #require(byID[vectorOnly])
         let evidenceResult = try #require(byID[evidence])
-        let timelineResult = try #require(byID[timelineOnly])
+        // Recency reorders matched frames; it must not pull in a recent frame
+        // that neither the text nor the vector lane retrieved.
+        #expect(byID[timelineOnly] == nil)
         #expect(textResult.sources.contains(.text))
+        #expect(textResult.sources.contains(.timeline))
         #expect(vectorResult.sources.contains(.vector))
         #expect(evidenceResult.sources.contains(.structured))
-        #expect(timelineResult.sources.contains(.timeline))
-        #expect(timelineResult.sources.contains(.text) == false)
 
         let laneSources = Set(
             response.results.compactMap(\.rankingDiagnostics).flatMap(\.laneContributions).map(\.source)

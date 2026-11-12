@@ -121,6 +121,7 @@ extension MemoryOrchestrator {
             timeRange: timeRange ?? inferredTimeRange,
             scopeContext: scopeContext ?? config.defaultScopeContext,
             accessStatsManager: config.enableAccessStatsScoring ? accessStatsManager : nil,
+            reranking: config.reranking,
             config: recallConfig
         )
         if let inferredTimeRange {

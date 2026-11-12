@@ -6,7 +6,7 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         case cl100kBase = "cl100k_base"
     }
 
-    private static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
+    static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
 
     private static let cl100kBaseRegex: NSRegularExpression = {
         do {
@@ -51,35 +51,48 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
 
     package func encode(_ text: String) -> [UInt32] {
         guard !text.isEmpty else { return [] }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         var tokens: [UInt32] = []
         tokens.reserveCapacity(text.utf8.count)
 
+        // ASCII text splits without ICU, which was about half of a short save's CPU time.
+        let scannedASCII = text.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
+            guard Cl100kASCIIPreTokenizer.isASCII(bytes) else { return false }
+            for range in Cl100kASCIIPreTokenizer.pieceRanges(bytes) {
+                appendTokens(forPiece: Array(bytes[range]), to: &tokens)
+            }
+            return true
+        } ?? false
+        if scannedASCII { return tokens }
+
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in matches {
             guard let range = Range(match.range, in: text) else { continue }
-            let piece = text[range]
-            let bytes = Array(piece.utf8)
-            if bytes.isEmpty { continue }
-
-            let data = Data(bytes)
-            if let cached = bpeCache.get(data) {
-                tokens.append(contentsOf: cached)
-                continue
-            }
-
-            if let token = encoder[data] {
-                let encoded = [token]
-                bpeCache.set(data, encoded)
-                tokens.append(token)
-                continue
-            }
-
-            let encoded = bpeEncode(bytes)
-            bpeCache.set(data, encoded)
-            tokens.append(contentsOf: encoded)
+            appendTokens(forPiece: Array(text[range].utf8), to: &tokens)
         }
 
         return tokens
+    }
+
+    private func appendTokens(forPiece bytes: [UInt8], to tokens: inout [UInt32]) {
+        if bytes.isEmpty { return }
+
+        let data = Data(bytes)
+        // Most pieces are one token. The vocabulary is immutable, so looking it up first
+        // takes no lock: chunkers encoding in parallel queued on the cache lock for every
+        // piece, and ran slower than one chunker alone.
+        if let token = encoder[data] {
+            tokens.append(token)
+            return
+        }
+
+        if let cached = bpeCache.get(data) {
+            tokens.append(contentsOf: cached)
+            return
+        }
+
+        let encoded = bpeEncode(bytes)
+        bpeCache.set(data, encoded)
+        tokens.append(contentsOf: encoded)
     }
 
     package func decode(_ tokens: [UInt32]) -> String {

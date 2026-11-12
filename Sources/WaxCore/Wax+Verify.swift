@@ -32,12 +32,14 @@ extension Wax {
             if let snapshot = header.walReplaySnapshot {
                 snapshotFooter = try await io.run {
                     try FooterScanner.findFooter(at: snapshot.footerOffset, in: url)
+                }.flatMap {
+                    header.admitsRecovery(footerOffset: $0.footerOffset, generation: $0.footer.generation) ? $0 : nil
                 }
             } else {
                 snapshotFooter = nil
             }
             let scannedFooter = try await io.run {
-                try FooterScanner.findLastValidFooter(in: url)
+                try FooterScanner.findLastValidFooter(in: url, accepts: header.admitsRecovery)
             }
 
             var footerCandidates: [FooterSlice] = []
@@ -51,20 +53,15 @@ extension Wax {
             if let scannedFooter {
                 footerCandidates.append(scannedFooter)
             }
-            guard let firstFooterCandidate = footerCandidates.first else {
-                throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+            let candidates = footerCandidates
+            let (footerSlice, toc) = try await io.run {
+                try Self.newestWholeCommit(
+                    candidates,
+                    headerFooterOffset: header.footerOffset,
+                    headerGeneration: header.fileGeneration,
+                    file: file
+                )
             }
-            let footerSlice = footerCandidates.dropFirst().reduce(firstFooterCandidate) { current, candidate in
-                if candidate.footer.generation > current.footer.generation {
-                    return candidate
-                }
-                if candidate.footer.generation == current.footer.generation,
-                   candidate.footerOffset > current.footerOffset {
-                    return candidate
-                }
-                return current
-            }
-            let toc = try WaxTOC.decode(from: footerSlice.tocBytes)
 
             let dataStart = header.walOffset + header.walSize
             try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: footerSlice.footerOffset)
@@ -143,21 +140,55 @@ extension Wax {
                     await Task.yield()
                 }
             }
+
+            // Each run's checksum is checked above; rebuilding the image also checks that the
+            // deltas decode and fit the base and each other.
+            if let lex = toc.indexes.lex {
+                let dataEnd = footerSlice.footerOffset
+                _ = try await io.run {
+                    try Self.reconstructLexImage(lex, file: file, dataStart: dataStart, dataEnd: dataEnd)
+                }
+            }
         }
     }
 
-    private struct DataRange {
+    /// Internal only because of the file split.
+    struct DataRange {
+        /// What uses the range. Named only when an overlap is reported: formatting a label for
+        /// every frame cost a string per frame on each commit and open.
+        enum Owner {
+            case frame(UInt64)
+            case segment(UInt64)
+
+            var label: String {
+                switch self {
+                case .frame(let id): "frame \(id)"
+                case .segment(let id): "segment \(id)"
+                }
+            }
+        }
+
         var start: UInt64
         var end: UInt64
-        var label: String
+        var owner: Owner
     }
 
     /// Internal only because of the file split.
     static func validateTocRanges(_ toc: WaxTOC, dataStart: UInt64, dataEnd: UInt64) throws {
-        let frameRanges = try collectFramePayloadRanges(toc.frames, dataStart: dataStart, dataEnd: dataEnd)
+        let frameRanges = try collectFramePayloadRanges(
+            toc.frames[...],
+            firstFrameId: 0,
+            dataStart: dataStart,
+            dataEnd: dataEnd
+        )
         let segmentRanges = try collectSegmentRanges(toc.segmentCatalog.entries, dataStart: dataStart, dataEnd: dataEnd)
 
-        try validateNoOverlap(frameRanges + segmentRanges)
+        _ = try sortedNonOverlapping(frameRanges + segmentRanges)
+        try validateTocManifests(toc)
+    }
+
+    /// Internal only because of the file split.
+    static func validateTocManifests(_ toc: WaxTOC) throws {
         try validateSegmentCatalogMatchesManifests(
             segmentCatalog: toc.segmentCatalog,
             indexes: toc.indexes,
@@ -165,8 +196,12 @@ extension Wax {
         )
     }
 
-    private static func collectFramePayloadRanges(
-        _ frames: [FrameMeta],
+    /// Checks each frame and returns its payload range, if it has one. `frames` must carry
+    /// the dense ids `firstFrameId`, `firstFrameId + 1`, ...
+    /// Internal only because of the file split.
+    static func collectFramePayloadRanges(
+        _ frames: ArraySlice<FrameMeta>,
+        firstFrameId: UInt64,
         dataStart: UInt64,
         dataEnd: UInt64
     ) throws -> [DataRange] {
@@ -177,37 +212,44 @@ extension Wax {
         var ranges: [DataRange] = []
         ranges.reserveCapacity(frames.count)
 
-        for (index, frame) in frames.enumerated() {
-            guard frame.id == UInt64(index) else {
-                throw WaxError.invalidToc(reason: "frame id not dense: found \(frame.id), expected \(index)")
+        // Fields are read in place: binding each frame to a local copied and released its
+        // strings, most of this check's time when an open validates 100k frames.
+        for index in frames.indices {
+            let id = frames[index].id
+            let expected = firstFrameId + UInt64(index - frames.startIndex)
+            guard id == expected else {
+                throw WaxError.invalidToc(reason: "frame id not dense: found \(id), expected \(expected)")
             }
-            if frame.checksum.count != 32 {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) checksum must be 32 bytes")
+            if frames[index].checksum.count != 32 {
+                throw WaxError.invalidToc(reason: "frame \(id) checksum must be 32 bytes")
             }
-            if frame.canonicalEncoding != .plain && frame.canonicalLength == nil {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) missing canonical_length")
+            if frames[index].canonicalEncoding != .plain && frames[index].canonicalLength == nil {
+                throw WaxError.invalidToc(reason: "frame \(id) missing canonical_length")
             }
-            if frame.payloadLength > 0 && frame.storedChecksum == nil {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) missing stored_checksum")
+            let payloadLength = frames[index].payloadLength
+            if payloadLength > 0 && frames[index].storedChecksum == nil {
+                throw WaxError.invalidToc(reason: "frame \(id) missing stored_checksum")
             }
-            if frame.payloadLength == 0 { continue }
-            guard frame.payloadOffset >= dataStart else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload below data region")
+            if payloadLength == 0 { continue }
+            let payloadOffset = frames[index].payloadOffset
+            guard payloadOffset >= dataStart else {
+                throw WaxError.invalidToc(reason: "frame \(id) payload below data region")
             }
-            guard frame.payloadOffset <= UInt64.max - frame.payloadLength else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload range overflows")
+            guard payloadOffset <= UInt64.max - payloadLength else {
+                throw WaxError.invalidToc(reason: "frame \(id) payload range overflows")
             }
-            let end = frame.payloadOffset + frame.payloadLength
+            let end = payloadOffset + payloadLength
             guard end <= dataEnd else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload exceeds data end")
+                throw WaxError.invalidToc(reason: "frame \(id) payload exceeds data end")
             }
-            ranges.append(DataRange(start: frame.payloadOffset, end: end, label: "frame \(frame.id)"))
+            ranges.append(DataRange(start: payloadOffset, end: end, owner: .frame(id)))
         }
 
         return ranges
     }
 
-    private static func collectSegmentRanges(
+    /// Internal only because of the file split.
+    static func collectSegmentRanges(
         _ entries: [SegmentCatalogEntry],
         dataStart: UInt64,
         dataEnd: UInt64
@@ -227,21 +269,29 @@ extension Wax {
             guard end <= dataEnd else {
                 throw WaxError.invalidToc(reason: "segment \(entry.segmentId) exceeds data end")
             }
-            ranges.append(DataRange(start: entry.bytesOffset, end: end, label: "segment \(entry.segmentId)"))
+            ranges.append(DataRange(start: entry.bytesOffset, end: end, owner: .segment(entry.segmentId)))
         }
 
         return ranges
     }
 
-    private static func validateNoOverlap(_ ranges: [DataRange]) throws {
+    /// `ranges` sorted by start, after checking that no two overlap.
+    /// Internal only because of the file split.
+    static func sortedNonOverlapping(_ ranges: [DataRange]) throws -> [DataRange] {
         let sorted = ranges.sorted { $0.start < $1.start }
         for idx in sorted.indices.dropFirst() {
             let prev = sorted[idx - 1]
             let next = sorted[idx]
             if prev.end > next.start {
-                throw WaxError.invalidToc(reason: "data overlap between \(prev.label) and \(next.label)")
+                throw overlapError(prev, next)
             }
         }
+        return sorted
+    }
+
+    /// Internal only because of the file split.
+    static func overlapError(_ first: DataRange, _ second: DataRange) -> WaxError {
+        WaxError.invalidToc(reason: "data overlap between \(first.owner.label) and \(second.owner.label)")
     }
 
     private static func validateSegmentCatalogMatchesManifests(
@@ -250,23 +300,52 @@ extension Wax {
         timeIndex: TimeIndexManifest?
     ) throws {
         if let lex = indexes.lex {
-            guard segmentCatalog.entries.contains(where: { entry in
-                entry.kind == .lex
-                    && entry.bytesOffset == lex.bytesOffset
-                    && entry.bytesLength == lex.bytesLength
-                    && entry.checksum == lex.checksum
-            }) else {
-                throw WaxError.invalidToc(reason: "lex index manifest missing matching segment catalog entry")
+            for run in lex.runs {
+                guard segmentCatalog.entries.contains(where: { entry in
+                    entry.kind == .lex
+                        && entry.bytesOffset == run.bytesOffset
+                        && entry.bytesLength == run.bytesLength
+                        && entry.checksum == run.checksum
+                }) else {
+                    throw WaxError.invalidToc(reason: "lex index manifest missing matching segment catalog entry")
+                }
+            }
+            guard let base = lex.runs.first, base.imageLength == base.bytesLength else {
+                throw WaxError.invalidToc(reason: "lex base run length differs from its image length")
+            }
+            // An adopted v2 blob (no page size yet) may sit beside catalog entries a released
+            // build left; the first commit drops them.
+            let adoptedLegacyBlob = lex.runs.count == 1 && lex.pageSize == 0
+            guard adoptedLegacyBlob || segmentCatalog.entries.count(where: { $0.kind == .lex }) == lex.runs.count else {
+                throw WaxError.invalidToc(reason: "lex segment catalog entries do not match the lex runs")
+            }
+            if lex.runs.count > 1 {
+                let pageSize = Int(lex.pageSize)
+                guard LexRunCodec.pageSizes.contains(pageSize), pageSize & (pageSize - 1) == 0 else {
+                    throw WaxError.invalidToc(reason: "lex page size \(lex.pageSize) invalid")
+                }
             }
         }
         if let vec = indexes.vec {
-            guard segmentCatalog.entries.contains(where: { entry in
-                entry.kind == .vec
-                    && entry.bytesOffset == vec.bytesOffset
-                    && entry.bytesLength == vec.bytesLength
-                    && entry.checksum == vec.checksum
-            }) else {
-                throw WaxError.invalidToc(reason: "vec index manifest missing matching segment catalog entry")
+            for run in vec.runs {
+                guard segmentCatalog.entries.contains(where: { entry in
+                    entry.kind == .vec
+                        && entry.bytesOffset == run.bytesOffset
+                        && entry.bytesLength == run.bytesLength
+                        && entry.checksum == run.checksum
+                }) else {
+                    throw WaxError.invalidToc(reason: "vec run missing matching segment catalog entry")
+                }
+            }
+            // Released 1.0 builds kept every superseded vec segment in the catalog. Their blob is
+            // adopted as the only run, with no keys checksum, and the first commit drops the rest.
+            let adoptedLegacyBlob = vec.runs.count == 1 && vec.runs[0].keysChecksum == nil
+            guard adoptedLegacyBlob || segmentCatalog.entries.count(where: { $0.kind == .vec }) == vec.runs.count else {
+                throw WaxError.invalidToc(reason: "vec segment catalog entries do not match the vec runs")
+            }
+            let rowCount = vec.runs.reduce(UInt64(0)) { $0 &+ $1.rowCount }
+            guard vec.vectorCount <= rowCount else {
+                throw WaxError.invalidToc(reason: "vec vector count exceeds the rows of its runs")
             }
         }
         if let timeIndex {

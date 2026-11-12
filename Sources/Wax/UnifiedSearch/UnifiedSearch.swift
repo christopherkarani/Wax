@@ -208,6 +208,8 @@ extension Wax {
                   let structuredEngine
             else { return [] }
 
+            // Without any entity alias no candidate can resolve; skip the per-token queries.
+            guard try await structuredEngine.hasEntityAliases() else { return [] }
             let candidates = try await Self.structuredEntityCandidates(
                 query: trimmedQuery,
                 engine: structuredEngine,
@@ -237,8 +239,10 @@ extension Wax {
         }
         let structuredFrameIds = try await structuredFrameIdsAsync
 
+        // Only hybrid fusion reads the recency lane, and the timeline walks every frame, so
+        // single-lane searches skip it.
         var timelineFrameIds: [UInt64] = []
-        if queryType == .temporal, weights.temporal > 0 {
+        if case .hybrid = request.lane, queryType == .temporal, weights.temporal > 0 {
             let timelineQuery = TimelineQuery(
                 limit: max(candidateLimit, request.timelineFallbackLimit),
                 order: .reverseChronological,
@@ -337,7 +341,9 @@ extension Wax {
 
             let (textIds, textSet) = Self.frameIDsAndSet(from: textResults.lazy.map(\.frameId))
             let (vectorIds, vectorSet) = Self.frameIDsAndSet(from: vectorResults.lazy.map(\.frameId))
-            let timelineIds = timelineFrameIds
+            // Recency only reorders frames that matched the query. Ranking every
+            // recent frame pushes unrelated notes above the relevant ones.
+            let timelineIds = timelineFrameIds.filter { textSet.contains($0) || vectorSet.contains($0) }
 
             var lists: [(source: SearchResponse.Source, weight: Float, frameIds: [UInt64])] = []
             if textWeight > 0, !textIds.isEmpty { lists.append((source: .text, weight: textWeight, frameIds: textIds)) }

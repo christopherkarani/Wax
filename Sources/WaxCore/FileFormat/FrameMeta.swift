@@ -156,6 +156,48 @@ extension FrameMeta: BinaryDecodable {
     /// timestamp, payload offset/length, 32-byte checksum). Bounds decoded frame counts.
     package static let minimumEncodedSize = 4 * 8 + 32
 
+    /// Consumes one encoded frame without building it, field for field as `decode` reads it.
+    /// It only finds where frames start, so it checks bounds but not values: whoever decodes
+    /// the skipped bytes still validates them.
+    package static func skip(in decoder: inout BinaryDecoder) throws {
+        func skipOptional(_ width: Int) throws {
+            if try decoder.decodePresence() { try decoder.skip(byteCount: width) }
+        }
+        func skipOptionalString() throws {
+            if try decoder.decodePresence() { try decoder.skipLengthPrefixed() }
+        }
+        func skipStrings(_ count: Int) throws {
+            for _ in 0..<count { try decoder.skipLengthPrefixed() }
+        }
+        try decoder.skip(byteCount: 16) // id, timestamp
+        try skipOptional(8) // anchorTs
+        try skipOptionalString() // kind
+        try skipOptionalString() // track
+        try decoder.skip(byteCount: 16 + 32) // payload offset and length, checksum
+        try skipOptionalString() // uri
+        try skipOptionalString() // title
+        try decoder.skip(byteCount: 1) // canonical encoding
+        try skipOptional(8) // canonicalLength
+        try skipOptional(32) // storedChecksum
+        if try decoder.decodePresence() { // metadata: key and value per entry
+            try skipStrings(2 * Int(try decoder.decode(UInt32.self)))
+        }
+        try skipOptionalString() // searchText
+        try skipStrings(2 * Int(try decoder.decode(UInt32.self))) // tags
+        try skipStrings(Int(try decoder.decode(UInt32.self))) // labels
+        try skipStrings(Int(try decoder.decode(UInt32.self))) // contentDates
+        try decoder.skip(byteCount: 1) // role
+        try skipOptional(8) // parentId
+        try skipOptional(4) // chunkIndex
+        try skipOptional(4) // chunkCount
+        if try decoder.decodePresence() { // chunkManifest
+            try decoder.skipLengthPrefixed(maxBytes: Constants.maxBlobBytes)
+        }
+        try decoder.skip(byteCount: 1) // status
+        try skipOptional(8) // supersedes
+        try skipOptional(8) // supersededBy
+    }
+
     package static func decode(from decoder: inout BinaryDecoder) throws -> FrameMeta {
         let id = try decoder.decode(UInt64.self)
         let timestamp = try decoder.decode(Int64.self)

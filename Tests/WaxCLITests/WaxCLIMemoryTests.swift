@@ -722,9 +722,10 @@ struct WaxCLIMemoryTests {
             .appendingPathComponent("wxds-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("daemon.wax")
         let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        let hooksURL = tempRoot.appendingPathComponent("hooks", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
-        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hooksURL, withIntermediateDirectories: true)
 
         let cli = try builtProductPath(named: "wax-cli")
         let process = Process()
@@ -736,6 +737,7 @@ struct WaxCLIMemoryTests {
             "--socket-path", socketURL.path,
             "--idle-timeout-secs", "10",
         ]
+        process.environment = testEnvironment(["WAX_BROKER_TEST_HOOKS_DIR": hooksURL.path])
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         try process.run()
@@ -746,13 +748,13 @@ struct WaxCLIMemoryTests {
             }
         }
 
-        try await waitForSocket(atPath: socketURL.path, timeout: 5)
+        try await waitForListening(hooksDirectory: hooksURL, daemon: process, timeout: 5)
 
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
 
-        let responseLine = try sendBrokerSocketRequest(
+        let responseLine = try await sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
             timeoutSeconds: 3
@@ -800,21 +802,21 @@ struct WaxCLIMemoryTests {
             }
         }
 
-        try await waitForSocket(atPath: socketURL.path, timeout: 5)
+        try await waitForListening(hooksDirectory: hooksDir, daemon: process, timeout: 5)
 
         // A stalled client stays connected until the daemon's 8s request-read
         // deadline drops it, which is longer than the 5s idle timeout.
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
-        try waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
+        try await waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
 
         // Well inside the idle timeout measured from that close; the old
         // last-accept baseline exited within one 200ms poll slice.
         try await Task.sleep(for: .milliseconds(600))
         #expect(process.isRunning, "daemon exited as soon as its long-lived client left")
 
-        let responseLine = try sendBrokerSocketRequest(
+        let responseLine = try await sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
             timeoutSeconds: 3
@@ -823,8 +825,14 @@ struct WaxCLIMemoryTests {
         #expect(response.ok)
     }
 
-    /// Reads and discards until the peer closes `fd`. The bound only catches a hang.
-    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) throws {
+    /// Reads and discards until the peer closes `fd`. The bound only catches a hang. The wait
+    /// runs on a GCD thread: it outlasts the daemon's read deadline, and on the cooperative
+    /// pool it held one of a CI runner's three threads that long.
+    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) async throws {
+        try await BlockingWork.run { try waitForPeerCloseBlocking(fd: fd, timeoutSeconds: timeoutSeconds) }
+    }
+
+    private func waitForPeerCloseBlocking(fd: Int32, timeoutSeconds: Int32) throws {
         var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -2104,15 +2112,24 @@ struct WaxCLIMemoryTests {
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
-    private func waitForSocket(atPath path: String, timeout: TimeInterval) async throws {
+    /// The socket file appears at `bind`, before `listen`, so a connect that only waits for the
+    /// file can be refused. The daemon's `listening` test marker is written once it accepts.
+    private func waitForListening(
+        hooksDirectory: URL,
+        daemon: Process,
+        timeout: TimeInterval
+    ) async throws {
+        let marker = hooksDirectory.appendingPathComponent("listening").path
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: path) {
-                return
+        while !FileManager.default.fileExists(atPath: marker) {
+            guard daemon.isRunning else {
+                throw CLIError("daemon exited (\(daemon.terminationStatus)) before listening")
             }
-            try await Task.sleep(for: .milliseconds(50))
+            guard Date() < deadline else {
+                throw CLIError("Timed out waiting for the daemon to listen")
+            }
+            try await Task.sleep(for: .milliseconds(20))
         }
-        throw CLIError("Timed out waiting for socket at \(path)")
     }
 
     private func connectUnixSocket(path: String) throws -> Int32 {
@@ -2157,7 +2174,19 @@ struct WaxCLIMemoryTests {
         return fd
     }
 
+    /// The round trip polls for the reply for up to `timeoutSeconds`, so it runs on a GCD
+    /// thread rather than holding a cooperative one.
     private func sendBrokerSocketRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double
+    ) async throws -> String {
+        try await BlockingWork.run {
+            try sendBrokerSocketRequestBlocking(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        }
+    }
+
+    private func sendBrokerSocketRequestBlocking(
         _ request: AgentBrokerRequest,
         socketPath: String,
         timeoutSeconds: Double

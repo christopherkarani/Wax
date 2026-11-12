@@ -193,6 +193,21 @@ func hostEmbeddingReadinessMapsExistingFlags() throws {
             embedderChoice: "arctic"
         ) == .builtIn(.arctic, .default)
     )
+    #expect(
+        try HostEmbeddingReadiness.request(
+            noEmbedder: false,
+            requireVector: true,
+            embedderChoice: "E5"
+        ) == .builtIn(.e5, .default)
+    )
+}
+
+@Test
+func builtInE5ProviderParsesAndNamesItsTrait() {
+    #expect(BuiltInEmbeddingProvider(rawValue: "e5") == .e5)
+    #expect(BuiltInEmbeddingProvider.e5.commandLineChoice == "e5")
+    let message = BuiltInEmbeddingProviderError.unavailable(.e5).localizedDescription
+    #expect(message.contains("`E5Embeddings` package trait"))
 }
 
 @Test

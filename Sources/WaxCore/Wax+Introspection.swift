@@ -76,7 +76,7 @@ extension Wax {
     }
 
     package func setMemoryBindingIfMissing(_ binding: MemoryBinding) async throws {
-        await withWriteLock {
+        try await withMutationLock {
             guard !binding.isEmpty else { return }
             guard toc.memoryBinding == nil else { return }
             toc.memoryBinding = binding
@@ -88,7 +88,7 @@ extension Wax {
     /// The binding lives in the TOC, so it becomes durable only in the same commit as the
     /// last re-embedded vectors; a crash before that commit keeps the old binding.
     package func replaceMemoryBinding(_ binding: MemoryBinding) async throws {
-        await withWriteLock {
+        try await withMutationLock {
             guard !binding.isEmpty, toc.memoryBinding != binding else { return }
             toc.memoryBinding = binding
             dirty = true
@@ -96,7 +96,7 @@ extension Wax {
     }
 
     package func overwriteMemoryBindingForTesting(_ binding: MemoryBinding?) async throws {
-        await withWriteLock {
+        try await withMutationLock {
             guard toc.memoryBinding != binding else { return }
             toc.memoryBinding = binding
             dirty = true
@@ -127,5 +127,27 @@ extension Wax {
         await withReadLock {
             wal.canAppend(payloadSize: payloadSize)
         }
+    }
+}
+
+extension Wax {
+    /// The committed segment catalog. Tests only.
+    func segmentCatalogEntriesForTesting() async -> [SegmentCatalogEntry] {
+        await withReadLock { toc.segmentCatalog.entries }
+    }
+
+    /// Free ranges a commit may allocate from. Tests only.
+    func freeDataRangesForTesting() async -> [Range<UInt64>] {
+        await withReadLock { dataSpace.free.extents }
+    }
+
+    /// Whole committed lex images this handle hashed. Tests only.
+    func lexFingerprintBuildsForTesting() async -> UInt64 {
+        await withReadLock { lexFingerprintBuilds }
+    }
+
+    /// Stages that could not read the committed lex runs. Tests only.
+    func committedLexReadFailuresForTesting() async -> UInt64 {
+        await withReadLock { committedLexReadFailures }
     }
 }

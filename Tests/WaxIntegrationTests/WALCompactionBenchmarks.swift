@@ -2,7 +2,7 @@
 import Foundation
 import XCTest
 @testable import Wax
-import WaxCore
+@testable import WaxCore
 
 final class WALCompactionBenchmarks: XCTestCase {
     private var isEnabled: Bool {
@@ -205,8 +205,13 @@ final class WALCompactionBenchmarks: XCTestCase {
         }
 
         try await prepareReplaySnapshotStressFile(at: baseURL)
-        try FileManager.default.copyItem(at: baseURL, to: disabledURL)
-        try FileManager.default.copyItem(at: baseURL, to: enabledURL)
+        // The first open of the crashed file repairs its header pages, after which both modes
+        // open the healthy file the same way. So every measured open starts from a fresh copy.
+        func freshCopy(to url: URL) throws -> URL {
+            try? FileManager.default.removeItem(at: url)
+            try FileManager.default.copyItem(at: baseURL, to: url)
+            return url
+        }
 
         // Exclude first-open compilation and filesystem cache warm-up from the
         // comparison; the guardrail is about steady-state reopen cost.
@@ -215,12 +220,12 @@ final class WALCompactionBenchmarks: XCTestCase {
         // load changes between the two measurement batches.
         for _ in 0..<2 {
             _ = try await measureReopenLatency(
-                at: disabledURL,
+                at: try freshCopy(to: disabledURL),
                 iterations: 1,
                 options: WaxOptions(walReplayStateSnapshotEnabled: false)
             )
             _ = try await measureReopenLatency(
-                at: enabledURL,
+                at: try freshCopy(to: enabledURL),
                 iterations: 1,
                 options: WaxOptions(walReplayStateSnapshotEnabled: true)
             )
@@ -235,19 +240,25 @@ final class WALCompactionBenchmarks: XCTestCase {
         var disabledSamples: [Double] = []
         var enabledSamples: [Double] = []
         var enabledSnapshotHits = 0
+        var enabledFooterScans = 0
+        var disabledSnapshotHits = 0
+        var disabledFooterScans = 0
         for round in 0..<Self.replayGuardrailRounds {
             let order: [Bool] = round.isMultiple(of: 2) ? [false, true] : [true, false]
             for snapshotEnabled in order {
                 let sample = try await measureReopenLatency(
-                    at: snapshotEnabled ? enabledURL : disabledURL,
+                    at: try freshCopy(to: snapshotEnabled ? enabledURL : disabledURL),
                     iterations: 1,
                     options: WaxOptions(walReplayStateSnapshotEnabled: snapshotEnabled)
                 )
                 if snapshotEnabled {
                     enabledSamples.append(sample.summary.meanMs)
                     enabledSnapshotHits += sample.snapshotHits
+                    enabledFooterScans += sample.footerScans
                 } else {
                     disabledSamples.append(sample.summary.meanMs)
+                    disabledSnapshotHits += sample.snapshotHits
+                    disabledFooterScans += sample.footerScans
                 }
             }
         }
@@ -258,25 +269,32 @@ final class WALCompactionBenchmarks: XCTestCase {
         let disabledMedian: Double = disabledSamples.sorted()[disabledSamples.count / 2]
         let medianIncrease: Double = pairedIncreases.sorted()[pairedIncreases.count / 2]
         // A snapshot hit skips both the WAL replay scan and the scan of the file tail for the
-        // newest footer, which together are most of a full reopen of this store (debug build:
-        // about 74 ms against 375 ms). Requiring at least half the reopen time back fails when
-        // either skip is lost.
-        let increaseBudget: Double = -0.5 * disabledMedian
+        // newest footer. The counters below check each skip exactly; the timing check only has
+        // to catch a snapshot path that grew expensive work of its own. It once required half
+        // the reopen time back, when the debug footer scan read the tail a byte at a time
+        // (CI: 620–835 ms full replay against about 150 ms). Since that scan got fast in
+        // `a95cccb84`, full replay takes about 270–340 ms on CI and the snapshot saves 46–58%
+        // there (60% locally), so half no longer separated a regression from runner noise.
+        let increaseBudget: Double = -0.25 * disabledMedian
 
         print(
             "🧪 WAL replay snapshot guardrail (\(Self.replayGuardrailRounds) paired rounds): "
                 + "median increase=\(medianIncrease.formatMs) (budget \(increaseBudget.formatMs)) "
                 + "disabled=\(disabledSamples.map(\.formatMs)) "
                 + "enabled=\(enabledSamples.map(\.formatMs)) "
-                + "snapshot_hits=\(enabledSnapshotHits)"
+                + "snapshot_hits=\(enabledSnapshotHits) footer_scans=\(enabledFooterScans)/\(disabledFooterScans)"
         )
 
-        // Snapshot hits do not depend on timing, so every enabled reopen must hit.
+        // None of these depend on timing. Every enabled reopen skips both the replay and the
+        // tail scan; every disabled one does both, so the fixture still exercises what is skipped.
         XCTAssertEqual(enabledSnapshotHits, Self.replayGuardrailRounds)
+        XCTAssertEqual(enabledFooterScans, 0, "a snapshot hit must not scan the file tail for the newest footer")
+        XCTAssertEqual(disabledSnapshotHits, 0)
+        XCTAssertEqual(disabledFooterScans, Self.replayGuardrailRounds)
         XCTAssertLessThanOrEqual(
             medianIncrease,
             increaseBudget,
-            "snapshot reopen must take at most half the full-replay reopen time"
+            "snapshot reopen must take at most three quarters of the full-replay reopen time"
         )
     }
 
@@ -317,8 +335,21 @@ final class WALCompactionBenchmarks: XCTestCase {
             return
         }
 
+        // Recreate a crash after the last commit's footer was synced but before its header write:
+        // the commit first writes its replay snapshot onto the page its header will overwrite
+        // (`persistReplaySnapshotOnNextHeaderPage`), so that page holds the previous commit's
+        // header plus a snapshot naming the newest footer, and is the newest page. Without the
+        // snapshot, open must scan the file tail for that footer and replay the WAL.
+        let otherBytes = selected.pageIndex == 0 ? pageB : pageA
+        var crashedPage = try WaxHeaderPage.decodeWithChecksumValidation(from: otherBytes)
+        guard let snapshot = selected.page.walReplaySnapshot else {
+            XCTFail("expected the last commit to persist a replay snapshot")
+            return
+        }
+        crashedPage.walReplaySnapshot = snapshot
+        crashedPage.headerPageGeneration = selected.page.headerPageGeneration
         let selectedOffset: UInt64 = selected.pageIndex == 0 ? 0 : Constants.headerPageSize
-        try file.writeAll(Data(repeating: 0, count: Int(Constants.headerPageSize)), at: selectedOffset)
+        try file.writeAll(try crashedPage.encodeWithChecksum(), at: selectedOffset)
         try file.fsync()
     }
 
@@ -326,11 +357,12 @@ final class WALCompactionBenchmarks: XCTestCase {
         at url: URL,
         iterations: Int,
         options: WaxOptions
-    ) async throws -> (summary: WALCompactionLatencySummary, snapshotHits: Int) {
+    ) async throws -> (summary: WALCompactionLatencySummary, snapshotHits: Int, footerScans: Int) {
         let clock = ContinuousClock()
         var samples: [Double] = []
         samples.reserveCapacity(iterations)
         var snapshotHits = 0
+        var footerScans = 0
 
         for _ in 0..<iterations {
             let start = clock.now
@@ -341,10 +373,13 @@ final class WALCompactionBenchmarks: XCTestCase {
             if stats.replaySnapshotHitCount > 0 {
                 snapshotHits += 1
             }
+            if stats.replayFooterScanCount > 0 {
+                footerScans += 1
+            }
             try await wax.close()
         }
 
-        return (WALCompactionLatencySummary.from(samples: samples), snapshotHits)
+        return (WALCompactionLatencySummary.from(samples: samples), snapshotHits, footerScans)
     }
 }
 

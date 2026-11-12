@@ -8,11 +8,13 @@ Source: `Sources/Wax/Memory.swift`
 
 - `public actor Memory`
 - `public init(at url: URL, config: Memory.Config = .default) async throws`
-  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while the built-in MiniLM provider loads (default `MiniLMEmbeddings` trait, iOS 18/macOS 15+), then live-attaches. Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
+  - Embedder selection lives on `config.embedding` (`Memory.EmbeddingSource`, default `.automatic`). With `.automatic` and `config.enableVectorSearch == true` (default), the store opens while a built-in provider loads (iOS 18/macOS 15+), then live-attaches: e5 for a new store (default `E5Embeddings` trait), and for an existing store the built-in that wrote its vectors (a MiniLM store keeps MiniLM). Hybrid search is text until attach; `vectorOnly` throws. If no provider activates, status is `unavailable` and any existing vector index remains. Check `stats().embeddingStatus` or `RAGContext.diagnostics`.
   - Opening waits for another process's lock on the store file for at most 30 seconds, then throws `WaxError.lockUnavailable`. Earlier releases waited indefinitely. Share one process (for example the MCP HTTP server) per store instead of opening it from several.
   - `Memory` owns the store it opens: if the text index is missing frames (after a crash, or frames written without one), opening indexes them and `close()` commits that. A store opened only to read can therefore still be written once on close.
 - `public init(at url: URL, configure: (inout Memory.Config) -> Void) async throws` — convenience closure form of the above.
 - `@discardableResult public func save(_ text: String, metadata: [String: String] = [:]) async throws -> UInt64` — returns the saved document's frame ID (pass it to `delete(frameID:)`). Re-saving identical text and metadata returns the existing ID. Text longer than one chunk is also indexed as chunk frames, whose IDs appear in search results.
+- `@discardableResult public func save(contentsOf texts: some Sequence<String>, metadata: [String: String] = [:]) async throws -> [UInt64]` — saves many texts with shared metadata, embedding and writing them in batches. Returns one frame ID per text, in input order: what `save(_:metadata:)` would return for each in turn, including the existing ID for a text already stored or repeated earlier in the batch. **Not atomic**: if it throws, earlier texts may already be saved.
+- `@discardableResult public func save(contentsOf documents: some Sequence<(text: String, metadata: [String: String])>) async throws -> [UInt64]` — the same with per-document metadata.
 - `public func save<each S: StringProtocol>(_ texts: repeat each S) async throws` — saves each text in order. **Not atomic**: if one save throws, earlier texts stay saved.
 - `public func search(_ query: String, options: Memory.SearchOptions = .default) async throws -> Memory.Results`
 - `public func search(_ query: String, configure: (inout Memory.SearchOptions) -> Void) async throws -> Memory.Results`
@@ -26,15 +28,25 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`), `reranking` (`.disabled`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
 
 ### Memory.EmbeddingSource
 
 `public enum EmbeddingSource: Sendable` — selects the embedder for a store:
 
-- `.automatic` — open immediately while the built-in MiniLM provider loads; live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
+- `.automatic` — open immediately while a built-in provider loads (e5 for a new store, the store's own built-in for an existing one); live-attach when compile finishes. Status `unavailable` if it cannot activate (index remains; hybrid is text).
 - `.builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions = .default)` — force a built-in provider; store creation throws `BuiltInEmbeddingProviderError.unavailable` when the provider is missing on this OS/build, or `BuiltInEmbeddingProviderError.timedOut` when compile exceeds `timeoutSeconds`.
 - `.custom(any EmbeddingProvider)` — bring your own embedder.
+
+### Memory.RerankingSource
+
+`public enum RerankingSource: Sendable` — selects the reranker, if any, that reorders each search's top candidates before context assembly (`config.reranking`):
+
+- `.disabled` (default) — results keep their retrieval order.
+- `.builtIn(BuiltInReranker, RerankingOptions = .default)` — a built-in reranker on the CPU; store creation throws `BuiltInRerankerError.unavailable` when its trait is not enabled or the OS is older than iOS 18/macOS 15.
+- `.custom(any RerankingProvider, RerankingOptions = .default)` — your own reranker, or one from `BuiltInRerankers.make(_:computeUnit:timeoutSeconds:)` to run a built-in one on another compute unit.
+
+The reranker scores the full frame text of the first `candidateCount` candidates (a chunk frame's chunk, otherwise the saved text). The search fetches at least `candidateCount` candidates even when `topK` is smaller, so reranking can promote a candidate into the results; candidates below the window keep their order after it. Item scores stay the retrieval scores (the order changes) and each reranked item gains a `rerank:` explanation. A reranker error, a score count that differs from the document count, or a non-finite score makes `search` throw.
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
@@ -94,26 +106,41 @@ Use `Memory` for text memory and search. `FrameStore` frames are not indexed.
 
 Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
-- `public enum BuiltInEmbeddingProvider { case miniLM, arctic }`
+- `public enum BuiltInEmbeddingProvider { case miniLM, arctic, e5 }`
   - `.miniLM` — all-MiniLM-L6-v2 CoreML embedder; iOS 18/macOS 15+, default `MiniLMEmbeddings` trait.
   - `.arctic` — Snowflake Arctic Embed Small; iOS 18/macOS 15+, `ArcticEmbeddings` trait.
+  - `.e5` — `intfloat/e5-small-v2` (MIT), mean pooling, `"query: "` / `"passage: "` prefixes; iOS 18/macOS 15+, `E5Embeddings` trait.
 - `public enum BuiltInEmbeddings { public static func make(_:options:) async throws -> any EmbeddingProvider }`
 - `public struct BuiltInEmbeddingProviderOptions` (`batchSize`, `prewarmBatchSize`, `allowLowPrecisionGPU`, `timeoutSeconds`, `computeUnitsOrder`).
 - `public enum BuiltInEmbeddingComputeUnit { cpuOnly, cpuAndGPU, cpuAndNeuralEngine, all }`
 - `public enum BuiltInEmbeddingProviderError: LocalizedError { case unavailable(BuiltInEmbeddingProvider), timedOut(BuiltInEmbeddingProvider) }`
 
+## Built-in Reranking
+
+Source: `Sources/Wax/Reranking/Reranking.swift`
+
+- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0) on CoreML, 22 MB INT8 weights, FP16 compute; iOS 18/macOS 15+, `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
+- `public struct RerankingOptions` — `candidateCount` (20, clamped to `RerankingOptions.candidateCountRange`, `1...200`) and `fusion` (`.reciprocalRank(k: 10)`).
+- `public enum RerankingFusion { case rerankerOrder, reciprocalRank(k: Int) }` — order by reranker score alone, or fuse `1/(k + retrievalRank) + 1/(k + rerankerRank)`; ties keep the retrieval order.
+- `public enum BuiltInRerankers { public static func make(_:computeUnit:timeoutSeconds:) async throws -> any RerankingProvider }` — loads are cached per compute unit for the process.
+- `public enum BuiltInRerankerError: LocalizedError { case unavailable(BuiltInReranker), timedOut(BuiltInReranker) }`
+- `public protocol RerankingProvider: Sendable` (WaxVectorSearch, `Sources/WaxVectorSearch/Reranking/RerankingProvider.swift`) — `func scores(query: String, documents: [String]) async throws -> [Float]`: one finite score per document, higher is more relevant, comparable within one call.
+
+`Memory.search(_:strategy:reranker:options:)` and `ResultReranker` are a different hook: they reorder the finished `RAGContext` (its snippet text and `topK` items), after context assembly.
+
 ## Embedding Protocols (public, via WaxVectorSearch)
 
 Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
-- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode`.
+- `public protocol EmbeddingProvider: Sendable` — `dimensions`, `normalize`, `identity`, `func embed(_:) async throws -> [Float]`. Optional `executionMode: ProviderExecutionMode` and `similarity: VectorSimilarity` (default `.cosine`).
+- `public enum VectorSimilarity: String, Sendable, Equatable { case cosine, dotProduct }` — how the store ranks the provider's vectors. `.dotProduct` ranks by raw inner product (for dot-product-trained models such as `facebook/contriever`; pair it with `normalize = false`, since with `normalize = true` it ranks like cosine), and its vector-lane scores are not bounded to `-1...1`. A store records its similarity when it first commits vectors; opening it with an embedder that declares another one throws `WaxError.io` ("vector similarity mismatch"), and a provider that attaches later is reported `unavailable`. Changing similarity needs a new store.
 - `public protocol BatchEmbeddingProvider: EmbeddingProvider` — `func embed(batch:) async throws -> [[Float]]`.
 - `public protocol QueryAwareEmbeddingProvider: EmbeddingProvider` — `func embedQuery(_:) async throws -> [Float]` for retrieval-optimized query embeddings.
 - `public struct EmbeddingIdentity` (`provider`, `model`, `dimensions`, `normalized`).
 
 ## Errors
 
-- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `vectorIndexNotStaged` (a commit was attempted with pending embeddings but no staged vector index), `vectorIndexStale` (a commit was attempted after an embedding was written past the staged vector index), `vectorsRebuilding(reason:progress:)` (vector-only search while vectors from a superseded model revision are re-embedded; `progress` is 0...1, text and hybrid search keep working), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
+- `public enum WaxError` (WaxCore) — `Memory.Error` typealias. Catchable cases include `featureDisabled(feature:)` (API requires a config feature that is off), `missingEmbedder` (vector search enabled but no embedder configured), `invalidEmbedding(reason:)` (provider returned a bad vector), `vectorIndexNotStaged` (a commit was attempted with pending embeddings before the store had a vector index or a declared dimension and similarity), `vectorsRebuilding(reason:progress:)` (vector-only search while vectors from a superseded model revision are re-embedded; `progress` is 0...1, text and hybrid search keep working), `frameNotFound(frameId:)`, `capacityExceeded(limit:requested:)`, `lockUnavailable`, `writerBusy`, `writerTimeout`, plus format/IO cases (`invalidHeader`, `invalidFooter`, `invalidToc`, `encodingError`, `decodingError`, `walCorruption`, `checksumMismatch`, `io`).
 
 ## Foundation Models Tools (iOS 26/macOS 26+)
 

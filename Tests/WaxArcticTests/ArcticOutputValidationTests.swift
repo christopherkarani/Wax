@@ -8,11 +8,45 @@ import WaxCore
 @available(macOS 15.0, iOS 18.0, *)
 @Test func arcticDefaultsToCPUComputeUnitsUnlessConfigured() {
     let defaults = ArcticEmbedder.resolveComputeUnitsOrder(explicit: [], tuning: CommandLineEmbedderRuntimeTuning())
-    #expect(defaults == [.cpuOnly, .cpuAndGPU])
+    #expect(defaults == [.cpuOnly])
 
     let customized = CommandLineEmbedderRuntimeTuning(computeUnitsOrder: [.cpuAndNeuralEngine])
     #expect(ArcticEmbedder.resolveComputeUnitsOrder(explicit: [], tuning: customized) == [.cpuAndNeuralEngine])
     #expect(ArcticEmbedder.resolveComputeUnitsOrder(explicit: [.all], tuning: customized) == [.all])
+}
+
+/// A cpuAndGPU load of the bundled model spends minutes in MPSGraph shape solving (range input
+/// shapes), so it is refused up front. The timeout is a hang guard, not a latency budget.
+/// The refusal is a configuration check, so a slow load (a busy machine, a cold disk) must not
+/// turn it into a timeout.
+@available(macOS 15.0, iOS 18.0, *)
+@Test func arcticRefusesCPUAndGPUBeforeAnyLoadWork() async {
+    let configuration = MLModelConfiguration()
+    configuration.computeUnits = .cpuAndGPU
+    var overrides = ArcticEmbeddings.Overrides.default
+    overrides.blockingModelLoadDelay = .seconds(5)
+    let started = ContinuousClock.now
+    do {
+        _ = try await ArcticEmbeddings.make(configuration: configuration, overrides: overrides, timeout: .seconds(2))
+        Issue.record("expected the cpuAndGPU load to be refused")
+    } catch ArcticEmbeddings.InitError.unsupportedComputeUnits {
+    } catch {
+        Issue.record("expected unsupportedComputeUnits, got \(error)")
+    }
+    #expect(ContinuousClock.now - started < .seconds(2))
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+@Test func arcticRejectsCPUAndGPUComputeUnitsInsteadOfStalling() async {
+    let configuration = MLModelConfiguration()
+    configuration.computeUnits = .cpuAndGPU
+    do {
+        _ = try await ArcticEmbeddings.make(configuration: configuration, timeout: .seconds(60))
+        Issue.record("expected the cpuAndGPU load to be refused")
+    } catch ArcticEmbeddings.InitError.unsupportedComputeUnits {
+    } catch {
+        Issue.record("expected unsupportedComputeUnits, got \(error)")
+    }
 }
 
 @available(macOS 15.0, iOS 18.0, *)

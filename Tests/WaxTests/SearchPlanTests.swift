@@ -11,7 +11,7 @@ struct SearchPlanTests {
         #expect(whitespace.includeVector == false)
         #expect(whitespace.exactIntentWindow == nil)
         #expect(whitespace.matchPlan == nil)
-        #expect(whitespace.weights == FusionWeights(bm25: 0.4, vector: 0.5, temporal: 0.1))
+        #expect(whitespace.weights == FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0))
 
         let omitted = SearchPlan.make(SearchRequest(query: nil, nowMs: 0))
         #expect(omitted.trimmedQuery == nil)
@@ -31,7 +31,7 @@ struct SearchPlanTests {
         #expect(plan.exactIntentWindow == 30)
         #expect(plan.candidateLimit == 30)
         #expect(plan.matchPlan != nil)
-        #expect(plan.weights == FusionWeights(bm25: 0.7, vector: 0.3, temporal: 0.0))
+        #expect(plan.weights == FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0))
     }
 
     @Test
@@ -60,7 +60,7 @@ struct SearchPlanTests {
         #expect(plan.includeText)
         #expect(plan.includeVector)
         #expect(plan.exactIntentWindow == nil)
-        #expect(plan.weights == FusionWeights(bm25: 0.4, vector: 0.5, temporal: 0.1))
+        #expect(plan.weights == FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0))
     }
 
     @Test

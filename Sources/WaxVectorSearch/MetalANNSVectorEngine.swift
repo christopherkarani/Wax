@@ -8,9 +8,15 @@ import WaxCore
 
 package actor MetalANNSVectorEngine: VectorSearchEngine {
     package static let autoThreshold = 10_000
+    /// Store size from which flat searches shortlist rows by sign code and rescore them
+    /// exactly (see ``SignCodeIndex``) instead of scanning every Float32 row. Smaller
+    /// stores keep the full exact scan.
+    package static let defaultQuantizedScanMinVectorCount = 50_000
 
     /// Runs at the start of every graph build. Test seam for holding or failing a build.
     package typealias GraphBuildHook = @Sendable () async throws -> Void
+    /// The dispatch queue label graph builds run on (`GraphBuildExecutor`).
+    package static let graphBuildQueueLabel = "com.wax.metalanns.graph-build"
 
     private typealias ReadyIndex = VectorIndex<UInt64, VectorIndexState.Ready>
 
@@ -20,9 +26,11 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     package let dimensions: Int
     private let configuration: IndexConfiguration
     private let graphBuildHook: GraphBuildHook?
+    private let quantizedScanMinVectorCount: Int
 
     /// Graph over `vectors`/`frameIds`, which are the source of truth. While it is `nil`,
-    /// searches scan `vectors` exactly and a background build is scheduled.
+    /// searches scan `vectors` (see `flatHits`), and a background build is scheduled when the graph
+    /// would serve searches (see `graphServesSearches`).
     private var index: ReadyIndex?
     /// Bumped on every change to `vectors`/`frameIds`. A graph built from a snapshot is
     /// installed only if the generation is unchanged when the build finishes.
@@ -42,11 +50,14 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private var failedGraphBuildGeneration: UInt64?
     /// Graph builds that threw. Searches keep using the exact scan when this happens.
     package private(set) var graphBuildFailureCount = 0
-    /// Ids soft-deleted from `index`; MetalANNS keeps them reserved until the graph is rebuilt.
-    private var softDeletedFrameIds: Set<UInt64> = []
     private var frameIds: [UInt64] = []
     private var positions: [UInt64: Int] = [:]
     private var vectors: [Float] = []
+    /// Sign codes of `vectors`, row for row. Encoded by the first search that uses them,
+    /// then kept in step with every mutation; `nil` until then and after a reload.
+    private var signCodes: SignCodeIndex?
+    /// Searches answered by the sign-code shortlist plus exact rescore.
+    package private(set) var quantizedScanCount = 0
     private var dirty = false
     /// Rows dropped from the last loaded segment because they held non-finite values.
     package private(set) var droppedNonFiniteRowCount = 0
@@ -64,6 +75,8 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         dimensions: Int,
         searchMode: MetalANNS.SearchMode,
         degree: Int? = nil,
+        exactSearchMaxVectorCount: Int? = nil,
+        quantizedScanMinVectorCount: Int? = nil,
         graphBuildHook: GraphBuildHook? = nil
     ) throws {
         guard dimensions > 0 else {
@@ -83,8 +96,12 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         if let degree {
             configuration.degree = degree
         }
+        if let exactSearchMaxVectorCount {
+            configuration.exactSearchMaxVectorCount = max(0, exactSearchMaxVectorCount)
+        }
         self.configuration = configuration
         self.graphBuildHook = graphBuildHook
+        self.quantizedScanMinVectorCount = max(1, quantizedScanMinVectorCount ?? Self.defaultQuantizedScanMinVectorCount)
     }
 
     /// Cancellation is advisory: a pending build stops before the MetalANNS build call, but
@@ -98,17 +115,50 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         index != nil
     }
 
+    /// Frame IDs that currently have a vector here.
+    package func storedFrameIds() -> Set<UInt64> {
+        Set(frameIds)
+    }
+
     /// Waits for the in-flight background graph build, if any, to finish.
     package func waitForPendingGraphBuild() async {
         await graphBuildTask?.value
     }
 
-    package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> MetalANNSVectorEngine {
-        let engine = try MetalANNSVectorEngine(metric: metric, dimensions: dimensions)
-        if let staged = await wax.readStagedVecIndexBytes() {
-            try await engine.deserialize(staged.bytes)
-        } else if let bytes = try await wax.readCommittedVecIndexBytes() {
-            try await engine.deserialize(bytes)
+    /// - Parameter exactSearchMaxVectorCount: Overrides the MetalANNS exact flat-scan cap;
+    ///   `nil` keeps the MetalANNS default. A test seam for exercising the graph path.
+    package static func load(
+        from wax: Wax,
+        metric: VectorMetric,
+        dimensions: Int,
+        exactSearchMaxVectorCount: Int? = nil
+    ) async throws -> MetalANNSVectorEngine {
+        try await load(
+            from: wax,
+            committed: try await wax.readCommittedVectors(),
+            metric: metric,
+            dimensions: dimensions,
+            exactSearchMaxVectorCount: exactSearchMaxVectorCount
+        )
+    }
+
+    /// Loads `committed` (what ``Wax/readCommittedVectors()`` returned) plus the store's
+    /// pending vector changes.
+    package static func load(
+        from wax: Wax,
+        committed: CommittedVectors?,
+        metric: VectorMetric,
+        dimensions: Int,
+        exactSearchMaxVectorCount: Int? = nil
+    ) async throws -> MetalANNSVectorEngine {
+        let engine = try MetalANNSVectorEngine(
+            metric: metric,
+            dimensions: dimensions,
+            searchMode: .exact,
+            exactSearchMaxVectorCount: exactSearchMaxVectorCount
+        )
+        if let committed {
+            try await engine.loadCommitted(committed)
         }
         let pending = await wax.pendingEmbeddingMutations(since: nil)
         if !pending.embeddings.isEmpty {
@@ -116,6 +166,9 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 frameIds: pending.embeddings.map(\.frameId),
                 vectors: pending.embeddings.map(\.vector)
             )
+        }
+        for frameId in pending.removedFrameIds {
+            try await engine.remove(frameId: frameId)
         }
         return engine
     }
@@ -134,6 +187,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             positions[frameId] = frameIds.count
             frameIds.append(frameId)
             vectors.append(contentsOf: stored)
+            signCodes?.append(rows: stored)
             await insertIntoIndex([VectorRecord(id: frameId, vector: stored)])
         }
         dirty = true
@@ -162,6 +216,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 positions[frameId] = self.frameIds.count
                 self.frameIds.append(frameId)
                 self.vectors.append(contentsOf: stored)
+                signCodes?.append(rows: stored)
                 newRecords.append(VectorRecord(id: frameId, vector: stored))
             }
         }
@@ -189,12 +244,12 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         }
         frameIds.removeLast()
         vectors.removeLast(dimensions)
+        signCodes?.removeSwappingLast(row: indexToRemove)
         if !canBuildIndex {
             invalidateIndex()
         } else if let index {
             do {
                 try await index.delete(id: frameId)
-                softDeletedFrameIds.insert(frameId)
             } catch {
                 invalidateIndex()
             }
@@ -208,7 +263,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let prepared = preparedVector(query)
         guard let index else {
             scheduleGraphBuildIfNeeded()
-            return exactHits(for: prepared, topK: topK)
+            return flatHits(for: prepared, topK: topK)
         }
         let results = try await index.search(query: prepared, topK: topK)
         return hits(from: results)
@@ -236,7 +291,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         let indexStart = CFAbsoluteTimeGetCurrent()
         guard let index else {
             scheduleGraphBuildIfNeeded()
-            let mapped = exactHits(for: prepared, topK: topK)
+            let mapped = flatHits(for: prepared, topK: topK)
             let indexMs = (CFAbsoluteTimeGetCurrent() - indexStart) * 1_000
             let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1_000
             return (mapped, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: 0, totalMs: totalMs))
@@ -250,60 +305,28 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         return (mapped, SearchTiming(prepareMs: prepareMs, indexMs: indexMs, mapMs: mapMs, totalMs: totalMs))
     }
 
+    /// Records the index's dimension and similarity for the commit; the commit writes the
+    /// pending embeddings and removals themselves from the WAL.
     package func stageForCommit(into wax: Wax) async throws {
-        try await stageForCommit(into: wax, coverage: .latestPending)
-    }
-
-    package func stageForCommit(into wax: Wax, coverage: StagedVecIndexCoverage) async throws {
-        guard dirty else { return }
-        let blob = try VectorSerializer.serializeFlatVectors(
-            vectors,
-            frameIds: frameIds,
-            metric: metric,
-            dimensions: dimensions
-        )
-        try await wax.stageVecIndexForNextCommit(
-            bytes: blob,
-            vectorCount: UInt64(frameIds.count),
-            dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity(),
-            coverage: coverage
-        )
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
         dirty = false
     }
 
-    private func deserialize(_ data: Data) async throws {
-        let decoded = try VectorSerializer.decodeVecSegment(from: data)
-        switch decoded {
-        case .metal(let info, let decodedVectors, let decodedFrameIds):
-            guard info.dimension == UInt32(dimensions) else {
-                throw WaxError.invalidToc(reason: "vec dimension mismatch: expected \(dimensions), got \(info.dimension)")
-            }
-            guard info.similarity == metric.toVecSimilarity() else {
-                throw WaxError.invalidToc(
-                    reason: "vec similarity mismatch: expected \(metric.toVecSimilarity()), got \(info.similarity)"
-                )
-            }
-            guard decodedVectors.count == Int(info.vectorCount) * dimensions else {
-                throw WaxError.invalidToc(reason: "vec vector count mismatch")
-            }
-            guard decodedFrameIds.count == Int(info.vectorCount) else {
-                throw WaxError.invalidToc(reason: "vec frameId count mismatch")
-            }
-            frameIds = decodedFrameIds
-            vectors = decodedVectors
-            positions.removeAll(keepingCapacity: true)
-            positions.reserveCapacity(decodedFrameIds.count)
-            for (index, frameId) in decodedFrameIds.enumerated() {
-                positions[frameId] = index
-            }
-            mutationGeneration &+= 1
-            lastNonAppendGeneration = mutationGeneration
-            await buildGraphNow()
-            droppedNonFiniteRowCount = info.droppedNonFiniteRowCount
-            // Rewrite a clean segment on the next commit when rows were dropped.
-            dirty = info.droppedNonFiniteRowCount > 0
+    private func loadCommitted(_ committed: CommittedVectors) async throws {
+        try VectorPreparation.validateCommitted(committed, dimensions: dimensions, metric: metric)
+        frameIds = committed.frameIds
+        vectors = VectorPreparation.preparedRows(committed.vectors, dimensions: dimensions, metric: metric)
+        signCodes = nil
+        positions.removeAll(keepingCapacity: true)
+        positions.reserveCapacity(frameIds.count)
+        for (index, frameId) in frameIds.enumerated() {
+            positions[frameId] = index
         }
+        mutationGeneration &+= 1
+        lastNonAppendGeneration = mutationGeneration
+        await buildGraphNow()
+        droppedNonFiniteRowCount = committed.droppedNonFiniteRowCount
+        dirty = false
     }
 
     /// MetalANNS reports distances (lower is better): cosine `1 - cos`, inner product `-dot`,
@@ -315,7 +338,7 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     private func hits(from neighbors: [VectorNeighbor<UInt64>]) -> [(frameId: UInt64, score: Float)] {
         neighbors
             .filter { positions[$0.id] != nil }
-            .map { (frameId: $0.id, score: metric.score(fromDistance: $0.score)) }
+            .map { (frameId: $0.id, score: metric.score(fromDistance: $0.distance)) }
             .filter { $0.score.isFinite }
             .sorted { lhs, rhs in
                 if lhs.score == rhs.score { return lhs.frameId < rhs.frameId }
@@ -323,33 +346,93 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             }
     }
 
-    /// MetalANNS graph construction requires more nodes than the graph degree.
+    /// A graph is built only when it would serve searches; one over no more nodes than its
+    /// degree is no faster than the exact scan.
     private var canBuildIndex: Bool {
-        frameIds.count > configuration.degree
+        graphServesSearches && frameIds.count > configuration.degree
     }
 
-    /// Exact scan used while there is no current graph (the store is too small for one, or a
-    /// build is pending or failed). Scores use the
-    /// same scale and ordering as AccelerateVectorEngine (cosine/dot: dot product of the
+    /// Whether MetalANNS would search a graph at the current size. In `.exact` mode it answers
+    /// every search up to `exactSearchMaxVectorCount` vectors with a flat scan, so a graph
+    /// built there would never be read; this engine scans `vectors` exactly instead.
+    private var graphServesSearches: Bool {
+        configuration.searchMode != .exact || frameIds.count > configuration.exactSearchMaxVectorCount
+    }
+
+    /// Flat search used while there is no current graph: the sign-code shortlist plus exact
+    /// rescore for large stores where it applies, else the full exact scan.
+    private func flatHits(for query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
+        guard let rows = shortlistRows(for: query, topK: topK) else {
+            return exactHits(for: query, topK: topK)
+        }
+        quantizedScanCount += 1
+        return rescoredHits(rows: rows, query: query, topK: topK)
+    }
+
+    /// Rows worth rescoring for `query`, or `nil` when the full exact scan should run: a
+    /// store below the threshold, L2 (sign codes estimate dot products), vectors too narrow
+    /// for a sign code to rank them, or a shortlist that would cover much of the store.
+    private func shortlistRows(for query: [Float], topK: Int) -> [Int]? {
+        let rowCount = frameIds.count
+        guard rowCount >= quantizedScanMinVectorCount,
+              metric != .l2,
+              dimensions >= SignCodeIndex.minDimensions
+        else { return nil }
+        let limit = SignCodeIndex.candidateCount(topK: topK)
+        guard limit <= rowCount / 4 else { return nil }
+        let codes = signCodes ?? SignCodeIndex(dimensions: dimensions, rows: vectors)
+        signCodes = codes
+        return codes.candidates(for: query, limit: limit)
+    }
+
+    /// Exact scores for `rows`, ranked like ``exactHits(for:topK:)``.
+    private func rescoredHits(rows: [Int], query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
+        var scores = [Float](repeating: 0, count: rows.count)
+        let length = vDSP_Length(dimensions)
+        vectors.withUnsafeBufferPointer { stored in
+            query.withUnsafeBufferPointer { queryBuffer in
+                scores.withUnsafeMutableBufferPointer { scoreBuffer in
+                    guard let storedBase = stored.baseAddress,
+                          let queryBase = queryBuffer.baseAddress,
+                          let scoreBase = scoreBuffer.baseAddress
+                    else { return }
+                    for (slot, row) in rows.enumerated() {
+                        vDSP_dotpr(storedBase + row * dimensions, 1, queryBase, 1, scoreBase + slot, length)
+                    }
+                }
+            }
+        }
+        let limit = min(max(topK, 1), rows.count)
+        return VectorTopK.select(frameIds: rows.map { frameIds[$0] }, scores: scores, limit: limit)
+    }
+
+    /// Exact scan used while there is no current graph (exact mode at or below the flat-scan
+    /// cap, a store too small for a graph, or a build that is pending or failed). Scores use
+    /// the same scale and ordering as AccelerateVectorEngine (cosine/dot: dot product of the
     /// stored and prepared query vectors; L2: negative squared distance).
     private func exactHits(for query: [Float], topK: Int) -> [(frameId: UInt64, score: Float)] {
         guard !frameIds.isEmpty else { return [] }
         var scores = [Float](repeating: 0, count: frameIds.count)
+        let rowCount = frameIds.count
         let length = vDSP_Length(dimensions)
         vectors.withUnsafeBufferPointer { rows in
             query.withUnsafeBufferPointer { queryBuffer in
-                guard let rowBase = rows.baseAddress, let queryBase = queryBuffer.baseAddress else { return }
-                for row in frameIds.indices {
-                    let rowStart = rowBase + row * dimensions
-                    var value: Float = 0
+                scores.withUnsafeMutableBufferPointer { scoreBuffer in
+                    guard let rowBase = rows.baseAddress,
+                          let queryBase = queryBuffer.baseAddress,
+                          let scoreBase = scoreBuffer.baseAddress
+                    else { return }
                     switch metric {
                     case .cosine, .dot:
-                        vDSP_dotpr(rowStart, 1, queryBase, 1, &value, length)
+                        // One matrix-vector product over the row-major store, as Accelerate does.
+                        vDSP_mmul(rowBase, 1, queryBase, 1, scoreBase, 1, vDSP_Length(rowCount), 1, length)
                     case .l2:
-                        vDSP_distancesq(rowStart, 1, queryBase, 1, &value, length)
-                        value = -value
+                        for row in 0..<rowCount {
+                            var value: Float = 0
+                            vDSP_distancesq(rowBase + row * dimensions, 1, queryBase, 1, &value, length)
+                            scoreBase[row] = -value
+                        }
                     }
-                    scores[row] = value
                 }
             }
         }
@@ -357,31 +440,36 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
 
-    /// Applies new-id inserts to the graph incrementally when MetalANNS can take them;
-    /// otherwise drops the graph so the next search rebuilds it from `vectors`.
-    /// MetalANNS 0.3.0 cannot re-insert an id it soft-deleted, and inserts past the capacity
-    /// fixed when the graph was built throw. The graph is a derived cache, so any insert
-    /// failure is handled by rebuilding rather than by failing an add whose data is stored.
+    /// Applies new-id inserts (including re-adds of removed ids) to the graph incrementally.
+    /// The graph is a derived cache, so an insert failure drops it for a rebuild from
+    /// `vectors` rather than failing an add whose data is stored.
     private func insertIntoIndex(_ records: [VectorRecord<UInt64>]) async {
         guard let index, !records.isEmpty else { return }
-        guard !records.contains(where: { softDeletedFrameIds.contains($0.id) }) else {
-            invalidateIndex()
-            return
-        }
         do {
-            if records.count == 1, let record = records.first {
-                try await index.insert(record)
+            // An insert runs MetalANNS's graph repair (a local NNDescent pass that never
+            // suspends), so it runs off the cooperative pool like a build.
+            if #available(macOS 15.0, iOS 18.0, *) {
+                try await withTaskExecutorPreference(GraphBuildExecutor()) {
+                    try await Self.insert(records, into: index)
+                }
             } else {
-                try await index.batchInsert(records)
+                try await Self.insert(records, into: index)
             }
         } catch {
             invalidateIndex()
         }
     }
 
+    private static func insert(_ records: [VectorRecord<UInt64>], into index: ReadyIndex) async throws {
+        if records.count == 1, let record = records.first {
+            try await index.insert(record)
+        } else {
+            try await index.batchInsert(records)
+        }
+    }
+
     private func invalidateIndex() {
         index = nil
-        softDeletedFrameIds.removeAll()
     }
 
     /// Starts a background graph build from a snapshot of the stored vectors, unless one is
@@ -399,13 +487,20 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             return
         }
         let generation = mutationGeneration
-        let rows = matrixVectors()
+        let rows = vectors
         let ids = frameIds
+        let dimension = dimensions
         let configuration = configuration
         let hook = graphBuildHook
         // Weak: a pending build must not keep a discarded engine alive.
         graphBuildTask = Task { [weak self] in
-            let result = await Self.buildGraph(rows: rows, ids: ids, configuration: configuration, hook: hook)
+            let result = await Self.buildGraph(
+                flatVectors: rows,
+                dimension: dimension,
+                ids: ids,
+                configuration: configuration,
+                hook: hook
+            )
             await self?.finishBackgroundGraphBuild(result, generation: generation, snapshotCount: ids.count)
         }
     }
@@ -419,14 +514,16 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
         await installGraph(result, generation: generation, snapshotCount: snapshotCount)
     }
 
-    /// Builds the graph inline (used on load), under the same generation rule.
+    /// Builds the graph inline (used on load when the graph would serve searches), under the
+    /// same generation rule.
     private func buildGraphNow() async {
         invalidateIndex()
         guard canBuildIndex else { return }
         let generation = mutationGeneration
         let snapshotCount = frameIds.count
         let result = await Self.buildGraph(
-            rows: matrixVectors(),
+            flatVectors: vectors,
+            dimension: dimensions,
             ids: frameIds,
             configuration: configuration,
             hook: graphBuildHook
@@ -453,7 +550,6 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
                 return
             }
             index = built
-            softDeletedFrameIds.removeAll()
             rebuildDebounceGeneration = nil
             guard frameIds.count > snapshotCount else { return }
             let appended = (snapshotCount..<frameIds.count).map { row in
@@ -477,7 +573,29 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
     }
 
     private static func buildGraph(
-        rows: [[Float]],
+        flatVectors: [Float],
+        dimension: Int,
+        ids: [UInt64],
+        configuration: IndexConfiguration,
+        hook: GraphBuildHook?
+    ) async -> Result<ReadyIndex, any Error> {
+        guard #available(macOS 15.0, iOS 18.0, *) else {
+            return await buildGraphOnCurrentExecutor(
+                flatVectors: flatVectors, dimension: dimension, ids: ids,
+                configuration: configuration, hook: hook
+            )
+        }
+        return await withTaskExecutorPreference(GraphBuildExecutor()) {
+            await buildGraphOnCurrentExecutor(
+                flatVectors: flatVectors, dimension: dimension, ids: ids,
+                configuration: configuration, hook: hook
+            )
+        }
+    }
+
+    private static func buildGraphOnCurrentExecutor(
+        flatVectors: [Float],
+        dimension: Int,
         ids: [UInt64],
         configuration: IndexConfiguration,
         hook: GraphBuildHook?
@@ -488,36 +606,31 @@ package actor MetalANNSVectorEngine: VectorSearchEngine {
             try await hook?()
             try Task.checkCancellation()
             let builder = VectorIndex<UInt64, VectorIndexState.Unbuilt>(configuration: configuration)
-            return .success(try await builder.build(vectors: rows, ids: ids))
+            return .success(
+                try await builder.build(flatVectors: flatVectors, dimension: dimension, ids: ids)
+            )
         } catch {
             return .failure(error)
         }
     }
 
-    private func matrixVectors() -> [[Float]] {
-        guard !frameIds.isEmpty else { return [] }
-        var rows: [[Float]] = []
-        rows.reserveCapacity(frameIds.count)
-        for index in frameIds.indices {
-            let start = index * dimensions
-            rows.append(Array(vectors[start..<(start + dimensions)]))
-        }
-        return rows
-    }
-
     private func overwriteVector(at index: Int, with vector: [Float]) {
         let start = index * dimensions
-        for dim in 0..<dimensions {
-            vectors[start + dim] = vector[dim]
-        }
+        // One mutation per row: per-element subscript writes cost a uniqueness check each, and
+        // Swift 6.2 debug builds copied the whole store on every one of them.
+        vectors.replaceSubrange(start..<(start + dimensions), with: vector)
+        signCodes?.replace(row: index, with: vector)
     }
 
     private func overwriteVector(at index: Int, withSliceFrom sourceIndex: Int) {
         guard index != sourceIndex else { return }
         let sourceStart = sourceIndex * dimensions
         let targetStart = index * dimensions
-        for dim in 0..<dimensions {
-            vectors[targetStart + dim] = vectors[sourceStart + dim]
+        let dimensions = dimensions
+        vectors.withUnsafeMutableBufferPointer { rows in
+            for dim in 0..<dimensions {
+                rows[targetStart + dim] = rows[sourceStart + dim]
+            }
         }
     }
 
@@ -546,6 +659,25 @@ private extension VectorMetric {
         case .l2:
             return .l2
         }
+    }
+}
+
+/// Runs one graph build's (or insert's) jobs on a serial dispatch queue instead of the
+/// cooperative pool.
+///
+/// NNDescent's CPU build is one loop inside MetalANNS's `GraphIndex` actor that never
+/// suspends. On the pool it held a thread for seconds; on a 3-core CI runner that starved
+/// every other task in the process, so trivial awaits waited tens of seconds. Under a task
+/// executor preference, nonisolated async code and default actors such as `GraphIndex` run
+/// here. Each build gets its own queue, which GCD always gives a thread.
+@available(macOS 15.0, iOS 18.0, *)
+private final class GraphBuildExecutor: TaskExecutor {
+    private let queue = DispatchQueue(label: MetalANNSVectorEngine.graphBuildQueueLabel)
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedTaskExecutor()
+        queue.async { job.runSynchronously(on: executor) }
     }
 }
 #endif

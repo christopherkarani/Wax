@@ -1,5 +1,5 @@
 {
-  "originHash" : "1aa78cb1c15a9247e7b752ae381fbb8daed1eb83027f6f2addfb766b2e36bc1e",
+  "originHash" : "ce1eb6b41857fef3b98a183998e9c49bcc5cf4be26f4b9d4b6baaca3a8f5963d",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/christopherkarani/MetalANNS.git",
       "state" : {
-        "revision" : "13960499c40abd3f06443eb80258e08a6b777da4",
-        "version" : "0.3.0"
+        "revision" : "1a8344c543eda41e3f4bb9826b1fe2f3dc03eb1f",
+        "version" : "0.4.0"
       }
     },
     {

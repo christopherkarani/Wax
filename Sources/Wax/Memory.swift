@@ -17,6 +17,9 @@ public actor Memory {
         public var requireOnDeviceProviders: Bool
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
+        /// Which reranker, if any, reorders each search's top candidates. Defaults to
+        /// ``RerankingSource/disabled``.
+        public var reranking: RerankingSource
 
         public init(
             enableTextSearch: Bool = true,
@@ -27,7 +30,8 @@ public actor Memory {
             ingestConcurrency: Int = 1,
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
-            embedding: EmbeddingSource = .automatic
+            embedding: EmbeddingSource = .automatic,
+            reranking: RerankingSource = .disabled
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -38,6 +42,7 @@ public actor Memory {
             self.ingestBatchSize = ingestBatchSize
             self.requireOnDeviceProviders = requireOnDeviceProviders
             self.embedding = embedding
+            self.reranking = reranking
         }
 
         public static let `default` = Config()
@@ -46,6 +51,8 @@ public actor Memory {
     /// Selects the embedding provider that backs vector search for a ``Memory`` store.
     public enum EmbeddingSource: Sendable {
         /// Prefer a built-in provider but open immediately while it loads.
+        /// A new store gets e5 (`E5Embeddings` trait, on by default). An existing store
+        /// keeps the built-in that wrote its vectors, so a MiniLM store stays on MiniLM.
         /// Hybrid search is text until compile finishes and this store live-attaches;
         /// ``vectorOnly`` throws until then. If the provider cannot activate, status is
         /// ``EmbeddingStatus/unavailable`` (the vector index remains). Inspect
@@ -156,9 +163,10 @@ public actor Memory {
         readiness: EmbeddingReadiness,
         readinessFactory: (@Sendable () async throws -> any EmbeddingProvider)?
     ) async throws {
+        let reranking = try await BuiltInRerankerCompiler.stage(for: config.reranking)
         self.orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
-            config: Self.makeOrchestratorConfig(config),
+            config: Self.makeOrchestratorConfig(config, reranking: reranking),
             request: Self.openRequest(for: config),
             readiness: readiness,
             factoryOverride: readinessFactory
@@ -184,6 +192,72 @@ public actor Memory {
     @discardableResult
     public func save(_ text: String, metadata: [String: String] = [:]) async throws -> UInt64 {
         try await orchestrator.remember(text, metadata: metadata).frameId
+    }
+
+    /// Persist many texts that share one metadata dictionary, embedding and writing
+    /// them in batches.
+    ///
+    /// - Returns: One frame ID per text, in input order: what calling
+    ///   ``save(_:metadata:)`` for each text in turn would return, including the
+    ///   existing ID for a text already stored, or repeated earlier in `texts`.
+    ///
+    /// Not atomic: if a save throws, texts before it may already be saved.
+    @discardableResult
+    public func save(
+        contentsOf texts: some Sequence<String>,
+        metadata: [String: String] = [:]
+    ) async throws -> [UInt64] {
+        try await save(contentsOf: texts.map { (text: $0, metadata: metadata) })
+    }
+
+    /// Persist many texts, each with its own metadata, embedding and writing them
+    /// in batches.
+    ///
+    /// - Returns: One frame ID per document, in input order: what calling
+    ///   ``save(_:metadata:)`` for each document in turn would return, including the
+    ///   existing ID for a document already stored, or repeated earlier in `documents`.
+    ///
+    /// Not atomic: if a save throws, documents before it may already be saved.
+    @discardableResult
+    public func save(
+        contentsOf documents: some Sequence<(text: String, metadata: [String: String])>
+    ) async throws -> [UInt64] {
+        try await orchestrator.remember(batch: Array(documents))
+    }
+
+    /// Import many documents, each with its own metadata, as one atomic write: the fast way
+    /// to load a large corpus.
+    ///
+    /// Saves what ``save(contentsOf:)`` would: the same frames, chunks, vectors and text
+    /// index entries, so searches return the same results. Instead of writing through the
+    /// write-ahead log and committing every few thousand documents, it writes each document
+    /// straight to the store, embeds in batches of ``Config/ingestBatchSize``, and adds
+    /// everything to the text and vector indexes in a single commit at the end.
+    ///
+    /// - Returns: One frame ID per document, in input order: what calling
+    ///   ``save(_:metadata:)`` for each document in turn would return, including the
+    ///   existing ID for a document already stored, or repeated earlier in `documents`.
+    ///
+    /// Atomic: nothing of the import is visible to searches or durable until it returns. If
+    /// it throws, or the process stops before it returns, the store holds exactly what it held
+    /// before the call, and the space the import wrote is reused by later writes.
+    ///
+    /// It first commits pending saves, as ``flush()`` would. While it runs, other saves,
+    /// deletes and flushes on this store wait and then run after it. Searches see the store as
+    /// it was before the import; text and hybrid searches wait while the final commit runs.
+    ///
+    /// Memory: until the commit, it holds every new frame's record (with its text and
+    /// metadata) and every vector, about `4 × dimensions` bytes per searchable frame. For
+    /// 100,000 MS MARCO passages with 384-dimension vectors the benchmark process peaked at
+    /// 1.4 GB, its own copy of the dataset included. Split a corpus too large for that into
+    /// several calls; each one is atomic on its own. A call whose frames cannot fit one
+    /// commit's TOC or text index throws `capacityExceeded` at the first batch that does not
+    /// fit, before the commit.
+    @discardableResult
+    public func importDocuments(
+        _ documents: some Sequence<(text: String, metadata: [String: String])>
+    ) async throws -> [UInt64] {
+        try await orchestrator.importDocuments(Array(documents))
     }
 
     /// Persist multiple texts in one call, in order.
@@ -346,11 +420,16 @@ public actor Memory {
         await orchestrator.setSearchSnapshotHoldForTesting(duration)
     }
 
+    /// The built-in `.automatic` chose for this store, or `nil` for other embedding sources.
+    package var automaticProviderForTesting: BuiltInEmbeddingProvider? {
+        orchestrator.automaticProvider
+    }
+
     private static func openRequest(for config: Config) -> EmbeddingOpenRequest {
         guard config.enableVectorSearch else { return .disabled }
         switch config.embedding {
         case .automatic:
-            return .automatic(.miniLM, .default)
+            return .automatic(.e5, .default)
         case .builtIn(let provider, let options):
             return .builtIn(provider, options)
         case .custom(let provider):
@@ -358,7 +437,7 @@ public actor Memory {
         }
     }
 
-    private static func makeOrchestratorConfig(_ config: Config) -> OrchestratorConfig {
+    private static func makeOrchestratorConfig(_ config: Config, reranking: RerankStage?) -> OrchestratorConfig {
         var resolved = OrchestratorConfig.default
         resolved.enableTextSearch = config.enableTextSearch
         resolved.enableVectorSearch = config.enableVectorSearch
@@ -369,6 +448,7 @@ public actor Memory {
         resolved.ingestBatchSize = config.ingestBatchSize
         resolved.requireOnDeviceProviders = config.requireOnDeviceProviders
         resolved.catchUpTextIndexOnOpen = true
+        resolved.reranking = reranking
         return resolved
     }
 }

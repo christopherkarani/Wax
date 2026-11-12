@@ -4,7 +4,7 @@ import Metal
 #endif
 import Testing
 import Wax
-import WaxCore
+@testable import WaxCore
 import WaxVectorSearch
 
 @Test func vectorEngineAddSearchRemoveRoundtrip() async throws {
@@ -27,29 +27,27 @@ import WaxVectorSearch
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let url = tempDir.appendingPathComponent("sample.wax")
+    let wax = try await Wax.create(at: url)
     let engine = try AccelerateVectorEngine(metric: .cosine, dimensions: 4)
-    try await engine.add(frameId: 0, vector: [1.0, 0.0, 0.0, 0.0])
-    try await engine.add(frameId: 1, vector: [0.0, 1.0, 0.0, 0.0])
+    let frame0 = try await wax.put(Data("first".utf8))
+    let frame1 = try await wax.put(Data("second".utf8))
+    try await engine.add(frameId: frame0, vector: [1.0, 0.0, 0.0, 0.0])
+    try await engine.add(frameId: frame1, vector: [0.0, 1.0, 0.0, 0.0])
+    try await wax.putEmbeddingBatch(frameIds: [frame0, frame1], vectors: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
     try await engine.stageForCommit(into: wax)
-    let blob = try #require(await wax.readStagedVecIndexBytes()?.bytes)
+    try await wax.commit()
+    try await wax.close()
 
-    let wax2 = try await Wax.create(at: tempDir.appendingPathComponent("sample-2.wax"))
-    try await wax2.stageVecIndexForNextCommit(
-        bytes: blob,
-        vectorCount: 2,
-        dimension: 4,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
-    let engine2 = try await AccelerateVectorEngine.load(from: wax2, metric: .cosine, dimensions: 4)
+    let reopened = try await Wax.open(at: url)
+    let engine2 = try await AccelerateVectorEngine.load(from: reopened, metric: .cosine, dimensions: 4)
 
     let hits = try await engine2.search(vector: [0.0, 1.0, 0.0, 0.0], topK: 10)
     #expect(!hits.isEmpty)
-    #expect(hits.contains(where: { $0.frameId == 1 }))
+    #expect(hits.first?.frameId == frame1)
+    #expect(Set(hits.map(\.frameId)) == [frame0, frame1])
 
-    try await wax.close()
-    try await wax2.close()
+    try await reopened.close()
 }
 
 @Test func accelerateVectorEngineAddBatchDuplicateIdsDoNotOvercount() async throws {
@@ -65,43 +63,43 @@ import WaxVectorSearch
 
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [7])
+    #expect(await engine.storedFrameIds() == [7])
 
+    // The same duplicate batch through the WAL commits one row: the frame's last vector.
+    for _ in 0...7 { _ = try await wax.put(Data("frame".utf8)) }
+    try await wax.putEmbeddingBatch(frameIds: [7, 7], vectors: [[1.0, 0.0], [0.0, 1.0]])
     try await engine.stageForCommit(into: wax)
-    let blob = try #require(await wax.readStagedVecIndexBytes()?.bytes)
-    let decoded = try VectorSerializer.decodeVecSegment(from: blob)
-    let info: VectorSerializer.SegmentInfo
-    guard case .metal(let decodedInfo, _, _) = decoded else { return }
-    info = decodedInfo
-    #expect(info.vectorCount == 1)
+    try await wax.commit()
+    #expect(await wax.committedVecIndexManifest()?.vectorCount == 1)
+    let committed = try #require(try await wax.readCommittedVectors())
+    #expect(committed.frameIds == [7])
+    #expect(committed.vectors == [0.0, 1.0])
 
     try await wax.close()
 }
 
-@Test func accelerateVectorEngineLoadPrefersStagedVectorIndexBytes() async throws {
+@Test func accelerateVectorEngineLoadPrefersPendingEmbeddingsOverCommittedVectors() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+    let replaced = try await wax.put(Data("replaced".utf8))
+    let removed = try await wax.put(Data("removed".utf8))
+    try await wax.putEmbeddingBatch(frameIds: [replaced, removed], vectors: [[0.0, 1.0], [1.0, 0.0]])
+    try await wax.setVectorIndexConfiguration(dimension: 2, similarity: .cosine)
+    try await wax.commit()
 
-    let stagedVecBytes = try VectorSerializer.serializeFlatVectors(
-        [1.0, 0.0],
-        frameIds: [42],
-        metric: .cosine,
-        dimensions: 2
-    )
-    try await wax.stageVecIndexForNextCommit(
-        bytes: stagedVecBytes,
-        vectorCount: 1,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    // Pending changes the engine must apply over the committed vectors.
+    try await wax.putEmbedding(frameId: replaced, vector: [1.0, 0.0])
+    try await wax.removeEmbedding(frameId: removed)
 
     let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
-    let hits = try await engine.search(vector: [1.0, 0.0], topK: 1)
-    #expect(hits.map(\.frameId) == [42])
+    let hits = try await engine.search(vector: [1.0, 0.0], topK: 10)
+    #expect(hits.map(\.frameId) == [replaced])
+    let hit = try #require(hits.first)
+    #expect(abs(hit.score - 1.0) < 0.0001)
 
     try await wax.close()
 }
@@ -256,70 +254,34 @@ import WaxVectorSearch
     }
 }
 
-@Test func loadedVectorSearchEngineRejectsLegacyUSearchVectorIndexes() async throws {
-    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+// A v1 store's vector blob is adopted in place as its first vector run, so a legacy USearch
+// blob reaches the vec run decoder, which must refuse it rather than misread it.
+@Test func vecRunDecoderRejectsLegacyUSearchVectorIndexes() throws {
     let legacyBytes = buildLegacyUSearchSegment(payload: Data([0x01, 0x02, 0x03, 0x04]))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: legacyBytes,
-        vectorCount: 1,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
-
     do {
-        _ = try await LoadedVectorSearchEngine.preferredKind(
-            for: wax,
-            queryEmbeddingDimensions: 2,
-            preference: .auto
-        )
+        _ = try VecRunCodec.decode(legacyBytes)
         Issue.record("Expected legacy USearch vector index to be rejected")
     } catch let error as WaxError {
         guard case .invalidToc(let reason) = error else {
             Issue.record("Expected invalidToc, got \(error)")
             return
         }
-        #expect(reason.contains("Legacy USearch vector index is unsupported"))
-        #expect(reason.contains("rebuild the vector index"))
+        #expect(reason.contains("Legacy USearch vector index is unsupported; rebuild the vector index"))
     }
-
-    try await wax.close()
 }
 
-@Test func loadedVectorSearchEngineCurrentEncodingRejectsLegacyUSearchVectorIndexes() async throws {
-    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
+@Test func vecRunHeaderDecoderRejectsLegacyUSearchVectorIndexes() throws {
     let legacyBytes = buildLegacyUSearchSegment(payload: Data([0x01, 0x02, 0x03, 0x04]))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: legacyBytes,
-        vectorCount: 1,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
-
     do {
-        _ = try await LoadedVectorSearchEngine.currentEncoding(for: wax)
+        _ = try VecRunCodec.decodeHeader(legacyBytes)
         Issue.record("Expected legacy USearch vector encoding to be rejected")
     } catch let error as WaxError {
         guard case .invalidToc(let reason) = error else {
             Issue.record("Expected invalidToc, got \(error)")
             return
         }
-        #expect(reason.contains("Legacy USearch vector index is unsupported"))
-        #expect(reason.contains("rebuild the vector index"))
+        #expect(reason.contains("Legacy USearch vector index is unsupported; rebuild the vector index"))
     }
-
-    try await wax.close()
 }
 
 @Test func unifiedSearchUsesAccelerateWhenMetalCannotDeserialize() async throws {
@@ -430,8 +392,9 @@ import WaxVectorSearch
 
     let manifest = await reopened.committedVecIndexManifest()
     #expect(manifest != nil)
-    let bytes = try await reopened.readCommittedVecIndexBytes()
-    #expect(bytes?.isEmpty == false)
+    let committed = try await reopened.readCommittedVectors()
+    #expect(committed.map { Set($0.frameIds) } == [0, 1])
+    #expect(committed?.vectors.count == 8)
 
     try await reopened.close()
 
@@ -457,7 +420,7 @@ import WaxVectorSearch
         try await wax.commit()
         Issue.record("Expected error when committing embeddings without staged vector index")
     } catch {
-        // Expected: vector index must be staged before committing embeddings
+        // Expected: the vector index dimension and similarity must be set first
     }
 
     do {
@@ -469,7 +432,7 @@ import WaxVectorSearch
             return
         }
         let message = error.errorDescription ?? ""
-        #expect(message.contains("vector index must be staged before committing embeddings"))
+        #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
     }
     try FileManager.default.removeItem(at: tempDir)
 }
@@ -508,19 +471,14 @@ import WaxVectorSearch
     let wax = try await Wax.create(at: fileURL)
     let frameId = try await wax.put(Data("payload".utf8))
     try await wax.putEmbedding(frameId: frameId, vector: [1.0, 0.0, 0.0, 0.0])
-    let mismatchedVecBytes = try VectorSerializer.serializeFlatVectors(
-        [],
-        frameIds: [],
-        metric: .cosine,
-        dimensions: 5
-    )
 
     do {
-        try await wax.stageVecIndexForNextCommit(bytes: mismatchedVecBytes, vectorCount: 0, dimension: 5, similarity: .cosine, coverage: .latestPending)
-        Issue.record("Expected error for pending embedding dimension mismatch vs staged vec index")
+        try await wax.setVectorIndexConfiguration(dimension: 5, similarity: .cosine)
+        Issue.record("Expected error for pending embedding dimension mismatch vs vec index configuration")
     } catch {
         // Expected: pending embedding dimension mismatch
     }
+    #expect(await wax.vectorIndexConfiguration() == nil)
 
     do {
         try await wax.close()
@@ -531,7 +489,7 @@ import WaxVectorSearch
             return
         }
         let message = error.errorDescription ?? ""
-        #expect(message.contains("vector index must be staged before committing embeddings"))
+        #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
     }
     try FileManager.default.removeItem(at: tempDir)
 }
@@ -543,26 +501,26 @@ import WaxVectorSearch
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("sample.wax"))
-    let duplicateVecBytes = buildRawVectorSegment(
-        encoding: 3,
-        vectors: [1.0, 0.0, 0.0, 1.0],
+    for _ in 0...7 { _ = try await wax.put(Data("frame".utf8)) }
+    let duplicates = CommittedVectors(
+        dimension: 2,
+        similarity: .cosine,
         frameIds: [7, 7],
-        dimension: 2
+        vectors: [1.0, 0.0, 0.0, 1.0]
     )
 
     await #expect(throws: WaxError.self) {
-        try await wax.stageVecIndexForNextCommit(
-            bytes: duplicateVecBytes,
-            vectorCount: 2,
-            dimension: 2,
-            similarity: .cosine,
-            coverage: .latestPending
-        )
+        try await wax.stageVectorImportForNextCommit(duplicates)
+        try await wax.commit()
     }
-    try await wax.close()
+    #expect(await wax.committedVecIndexManifest() == nil)
+    // The refused import stays staged, so the close's commit refuses it too.
+    await #expect(throws: WaxError.self) {
+        try await wax.close()
+    }
 }
 
-@Test func commitRejectsStaleStagedVectorIndexWhenPendingEmbeddingsChange() async throws {
+@Test func commitIncludesEmbeddingsWrittenAfterTheVectorIndexIsConfigured() async throws {
     let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -573,42 +531,29 @@ import WaxVectorSearch
 
     let frame0 = try await wax.put(Data("first".utf8))
     try await wax.putEmbedding(frameId: frame0, vector: [1.0, 0.0, 0.0, 0.0])
-    let stagedVecBytes = try VectorSerializer.serializeFlatVectors(
-        [1.0, 0.0, 0.0, 0.0],
-        frameIds: [frame0],
-        metric: .cosine,
-        dimensions: 4
-    )
-    try await wax.stageVecIndexForNextCommit(
-        bytes: stagedVecBytes,
-        vectorCount: 1,
-        dimension: 4,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    try await wax.setVectorIndexConfiguration(dimension: 4, similarity: .cosine)
 
+    // Written after the configuration: the commit takes every pending embedding from the WAL.
     let frame1 = try await wax.put(Data("second".utf8))
     try await wax.putEmbedding(frameId: frame1, vector: [0.0, 1.0, 0.0, 0.0])
 
-    do {
-        try await wax.commit()
-        Issue.record("Expected error for stale staged vector index")
-    } catch let error as WaxError {
-        guard case .vectorIndexStale = error else {
-            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
-            return
-        }
-    }
+    try await wax.commit()
+    #expect(try await wax.committedVectorFrameIds() == [frame0, frame1])
+    #expect(await wax.pendingEmbeddingMutations().isEmpty)
+    try await wax.close()
 
-    do {
-        try await wax.close()
-        Issue.record("Expected close to propagate stale auto-commit failure")
-    } catch let error as WaxError {
-        guard case .vectorIndexStale = error else {
-            Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
-            return
-        }
+    let reopened = try await Wax.open(at: fileURL)
+    #expect(await reopened.committedVecIndexManifest()?.vectorCount == 2)
+    let committed = try #require(try await reopened.readCommittedVectors())
+    var vectors: [UInt64: [Float]] = [:]
+    for (row, frameId) in committed.frameIds.enumerated() {
+        vectors[frameId] = Array(committed.vectors[(row * 4)..<(row * 4 + 4)])
     }
+    #expect(vectors == [frame0: [1.0, 0.0, 0.0, 0.0], frame1: [0.0, 1.0, 0.0, 0.0]])
+    let session = try await reopened.enableVectorSearch(dimensions: 4, preference: .cpuOnly)
+    let hits = try await session.search(vector: [0.0, 1.0, 0.0, 0.0], topK: 1)
+    #expect(hits.first?.frameId == frame1)
+    try await reopened.close()
 }
 
 @Test func crashRecoveryAllowsVectorCommitWithoutReprovidingEmbeddings() async throws {
@@ -631,7 +576,7 @@ import WaxVectorSearch
                 return
             }
             let message = error.errorDescription ?? ""
-            #expect(message.contains("vector index must be staged before committing embeddings"))
+            #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
     }
 

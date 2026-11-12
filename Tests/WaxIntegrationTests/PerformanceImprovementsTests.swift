@@ -75,13 +75,19 @@ func stagingVecIndexDoesNotChangeWhenNoEmbeddingMutations() async throws {
             options: FrameMetaSubset(searchText: content)
         )
 
+        // Staging records the index configuration; the commit writes the pending embeddings
+        // from the WAL. Staging again without embedding mutations changes neither.
         try await vec.stageForCommit()
-        let stamp1 = await wax.stagedVecIndexStamp()
-        #expect(stamp1 != nil)
+        let configuration1 = await wax.vectorIndexConfiguration()
+        #expect(configuration1 == VectorIndexConfiguration(dimension: 4, similarity: .cosine))
+        let pending1 = await wax.pendingEmbeddingMutations(since: nil)
+        #expect(pending1.embeddings.count == 1)
 
         try await vec.stageForCommit()
-        let stamp2 = await wax.stagedVecIndexStamp()
-        #expect(stamp1 == stamp2)
+        let configuration2 = await wax.vectorIndexConfiguration()
+        #expect(configuration1 == configuration2)
+        let pending2 = await wax.pendingEmbeddingMutations(since: nil)
+        #expect(pending1 == pending2)
 
         try await wax.close()
     }
@@ -208,7 +214,7 @@ func pendingEmbeddingMutationsSinceReturnsIncremental() async throws {
                 return
             }
             let message = error.errorDescription ?? ""
-            #expect(message.contains("vector index must be staged before committing embeddings"))
+            #expect(message.contains("vector index dimension and similarity must be set before committing the first embeddings"))
         }
     }
 }

@@ -30,6 +30,29 @@ import Testing
     #expect(stats.mismatches == 0)
 }
 
+// MARK: - truncateCounted
+
+@Test func tokenCounterTruncateCountedMatchesTruncateThenCount() async throws {
+    let counter = try await TokenCounter()
+    let texts: [String] = [
+        "Hello",
+        "The quick brown fox jumps over the lazy dog, then naps in the afternoon sun.",
+        String(repeating: "naïve café déjà vu 東京 🚀 ", count: 40),
+    ]
+    for text in texts {
+        for maxTokens in [1, 3, 8, 17, 4_096] {
+            let truncated: String = await counter.truncate(text, maxTokens: maxTokens)
+            let expectedTokens: Int = await counter.count(truncated)
+            // Twice: the second call reads the encoding the first one cached.
+            for _ in 0..<2 {
+                let counted: (text: String, tokens: Int) = await counter.truncateCounted(text, maxTokens: maxTokens)
+                #expect(counted.text == truncated)
+                #expect(counted.tokens == expectedTokens)
+            }
+        }
+    }
+}
+
 // MARK: - countBatch (sequential path: <= 4 items)
 
 @Test func tokenCounterCountBatchSmall() async throws {

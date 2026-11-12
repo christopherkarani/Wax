@@ -25,10 +25,13 @@ package actor MemoryOrchestrator {
 
     let wax: Wax
     let config: OrchestratorConfig
+    /// The built-in chosen for this store when it was opened for `.automatic` embedding.
+    package let automaticProvider: BuiltInEmbeddingProvider?
     /// Internal only because of the file split; immutable after init.
     let ragBuilder: FastRAGContextBuilder
     private let handoffWriteMutex = AsyncMutex()
-    private let flushMutex = AsyncMutex()
+    /// Internal only because of the file split.
+    let flushMutex = AsyncMutex()
     private let embeddingBackfillMutex = AsyncMutex()
     /// Internal only because of the file split.
     let embeddingBackfillStoreMutex = AsyncMutex()
@@ -127,6 +130,7 @@ package actor MemoryOrchestrator {
         embedder: (any EmbeddingProvider)? = nil,
         waxOptions: WaxOptions = .init(),
         initialEmbeddingStatus: EmbeddingStatus? = nil,
+        automaticNewStoreProvider: BuiltInEmbeddingProvider? = nil,
         nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
         // Prewarm tokenizer in parallel with Wax file operations
@@ -167,9 +171,24 @@ package actor MemoryOrchestrator {
         // Callers that pass `initialEmbeddingStatus` own the missing-provider rule
         // (index remains + unavailable / loading + live attach).
         let existingMemoryBinding = await wax.memoryBinding()
-        var resolvedConfig = config.sizingChunks(
-            forEmbedderModel: embedder?.identity?.model ?? existingMemoryBinding?.embeddingModel
-        )
+        // `.automatic` without a provider yet: the store's binding picks the built-in to load.
+        var automaticProvider: BuiltInEmbeddingProvider?
+        if let automaticNewStoreProvider, embedder == nil {
+            // Presence only: the manifest count avoids decoding the vector index at open.
+            let committedVectors = await wax.committedVecIndexManifest()?.vectorCount ?? 0
+            let pendingVectors = await wax.pendingEmbeddingMutations()
+            automaticProvider = AutomaticEmbedderChoice.provider(
+                binding: existingMemoryBinding,
+                storeHasVectors: committedVectors > 0 || !pendingVectors.isEmpty,
+                newStore: automaticNewStoreProvider,
+                available: BuiltInEmbeddingCompiler.bindingIdentities()
+            )
+        }
+        self.automaticProvider = automaticProvider
+        var resolvedConfig = automaticProvider.map { config.sizingChunks(for: $0) }
+            ?? config.sizingChunks(
+                forEmbedderModel: embedder?.identity?.model ?? existingMemoryBinding?.embeddingModel
+            )
         var lifecycle: EmbedderLifecycle
         if let initialEmbeddingStatus {
             lifecycle = Self.lifecycle(from: initialEmbeddingStatus, provider: embedder)
@@ -182,7 +201,7 @@ package actor MemoryOrchestrator {
             WaxDiagnostics.logSwallowed(
                 WaxError.io("vector search requested but no EmbeddingProvider configured"),
                 context: "MemoryOrchestrator init",
-                fallback: "text-only search; Memory(at:) auto-wires the built-in MiniLM embedder on iOS 18/macOS 15+"
+                fallback: "text-only search; Memory(at:) auto-wires a built-in embedder on iOS 18/macOS 15+"
             )
         } else if let embedder {
             lifecycle = .ready(
@@ -193,15 +212,6 @@ package actor MemoryOrchestrator {
             lifecycle = .unavailable(reason: "no embedding provider")
         } else {
             lifecycle = .disabled
-        }
-        if embedder != nil,
-           let degradedReason = await Self.vectorCoverageDegradedReason(in: wax) {
-            switch lifecycle {
-            case .ready(let attached, _):
-                lifecycle = .ready(attached: attached, degradedReason: degradedReason)
-            case .disabled, .loading, .unavailable:
-                break
-            }
         }
         var supersededReason: String?
         if let embedder {
@@ -226,6 +236,19 @@ package actor MemoryOrchestrator {
                 }
             }
         }
+        // Without a provider yet (it may attach later), rank by what the store recorded.
+        let storedVectorMetric = await VectorSimilarityBinding.storedMetric(in: wax)
+        var vectorMetric = storedVectorMetric ?? .cosine
+        if let embedder, resolvedConfig.enableVectorSearch {
+            let declared = VectorMetric(embedder.similarity)
+            if let storedVectorMetric, storedVectorMetric != declared {
+                try? await wax.close()
+                throw WaxError.io(
+                    VectorSimilarityBinding.mismatchReason(stored: storedVectorMetric, declared: declared)
+                )
+            }
+            vectorMetric = declared
+        }
 
         self.config = resolvedConfig
         self.ragBuilder = FastRAGContextBuilder()
@@ -245,22 +268,36 @@ package actor MemoryOrchestrator {
             enableVectorSearch: resolvedConfig.enableVectorSearch,
             enableStructuredMemory: resolvedConfig.enableStructuredMemory,
             vectorEnginePreference: preference,
-            vectorMetric: .cosine,
+            vectorMetric: vectorMetric,
             vectorDimensions: embedder?.dimensions,
             catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
         self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        // A superseded-vectors reason outranks the coverage one, so skip the scan then. The
+        // session's engine already holds every embedded frame ID, so the scan reuses them
+        // instead of reading and decoding the vector segment again.
+        if embedder != nil, supersededReason == nil, case .ready(let attached, _) = lifecycle,
+           let degradedReason = await Self.vectorCoverageDegradedReason(
+               in: wax,
+               loadedFrameIds: await session.loadedVectorFrameIds()
+           ) {
+            self.embedderLifecycle = .ready(attached: attached, degradedReason: degradedReason)
+        }
 
         // Wait for tokenizer prewarm to complete (should already be done by now)
         _ = await tokenizerPrewarm
         if let enrichmentPipeline {
             let session = self.session
             await enrichmentPipeline.start { task in
-                EnrichmentResult(
-                    frameId: task.frameId,
-                    keywords: KeywordExtractor.extract(from: task.text),
-                    entities: EntityExtractor.extract(from: task.text)
-                )
+                // Extraction is synchronous CPU work that grows with the chunk; on a
+                // cooperative thread a long chunk stalls every other task in the process.
+                await BlockingWork.run {
+                    EnrichmentResult(
+                        frameId: task.frameId,
+                        keywords: KeywordExtractor.extract(from: task.text),
+                        entities: EntityExtractor.extract(from: task.text)
+                    )
+                }
             } resultHandler: { result in
                 try await Self.persistEnrichmentResult(result, in: session)
             }
@@ -322,6 +359,11 @@ package actor MemoryOrchestrator {
         }
     }
 
+    /// Records that a commit set the store's binding. Internal only because of the file split.
+    func markMemoryBindingEnsured() {
+        hasEnsuredMemoryBinding = true
+    }
+
     /// Embed live searchable frames that have no vectors using the attached provider.
     ///
     /// Returns the number of frames newly embedded. Already-vectorized frames are
@@ -355,7 +397,10 @@ package actor MemoryOrchestrator {
             if missing.isEmpty {
                 await refreshEmbeddingCoverage()
             } else {
-                try await session.ensureVectorEngine(dimensions: embedder.dimensions)
+                try await session.ensureVectorEngine(
+                    dimensions: embedder.dimensions,
+                    metric: VectorMetric(embedder.similarity)
+                )
             }
             return missing
         }
@@ -408,7 +453,10 @@ package actor MemoryOrchestrator {
         let plan = try await embeddingBackfillStoreMutex.withLock { [self] in
             try Task.checkCancellation()
             guard !(await isClosed) else { throw CancellationError() }
-            try await session.ensureVectorEngine(dimensions: attached.dimensions)
+            try await session.ensureVectorEngine(
+                dimensions: attached.dimensions,
+                metric: VectorMetric(attached.similarity)
+            )
             let marker = await reembedProgressMarker(targetModel: targetModel)
             return SupersededReembedPlan(
                 nextFrameId: marker?.nextFrameId ?? 0,
@@ -659,7 +707,8 @@ package actor MemoryOrchestrator {
         }
     }
 
-    private func flushSerialized() async throws {
+    /// Internal only because of the file split; call only while holding `flushMutex`.
+    func flushSerialized() async throws {
         if let enrichmentPipeline {
             let drained = try await enrichmentPipeline.waitUntilIdle(
                 bestEffortTimeout: config.enrichmentFlushDrainTimeout
@@ -767,10 +816,14 @@ package actor MemoryOrchestrator {
         try await wax.close()
         if let maintenanceReport {
             do {
-                try Self.promoteValidatedLiveSetCandidateIfNeeded(
-                    maintenanceReport,
-                    sourceURL: sourceURL
-                )
+                // File swaps, fsyncs and a footer scan of up to 32 MiB: blocking work that
+                // held a cooperative thread for the whole promotion.
+                try await BlockingWork.run {
+                    try Self.promoteValidatedLiveSetCandidateIfNeeded(
+                        maintenanceReport,
+                        sourceURL: sourceURL
+                    )
+                }
             } catch {
                 WaxDiagnostics.logSwallowed(
                     error,

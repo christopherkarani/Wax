@@ -35,16 +35,21 @@ extension LayeredRecall {
     }
 
     /// Git ancestry for the hits about to be merged. Call once per recall, before `mergeHits`.
+    /// Each unequal SHA can run `git merge-base` and wait up to 200 ms for it, so the
+    /// lookups run on a private queue rather than holding a cooperative thread.
     private static func resolvedCheckoutRelations(
         for hits: [Hit],
         live: GitCheckoutSnapshot,
         repoRootPath: String?
-    ) -> [String: OnThisTree] {
-        MemorySemantics.checkoutRelations(
-            storedSHAs: distinctStoredGitSHAs(in: hits),
-            live: live,
-            repoRootPath: repoRootPath
-        )
+    ) async -> [String: OnThisTree] {
+        let storedSHAs = distinctStoredGitSHAs(in: hits)
+        return await BlockingWork.run {
+            MemorySemantics.checkoutRelations(
+                storedSHAs: storedSHAs,
+                live: live,
+                repoRootPath: repoRootPath
+            )
+        }
     }
 
     private static func distinctStoredGitSHAs(in hits: [Hit]) -> [String] {
@@ -100,6 +105,11 @@ extension LayeredRecall {
                 project: identity.project,
                 repo: identity.repo
             )
+            let relations = await resolvedCheckoutRelations(
+                for: scopedSession + scopedDurable,
+                live: liveCheckout,
+                repoRootPath: repoRootPath
+            )
             merged = mergeHits(
                 sessionHits: scopedSession,
                 durableHits: scopedDurable,
@@ -107,11 +117,7 @@ extension LayeredRecall {
                 nowMs: stores.nowMs(),
                 query: request.query,
                 liveCheckout: liveCheckout,
-                relations: resolvedCheckoutRelations(
-                    for: scopedSession + scopedDurable,
-                    live: liveCheckout,
-                    repoRootPath: repoRootPath
-                )
+                relations: relations
             )
         } else {
             // Global changes the project boundary, not query or filter matching.
@@ -143,6 +149,11 @@ extension LayeredRecall {
                     types: request.memoryTypes
                 ))
             }
+            let relations = await resolvedCheckoutRelations(
+                for: personLaneWorking + personLaneDurable,
+                live: liveCheckout,
+                repoRootPath: repoRootPath
+            )
             let searched = mergeHits(
                 sessionHits: personLaneWorking,
                 durableHits: personLaneDurable,
@@ -150,11 +161,7 @@ extension LayeredRecall {
                 nowMs: stores.nowMs(),
                 query: request.query,
                 liveCheckout: liveCheckout,
-                relations: resolvedCheckoutRelations(
-                    for: personLaneWorking + personLaneDurable,
-                    live: liveCheckout,
-                    repoRootPath: repoRootPath
-                )
+                relations: relations
             )
             if personLane {
                 let cardHits = await OwnerCard.hits(

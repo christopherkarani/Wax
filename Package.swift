@@ -110,7 +110,7 @@ let package = Package(
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
     ],
     traits: [
-        .default(enabledTraits: ["MiniLMEmbeddings"]),
+        .default(enabledTraits: ["MiniLMEmbeddings", "E5Embeddings"]),
         .init(
             name: "MiniLMEmbeddings",
             description: "Includes the built-in MiniLM embedding provider",
@@ -119,6 +119,16 @@ let package = Package(
         .init(
             name: "ArcticEmbeddings",
             description: "Includes the Snowflake Arctic Embed Small provider",
+            enabledTraits: []
+        ),
+        .init(
+            name: "E5Embeddings",
+            description: "Includes the intfloat/e5-small-v2 provider",
+            enabledTraits: []
+        ),
+        .init(
+            name: "MiniLMReranker",
+            description: "Includes the cross-encoder/ms-marco-MiniLM-L-6-v2 on-device reranker",
             enabledTraits: []
         ),
         .init(
@@ -133,7 +143,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.3.0"),
+        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.4.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
@@ -179,9 +189,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "WaxVectorSearchC",
+            dependencies: [],
+            path: "Sources/WaxVectorSearchC",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "WaxVectorSearch",
             dependencies: [
                 "WaxCore",
+                "WaxVectorSearchC",
                 .product(
                     name: "MetalANNS",
                     package: "MetalANNS",
@@ -211,6 +228,29 @@ let package = Package(
             ]
         ),
         .target(
+            name: "WaxVectorSearchE5",
+            dependencies: [
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/e5-small-v2.mlmodelc"),
+                .copy("Resources/e5-small-v2-LICENSE.txt"),
+            ]
+        ),
+        .target(
+            name: "WaxRerankerMiniLM",
+            dependencies: [
+                "WaxCore",
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/ms-marco-MiniLM-L-6-v2.mlmodelc"),
+                .copy("Resources/ms-marco-MiniLM-L-6-v2-LICENSE.txt"),
+            ]
+        ),
+        .target(
             name: "Wax",
             dependencies: [
                 "WaxCore",
@@ -224,11 +264,21 @@ let package = Package(
                     name: "WaxVectorSearchArctic",
                     condition: .when(traits: ["ArcticEmbeddings"])
                 ),
+                .target(
+                    name: "WaxVectorSearchE5",
+                    condition: .when(traits: ["E5Embeddings"])
+                ),
+                .target(
+                    name: "WaxRerankerMiniLM",
+                    condition: .when(traits: ["MiniLMReranker"])
+                ),
             ],
             resources: [.process("RAG/Resources")],
             swiftSettings: [
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .executableTarget(
@@ -331,6 +381,7 @@ let package = Package(
             resources: [.process("Fixtures")],
             swiftSettings: [
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
             ]
         ),
         .testTarget(
@@ -342,6 +393,25 @@ let package = Package(
                 "WaxBertTokenizer",
             ],
             path: "Tests/WaxArcticTests"
+        ),
+        .testTarget(
+            name: "WaxE5Tests",
+            dependencies: [
+                "Wax",
+                "WaxVectorSearchE5",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxE5Tests",
+            resources: [.process("Fixtures")]
+        ),
+        .testTarget(
+            name: "WaxRerankerMiniLMTests",
+            dependencies: [
+                "WaxRerankerMiniLM",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxRerankerMiniLMTests",
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "wax-mcpTests",
@@ -388,6 +458,7 @@ let package = Package(
             path: "Tests/WaxTests",
             swiftSettings: [
                 .define("WaxRepo", .when(traits: ["WaxRepo"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .testTarget(

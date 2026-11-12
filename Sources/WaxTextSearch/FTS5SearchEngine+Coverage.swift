@@ -90,8 +90,9 @@ extension FTS5SearchEngine {
     }
 
     /// Advances the watermark to the first indexable frame without postings (or past the last
-    /// frame) and writes it into the blob. `metas` must be in ascending id order, as
-    /// `Wax.frameMetasIncludingPending()` returns them. Call after pending ops are flushed.
+    /// frame) and writes it into the blob. `metas` must be in ascending id order and hold
+    /// every frame at or above the watermark, as `Wax.frameMetasIncludingPending()` and
+    /// `Wax.frameMetasForTextStaging(atOrAbove:)` return them. Call after pending ops are flushed.
     func recordCoverage(of metas: [FrameMeta]) async throws {
         let floor = coveredBelowFrameId
         let indexed = try await indexedFrameIds(atOrAbove: floor)
@@ -104,6 +105,8 @@ extension FTS5SearchEngine {
         }
         let dbQueue = self.dbQueue
         let watermark = covered
+        await beginWrite()
+        defer { endWrite() }
         try await io.run {
             try dbQueue.write { db in
                 try FTS5Coverage.write(coveredBelowFrameId: watermark, in: db)
@@ -111,6 +114,20 @@ extension FTS5SearchEngine {
         }
         coveredBelowFrameId = covered
         coverageRecorded = true
+    }
+
+    /// The coverage watermark, to hand back to ``lowerCoverage(to:)`` when a commit that
+    /// staged a higher one fails.
+    package func coverageWatermark() -> UInt64 {
+        coveredBelowFrameId
+    }
+
+    /// Moves the watermark back down to `frameId` after the commit of frames it vouched for
+    /// failed; the next stage records the lowered value.
+    package func lowerCoverage(to frameId: UInt64) {
+        guard frameId < coveredBelowFrameId else { return }
+        coveredBelowFrameId = frameId
+        dirty = true
     }
 
     private func indexedFrameIds(atOrAbove floor: UInt64) async throws -> Set<Int64> {

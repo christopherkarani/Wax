@@ -52,7 +52,12 @@ package enum AsyncTimeout {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 once.install(continuation)
-                let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+                // A serial queue of its own, not a global one: GCD always gives a serial
+                // queue a thread, while it caps a global queue's threads by the core count,
+                // and on a busy host a blocked operation could finish before its timeout fired.
+                let timer = DispatchSource.makeTimerSource(
+                    queue: DispatchQueue(label: "com.wax.async-timeout", qos: .userInitiated)
+                )
                 timer.schedule(deadline: dispatchDeadline(after: timeout))
                 timer.setEventHandler {
                     finish(.failure(TimeoutError(operation: String(describing: name), timeout: timeout)))

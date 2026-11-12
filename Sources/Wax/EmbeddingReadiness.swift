@@ -185,9 +185,11 @@ package enum HostEmbeddingReadiness {
             return .miniLM
         case "arctic":
             return .arctic
+        case "e5":
+            return .e5
         default:
             throw WaxError.encodingError(
-                reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, or auto."
+                reason: "Invalid embedder choice '\(embedderChoice)'. Expected minilm, arctic, e5, or auto."
             )
         }
     }
@@ -212,6 +214,8 @@ package enum HostEmbeddingReadiness {
 /// Caller-facing request used to open a store with embedding readiness.
 package enum EmbeddingOpenRequest: Sendable, Equatable {
     case disabled
+    /// Opens at once and loads a built-in in the background: the named one for a store
+    /// without vectors, otherwise the one that wrote the store (``AutomaticEmbedderChoice``).
     case automatic(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions)
     case builtIn(BuiltInEmbeddingProvider, BuiltInEmbeddingProviderOptions)
     case custom(any EmbeddingProvider)
@@ -266,24 +270,36 @@ package enum EmbeddingReadinessBinding {
                 waxOptions: waxOptions,
                 initialEmbeddingStatus: .active(provider.identity)
             )
-        case .automatic(let provider, let options):
-            let config = config.sizingChunks(for: provider)
+        case .automatic(let newStoreProvider, let options):
+            // Open the store first: its binding decides which built-in to load. Search is
+            // text-only until that provider attaches.
+            let orchestrator = try await MemoryOrchestrator(
+                at: url,
+                config: config,
+                embedder: nil,
+                waxOptions: waxOptions,
+                initialEmbeddingStatus: .loading,
+                automaticNewStoreProvider: newStoreProvider
+            )
+            let provider = orchestrator.automaticProvider ?? newStoreProvider
             let factory = factoryOverride ?? {
                 try await BuiltInEmbeddingCompiler.compile(provider, options: options, skipPrewarm: true)
             }
-            let session = try await readiness.open(
-                .automatic(
-                    key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
-                    waitTimeout: options.tuning.timeoutDuration,
-                    factory: factory
+            let session: EmbeddingReadinessSession
+            do {
+                session = try await readiness.open(
+                    .automatic(
+                        key: BuiltInEmbeddingCompiler.loadKey(provider, options: options),
+                        waitTimeout: options.tuning.timeoutDuration,
+                        factory: factory
+                    )
                 )
-            )
-            return try await openBound(
-                at: url,
-                config: config,
-                session: session,
-                waxOptions: waxOptions
-            )
+            } catch {
+                try? await orchestrator.close()
+                throw error
+            }
+            await follow(session, in: orchestrator)
+            return orchestrator
         case .builtIn(let provider, let options):
             let config = config.sizingChunks(for: provider)
             let factory = factoryOverride ?? {
@@ -323,6 +339,15 @@ package enum EmbeddingReadinessBinding {
             waxOptions: waxOptions,
             initialEmbeddingStatus: snapshot.status
         )
+        await follow(session, in: orchestrator)
+        return orchestrator
+    }
+
+    /// Attaches a provider that finished loading while the store opened, then follows the rest.
+    private static func follow(
+        _ session: EmbeddingReadinessSession,
+        in orchestrator: MemoryOrchestrator
+    ) async {
         let latest = await session.snapshot()
         switch latest.status {
         case .active, .degraded:
@@ -335,6 +360,5 @@ package enum EmbeddingReadinessBinding {
             break
         }
         await orchestrator.followReadiness(session)
-        return orchestrator
     }
 }

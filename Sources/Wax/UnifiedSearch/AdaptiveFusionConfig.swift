@@ -19,10 +19,10 @@ package struct AdaptiveFusionConfig: Sendable {
 
     package init() {
         self.weightsByType = [
-            .factual: FusionWeights(bm25: 0.7, vector: 0.3, temporal: 0.0),
-            .semantic: FusionWeights(bm25: 0.3, vector: 0.7, temporal: 0.0),
-            .temporal: FusionWeights(bm25: 0.25, vector: 0.25, temporal: 0.5),
-            .exploratory: FusionWeights(bm25: 0.4, vector: 0.5, temporal: 0.1),
+            .factual: FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0),
+            .semantic: FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0),
+            .temporal: FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.1),
+            .exploratory: FusionWeights(bm25: 0.5, vector: 0.5, temporal: 0.0),
         ]
     }
 

@@ -36,8 +36,8 @@ import Foundation
 import Wax
 
 func openDocsMemory() async throws -> Memory {
-    // Creates or opens the file. On iOS 18 / macOS 15+ MiniLM is wired automatically
-    // when the default package trait is enabled.
+    // Creates or opens the file. On iOS 18 / macOS 15+ a built-in embedder is wired
+    // automatically: e5 for a new store, or the one an existing store was written with.
     try await Memory(at: URL.documentsDirectory.appending(path: "memory.wax"))
 }
 ```
@@ -72,6 +72,14 @@ func saveDocsExamples(memory: Memory) async throws {
 ```
 
 Wax chunks text, embeds when a provider is present, indexes BM25, and appends frames through the WAL. ``Memory/flush()`` forces durable writes; ``Memory/close()`` flushes automatically.
+
+To import many texts, ``Memory/save(contentsOf:metadata:)`` embeds and writes them in batches and returns one frame ID per text, in order. It is not atomic: if it throws, earlier texts may already be saved.
+
+```swift
+func importDocsExamples(memory: Memory, notes: [String]) async throws -> [UInt64] {
+    try await memory.save(contentsOf: notes, metadata: ["source": "import"])
+}
+```
 
 ## Search
 

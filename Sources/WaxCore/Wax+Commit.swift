@@ -29,6 +29,8 @@ private func posixKill(_ pid: Int32, _ signal: Int32) -> Int32 {
 extension Wax {
     /// Internal only because of the file split.
     enum CrashInjectionCheckpoint: String {
+        /// After the commit wrote its vector or lex runs.
+        case afterVectorRunWriteBeforeToc = "after_vector_run_write_before_toc"
         case afterTocWriteBeforeFooter = "after_toc_write_before_footer"
         case afterFooterWriteBeforeFsync = "after_footer_write_before_fsync"
         case afterFooterFsyncBeforeHeader = "after_footer_fsync_before_header"
@@ -49,6 +51,11 @@ extension Wax {
         // for those cases; it should never be reached in normal crash-injection runs but
         // produces a clear diagnostic if SIGKILL did not terminate the process in time.
         _ = posixKill(posixGetPID(), SIGKILL)
+        // Another thread may take the signal a little later on a busy machine; wait for it
+        // instead of reaching the safety net first.
+        for _ in 0..<1_000 {
+            usleep(10_000)
+        }
         fatalError("crash injection did not terminate process at \(checkpoint.rawValue)")
     }
 #else
@@ -59,21 +66,46 @@ extension Wax {
     }
 #endif
 
+    /// What the commit in progress changed in place, so its rollback undoes just that.
+    /// Internal only because of the file split.
+    struct CommitUndo {
+        /// Committed frames as they were before the commit first modified each, by index.
+        private(set) var committedFrameOriginals: [Int: FrameMeta] = [:]
+        /// Whether the commit dropped the encoded frame cache to encode every frame again.
+        private(set) var replacedFrameCache = false
+        private(set) var frameCacheBeforeCommit: Data?
+
+        mutating func recordOriginal(_ frame: FrameMeta, at index: Int) {
+            if committedFrameOriginals[index] == nil {
+                committedFrameOriginals[index] = frame
+            }
+        }
+
+        mutating func recordReplacedFrameCache(_ cache: Data?) {
+            guard !replacedFrameCache else { return }
+            replacedFrameCache = true
+            frameCacheBeforeCommit = cache
+        }
+    }
+
     /// Internal only because of the file split.
     struct AppliedPendingMutations {
         var maxSequence: UInt64
         var appendedFrames: [FrameMeta]
         var modifiedCommittedFrames: Bool
+        /// The pending embeddings and removals, in WAL order.
+        var vectorChanges: [PendingVectorChange]
     }
 
+    /// Applies the pending mutations, then `frameImport`'s frames and embeddings after them.
     /// Internal only because of the file split; call only while holding `opLock` for writing.
-    func applyPendingMutationsIntoTOC() throws -> AppliedPendingMutations {
+    func applyPendingMutationsIntoTOC(frameImport: FrameImport? = nil) throws -> AppliedPendingMutations {
         let committedSeq = header.walCommittedSeq
         var maxSeq = committedSeq
 
-        let stagedVecDimension = stagedVecIndex?.dimension
         let ordered = orderedPendingMutationsLocked()
         var newFrames: [FrameMeta] = []
+        var vectorChanges: [PendingVectorChange] = []
         var modifiedCommittedFrames = false
 
         func withFrame(_ frameId: UInt64, _ update: (inout FrameMeta) throws -> Void) throws {
@@ -84,6 +116,7 @@ extension Wax {
             }
             if frameId < UInt64(committedCount) {
                 modifiedCommittedFrames = true
+                commitUndo?.recordOriginal(toc.frames[Int(frameId)], at: Int(frameId))
                 try update(&toc.frames[Int(frameId)])
             } else {
                 let index = Int(frameId - UInt64(committedCount))
@@ -129,42 +162,51 @@ extension Wax {
                     }
                 }
             case .putEmbedding(let embedding):
-                guard let stagedVecDimension else {
-                    throw WaxError.invalidToc(reason: "putEmbedding pending without staged vec index")
-                }
-                guard embedding.dimension == stagedVecDimension else {
-                    throw WaxError.invalidToc(
-                        reason: "putEmbedding dimension \(embedding.dimension) != staged vec dimension \(stagedVecDimension)"
-                    )
-                }
-
                 let maxKnownFrameIdExclusive = UInt64(toc.frames.count + newFrames.count)
                 guard embedding.frameId < maxKnownFrameIdExclusive else {
                     throw WaxError.invalidToc(
                         reason: "putEmbedding references unknown frameId \(embedding.frameId) (known < \(maxKnownFrameIdExclusive))"
                     )
                 }
-                continue
+                vectorChanges.append(.put(embedding))
+            case .removeEmbedding(let removal):
+                let maxKnownFrameIdExclusive = UInt64(toc.frames.count + newFrames.count)
+                guard removal.frameId < maxKnownFrameIdExclusive else {
+                    throw WaxError.invalidToc(
+                        reason: "removeEmbedding references unknown frameId \(removal.frameId) (known < \(maxKnownFrameIdExclusive))"
+                    )
+                }
+                vectorChanges.append(.remove(removal.frameId))
             }
         }
 
-        if !newFrames.isEmpty {
-            let originalCount = toc.frames.count
-            // Validate after appending in place so commit does not clone the full frame array first.
-            toc.frames.append(contentsOf: newFrames)
-            let dataStart = header.walOffset + header.walSize
-            do {
-                try Self.validateTocRanges(toc, dataStart: dataStart, dataEnd: dataEnd)
-            } catch {
-                toc.frames.removeLast(toc.frames.count - originalCount)
-                throw error
+        if let frameImport {
+            guard frameImport.firstFrameId == UInt64(toc.frames.count + newFrames.count) else {
+                throw WaxError.invalidToc(
+                    reason: "frame import starts at \(frameImport.firstFrameId), expected \(toc.frames.count + newFrames.count)"
+                )
             }
+            newFrames += frameImport.frames
+            vectorChanges += frameImport.embeddings.map(PendingVectorChange.put)
+        }
+
+        if !newFrames.isEmpty {
+            // Open validated the committed frames; check only the new ones against them.
+            try committedFramePayloadRangesLocked(committedFrameCount: toc.frames.count).validateAppending(
+                newFrames,
+                segments: toc.segmentCatalog.entries,
+                dataStart: header.walOffset + header.walSize,
+                dataEnd: dataEnd
+            )
+            try Self.validateTocManifests(toc)
+            toc.frames.append(contentsOf: newFrames)
         }
 
         return AppliedPendingMutations(
             maxSequence: maxSeq,
             appendedFrames: newFrames,
-            modifiedCommittedFrames: modifiedCommittedFrames
+            modifiedCommittedFrames: modifiedCommittedFrames,
+            vectorChanges: vectorChanges
         )
     }
 
@@ -174,6 +216,7 @@ extension Wax {
         invalidated: Bool
     ) throws -> Data {
         if invalidated {
+            commitUndo?.recordReplacedFrameCache(encodedCommittedFramePayloadCache)
             encodedCommittedFramePayloadCache = nil
         }
 

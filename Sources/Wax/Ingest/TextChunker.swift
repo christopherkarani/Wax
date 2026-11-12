@@ -21,6 +21,11 @@ package enum TextChunker {
     private static func tokenCountChunk(text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
+        // Every cl100k token covers at least one UTF-8 byte, so text with no more bytes
+        // than the target fits without being encoded.
+        if text.utf8.count <= cappedTarget {
+            return [text]
+        }
 
         let counter: TokenCounter
         do {
@@ -33,7 +38,7 @@ package enum TextChunker {
             )
             return [text]
         }
-        let tokens = await counter.encode(text)
+        let tokens = counter.encode(text)
         if tokens.count <= cappedTarget {
             return [text]
         }
@@ -47,7 +52,7 @@ package enum TextChunker {
         chunks.reserveCapacity(ranges.count)
         for range in ranges {
             let slice = Array(tokens[range])
-            let chunk = await counter.decode(slice)
+            let chunk = counter.decode(slice)
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 chunks.append(chunk)
             }
@@ -81,7 +86,7 @@ package enum TextChunker {
                     continuation.finish()
                     return
                 }
-                let tokens = await counter.encode(text)
+                let tokens = counter.encode(text)
                 if tokens.count <= cappedTarget {
                     continuation.yield(text)
                     continuation.finish()
@@ -96,7 +101,7 @@ package enum TextChunker {
 
                 for range in ranges {
                     let slice = Array(tokens[range])
-                    let chunk = await counter.decode(slice)
+                    let chunk = counter.decode(slice)
                     if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         continuation.yield(chunk)
                     }
@@ -121,7 +126,7 @@ package enum TextChunker {
         var pending = Array(chunks.reversed())
         while let chunk = pending.popLast() {
             let count = inputTokenCount(chunk)
-            let tokens = count > limit ? await counter.encode(chunk) : []
+            let tokens = count > limit ? counter.encode(chunk) : []
             guard tokens.count > 1 else {
                 fitted.append(chunk)
                 continue
@@ -131,7 +136,7 @@ package enum TextChunker {
             let ranges = tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: target, overlapTokens: 0)
             var pieces: [String] = []
             for range in ranges {
-                pieces.append(await counter.decode(Array(tokens[range])))
+                pieces.append(counter.decode(Array(tokens[range])))
             }
             pending.append(contentsOf: pieces.reversed())
         }

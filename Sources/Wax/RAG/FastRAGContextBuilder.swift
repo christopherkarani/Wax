@@ -24,6 +24,7 @@ package struct FastRAGContextBuilder: Sendable {
         timeRange: SearchTimeRange? = nil,
         scopeContext: MemoryScopeContext? = nil,
         accessStatsManager: AccessStatsManager? = nil,
+        reranking: RerankStage? = nil,
         config: FastRAGConfig = .init()
     ) async throws -> RAGContext {
         let clamped = clamp(config)
@@ -54,7 +55,8 @@ package struct FastRAGContextBuilder: Sendable {
             lane: try SearchLane.from(mode: clamped.searchMode, embedding: embedding),
             vectorEnginePreference: vectorEnginePreference,
             vectorSearchTimeout: vectorSearchTimeout,
-            topK: searchTopK,
+            // Reranking rescores its whole candidate window, which may reach past topK.
+            topK: max(searchTopK, reranking?.options.candidateCount ?? 0),
             timeRange: timeRange,
             frameFilter: frameFilter,
             nowMs: nowMs,
@@ -87,7 +89,7 @@ package struct FastRAGContextBuilder: Sendable {
             enabled: accessEnabled
         )
         let queryAnalyzer = QueryAnalyzer()
-        let rankedResults = clamped.enableAnswerFocusedRanking
+        let answerRankedResults = clamped.enableAnswerFocusedRanking
             ? Self.orderCandidatesForAnswer(
                 results: accessRankedResults,
                 query: query,
@@ -95,6 +97,13 @@ package struct FastRAGContextBuilder: Sendable {
                 analyzer: queryAnalyzer
             )
             : accessRankedResults
+        let rankedResults = if let reranking {
+            try await reranking.rerank(query: query, results: answerRankedResults) { result in
+                await rerankText(for: result, wax: wax, maxBytes: clamped.expansionMaxBytes)
+            }
+        } else {
+            answerRankedResults
+        }
         // The search request may be overfetched only to give access-aware
         // reranking headroom. Context assembly still honors the caller's
         // requested result count.
@@ -258,42 +267,51 @@ package struct FastRAGContextBuilder: Sendable {
                     max(4 * 1024, clamped.previewMaxBytes * 64)
                 )
                 let snippetMaxTokens = clamped.snippetMaxTokens
-                var previews = Array<String>(repeating: "", count: snippetCandidates.count)
-                await withTaskGroup(of: (Int, String).self) { group in
-                    for (index, (result, preview)) in snippetCandidates.enumerated() {
-                        group.addTask {
-                            guard Self.shouldUseFullFrameForSnippet(preview: preview, intent: queryIntent, analyzer: queryAnalyzer) else {
+                var previews: [String] = snippetCandidates.map { $0.preview }
+                // Only previews that need the full frame load it; the rest stay as they are, so
+                // the common case starts no tasks.
+                let fullFrameIndices: [Int] = snippetCandidates.indices.filter { (index: Int) -> Bool in
+                    Self.shouldUseFullFrameForSnippet(
+                        preview: snippetCandidates[index].preview,
+                        intent: queryIntent,
+                        analyzer: queryAnalyzer
+                    )
+                }
+                if !fullFrameIndices.isEmpty {
+                    await withTaskGroup(of: (Int, String).self) { group in
+                        for index in fullFrameIndices {
+                            let (result, preview) = snippetCandidates[index]
+                            group.addTask {
+                                do {
+                                    if let expanded = try await expansionText(
+                                        frameId: result.frameId,
+                                        wax: wax,
+                                        maxBytes: snippetFallbackMaxBytes
+                                    ),
+                                    !expanded.isEmpty {
+                                        return (index, await Self.tokenFittedSnippetText(
+                                            preview: preview,
+                                            frameText: expanded,
+                                            intent: queryIntent,
+                                            analyzer: queryAnalyzer,
+                                            maxTokens: snippetMaxTokens,
+                                            countTokens: { await counter.count($0) }
+                                        ))
+                                    }
+                                } catch {
+                                    WaxDiagnostics.logSwallowed(
+                                        error,
+                                        context: "snippet full-frame expansion",
+                                        fallback: "keep preview snippet"
+                                    )
+                                }
                                 return (index, preview)
                             }
-                            do {
-                                if let expanded = try await expansionText(
-                                    frameId: result.frameId,
-                                    wax: wax,
-                                    maxBytes: snippetFallbackMaxBytes
-                                ),
-                                !expanded.isEmpty {
-                                    return (index, await Self.tokenFittedSnippetText(
-                                        preview: preview,
-                                        frameText: expanded,
-                                        intent: queryIntent,
-                                        analyzer: queryAnalyzer,
-                                        maxTokens: snippetMaxTokens,
-                                        countTokens: { await counter.count($0) }
-                                    ))
-                                }
-                            } catch {
-                                WaxDiagnostics.logSwallowed(
-                                    error,
-                                    context: "snippet full-frame expansion",
-                                    fallback: "keep preview snippet"
-                                )
-                            }
-                            return (index, preview)
                         }
-                    }
 
-                    for await (index, text) in group {
-                        previews[index] = text
+                        for await (index, text) in group {
+                            previews[index] = text
+                        }
                     }
                 }
 
@@ -321,7 +339,8 @@ package struct FastRAGContextBuilder: Sendable {
 
         let tokenizer = RecallAssembly.Tokenizer(
             count: { text in await counter.count(text) },
-            truncate: { text, maxTokens in await counter.truncate(text, maxTokens: maxTokens) }
+            truncate: { text, maxTokens in await counter.truncate(text, maxTokens: maxTokens) },
+            truncateCounted: { text, maxTokens in await counter.truncateCounted(text, maxTokens: maxTokens) }
         )
         var context = await RecallAssembly.pack(
             query: query,
@@ -585,6 +604,19 @@ package struct FastRAGContextBuilder: Sendable {
 
         if cappedWindow == results.count { return head }
         return head + results.dropFirst(cappedWindow)
+    }
+
+    /// The full frame text a reranker scores: the frame payload, or the search preview when
+    /// the payload is larger than `maxBytes`, not UTF-8, or unreadable.
+    private func rerankText(for result: SearchResponse.Result, wax: Wax, maxBytes: Int) async -> String {
+        do {
+            if let text = try await expansionText(frameId: result.frameId, wax: wax, maxBytes: maxBytes) {
+                return text
+            }
+        } catch {
+            WaxDiagnostics.logSwallowed(error, context: "rerank frame text load", fallback: "score the preview")
+        }
+        return result.previewText ?? ""
     }
 
     private func expansionText(

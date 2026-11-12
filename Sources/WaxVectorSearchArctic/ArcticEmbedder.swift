@@ -22,12 +22,14 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// L2 normalization is baked into the CoreML graph (CLS extraction + L2 norm),
     /// so the caller (MemoryOrchestrator.embedOne) should NOT re-normalize.
     package nonisolated let normalize: Bool = false
-    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+    /// The identity a store records for vectors from this model.
+    package static let bindingIdentity = EmbeddingIdentity(
         provider: "Wax",
         model: "ArcticEmbedS",
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let identity: EmbeddingIdentity? = ArcticEmbedder.bindingIdentity
 
     private nonisolated let model: ArcticEmbeddings
 
@@ -234,10 +236,11 @@ extension ArcticEmbedder {
         )
     }
 
-    /// Arctic's fallback order when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
-    /// chose one. The Neural Engine path intermittently emits non-finite embeddings for
+    /// Arctic's compute units when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
+    /// chose any. The Neural Engine path intermittently emits non-finite embeddings for
     /// this model, and a single startup probe cannot catch that, so ANE is opt-in only.
-    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly, .cpuAndGPU]
+    /// There is no GPU fallback: `ArcticEmbeddings` refuses `.cpuAndGPU`, whose load stalls.
+    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
 
     /// Explicit order wins, then a customized tuning order, then `defaultComputeUnitsOrder`.
     package static func resolveComputeUnitsOrder(

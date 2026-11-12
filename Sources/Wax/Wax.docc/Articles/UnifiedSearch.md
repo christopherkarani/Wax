@@ -33,7 +33,7 @@ The structured-memory lane resolves entity mentions, finds related facts, and re
 
 ### Timeline Lane
 
-The timeline lane is a reverse-chronological fallback for queries that imply recency, such as "what happened recently?".
+For queries that imply recency, such as "when did we last deploy?", the timeline lane ranks the frames the text and vector lanes retrieved from newest to oldest, with a small weight, so recency breaks near-ties without outranking relevance. When nothing matches, a search that enables the timeline fallback returns the most recent frames instead.
 
 ## Reciprocal Rank Fusion
 
@@ -55,13 +55,13 @@ Published `score` is the rank key used to order hits, not a probability and not 
 
 ## Query Classification
 
-The package-only classifier adjusts lane weights using simple offline rules:
+The package-only classifier labels each query with simple offline rules. The text and vector lanes always weigh equally; a per-type split lost recall on LongMemEval and LoCoMo because the rules misclassify too many queries.
 
-| Type | Trigger Examples | Weight Bias |
-|------|------------------|-------------|
-| Factual | "what is", "who is", "define" | Text lane |
-| Semantic | "how", "why", "explain" | Vector lane |
-| Temporal | "when", "recent", "yesterday" | Timeline lane |
+| Type | Trigger Examples | Effect |
+|------|------------------|--------|
+| Factual | "what is", "who is", "define" | Balanced lanes |
+| Semantic | "how", "why", "explain" | Balanced lanes |
+| Temporal | "when", "recent", "yesterday" | Balanced lanes plus a small recency weight |
 | Exploratory | Default | Balanced lanes |
 
 Classification is fully offline. It does not call network services or external models.

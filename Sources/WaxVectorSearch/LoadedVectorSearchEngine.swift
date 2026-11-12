@@ -58,6 +58,17 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
+    package func storedFrameIds() async -> Set<UInt64> {
+        switch self {
+        case .accelerate(let engine):
+            await engine.storedFrameIds()
+        #if canImport(Metal) && canImport(MetalANNS)
+        case .metalANNS(let engine):
+            await engine.storedFrameIds()
+        #endif
+        }
+    }
+
     package func remove(frameId: UInt64) async throws {
         switch self {
         case .accelerate(let engine):
@@ -80,16 +91,15 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
-    /// `syncedThrough` is the pending-embedding sequence the engine was last synced to;
-    /// an embedding written after that sync leaves the staged index stale, not silently short.
-    package func stageForCommit(into wax: Wax, syncedThrough: UInt64?) async throws {
-        let coverage = StagedVecIndexCoverage.syncedThrough(syncedThrough)
+    /// Records the index's dimension and similarity for the commit, which writes the pending
+    /// vector changes from the WAL.
+    package func stageForCommit(into wax: Wax) async throws {
         switch self {
         case .accelerate(let engine):
-            try await engine.stageForCommit(into: wax, coverage: coverage)
+            try await engine.stageForCommit(into: wax)
         #if canImport(Metal) && canImport(MetalANNS)
         case .metalANNS(let engine):
-            try await engine.stageForCommit(into: wax, coverage: coverage)
+            try await engine.stageForCommit(into: wax)
         #endif
         }
     }
@@ -100,20 +110,30 @@ package enum LoadedVectorSearchEngine: Sendable {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> LoadedVectorSearchEngine {
-        let encoding = try await currentEncoding(for: wax)
+        // Both kinds load the same committed vectors, read (and checksummed) once. The read
+        // starts first because choosing the kind can create the Metal device, about 30 ms the
+        // first time in a process.
+        async let committedRead = wax.readCommittedVectors()
         let projectedCount = try await projectedVectorCount(for: wax, fallbackDimensions: dimensions)
-        let selectedKind = try resolveKind(
-            encoding: encoding,
-            projectedVectorCount: projectedCount,
-            preference: preference
-        )
+        let selectedKind = try resolveKind(projectedVectorCount: projectedCount, preference: preference)
+        let committed = try await committedRead
 
         switch selectedKind {
         case .accelerate:
-            return .accelerate(try await AccelerateVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .accelerate(try await AccelerateVectorEngine.load(
+                from: wax,
+                committed: committed,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #if canImport(Metal) && canImport(MetalANNS)
         case .metalANNS:
-            return .metalANNS(try await MetalANNSVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .metalANNS(try await MetalANNSVectorEngine.load(
+                from: wax,
+                committed: committed,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #endif
         }
     }
@@ -131,53 +151,27 @@ package enum LoadedVectorSearchEngine: Sendable {
             snapshot = await wax.pendingEmbeddingMutations(since: nil)
         }
         let hasPending = snapshot.embeddings.contains { embedding in embedding.dimension == UInt32(queryEmbeddingDimensions) }
-        let hasStaged = await wax.stagedVecIndexStamp() != nil
         let hasCommitted = await wax.committedVecIndexManifest() != nil
-        let hasCommittedOrStaged = hasStaged || hasCommitted
-        guard hasPending || hasCommittedOrStaged else { return nil }
+        guard hasPending || hasCommitted else { return nil }
 
-        let encoding = try await currentEncoding(for: wax)
         let projectedCount = try await projectedVectorCount(
             for: wax,
             fallbackDimensions: queryEmbeddingDimensions,
             pendingSnapshot: snapshot
         )
-        return try resolveKind(
-            encoding: encoding,
-            projectedVectorCount: projectedCount,
-            preference: preference
-        )
+        return try resolveKind(projectedVectorCount: projectedCount, preference: preference)
     }
 
-    package static func currentEncoding(for wax: Wax) async throws -> VectorSerializer.VecEncoding? {
-        if let staged = await wax.readStagedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: staged.bytes)
-        }
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: bytes)
-        }
-        return nil
-    }
-
-    private static func validatedCurrentEncoding(from data: Data) throws -> VectorSerializer.VecEncoding {
-        let encoding = try VectorSerializer.detectEncoding(from: data)
-        guard encoding != .uSearch else {
-            throw WaxError.invalidToc(reason: VectorSerializer.legacyUSearchUnsupportedReason)
-        }
-        return encoding
-    }
-
+    /// Committed vectors plus pending embeddings of `fallbackDimensions`: an upper bound, since
+    /// a pending embedding can replace a committed vector.
     package static func projectedVectorCount(
         for wax: Wax,
         fallbackDimensions: Int,
         pendingSnapshot: PendingEmbeddingSnapshot? = nil
     ) async throws -> Int {
-        var committedOrStaged = 0
-        if let staged = await wax.readStagedVecIndexBytes() {
-            let decoded = try VectorSerializer.decodeVecSegment(from: staged.bytes)
-            committedOrStaged = try segmentVectorCount(for: decoded)
-        } else if let manifest = await wax.committedVecIndexManifest() {
-            committedOrStaged = try checkedVectorCount(
+        var committedCount = 0
+        if let manifest = await wax.committedVecIndexManifest() {
+            committedCount = try checkedVectorCount(
                 manifest.vectorCount,
                 context: "committed vec index manifest"
             )
@@ -195,13 +189,12 @@ package enum LoadedVectorSearchEngine: Sendable {
             }
         }
         return try checkedProjectedVectorCount(
-            committedOrStaged: committedOrStaged,
+            committedOrStaged: committedCount,
             pendingCount: pendingCount
         )
     }
 
     private static func resolveKind(
-        encoding: VectorSerializer.VecEncoding?,
         projectedVectorCount: Int,
         preference: VectorEnginePreference
     ) throws -> Kind {
@@ -225,13 +218,6 @@ package enum LoadedVectorSearchEngine: Sendable {
             }
             #endif
             return .accelerate
-        }
-    }
-
-    private static func segmentVectorCount(for payload: VectorSerializer.VecSegmentPayload) throws -> Int {
-        switch payload {
-        case .metal(let info, _, _):
-            return try checkedVectorCount(info.vectorCount, context: "Metal vec segment")
         }
     }
 

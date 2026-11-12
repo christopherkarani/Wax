@@ -63,21 +63,36 @@ private func miniLMInputTokens(_ text: String, tokenizer: BertTokenizer) -> Int 
             config: config,
             embedder: IdentityEmbedder(model: "MiniLMAll-mean")
         )
-        let tokenizer = try BertTokenizer()
+        var chunked: [(text: String, chunks: [String])] = []
         for text in ChunkCorpus.texts {
             let chunks = await memory.ingestChunks(for: text)
             #expect(chunks.count > 1)
-            for chunk in chunks {
-                let tokens = miniLMInputTokens(chunk, tokenizer: tokenizer)
-                #expect(tokens <= MiniLMChunkSizing.inputTokenLimit, "chunk of \(tokens) tokens: \(chunk.prefix(80))")
-            }
-            // Fitting re-splits; it never drops text.
-            let joined = chunks.joined()
-            for word in Set(ChunkCorpus.words(text)) {
-                #expect(joined.contains(word), "lost \(word)")
-            }
+            chunked.append((text, chunks))
         }
         try await memory.close()
+
+        // Tokenizing and scanning ~15k words is CPU-bound, so it runs on a private queue
+        // rather than holding a cooperative thread.
+        let checked = chunked
+        let problems = try await BlockingWork.run { () throws -> [String] in
+            let tokenizer = try BertTokenizer()
+            var problems: [String] = []
+            for (text, chunks) in checked {
+                for chunk in chunks {
+                    let tokens = miniLMInputTokens(chunk, tokenizer: tokenizer)
+                    if tokens > MiniLMChunkSizing.inputTokenLimit {
+                        problems.append("chunk of \(tokens) tokens: \(chunk.prefix(80))")
+                    }
+                }
+                // Fitting re-splits; it never drops text.
+                let joined = chunks.joined()
+                for word in Set(ChunkCorpus.words(text)) where !joined.contains(word) {
+                    problems.append("lost \(word)")
+                }
+            }
+            return problems
+        }
+        #expect(problems.isEmpty, "\(problems.prefix(10))")
     }
 }
 
@@ -120,7 +135,7 @@ func miniLMVectorSearchFindsAFactPastTheOldChunkWindow() async throws {
         let counter = try await TokenCounter.shared()
         let filler = "The committee reviewed the quarterly budget spreadsheet and approved the travel line items."
         var head: [String] = []
-        while await counter.encode(head.joined(separator: " ")).count < 280 {
+        while counter.encode(head.joined(separator: " ")).count < 280 {
             head.append(filler)
         }
         let fact = "The lighthouse keeper's orange cat is named Biscuit and sleeps on the warm lamp housing."
@@ -174,6 +189,35 @@ func miniLMVectorSearchFindsAFactPastTheOldChunkWindow() async throws {
         #expect(await memory.runtimeStats().embeddingStatus == .loading)
         #expect(await memory.config.chunking == MiniLMChunkSizing.chunking)
         #expect(await memory.config.fitsChunksToMiniLMInput)
+        try await memory.close()
+    }
+}
+
+/// Imports chunk a window of documents concurrently; each text must get exactly the chunks
+/// it gets alone, in input order, for short, empty, multi-chunk and off-thread (long) texts.
+@Test func concurrentChunkingMatchesChunkingEachTextAlone() async throws {
+    try await TempFiles.withTempFile { url in
+        var config = OrchestratorConfig.default
+        config.requireOnDeviceProviders = false
+        let memory = try await MemoryOrchestrator(
+            at: url,
+            config: config,
+            embedder: IdentityEmbedder(model: "MiniLMAll-mean")
+        )
+        var texts: [String] = ["", "short note", "  padded  "]
+        for index in 0..<60 {
+            texts.append("Passage \(index): " + String(repeating: "the quarterly budget review, item \(index). ", count: index % 7 + 1))
+        }
+        texts += ChunkCorpus.texts
+        texts.append("last")
+
+        let together = await memory.ingestChunks(forEach: texts)
+        var alone: [[String]] = []
+        for text in texts {
+            alone.append(await memory.ingestChunks(for: text))
+        }
+        #expect(together == alone)
+        #expect(together.contains { $0.count > 1 })
         try await memory.close()
     }
 }

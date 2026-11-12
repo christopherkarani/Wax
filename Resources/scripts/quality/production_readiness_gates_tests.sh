@@ -120,6 +120,14 @@ assert_accepts_expected_skip \
   'Suite ArcticEmbedderTests skipped: "Set WAX_TEST_ARCTIC=1 to run Arctic embedder tests"'
 
 assert_accepts_expected_skip \
+  "e5-env-gated" \
+  'Suite E5EmbedderTests skipped: "Set WAX_TEST_E5=1 to run e5 embedder tests"'
+
+assert_accepts_expected_skip \
+  "reranker-env-gated" \
+  'Suite MiniLMRerankerInferenceTests skipped: "Set WAX_TEST_RERANKER=1 to run MiniLM reranker inference tests"'
+
+assert_accepts_expected_skip \
   "minilm-env-gated" \
   'Test miniLMEmbedderProducesExpectedDimensions() skipped: "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"'
 
@@ -406,5 +414,41 @@ assert_stability_gate_sets_search_mode \
   "ProductionReadinessStabilityTests.testSoakSmokeStability" \
   "vector" \
   "vector"
+
+assert_lists_unfinished_tests() {
+  local log_file="$TMP_DIR/unfinished.log"
+  printf '%b\n' \
+    '\033[1;39m\xe2\x97\x87 Test run started.\033[0m\r' \
+    '\xe2\x97\x87 Test finishesFine() started.\r' \
+    '\xe2\x97\x87 Test hangsForever() started.' \
+    '\xe2\x97\x87 Test parameterized(value:) started.' \
+    '\xe2\x9c\x94 Test finishesFine() passed after 0.012 seconds.\r' \
+    '\xe2\x9c\x98 Test hangsForever() recorded an issue at A.swift:3:2: passed nothing' \
+    '\xe2\x9c\x98 Test parameterized(value:) failed after 1.0 seconds with 1 issue.' \
+    '\xe2\x97\x87 Test skippedOne() started.' \
+    '\xe2\x9e\x9c Test skippedOne() skipped: "needs a trait"' \
+    '\xe2\x97\x87 Test "Display name" started.' \
+    '\xe2\x97\x87 Test case passing 1 argument value \xe2\x86\x92 nan to "Display name" started.' \
+    '\xe2\x9c\x94 Test "Display name" with 3 test cases passed after 0.5 seconds.' \
+    '\xe2\x97\x87 Test oneCase(x:) started.' \
+    '\xe2\x9c\x98 Test oneCase(x:) with 1 test case failed after 0.5 seconds with 1 issue.' \
+    "Test Case '-[Suite stuckCase]' started." \
+    "Test Case '-[Suite doneCase]' started." \
+    "Test Case '-[Suite doneCase]' passed (0.100 seconds)." \
+    >"$log_file"
+
+  local captured
+  captured="$(unfinished_tests "$log_file")"
+  local expected
+  expected="$(printf '%s\n' 'hangsForever()' '-[Suite stuckCase]')"
+  if [[ "$captured" != "$expected" ]]; then
+    echo "FAIL: unfinished_tests listed the wrong tests" >&2
+    echo "Expected: $expected" >&2
+    echo "Captured: $captured" >&2
+    return 1
+  fi
+}
+
+assert_lists_unfinished_tests
 
 echo "production_readiness_gates_tests: ok"
