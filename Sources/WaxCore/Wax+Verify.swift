@@ -212,32 +212,37 @@ extension Wax {
         var ranges: [DataRange] = []
         ranges.reserveCapacity(frames.count)
 
-        for (offset, frame) in frames.enumerated() {
-            let expected = firstFrameId + UInt64(offset)
-            guard frame.id == expected else {
-                throw WaxError.invalidToc(reason: "frame id not dense: found \(frame.id), expected \(expected)")
+        // Fields are read in place: binding each frame to a local copied and released its
+        // strings, most of this check's time when an open validates 100k frames.
+        for index in frames.indices {
+            let id = frames[index].id
+            let expected = firstFrameId + UInt64(index - frames.startIndex)
+            guard id == expected else {
+                throw WaxError.invalidToc(reason: "frame id not dense: found \(id), expected \(expected)")
             }
-            if frame.checksum.count != 32 {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) checksum must be 32 bytes")
+            if frames[index].checksum.count != 32 {
+                throw WaxError.invalidToc(reason: "frame \(id) checksum must be 32 bytes")
             }
-            if frame.canonicalEncoding != .plain && frame.canonicalLength == nil {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) missing canonical_length")
+            if frames[index].canonicalEncoding != .plain && frames[index].canonicalLength == nil {
+                throw WaxError.invalidToc(reason: "frame \(id) missing canonical_length")
             }
-            if frame.payloadLength > 0 && frame.storedChecksum == nil {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) missing stored_checksum")
+            let payloadLength = frames[index].payloadLength
+            if payloadLength > 0 && frames[index].storedChecksum == nil {
+                throw WaxError.invalidToc(reason: "frame \(id) missing stored_checksum")
             }
-            if frame.payloadLength == 0 { continue }
-            guard frame.payloadOffset >= dataStart else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload below data region")
+            if payloadLength == 0 { continue }
+            let payloadOffset = frames[index].payloadOffset
+            guard payloadOffset >= dataStart else {
+                throw WaxError.invalidToc(reason: "frame \(id) payload below data region")
             }
-            guard frame.payloadOffset <= UInt64.max - frame.payloadLength else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload range overflows")
+            guard payloadOffset <= UInt64.max - payloadLength else {
+                throw WaxError.invalidToc(reason: "frame \(id) payload range overflows")
             }
-            let end = frame.payloadOffset + frame.payloadLength
+            let end = payloadOffset + payloadLength
             guard end <= dataEnd else {
-                throw WaxError.invalidToc(reason: "frame \(frame.id) payload exceeds data end")
+                throw WaxError.invalidToc(reason: "frame \(id) payload exceeds data end")
             }
-            ranges.append(DataRange(start: frame.payloadOffset, end: end, owner: .frame(frame.id)))
+            ranges.append(DataRange(start: payloadOffset, end: end, owner: .frame(id)))
         }
 
         return ranges
