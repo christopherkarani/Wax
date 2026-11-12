@@ -5,19 +5,27 @@ import Testing
 /// A TOC above the parallel-decode threshold, so the overlapped decode also fans out.
 private func largeToc() -> WaxTOC {
     var toc = WaxTOC.emptyV1()
-    toc.frames = (0..<(WaxTOC.parallelFrameDecodeThreshold + 7)).map { index in
-        FrameMeta(
-            id: UInt64(index),
-            timestamp: 1_700_000_000_000 + Int64(index),
-            payloadOffset: 9_216 + UInt64(index) * 16,
+    var frames: [FrameMeta] = []
+    for index in 0..<(WaxTOC.parallelFrameDecodeThreshold + 7) {
+        let id = UInt64(index)
+        let timestamp: Int64 = 1_700_000_000_000 + Int64(index)
+        let payloadOffset: UInt64 = 9_216 + id * 16
+        let checksum = Data(repeating: UInt8(index % 251), count: 32)
+        let metadata = Metadata(["doc_id": String(index)])
+        let frame = FrameMeta(
+            id: id,
+            timestamp: timestamp,
+            payloadOffset: payloadOffset,
             payloadLength: 16,
-            checksum: Data(repeating: UInt8(index % 251), count: 32),
+            checksum: checksum,
             canonicalEncoding: .plain,
             storedChecksum: Data(repeating: 0xBB, count: 32),
-            metadata: Metadata(["doc_id": "\(index)"]),
+            metadata: metadata,
             searchText: "passage \(index)"
         )
+        frames.append(frame)
     }
+    toc.frames = frames
     return toc
 }
 
