@@ -13,7 +13,7 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | LongMemEval-S retrieval | R_all@5 / NDCG@10 | **0.938 / 0.950** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker); 0.905 / 0.926 without the reranker | Contriever 0.902 / 0.927 | 0.742 / – |
 | LongMemEval-S QA | accuracy, mean of 3 runs | **89.4%** (hybrid, e5-small-v2, text weight 0.4, MiniLM reranker, top 5); task-averaged 90.2% | Contriever top 5: 87.7%; task-averaged 90.0% | 83.0% (vector, top 5) |
 | Systems, 100k passages | vector recall@10 | **0.998** | Chroma HNSW 0.976 | 0.902 |
-| Systems, 100k passages | ingest | 13,826 docs/s with `importDocuments`; 9,674 saving one at a time | sqlite-vec 43,584; FAISS flat 484k (vectors only); Chroma 2,541 | 136 docs/s |
+| Systems, 100k passages | ingest | 25,600 docs/s with `importDocuments`; 9,674 saving one at a time | sqlite-vec 43,584; FAISS flat 484k (vectors only); Chroma 2,541 | 136 docs/s |
 | Systems, 100k passages | disk | 308 MB with `importDocuments`; 417 MB saving one at a time | Chroma 408 MB (text + vectors) | 13.5 GB |
 | Systems, 100k passages | vector p50 / p95 | **1.09** / 1.57 ms | Chroma HNSW 1.13 / 1.41 ms; FAISS flat 1.40 / 1.46 ms | 64–97 ms (p95) |
 | Systems, 100k passages | cold open + first query | **225 ms** | Chroma HNSW 511 ms | 840 ms |
@@ -240,7 +240,7 @@ metadata; most competitors store vectors only.
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
 | Wax `save` | 100,000 | 9,674 | 417 | 225 | 1.09 / 1.57 | 0.998 |
-| Wax `importDocuments` | 100,000 | 13,826 | 308 | – | – | 0.998 |
+| Wax `importDocuments` | 100,000 | 25,600 | 308 | 250 | 1.08 / 1.55 | 0.998 |
 | Chroma HNSW | 100,000 | 2,541 | 408 | 511 | 1.13 / 1.41 | 0.976 |
 | sqlite-vec | 100,000 | 43,584 | 192 | 27 | 24.8 / 26.2 | 1.000 |
 | usearch HNSW | 100,000 | 16,738 | 168 | 62 | 0.27 / 0.34 | 0.966 |
@@ -249,8 +249,10 @@ metadata; most competitors store vectors only.
 
 The 100k rows for Wax `save`, Chroma, sqlite-vec, usearch and FAISS flat were rerun
 together on 2026-11-11 at `7f857833c`, load average 5–12: Wax figures are medians of three
-fresh ingest-and-query passes, competitor figures are single runs. The `importDocuments`,
-LanceDB and 10k rows are from the earlier runs at load average 30–125. Wax hybrid search
+fresh ingest-and-query passes, competitor figures are single runs. The `importDocuments` row
+is the median of three fresh imports on 2026-11-12 at `10adbf254`, load average 5 (it
+showed 13,826 docs/s from a run at load average 30–125). The LanceDB and 10k rows are from
+the earlier runs at load average 30–125. Wax hybrid search
 (text and vector lanes fused) at 100k: p50 4.6 ms, p95 14.8 ms, p99 18.9 ms (before
 `386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9). Wax cold open was
 measured again on 2026-11-12 at `17cd222e0`: median of five query passes over the same 100k
@@ -388,8 +390,9 @@ Fixes on the branch, each with tests:
    separate inverted index.
 3. **Ingest against bulk-loading stores.** Commits now write text-index and vector deltas,
    but still rewrite and hash the whole table of contents (about 15% of commit work at
-   100k). Wax ingests 9,674 docs/s saving one at a time and 13,826 with `importDocuments`,
-   against 17k–484k for the vector-only stores. Wax was not run at 1M.
+   100k). Wax ingests 9,674 docs/s saving one at a time and 25,600 with `importDocuments`,
+   ahead of usearch (16,738) and LanceDB (22,584) but behind sqlite-vec (43,584) and FAISS
+   flat (484k), which store vectors only. Wax was not run at 1M.
 4. **Cold open** is 225 ms at 100k, ahead of Chroma's 511 ms but still behind the
    vector-only stores (27–62 ms). What remains is mostly the table-of-contents decode
    (about 55 ms, much of it each frame's search text, which the TOC holds) and its
