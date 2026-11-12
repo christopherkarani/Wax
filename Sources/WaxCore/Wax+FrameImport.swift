@@ -86,11 +86,13 @@ extension Wax {
                 let range = startOffset..<(startOffset + totalBytes)
                 do {
                     try await io.run {
-                        var offset = startOffset
+                        // One write per batch: a pwrite per payload was 100k system calls
+                        // for a 100k import, and the batch's bytes are only kilobytes each.
+                        var joined = Data(capacity: Int(totalBytes))
                         for content in contents {
-                            try file.writeAll(content, at: offset)
-                            offset += UInt64(content.count)
+                            joined.append(content)
                         }
+                        try file.writeAll(joined, at: startOffset)
                     }
                 } catch {
                     dataSpace.free.release(range)
