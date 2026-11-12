@@ -22,7 +22,7 @@ extension MemoryOrchestrator {
 
     /// Everything an import adds, gathered across its windows.
     private struct ImportAdditions {
-        /// Text of the new searchable frames: indexed at the commit, then enriched.
+        /// Text of the new searchable frames: indexed window by window, then enriched.
         var texts: [(frameId: UInt64, text: String)] = []
         /// Text of stored documents the import indexes because their index entry is missing.
         var repairTexts: [(frameId: UInt64, text: String)] = []
@@ -74,8 +74,9 @@ extension MemoryOrchestrator {
                     binding = embedder.identity.map { MemoryBindingCompatibility.binding(from: $0) }
                 }
             }
+            // The new frames' text was indexed as the windows were written.
             try await session.commitFrameImport(
-                texts: additions.repairTexts + additions.texts,
+                texts: additions.repairTexts,
                 hasVectors: additions.hasVectors,
                 memoryBinding: binding
             )
@@ -83,6 +84,7 @@ extension MemoryOrchestrator {
                 markMemoryBindingEnsured()
             }
         } catch {
+            await session.abandonImportTextIndexing()
             await wax.abandonFrameImport()
             throw error
         }
@@ -118,9 +120,45 @@ extension MemoryOrchestrator {
 
     /// Plans, embeds and writes the documents window by window into the open import, and
     /// returns one frame ID per document.
+    ///
+    /// Each window's text is indexed, in order, while the next window is planned and
+    /// written: at 100k documents that indexing took about a second of the commit. Text
+    /// searches wait from the first window's indexing to the end of the commit.
     private func writeImport(
         _ documents: [(text: String, metadata: [String: String])],
         additions: inout ImportAdditions
+    ) async throws -> [UInt64] {
+        let (windowTexts, indexing) = AsyncStream.makeStream(of: [(frameId: UInt64, text: String)].self)
+        let session = self.session
+        return try await withThrowingTaskGroup(of: Int.self) { (group: inout ThrowingTaskGroup<Int, any Error>) -> [UInt64] in
+            group.addTask {
+                var indexed = 0
+                for await batch in windowTexts {
+                    try await session.indexImportTexts(
+                        frameIds: batch.map(\.frameId),
+                        texts: batch.map(\.text)
+                    )
+                    indexed += batch.count
+                }
+                return indexed
+            }
+            // On a throw the indexing task ends after its current batch, which
+            // `abandonImportTextIndexing` then removes with the rest.
+            defer { indexing.finish() }
+            let ids = try await writeImportWindows(documents, additions: &additions, indexing: indexing)
+            indexing.finish()
+            let indexed = try await group.next() ?? 0
+            // A cancelled task stops reading the stream without an error; committing then
+            // would publish frames whose text is not indexed.
+            guard indexed == additions.texts.count else { throw CancellationError() }
+            return ids
+        }
+    }
+
+    private func writeImportWindows(
+        _ documents: [(text: String, metadata: [String: String])],
+        additions: inout ImportAdditions,
+        indexing: AsyncStream<[(frameId: UInt64, text: String)]>.Continuation
     ) async throws -> [UInt64] {
         let attached = readyEmbedderSnapshot
         let embedder = config.enableVectorSearch ? attached : nil
@@ -147,6 +185,7 @@ extension MemoryOrchestrator {
                 )
                 ids.append(id)
             }
+            let indexedBefore = additions.texts.count
             try await writeImportWindow(
                 frames,
                 firstFrameId: nextFrameId,
@@ -154,6 +193,7 @@ extension MemoryOrchestrator {
                 embedder: embedder,
                 additions: &additions
             )
+            indexing.yield(Array(additions.texts[indexedBefore...]))
             nextFrameId += UInt64(frames.count)
         }
         return ids

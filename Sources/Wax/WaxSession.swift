@@ -68,6 +68,16 @@ package actor WaxSession {
     private var frameImportCommitHookForTesting: (@Sendable () async -> Void)?
     /// Thrown instead of loading a committed import's vectors into the engine, once.
     private var frameImportVectorLoadFaultForTesting: (any Error)?
+    /// Text an open frame import indexed before its commit, and the hold on text searches
+    /// that keeps it unseen; `nil` when there is none.
+    private var importTextIndexing: ImportTextIndexing?
+
+    private struct ImportTextIndexing {
+        /// The text index's coverage watermark before the first early batch, restored if the
+        /// import does not commit.
+        let coverage: UInt64
+        var frameIds: [UInt64]
+    }
     /// `concreteVectorEngine` misses committed vectors: a frame import's failed to load.
     private var vectorEngineNeedsReload = false
 
@@ -500,33 +510,67 @@ package actor WaxSession {
 
     // MARK: - Frame import
 
+    /// Indexes text of the open frame import's frames before its commit, so the indexing runs
+    /// while the import writes more frames. The first call holds text searches until
+    /// ``commitFrameImport(texts:hasVectors:memoryBinding:)`` or
+    /// ``abandonImportTextIndexing()`` ends the import's indexing; searches already running
+    /// finish first. Does nothing when text search is off.
+    package func indexImportTexts(frameIds: [UInt64], texts: [String]) async throws {
+        guard config.enableTextSearch, let textEngine, !frameIds.isEmpty else { return }
+        try ensureWritable()
+        if importTextIndexing == nil {
+            let coverage = await textEngine.coverageWatermark()
+            await textEngine.holdSearches()
+            importTextIndexing = ImportTextIndexing(coverage: coverage, frameIds: [])
+        }
+        // Recorded first, so a batch that throws partway is removed again too.
+        importTextIndexing?.frameIds += frameIds
+        try await textEngine.indexBatch(frameIds: frameIds, texts: texts)
+    }
+
+    /// Removes the text ``indexImportTexts(frameIds:texts:)`` indexed for an import that will
+    /// not commit, restores the text index's coverage and lets searches run again.
+    package func abandonImportTextIndexing() async {
+        guard let indexing = importTextIndexing else { return }
+        importTextIndexing = nil
+        guard let textEngine else { return }
+        await Self.unindex(indexing.frameIds, from: textEngine)
+        await textEngine.lowerCoverage(to: indexing.coverage)
+        await textEngine.releaseSearches()
+    }
+
     /// Commits the store's open frame import (``Wax/beginFrameImport()``): indexes `texts`,
     /// stages the text index and, when `hasVectors`, the vector index configuration, commits,
-    /// then adds the committed vectors to the vector engine. If a step throws, `texts` leave
-    /// the text index again and the import stays open for the caller to abandon.
+    /// then adds the committed vectors to the vector engine. If a step throws, `texts` and any
+    /// text indexed early leave the text index again and the import stays open for the
+    /// caller to abandon.
     ///
-    /// Text searches wait from the indexing to the end of the store commit, so none ranks a
-    /// frame readers cannot see yet. If loading the vectors into the engine fails after the
-    /// commit, the next vector search reloads the engine from the store.
+    /// Text searches wait from the indexing (the first early batch, if any) to the end of the
+    /// store commit, so none ranks a frame readers cannot see yet. If loading the vectors into
+    /// the engine fails after the commit, the next vector search reloads the engine from the
+    /// store.
     package func commitFrameImport(
         texts: [(frameId: UInt64, text: String)],
         hasVectors: Bool,
         memoryBinding: MemoryBinding?
     ) async throws {
         try ensureWritable()
+        let early = importTextIndexing
+        importTextIndexing = nil
         await textEngine?.holdSearches()
         let embeddings: [PutEmbedding]
         do {
             embeddings = try await commitFrameImportHoldingSearches(
                 texts: texts,
+                earlyIndexing: early,
                 hasVectors: hasVectors,
                 memoryBinding: memoryBinding
             )
         } catch {
-            await textEngine?.releaseSearches()
+            await releaseImportSearchHolds(early: early)
             throw error
         }
-        await textEngine?.releaseSearches()
+        await releaseImportSearchHolds(early: early)
         guard !embeddings.isEmpty, let concreteVectorEngine else { return }
         do {
             if let fault = frameImportVectorLoadFaultForTesting {
@@ -547,13 +591,27 @@ package actor WaxSession {
         }
     }
 
+    /// Ends the commit's hold on text searches and the early indexing's, if there was one.
+    private func releaseImportSearchHolds(early: ImportTextIndexing?) async {
+        await textEngine?.releaseSearches()
+        if early != nil {
+            await textEngine?.releaseSearches()
+        }
+    }
+
     private func commitFrameImportHoldingSearches(
         texts: [(frameId: UInt64, text: String)],
+        earlyIndexing: ImportTextIndexing?,
         hasVectors: Bool,
         memoryBinding: MemoryBinding?
     ) async throws -> [PutEmbedding] {
         let indexesTexts = config.enableTextSearch && !texts.isEmpty
-        let coverage = await textEngine?.coverageWatermark()
+        let coverage: UInt64?
+        if let earlyIndexing {
+            coverage = earlyIndexing.coverage
+        } else {
+            coverage = await textEngine?.coverageWatermark()
+        }
         do {
             if indexesTexts, let textEngine {
                 try await textEngine.indexBatch(frameIds: texts.map(\.frameId), texts: texts.map(\.text))
@@ -569,8 +627,9 @@ package actor WaxSession {
             return try await wax.commitFrameImport(memoryBinding: memoryBinding)
         } catch {
             if let textEngine {
-                if indexesTexts {
-                    await Self.unindex(texts.map(\.frameId), from: textEngine)
+                let unindexed = (indexesTexts ? texts.map(\.frameId) : []) + (earlyIndexing?.frameIds ?? [])
+                if !unindexed.isEmpty {
+                    await Self.unindex(unindexed, from: textEngine)
                 }
                 if let coverage {
                     await textEngine.lowerCoverage(to: coverage)
