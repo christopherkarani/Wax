@@ -231,8 +231,8 @@ public actor Memory {
     /// Saves what ``save(contentsOf:)`` would: the same frames, chunks, vectors and text
     /// index entries, so searches return the same results. Instead of writing through the
     /// write-ahead log and committing every few thousand documents, it writes each document
-    /// straight to the store, embeds in batches of ``Config/ingestBatchSize``, and adds
-    /// everything to the text and vector indexes in a single commit at the end.
+    /// straight to the store, embeds in batches of ``Config/ingestBatchSize``, indexes its
+    /// text while it writes, and publishes everything in a single commit at the end.
     ///
     /// - Returns: One frame ID per document, in input order: what calling
     ///   ``save(_:metadata:)`` for each document in turn would return, including the
@@ -244,7 +244,8 @@ public actor Memory {
     ///
     /// It first commits pending saves, as ``flush()`` would. While it runs, other saves,
     /// deletes and flushes on this store wait and then run after it. Searches see the store as
-    /// it was before the import; text and hybrid searches wait while the final commit runs.
+    /// it was before the import. Text and hybrid searches wait from the end of its first
+    /// batch of 1,024 documents until the commit, while its text is indexed.
     ///
     /// Memory: until the commit, it holds every new frame's record (with its text and
     /// metadata) and every vector, about `4 × dimensions` bytes per searchable frame. For

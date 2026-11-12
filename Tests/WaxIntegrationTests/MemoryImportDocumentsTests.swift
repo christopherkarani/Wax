@@ -435,3 +435,85 @@ private actor Flag {
         try await memory.close()
     }
 }
+
+/// Cancelling an import, even after its first window's text was indexed, never commits
+/// frames whose text is missing from the text index: it either throws and leaves the store
+/// as it was, or commits with every frame's text searchable.
+@Test(.timeLimit(.minutes(1)))
+func aCancelledImportNeverCommitsFramesWithoutTheirText() async throws {
+    try await TempFiles.withTempFile { url in
+        let marker = "quokkaferry"
+        let embedder = GatedEmbedder(dimensions: Import.dimensions, marker: marker)
+        let memory = try await Memory(at: url, config: Memory.Config(embedding: .custom(embedder)))
+        let seedId = try await memory.save("Seed note about lighthouses.")
+        try await memory.flush()
+
+        // The first 1,024-document window is written and its text indexed; the second
+        // window's embedding parks until the import task is cancelled.
+        let tailCount = 76
+        var documents: [Import.Document] = []
+        for index in 0..<1_024 {
+            documents.append((Import.passage(index), ["row": String(index)]))
+        }
+        for index in 0..<tailCount {
+            documents.append(("\(marker) \(Import.passage(1_024 + index))", ["row": String(1_024 + index)]))
+        }
+        let batch = documents
+        let importTask = Task { () async throws -> [UInt64] in
+            try await memory.importDocuments(batch)
+        }
+        await embedder.waitUntilParked()
+        importTask.cancel()
+        await embedder.release()
+        let outcome: Result<[UInt64], any Error> = await importTask.result
+
+        let frameCount = await memory.stats().frameCount
+        let tail = try await memory.search(marker, options: .init(topK: 200, mode: .textOnly))
+        switch outcome {
+        case .success(let ids):
+            #expect(ids.count == documents.count)
+            #expect(tail.items.count == tailCount, "every committed tail frame is text-searchable")
+        case .failure:
+            #expect(frameCount == 1, "a failed import leaves the store as it was")
+            #expect(tail.items.isEmpty)
+            let seed = try await memory.search("lighthouses", options: .init(topK: 5, mode: .textOnly))
+            #expect(seed.items.first?.frameId == seedId)
+        }
+        try await memory.close()
+    }
+}
+
+/// A text-only import made from a cancelled task embeds nothing that would notice the
+/// cancellation; it still never commits frames whose text is not indexed.
+@Test(.timeLimit(.minutes(1)))
+func aTextOnlyImportFromACancelledTaskNeverCommitsFramesWithoutTheirText() async throws {
+    try await TempFiles.withTempFile { url in
+        let memory = try await Memory(at: url, config: Memory.Config(enableVectorSearch: false))
+        _ = try await memory.save("Seed note about lighthouses.")
+        try await memory.flush()
+
+        let marker = "quokkaferry"
+        let count = 1_100
+        var documents: [Import.Document] = []
+        for index in 0..<count {
+            documents.append(("\(marker) \(Import.passage(index))", ["row": String(index)]))
+        }
+        let batch = documents
+        let importTask = Task { () async throws -> [UInt64] in
+            withUnsafeCurrentTask { (task: UnsafeCurrentTask?) in task?.cancel() }
+            return try await memory.importDocuments(batch)
+        }
+        let outcome: Result<[UInt64], any Error> = await importTask.result
+
+        let frameCount = await memory.stats().frameCount
+        let hits = try await memory.search(marker, options: .init(topK: 2_000, mode: .textOnly))
+        switch outcome {
+        case .success:
+            #expect(hits.items.count == count, "every committed frame is text-searchable")
+        case .failure:
+            #expect(frameCount == 1, "a failed import leaves the store as it was")
+            #expect(hits.items.isEmpty)
+        }
+        try await memory.close()
+    }
+}

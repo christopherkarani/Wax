@@ -76,6 +76,82 @@ private struct VectorLoadFault: Error {}
     }
 }
 
+/// An import's text indexed before its commit (window by window) stays out of search results
+/// until the store commit publishes the frames: searches started after it was indexed wait.
+@Test func importTextIndexedBeforeTheCommitStaysUnseenUntilTheCommit() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let session = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+        let seedText = "a lighthouse keeper's notes"
+        let seed = try await session.put(Data(seedText.utf8), options: SessionImport.options(seedText))
+        try await session.indexText(frameId: seed, text: seedText)
+        try await session.commit()
+
+        #expect(try await wax.beginFrameImport())
+        let texts: [String] = (0..<300).map { (index: Int) -> String in "lighthouse lighthouse beacon \(index)" }
+        let ids = try await wax.importFrames(
+            texts.map { (text: String) -> Data in Data(text.utf8) },
+            options: texts.map(SessionImport.options)
+        )
+        try await session.indexImportTexts(frameIds: Array(ids.prefix(150)), texts: Array(texts.prefix(150)))
+        try await session.indexImportTexts(frameIds: Array(ids.dropFirst(150)), texts: Array(texts.dropFirst(150)))
+
+        let search = Task { () async throws -> (hits: [UInt64], committedFrames: UInt64) in
+            let hits = try await session.searchText(query: "lighthouse", topK: 50)
+            let committed = await wax.stats().frameCount
+            return (hits.map(\.frameId), committed)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        try await session.commitFrameImport(texts: [], hasVectors: false, memoryBinding: nil)
+
+        let observed = try await search.value
+        #expect(observed.committedFrames == 301, "the search waited for the commit")
+        #expect(observed.hits.count == 50)
+        let all = try await session.searchText(query: "beacon", topK: 400)
+        #expect(Set(all.map(\.frameId)) == Set(ids))
+        try await wax.close()
+    }
+}
+
+/// Abandoning an import removes the text it indexed before its commit and lets searches run.
+@Test(.timeLimit(.minutes(1)))
+func abandoningAnImportRemovesTheTextItIndexedEarly() async throws {
+    try await TempFiles.withTempFile { url in
+        let wax = try await Wax.create(at: url)
+        let session = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
+        let seedText = "a lighthouse keeper's notes"
+        let seed = try await session.put(Data(seedText.utf8), options: SessionImport.options(seedText))
+        try await session.indexText(frameId: seed, text: seedText)
+        try await session.commit()
+
+        #expect(try await wax.beginFrameImport())
+        let texts: [String] = (0..<40).map { (index: Int) -> String in "lighthouse beacon \(index)" }
+        let ids = try await wax.importFrames(
+            texts.map { (text: String) -> Data in Data(text.utf8) },
+            options: texts.map(SessionImport.options)
+        )
+        try await session.indexImportTexts(frameIds: ids, texts: texts)
+        await session.abandonImportTextIndexing()
+        await wax.abandonFrameImport()
+
+        let hits = try await session.searchText(query: "lighthouse", topK: 50)
+        #expect(hits.map(\.frameId) == [seed])
+        #expect(try await session.searchText(query: "beacon", topK: 50).isEmpty)
+
+        // The same frame ids index and commit again.
+        #expect(try await wax.beginFrameImport())
+        let again = try await wax.importFrames(
+            texts.map { (text: String) -> Data in Data(text.utf8) },
+            options: texts.map(SessionImport.options)
+        )
+        #expect(again == ids)
+        try await session.indexImportTexts(frameIds: again, texts: texts)
+        try await session.commitFrameImport(texts: [], hasVectors: false, memoryBinding: nil)
+        #expect(try await session.searchText(query: "beacon", topK: 50).count == 40)
+        try await wax.close()
+    }
+}
+
 @Test func importVectorsReachSearchWhenLoadingThemIntoTheEngineFails() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
