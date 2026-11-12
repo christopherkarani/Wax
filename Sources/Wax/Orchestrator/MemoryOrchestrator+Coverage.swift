@@ -101,8 +101,7 @@ extension MemoryOrchestrator {
     /// Internal only because of the file split.
     static func vectorCoverageDegradedReason(in wax: Wax, loadedFrameIds: Set<UInt64>?) async -> String? {
         if let loadedFrameIds {
-            let sources = await wax.activeSurrogateSourceFrames()
-            return sources.allSatisfy { loadedFrameIds.contains($0.id) } ? nil : missingVectorsReason
+            return await wax.activeSurrogateSourcesAreCovered(by: loadedFrameIds) ? nil : missingVectorsReason
         }
         do {
             return try await unembeddedLiveSources(in: wax, cached: nil).sources.isEmpty

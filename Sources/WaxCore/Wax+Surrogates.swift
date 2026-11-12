@@ -13,15 +13,31 @@ package struct SurrogateSourceFrame: Equatable, Sendable {
 extension Wax {
     package func activeSurrogateSourceFrames() async -> [SurrogateSourceFrame] {
         await withReadLock {
+            let frames = toc.frames
             var sources: [SurrogateSourceFrame] = []
-            sources.reserveCapacity(toc.frames.count)
+            sources.reserveCapacity(frames.count)
 
-            for frame in toc.frames where Self.isLiveSurrogateSource(frame) {
-                guard let searchText = Self.embeddableText(of: frame) else { continue }
-                sources.append(.init(id: frame.id, searchText: searchText))
+            for index in frames.indices where Self.isLiveSurrogateSource(frames, at: index) {
+                guard let searchText = Self.embeddableText(of: frames[index]) else { continue }
+                sources.append(.init(id: frames[index].id, searchText: searchText))
             }
 
             return sources
+        }
+    }
+
+    /// Whether every live surrogate source with embeddable text is in `frameIds`, as
+    /// `activeSurrogateSourceFrames()` would tell: the open's coverage check. Only a frame
+    /// missing from `frameIds` has its text read; collecting the sources of a 100k store
+    /// took about 8 ms of its open.
+    package func activeSurrogateSourcesAreCovered(by frameIds: Set<UInt64>) async -> Bool {
+        await withReadLock {
+            let frames = toc.frames
+            for index in frames.indices where Self.isLiveSurrogateSource(frames, at: index) {
+                guard !frameIds.contains(frames[index].id) else { continue }
+                if Self.embeddableText(of: frames[index]) != nil { return false }
+            }
+            return true
         }
     }
 
@@ -39,7 +55,9 @@ extension Wax {
             for id in frameIds.lowerBound..<upper {
                 let frame = toc.frames[Int(id)]
                 guard frame.status != .deleted, frame.role != .system else { continue }
-                guard embeddedFrameIds.contains(id) || Self.isLiveSurrogateSource(frame) else { continue }
+                guard embeddedFrameIds.contains(id) || Self.isLiveSurrogateSource(toc.frames, at: Int(id)) else {
+                    continue
+                }
                 // Every vector-writing path embeds `searchText`; a frame without one has
                 // nothing to re-embed from.
                 guard let searchText = Self.embeddableText(of: frame) else { continue }
@@ -49,13 +67,16 @@ extension Wax {
         }
     }
 
-    private static func isLiveSurrogateSource(_ frame: FrameMeta) -> Bool {
-        guard frame.status == .active, frame.supersededBy == nil else { return false }
+    /// Fields are read in place: binding each of 100k frames to a local copies and releases
+    /// its strings.
+    private static func isLiveSurrogateSource(_ frames: [FrameMeta], at index: Int) -> Bool {
+        guard frames[index].status == .active, frames[index].supersededBy == nil else { return false }
         // Single-chunk remember writes only a searchable document.
         // Corpus ingest already does the same. Chunks stay the
         // multi-chunk source.
-        guard frame.role == .chunk || frame.role == .document else { return false }
-        return frame.kind != "surrogate"
+        let role = frames[index].role
+        guard role == .chunk || role == .document else { return false }
+        return frames[index].kind != "surrogate"
     }
 
     private static func embeddableText(of frame: FrameMeta) -> String? {

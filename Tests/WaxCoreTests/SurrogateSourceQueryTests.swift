@@ -109,3 +109,39 @@ func activeSurrogateSourceFramesTrimsPaddedText() async throws {
 
     try await wax.close()
 }
+
+/// The open's coverage check answers what `activeSurrogateSourceFrames()` would: whether
+/// every live source with embeddable text is in the set. Frames that are not sources (a
+/// system frame, whitespace-only text, a surrogate, a superseded or deleted frame) never
+/// need a vector.
+@Test
+func activeSurrogateSourcesAreCoveredMatchesTheSourceList() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let wax = try await Wax.create(at: url)
+    let document = try await wax.put(Data("d".utf8), options: FrameMetaSubset(role: .document, searchText: "document"))
+    let chunk = try await wax.put(Data("c".utf8), options: FrameMetaSubset(role: .chunk, searchText: "chunk"))
+    let system = try await wax.put(Data("s".utf8), options: FrameMetaSubset(role: .system, searchText: "system"))
+    let blank = try await wax.put(Data("b".utf8), options: FrameMetaSubset(role: .chunk, searchText: " \n "))
+    let surrogate = try await wax.put(
+        Data("g".utf8), options: FrameMetaSubset(kind: "surrogate", role: .chunk, searchText: "surrogate")
+    )
+    let superseded = try await wax.put(Data("o".utf8), options: FrameMetaSubset(role: .chunk, searchText: "old"))
+    let replacement = try await wax.put(Data("n".utf8), options: FrameMetaSubset(role: .chunk, searchText: "new"))
+    try await wax.supersede(supersededId: superseded, supersedingId: replacement)
+    let deleted = try await wax.put(Data("x".utf8), options: FrameMetaSubset(role: .chunk, searchText: "gone"))
+    try await wax.delete(frameId: deleted)
+    try await wax.commit()
+
+    let sources = Set(await wax.activeSurrogateSourceFrames().map(\.id))
+    #expect(sources == [document, chunk, replacement])
+    #expect(await wax.activeSurrogateSourcesAreCovered(by: sources))
+    #expect(await wax.activeSurrogateSourcesAreCovered(by: sources.union([system, blank, surrogate, superseded, deleted])))
+    for missing in sources {
+        #expect(await wax.activeSurrogateSourcesAreCovered(by: sources.subtracting([missing])) == false)
+    }
+    #expect(await wax.activeSurrogateSourcesAreCovered(by: [system, blank, surrogate, superseded, deleted]) == false)
+
+    try await wax.close()
+}
