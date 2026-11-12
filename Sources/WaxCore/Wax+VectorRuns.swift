@@ -24,6 +24,24 @@ package struct CommittedVectors: Equatable, Sendable {
         self.vectors = vectors
         self.droppedNonFiniteRowCount = droppedNonFiniteRowCount
     }
+
+    /// Whether every value is finite; `values.allSatisfy(\.isFinite)`, without the early exit
+    /// that keeps that loop scalar. A float is NaN or infinite exactly when its exponent bits
+    /// are all ones, so the maximum of the masked exponents decides. About 2 ms against 12 ms
+    /// for the 38.4M floats of 100k 384-dimension rows, which every open checks.
+    package static func allFinite(_ values: [Float]) -> Bool {
+        let exponentMask: UInt32 = 0x7F80_0000
+        let largestExponent: UInt32 = values.withUnsafeBufferPointer { (floats: UnsafeBufferPointer<Float>) -> UInt32 in
+            floats.withMemoryRebound(to: UInt32.self) { (words: UnsafeBufferPointer<UInt32>) -> UInt32 in
+                var largest: UInt32 = 0
+                for word in words {
+                    largest = max(largest, word & exponentMask)
+                }
+                return largest
+            }
+        }
+        return largestExponent != exponentMask
+    }
 }
 
 /// The dimension and similarity a store's vectors are indexed with.
@@ -567,7 +585,7 @@ extension Wax {
     }
 
     private static func droppingNonFiniteRows(_ vectors: CommittedVectors) -> CommittedVectors {
-        guard !vectors.vectors.allSatisfy(\.isFinite) else { return vectors }
+        guard !CommittedVectors.allFinite(vectors.vectors) else { return vectors }
         let dimension = Int(vectors.dimension)
         var kept = vectors
         kept.frameIds = []

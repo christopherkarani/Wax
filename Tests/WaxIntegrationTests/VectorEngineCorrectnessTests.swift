@@ -777,6 +777,27 @@ private func expectNaNRowDropped(_ wax: Wax, sourceLocation: SourceLocation = #_
     #expect(committed.vectors.allSatisfy { $0.isFinite }, sourceLocation: sourceLocation)
 }
 
+@Test func allFiniteAgreesWithIsFiniteAtEveryPosition() {
+    let edges: [Float] = [
+        .nan, -.nan, .signalingNaN, .infinity, -.infinity,
+        .greatestFiniteMagnitude, -.greatestFiniteMagnitude,
+        .leastNonzeroMagnitude, .leastNormalMagnitude, 0, -0, 1,
+    ]
+    #expect(CommittedVectors.allFinite([]))
+    for count in [1, 15, 16, 17, 100] {
+        for position in Set([0, count / 2, count - 1]) {
+            for edge in edges {
+                var values = [Float](repeating: 0.25, count: count)
+                values[position] = edge
+                #expect(
+                    CommittedVectors.allFinite(values) == edge.isFinite,
+                    "count \(count), position \(position), value \(edge)"
+                )
+            }
+        }
+    }
+}
+
 @Test func vectorSerializerDropsNonFiniteRowsAndReportsCount() throws {
     let decoded = try VectorSerializer.decodeVecSegment(from: try segmentWithNaNRow())
     guard case .metal(let info, let vectors, let frameIds) = decoded else {
