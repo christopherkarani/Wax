@@ -344,7 +344,7 @@ struct BrokerCommandDecodeTests {
     }
 
     @Test
-    func hybridWithoutAlphaUsesCanonicalDefault() throws {
+    func hybridWithoutAlphaLeavesTheWeightToTheStore() throws {
         let recall = try BrokerCommand.decode(
             command: "recall",
             arguments: [
@@ -356,7 +356,7 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected recall")
             return
         }
-        #expect(recallPayload.mode == .hybrid(alpha: 0.5))
+        #expect(recallPayload.mode == .hybrid(alpha: nil))
 
         let search = try BrokerCommand.decode(
             command: "search",
@@ -369,8 +369,7 @@ struct BrokerCommandDecodeTests {
             Issue.record("expected search")
             return
         }
-        #expect(searchPayload.mode == .hybrid(alpha: 0.5))
-        #expect(searchPayload.mode.diagnosticsSummary == "hybrid(alpha=0.500)")
+        #expect(searchPayload.mode == .hybrid(alpha: nil))
     }
 
     @Test

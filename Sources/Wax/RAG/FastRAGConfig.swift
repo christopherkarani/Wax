@@ -95,7 +95,13 @@ package struct FastRAGConfig: Sendable, Equatable {
 
     /// Search parameters used to collect candidates.
     package var searchTopK: Int = 24
-    package var searchMode: SearchMode = .hybrid(alpha: 0.5)
+    /// Mode for recalls that name none. Unset reads as `.hybrid()`, and `MemoryOrchestrator`
+    /// searches it as hybrid at the store's default text weight (``HybridTextWeight``).
+    package var searchMode: SearchMode {
+        get { chosenSearchMode ?? .hybrid() }
+        set { chosenSearchMode = newValue }
+    }
+    private var chosenSearchMode: SearchMode?
     package var rrfK: Int = 10
     package var previewMaxBytes: Int = 512
 
@@ -131,7 +137,7 @@ package struct FastRAGConfig: Sendable, Equatable {
         maxSurrogates: Int = 8,
         surrogateMaxTokens: Int = 60,
         searchTopK: Int = 24,
-        searchMode: SearchMode = .hybrid(alpha: 0.5),
+        searchMode: SearchMode? = nil,
         rrfK: Int = 10,
         previewMaxBytes: Int = 512,
         enableAnswerFocusedRanking: Bool = false,
@@ -150,7 +156,7 @@ package struct FastRAGConfig: Sendable, Equatable {
         self.maxSurrogates = maxSurrogates
         self.surrogateMaxTokens = surrogateMaxTokens
         self.searchTopK = searchTopK
-        self.searchMode = searchMode
+        self.chosenSearchMode = searchMode
         self.rrfK = rrfK
         self.previewMaxBytes = previewMaxBytes
         self.enableAnswerFocusedRanking = enableAnswerFocusedRanking
@@ -159,5 +165,10 @@ package struct FastRAGConfig: Sendable, Equatable {
         self.tierSelectionPolicy = tierSelectionPolicy
         self.enableQueryAwareTierSelection = enableQueryAwareTierSelection
         self.deterministicNowMs = deterministicNowMs
+    }
+
+    /// ``searchMode`` as a request: unset is hybrid at the store's default weight.
+    package var searchModeRequest: SearchModeRequest {
+        chosenSearchMode.map(SearchModeRequest.init) ?? .hybrid(alpha: nil)
     }
 }

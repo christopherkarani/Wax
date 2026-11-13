@@ -162,7 +162,10 @@ package enum BrokerRecall {
         } else if parsedFilters.sessionId != nil {
             sessionExecution = MemoryOrchestrator.SearchExecution(
                 hits: [],
-                diagnostics: .text(requested: mode, embedding: .notRequested)
+                diagnostics: .text(
+                    requested: mode.resolved(defaultHybridAlpha: await stores.longTermMemory.defaultHybridAlpha),
+                    embedding: .notRequested
+                )
             )
             sessionHits = []
         } else {

@@ -172,7 +172,7 @@ package enum MemoryRetention {
         return keep < settings.keepColdThreshold
     }
 
-    package static func includeColdInRetrieval(query: String, mode: Memory.RetrievalMode?) -> Bool {
+    package static func includeColdInRetrieval(query: String, mode: SearchModeRequest?) -> Bool {
         if mode == .textOnly {
             return true
         }
@@ -184,7 +184,7 @@ package enum MemoryRetention {
         metadata: [String: String],
         nowMs: Int64,
         query: String,
-        mode: Memory.RetrievalMode?
+        mode: SearchModeRequest?
     ) -> Bool {
         if includeColdInRetrieval(query: query, mode: mode) {
             return true

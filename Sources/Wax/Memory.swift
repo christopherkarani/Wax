@@ -98,7 +98,16 @@ public actor Memory {
         public var topK: Int
         public var includeSurrogates: Bool
         public var timeRange: TimeRange?
-        public var mode: RetrievalMode
+        /// Retrieval mode. Left unset, search is hybrid with the store's default text
+        /// weight: 0.4 when the store's embedder is e5-small-v2, 0.5 otherwise. Reading an
+        /// unset mode returns `.hybrid()`. A mode passed to the initializer or assigned here,
+        /// `.hybrid()` included, is used exactly as given.
+        public var mode: RetrievalMode {
+            get { chosenMode ?? .hybrid() }
+            set { chosenMode = newValue }
+        }
+        /// The caller's mode; `nil` leaves the hybrid text weight to the store.
+        private var chosenMode: RetrievalMode?
         /// Token budget for the returned context. `nil` uses the store default
         /// (1,500 tokens). Clamped to ``maxContextTokensRange``. Raise it when a
         /// large ``topK`` returns fewer items than requested.
@@ -115,19 +124,24 @@ public actor Memory {
             topK: Int = 10,
             includeSurrogates: Bool = false,
             timeRange: TimeRange? = nil,
-            mode: RetrievalMode = .hybrid(),
+            mode: RetrievalMode? = nil,
             maxContextTokens: Int? = nil,
             inferTimeRange: Bool = true
         ) {
             self.topK = topK
             self.includeSurrogates = includeSurrogates
             self.timeRange = timeRange
-            self.mode = mode
+            self.chosenMode = mode
             self.maxContextTokens = maxContextTokens
             self.inferTimeRange = inferTimeRange
         }
 
         public static let `default` = SearchOptions()
+
+        /// The mode a store resolves: unset is hybrid at the store's default weight.
+        package var modeRequest: SearchModeRequest {
+            chosenMode.map(SearchModeRequest.init) ?? .hybrid(alpha: nil)
+        }
     }
 
     public typealias Results = RAGContext
@@ -279,7 +293,7 @@ public actor Memory {
         }
         let execution = try await orchestrator.recallExecution(
             query: query,
-            mode: options.mode,
+            mode: options.modeRequest,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
             topK: options.topK,
