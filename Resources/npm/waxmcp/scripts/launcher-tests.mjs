@@ -21,6 +21,7 @@ const requiredRuntimeBundles = [
   "Wax_Wax.bundle",
   "Wax_WaxBertTokenizer.bundle",
   "Wax_WaxVectorSearch.bundle",
+  "Wax_WaxVectorSearchE5.bundle",
   "Wax_WaxVectorSearchMiniLM.bundle",
   "swift-crypto_Crypto.bundle",
   "swift-nio_NIOPosix.bundle",
