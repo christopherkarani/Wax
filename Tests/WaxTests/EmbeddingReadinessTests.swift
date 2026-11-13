@@ -170,7 +170,7 @@ func hostEmbeddingReadinessMapsExistingFlags() throws {
             noEmbedder: false,
             requireVector: false,
             embedderChoice: "auto"
-        ) == .automatic(.miniLM, .default)
+        ) == .automatic(HostNewStoreEmbedder.provider(servedStores: []), .default)
     )
     #expect(
         try HostEmbeddingReadiness.request(

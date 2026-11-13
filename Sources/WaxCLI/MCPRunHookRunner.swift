@@ -65,7 +65,7 @@ enum MCPRunHookRunner {
         stdin: Data,
         storePath: String = StoreSession.defaultStorePath,
         noEmbedder: Bool = false,
-        embedderChoice: String = EmbedderChoice.minilm.rawValue
+        embedderChoice: String = EmbedderChoice.auto.rawValue
     ) -> Outcome {
         let event = HostHookStdinParser.parse(stdin)
         let normalizedRole = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
