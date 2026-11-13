@@ -57,6 +57,30 @@ package struct BinaryDecoder {
         )
     }
 
+    /// Calls `body` with the decoder's bytes; offsets count from the first byte, like
+    /// ``position``.
+    package func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
+        try data.withUnsafeBytes(body)
+    }
+
+    /// A decoder with the same limits over `bytes[range]`, positioned at its first byte,
+    /// that neither copies nor retains `bytes`: the caller keeps them alive and unchanged
+    /// while the decoder or anything it decoded lazily is in use. Decoded values never
+    /// share its storage (strings and byte fields are copied out), so a decoder per thread
+    /// reads one buffer without contending on a shared `Data`'s reference count.
+    package func borrowing(_ range: Range<Int>, of bytes: UnsafeRawBufferPointer) -> BinaryDecoder {
+        precondition(range.lowerBound >= 0 && range.upperBound <= bytes.count, "range outside buffer")
+        guard let base = bytes.baseAddress, !range.isEmpty else {
+            return BinaryDecoder(copiedData: Data(), limits: limits)
+        }
+        let borrowed = Data(
+            bytesNoCopy: UnsafeMutableRawPointer(mutating: base + range.lowerBound),
+            count: range.count,
+            deallocator: .none
+        )
+        return BinaryDecoder(copiedData: borrowed, limits: limits)
+    }
+
     private init(copiedData: Data, limits: Limits) {
         self.data = copiedData
         self.limits = limits
