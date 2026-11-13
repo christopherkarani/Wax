@@ -120,16 +120,33 @@ extension Wax {
                 }
             }
 
+            // A vec or lex segment carries its run's checksum, so it is hashed the run's way;
+            // one no run names (left by a released build) has a whole-segment SHA-256.
+            var vecChunkBytes: [UInt64: UInt32] = [:]
+            for run in toc.indexes.vec?.runs ?? [] {
+                vecChunkBytes[run.bytesOffset] = run.checksumChunkBytes
+            }
+            var lexChunkBytes: [UInt64: UInt32] = [:]
+            for run in toc.indexes.lex?.runs ?? [] {
+                lexChunkBytes[run.bytesOffset] = run.checksumChunkBytes
+            }
             var segmentIndex = 0
             for entry in toc.segmentCatalog.entries {
                 guard entry.bytesLength > 0 else {
                     segmentIndex += 1
                     continue
                 }
+                let chunkBytes: UInt32?
+                switch entry.kind {
+                case .vec: chunkBytes = vecChunkBytes[entry.bytesOffset]
+                case .lex: chunkBytes = lexChunkBytes[entry.bytesOffset]
+                default: chunkBytes = nil
+                }
                 let computed = try await sha256(
                     file: file,
                     offset: entry.bytesOffset,
-                    length: entry.bytesLength
+                    length: entry.bytesLength,
+                    checksumChunkBytes: chunkBytes
                 )
                 guard computed == entry.checksum else {
                     throw WaxError.checksumMismatch("segment \(entry.segmentId) checksum mismatch")
@@ -360,9 +377,16 @@ extension Wax {
         }
     }
 
-    private func sha256(file: FDFile, offset: UInt64, length: UInt64) async throws -> Data {
-        guard length > 0 else { return SHA256Checksum.digest(Data()) }
-        var hasher = SHA256Checksum()
+    /// The SHA-256 of the range, or with `checksumChunkBytes` its tree checksum (see
+    /// ``RunChecksum``), read 1 MiB at a time.
+    private func sha256(
+        file: FDFile,
+        offset: UInt64,
+        length: UInt64,
+        checksumChunkBytes: UInt32? = nil
+    ) async throws -> Data {
+        var hasher = RunChecksum.Hasher(chunkBytes: checksumChunkBytes)
+        guard length > 0 else { return hasher.finalize() }
         let chunkSize: UInt64 = 1 * 1024 * 1024
 
         var cursor: UInt64 = 0

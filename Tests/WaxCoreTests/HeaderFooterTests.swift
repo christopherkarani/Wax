@@ -281,7 +281,7 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
 
     var expected = Data(repeating: 0, count: WaxHeaderPage.size)
     expected.replaceSubrange(0..<4, with: Constants.magic)
-    expected.replaceSubrange(4..<6, with: Data([0x00, 0x03])) // 0x0300 LE
+    expected.replaceSubrange(4..<6, with: Data([0x01, 0x03])) // 0x0301 LE
     expected[6] = Constants.specMajor
     expected[7] = Constants.specMinor
 

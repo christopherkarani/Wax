@@ -438,7 +438,7 @@ private func deltaLength(pages: Int) -> UInt64 {
 
 // MARK: - Format version
 
-@Test func aCommitMakesAV2StoreFormatThree() async throws {
+@Test func aCommitMakesAV2StoreFormatThreePointOne() async throws {
     let url = try await copyMigrationFixture(named: "migration-n-1")
     defer { try? FileManager.default.removeItem(at: url) }
     let before = try headerFormatVersions(url)
@@ -446,6 +446,6 @@ private func deltaLength(pages: Int) -> UInt64 {
     _ = try await wax.put(Data("next".utf8))
     try await wax.commit()
     try await wax.close()
-    #expect(before != [0x0300, 0x0300])
-    #expect(try headerFormatVersions(url) == [0x0300, 0x0300])
+    #expect(before != [0x0301, 0x0301])
+    #expect(try headerFormatVersions(url) == [0x0301, 0x0301])
 }

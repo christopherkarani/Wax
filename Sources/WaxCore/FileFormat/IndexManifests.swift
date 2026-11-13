@@ -4,23 +4,35 @@ import Foundation
 package struct LexRunManifest: Equatable, Sendable {
     package var bytesOffset: UInt64
     package var bytesLength: UInt64
-    /// SHA-256 of the whole run.
+    /// The run's checksum (see ``RunChecksum``).
     package var checksum: Data
     /// Footer generation of the commit that wrote the run; 0 for an adopted v2 lex blob.
     package var addedGeneration: UInt64
     /// Length of the image after applying the run.
     package var imageLength: UInt64
+    /// Chunk size of the run's tree checksum; `nil` for a run whose checksum is the SHA-256
+    /// of the whole run (written before format 3.1).
+    package var checksumChunkBytes: UInt32?
 
-    package init(bytesOffset: UInt64, bytesLength: UInt64, checksum: Data, addedGeneration: UInt64, imageLength: UInt64) {
+    package init(
+        bytesOffset: UInt64,
+        bytesLength: UInt64,
+        checksum: Data,
+        addedGeneration: UInt64,
+        imageLength: UInt64,
+        checksumChunkBytes: UInt32? = nil
+    ) {
         self.bytesOffset = bytesOffset
         self.bytesLength = bytesLength
         self.checksum = checksum
         self.addedGeneration = addedGeneration
         self.imageLength = imageLength
+        self.checksumChunkBytes = checksumChunkBytes
     }
 }
 
 extension LexRunManifest: BinaryCodable {
+    /// The format 3.1 encoding, which ends with the checksum chunk size.
     package mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(bytesOffset)
         encoder.encode(bytesLength)
@@ -30,15 +42,22 @@ extension LexRunManifest: BinaryCodable {
         encoder.encodeFixedBytes(checksum)
         encoder.encode(addedGeneration)
         encoder.encode(imageLength)
+        try RunChecksum.encode(chunkBytes: checksumChunkBytes, to: &encoder)
     }
 
     package static func decode(from decoder: inout BinaryDecoder) throws -> LexRunManifest {
+        try decode(from: &decoder, recordsChecksumChunkBytes: true)
+    }
+
+    /// Without `recordsChecksumChunkBytes`, a format 3.0 run, which has no chunk size.
+    static func decode(from decoder: inout BinaryDecoder, recordsChecksumChunkBytes: Bool) throws -> LexRunManifest {
         LexRunManifest(
             bytesOffset: try decoder.decode(UInt64.self),
             bytesLength: try decoder.decode(UInt64.self),
             checksum: try decoder.decodeFixedBytes(count: 32),
             addedGeneration: try decoder.decode(UInt64.self),
-            imageLength: try decoder.decode(UInt64.self)
+            imageLength: try decoder.decode(UInt64.self),
+            checksumChunkBytes: recordsChecksumChunkBytes ? try RunChecksum.decodeChunkBytes(from: &decoder) : nil
         )
     }
 }
@@ -65,9 +84,12 @@ package struct LexIndexManifest: Equatable, Sendable {
 
     /// Optional tag of a v2 manifest: one whole-image blob.
     static let legacyTag: UInt8 = 1
-    /// Optional tag of a manifest of runs.
+    /// Optional tag of a format 3.0 manifest of runs.
     static let runsTag: UInt8 = 2
+    /// Optional tag of a manifest of runs that record their checksum chunk size (format 3.1).
+    static let checksummedRunsTag: UInt8 = 3
 
+    /// Encodes the manifest that follows ``checksummedRunsTag``.
     mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(docCount)
         encoder.encode(version)
@@ -78,7 +100,7 @@ package struct LexIndexManifest: Equatable, Sendable {
         }
     }
 
-    static func decodeRuns(from decoder: inout BinaryDecoder) throws -> LexIndexManifest {
+    static func decodeRuns(from decoder: inout BinaryDecoder, recordsChecksumChunkBytes: Bool) throws -> LexIndexManifest {
         let docCount = try decoder.decode(UInt64.self)
         let version = try decoder.decode(UInt32.self)
         let pageSize = try decoder.decode(UInt32.self)
@@ -88,7 +110,7 @@ package struct LexIndexManifest: Equatable, Sendable {
         }
         var runs: [LexRunManifest] = []
         for _ in 0..<runCount {
-            runs.append(try LexRunManifest.decode(from: &decoder))
+            runs.append(try LexRunManifest.decode(from: &decoder, recordsChecksumChunkBytes: recordsChecksumChunkBytes))
         }
         return LexIndexManifest(docCount: docCount, version: version, pageSize: pageSize, runs: runs)
     }
@@ -115,7 +137,7 @@ package struct LexIndexManifest: Equatable, Sendable {
 package struct VecRunManifest: Equatable, Sendable {
     package var bytesOffset: UInt64
     package var bytesLength: UInt64
-    /// SHA-256 of the whole run.
+    /// The run's checksum (see ``RunChecksum``).
     package var checksum: Data
     package var rowCount: UInt64
     package var tombstoneCount: UInt64
@@ -126,6 +148,9 @@ package struct VecRunManifest: Equatable, Sendable {
     /// SHA-256 of the run's keys (frame-id byte count onward), so a commit can read them
     /// without the vectors. `nil` for a v1 store's vector blob until a commit records it.
     package var keysChecksum: Data?
+    /// Chunk size of the run's tree checksum; `nil` for a run whose checksum is the SHA-256
+    /// of the whole run (written before format 3.1).
+    package var checksumChunkBytes: UInt32?
 
     package init(
         bytesOffset: UInt64,
@@ -135,7 +160,8 @@ package struct VecRunManifest: Equatable, Sendable {
         tombstoneCount: UInt64,
         level: UInt8,
         addedGeneration: UInt64,
-        keysChecksum: Data?
+        keysChecksum: Data?,
+        checksumChunkBytes: UInt32? = nil
     ) {
         self.bytesOffset = bytesOffset
         self.bytesLength = bytesLength
@@ -145,10 +171,12 @@ package struct VecRunManifest: Equatable, Sendable {
         self.level = level
         self.addedGeneration = addedGeneration
         self.keysChecksum = keysChecksum
+        self.checksumChunkBytes = checksumChunkBytes
     }
 }
 
 extension VecRunManifest: BinaryCodable {
+    /// The format 3.1 encoding, which ends with the checksum chunk size.
     package mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(bytesOffset)
         encoder.encode(bytesLength)
@@ -169,9 +197,15 @@ extension VecRunManifest: BinaryCodable {
         } else {
             encoder.encode(UInt8(0))
         }
+        try RunChecksum.encode(chunkBytes: checksumChunkBytes, to: &encoder)
     }
 
     package static func decode(from decoder: inout BinaryDecoder) throws -> VecRunManifest {
+        try decode(from: &decoder, recordsChecksumChunkBytes: true)
+    }
+
+    /// Without `recordsChecksumChunkBytes`, a format 3.0 run, which has no chunk size.
+    static func decode(from decoder: inout BinaryDecoder, recordsChecksumChunkBytes: Bool) throws -> VecRunManifest {
         let bytesOffset = try decoder.decode(UInt64.self)
         let bytesLength = try decoder.decode(UInt64.self)
         let checksum = try decoder.decodeFixedBytes(count: 32)
@@ -186,6 +220,7 @@ extension VecRunManifest: BinaryCodable {
         case 1: keysChecksum = try decoder.decodeFixedBytes(count: 32)
         default: throw WaxError.decodingError(reason: "invalid vec run keys checksum tag \(keysTag)")
         }
+        let checksumChunkBytes = recordsChecksumChunkBytes ? try RunChecksum.decodeChunkBytes(from: &decoder) : nil
         return VecRunManifest(
             bytesOffset: bytesOffset,
             bytesLength: bytesLength,
@@ -194,7 +229,8 @@ extension VecRunManifest: BinaryCodable {
             tombstoneCount: tombstoneCount,
             level: level,
             addedGeneration: addedGeneration,
-            keysChecksum: keysChecksum
+            keysChecksum: keysChecksum,
+            checksumChunkBytes: checksumChunkBytes
         )
     }
 }
@@ -217,9 +253,12 @@ package struct VecIndexManifest: Equatable, Sendable {
 
     /// Optional tag of a v1 manifest: one whole-index blob.
     static let legacyTag: UInt8 = 1
-    /// Optional tag of a manifest of runs.
+    /// Optional tag of a format 2.0 or 3.0 manifest of runs.
     static let runsTag: UInt8 = 2
+    /// Optional tag of a manifest of runs that record their checksum chunk size (format 3.1).
+    static let checksummedRunsTag: UInt8 = 3
 
+    /// Encodes the manifest that follows ``checksummedRunsTag``.
     mutating func encode(to encoder: inout BinaryEncoder) throws {
         encoder.encode(vectorCount)
         encoder.encode(dimension)
@@ -230,14 +269,14 @@ package struct VecIndexManifest: Equatable, Sendable {
         }
     }
 
-    static func decodeRuns(from decoder: inout BinaryDecoder) throws -> VecIndexManifest {
+    static func decodeRuns(from decoder: inout BinaryDecoder, recordsChecksumChunkBytes: Bool) throws -> VecIndexManifest {
         let vectorCount = try decoder.decode(UInt64.self)
         let dimension = try decoder.decode(UInt32.self)
         let similarity = try decodeSimilarity(from: &decoder)
         let runCount = try decoder.decode(UInt32.self)
         var runs: [VecRunManifest] = []
         for _ in 0..<runCount {
-            runs.append(try VecRunManifest.decode(from: &decoder))
+            runs.append(try VecRunManifest.decode(from: &decoder, recordsChecksumChunkBytes: recordsChecksumChunkBytes))
         }
         return VecIndexManifest(vectorCount: vectorCount, dimension: dimension, similarity: similarity, runs: runs)
     }
@@ -286,13 +325,13 @@ struct IndexManifests: Equatable, Sendable {
 extension IndexManifests: BinaryCodable {
     package mutating func encode(to encoder: inout BinaryEncoder) throws {
         if var lex {
-            encoder.encode(LexIndexManifest.runsTag)
+            encoder.encode(LexIndexManifest.checksummedRunsTag)
             try lex.encode(to: &encoder)
         } else {
             encoder.encode(UInt8(0))
         }
         if var vec {
-            encoder.encode(VecIndexManifest.runsTag)
+            encoder.encode(VecIndexManifest.checksummedRunsTag)
             try vec.encode(to: &encoder)
         } else {
             encoder.encode(UInt8(0))
@@ -306,7 +345,10 @@ extension IndexManifests: BinaryCodable {
         switch lexTag {
         case 0: lex = nil
         case LexIndexManifest.legacyTag: lex = try LexIndexManifest.decodeLegacy(from: &decoder)
-        case LexIndexManifest.runsTag: lex = try LexIndexManifest.decodeRuns(from: &decoder)
+        case LexIndexManifest.runsTag:
+            lex = try LexIndexManifest.decodeRuns(from: &decoder, recordsChecksumChunkBytes: false)
+        case LexIndexManifest.checksummedRunsTag:
+            lex = try LexIndexManifest.decodeRuns(from: &decoder, recordsChecksumChunkBytes: true)
         default: throw WaxError.decodingError(reason: "invalid optional tag \(lexTag)")
         }
         let vecTag = try decoder.decode(UInt8.self)
@@ -314,7 +356,10 @@ extension IndexManifests: BinaryCodable {
         switch vecTag {
         case 0: vec = nil
         case VecIndexManifest.legacyTag: vec = try VecIndexManifest.decodeLegacy(from: &decoder)
-        case VecIndexManifest.runsTag: vec = try VecIndexManifest.decodeRuns(from: &decoder)
+        case VecIndexManifest.runsTag:
+            vec = try VecIndexManifest.decodeRuns(from: &decoder, recordsChecksumChunkBytes: false)
+        case VecIndexManifest.checksummedRunsTag:
+            vec = try VecIndexManifest.decodeRuns(from: &decoder, recordsChecksumChunkBytes: true)
         default: throw WaxError.decodingError(reason: "invalid optional tag \(vecTag)")
         }
         let clipTag = try decoder.decode(UInt8.self)

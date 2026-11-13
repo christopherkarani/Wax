@@ -138,6 +138,27 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
+    /// Starts creating the system Metal device on a background thread and returns at once,
+    /// so a later ``load(from:metric:dimensions:preference:)`` finds it made. The first
+    /// creation in a process takes 30–45 ms; opening a store with vectors does it anyway, and
+    /// started before the store opens it overlaps reading the table of contents. Does
+    /// nothing for `.cpuOnly`, without Metal, or after the first call in a process.
+    package static func prepareGPU(for preference: VectorEnginePreference) {
+        #if canImport(Metal) && canImport(MetalANNS)
+        guard preference != .cpuOnly else { return }
+        _ = gpuPreparation
+        #endif
+    }
+
+    #if canImport(Metal) && canImport(MetalANNS)
+    /// A static `let` initializes once per process, on the first `prepareGPU` call.
+    private static let gpuPreparation: Void = {
+        DispatchQueue(label: "com.wax.metal-device-preparation").async {
+            _ = MetalANNSVectorEngine.isAvailable
+        }
+    }()
+    #endif
+
     package static func preferredKind(
         for wax: Wax,
         queryEmbeddingDimensions: Int,

@@ -156,6 +156,9 @@ package actor MemoryOrchestrator {
         }
         
         if FileManager.default.fileExists(atPath: url.path) {
+            if config.enableVectorSearch {
+                LoadedVectorSearchEngine.prepareGPU(for: config.vectorEnginePreference)
+            }
             self.wax = try await Wax.open(at: url, options: waxOptions)
         } else {
             self.wax = try await Wax.create(

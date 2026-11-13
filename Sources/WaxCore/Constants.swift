@@ -13,15 +13,16 @@ package enum Constants {
     // MARK: - Version
 
     package static let specMajor: UInt8 = 3
-    package static let specMinor: UInt8 = 0
+    package static let specMinor: UInt8 = 1
 
     /// Packed major/minor: `(major << 8) | minor` (little-endian on disk).
     package static let specVersion: UInt16 = (UInt16(specMajor) << 8) | UInt16(specMinor)
 
     /// Header page versions this build opens: 1.0 (one whole-index vector blob), 2.0 (vector
-    /// runs, one whole lex blob) and 3.0 (lex runs). An older file's first commit here
-    /// rewrites both header pages as 3.0, which older builds refuse.
-    package static let supportedSpecVersions: Set<UInt16> = [0x0100, 0x0200, specVersion]
+    /// runs, one whole lex blob), 3.0 (lex runs) and 3.1 (runs with tree checksums, see
+    /// `RunChecksum`). An older file's first commit here rewrites both header pages as 3.1,
+    /// which older builds refuse.
+    package static let supportedSpecVersions: Set<UInt16> = [0x0100, 0x0200, 0x0300, specVersion]
 
     // MARK: - Sizes
 
