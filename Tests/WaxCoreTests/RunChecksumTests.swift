@@ -371,6 +371,8 @@ func aLargeVectorRunVerifiesUnderEitherChecksumScheme(chunkBytes: UInt32?) throw
 
 enum TreeRunDamage: String, CaseIterable, Sendable {
     case header
+    case lastByteOfFirstChunk
+    case firstByteOfSecondChunk
     case middleChunk
     case lastPartialChunk
 
@@ -378,6 +380,8 @@ enum TreeRunDamage: String, CaseIterable, Sendable {
         let chunk = UInt64(RunChecksum.treeChunkBytes)
         switch self {
         case .header: return run.offset
+        case .lastByteOfFirstChunk: return run.offset + chunk - 1
+        case .firstByteOfSecondChunk: return run.offset + chunk
         case .middleChunk: return run.offset + chunk + chunk / 2
         case .lastPartialChunk: return run.offset + run.length - 1
         }
@@ -385,7 +389,53 @@ enum TreeRunDamage: String, CaseIterable, Sendable {
 }
 
 private let vectorRunDamages: [TreeRunDamage] = TreeRunDamage.allCases
-private let lexRunDamages: [TreeRunDamage] = [.middleChunk, .lastPartialChunk]
+private let lexRunDamages: [TreeRunDamage] = [.lastByteOfFirstChunk, .firstByteOfSecondChunk, .middleChunk, .lastPartialChunk]
+
+/// The runs of the `migration-v3-0-runs` fixture, written by format 3.0.
+enum LegacyRunKind: String, CaseIterable, Sendable {
+    case vector
+    case lex
+}
+
+private let legacyRunKinds: [LegacyRunKind] = LegacyRunKind.allCases
+
+/// Runs a format 3.0 store wrote keep their whole-run SHA-256: damage in the middle of one
+/// fails the read and the deep verify.
+@Test(arguments: legacyRunKinds)
+func damageToAWholeRunChecksummedRunFailsTheRead(kind: LegacyRunKind) async throws {
+    let url = try await copyMigrationFixture(named: "migration-v3-0-runs")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.open(at: url)
+    let run: (offset: UInt64, length: UInt64, chunkBytes: UInt32?)
+    switch kind {
+    case .vector:
+        let first = try #require(await wax.committedVecIndexManifest()?.runs.first)
+        run = (first.bytesOffset, first.bytesLength, first.checksumChunkBytes)
+    case .lex:
+        let first = try #require(await wax.committedLexIndexManifest()?.runs.first)
+        run = (first.bytesOffset, first.bytesLength, first.checksumChunkBytes)
+    }
+    try await wax.close()
+    #expect(run.chunkBytes == nil)
+
+    try flipByte(at: run.offset + run.length / 2, of: url)
+
+    let reopened = try await Wax.open(at: url)
+    await #expect {
+        switch kind {
+        case .vector: _ = try await reopened.readCommittedVectors()
+        case .lex: _ = try await reopened.readCommittedLexIndexBytes()
+        }
+    } throws: { (error: any Error) -> Bool in
+        isChecksumMismatch(error)
+    }
+    await #expect {
+        try await reopened.verify(deep: true)
+    } throws: { (error: any Error) -> Bool in
+        isChecksumMismatch(error)
+    }
+    try await reopened.close()
+}
 
 /// A tree-checksummed run of three chunks, the last partial: damage anywhere fails the read
 /// with a checksum mismatch, before any decode error.
