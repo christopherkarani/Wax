@@ -128,6 +128,8 @@ func docsRetrievalModes(memory: Memory) async throws {
 }
 ```
 
+`alpha` is the text weight: 0 is all vector, 1 is all text. When you leave ``Memory/SearchOptions/mode`` unset, hybrid search uses the store's default weight: 0.4 when the store's embedder is e5-small-v2, which retrieves best there, and 0.5 for every other embedder. A mode you pass, `.hybrid()` (0.5) included, is used as given.
+
 ## Configuration
 
 ```swift
