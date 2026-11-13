@@ -40,8 +40,9 @@ package enum RunChecksum {
             writeChunkDigest(0, of: bytes, chunkBytes: chunk, to: digests)
         } else {
             // The calling thread runs iterations too, so this completes even with no worker free.
+            let work = ChunkDigestWork(bytes: bytes, digests: digests, chunkBytes: chunk)
             DispatchQueue.concurrentPerform(iterations: count) { (index: Int) in
-                writeChunkDigest(index, of: bytes, chunkBytes: chunk, to: digests)
+                work.run(index)
             }
         }
         return root(of: UnsafeRawBufferPointer(digests))
@@ -150,5 +151,19 @@ package enum RunChecksum {
         default:
             throw WaxError.decodingError(reason: "invalid run checksum chunk size tag \(tag)")
         }
+    }
+}
+
+/// One tree checksum's chunk hashing, shared by the `concurrentPerform` workers.
+///
+/// `@unchecked Sendable`: `bytes` is only read, iteration `i` writes only its own 32 bytes of
+/// `digests`, and both buffers outlive `concurrentPerform`, which returns before they are freed.
+private struct ChunkDigestWork: @unchecked Sendable {
+    let bytes: UnsafeRawBufferPointer
+    let digests: UnsafeMutableRawBufferPointer
+    let chunkBytes: Int
+
+    func run(_ index: Int) {
+        RunChecksum.writeChunkDigest(index, of: bytes, chunkBytes: chunkBytes, to: digests)
     }
 }
