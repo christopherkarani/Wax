@@ -7,7 +7,8 @@
  *   npx waxmcp                    # Start MCP server (stdio, default store)
  *   npx waxmcp --transport http   # Start HTTP MCP server on :3000
  *   npx waxmcp --no-embedder      # Text-only search (no vector search)
- *   npx waxmcp --embedder arctic  # Opt in to Arctic embeddings (default: minilm)
+ *   npx waxmcp --embedder arctic  # Name the embedder for new stores (default: auto, which is
+ *                                 # e5 unless a store in use is bound to MiniLM)
  *   npx waxmcp mcp doctor         # Validate setup (routes to wax-cli)
  *
  * Environment:
@@ -51,7 +52,7 @@ Usage:
 
 Common server options:
   --transport http --http-host 127.0.0.1 --http-port 3000
-  --embedder minilm | --embedder arctic | --no-embedder
+  --embedder auto | --embedder minilm | --embedder e5 | --embedder arctic | --no-embedder
 
 Environment:
   WAX_MCP_INSTALL_ROOT   Install root (default: ~/.local/share/waxmcp)
@@ -595,7 +596,7 @@ exec "$install_root/runtime/${platformKey}/wax-mcp" \\
   --http-host 127.0.0.1 \\
   --http-port "\${WAX_MCP_HTTP_PORT:-3000}" \\
   --http-endpoint /mcp \\
-  --embedder minilm "$@"
+  --embedder auto "$@"
 `;
 
   const stagingRoot = fs.mkdtempSync(path.join(installRoot, ".waxmcp-stage-"));
@@ -1060,7 +1061,7 @@ while (i < forwardedArgs.length) {
 
 // Auto-detect if we should add default embedder
 if (!mcpFlags.includes("--no-embedder") && !mcpFlags.some(f => f.startsWith("--embedder"))) {
-  mcpFlags.unshift("--embedder", "minilm");
+  mcpFlags.unshift("--embedder", "auto");
 }
 
 runBinary("wax-mcp", mcpFlags);
