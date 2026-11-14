@@ -16,7 +16,7 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | Systems, 100k passages | ingest | 57,250 docs/s with `importDocuments`; 9,674 saving one at a time | sqlite-vec 43,584; FAISS flat 484k (vectors only); Chroma 2,541 | 136 docs/s |
 | Systems, 100k passages | disk | 286 MB with `importDocuments`; 417 MB saving one at a time | Chroma 408 MB (text + vectors) | 13.5 GB |
 | Systems, 100k passages | vector p50 / p95 | **1.09** / 1.57 ms | Chroma HNSW 1.13 / 1.41 ms; FAISS flat 1.40 / 1.46 ms | 64–97 ms (p95) |
-| Systems, 100k passages | cold open + first query | **112 ms** | Chroma HNSW 511 ms | 840 ms |
+| Systems, 100k passages | cold open + first query | **121 ms** | Chroma HNSW 511 ms | 840 ms |
 
 Wax leads every retrieval and QA benchmark here. With the e5-small-v2 embedder (the default for new stores)
 (33M parameters, against Contriever's 110M) and the opt-in MiniLM cross-encoder reranker
@@ -239,8 +239,8 @@ metadata; most competitors store vectors only.
 | sqlite-vec | 10,000 | 43,334 | 19 | 4 | 2.27 / 2.54 | 1.000 |
 | usearch HNSW | 10,000 | 34,105 | 17 | 16 | 0.13 / 0.16 | 0.980 |
 | FAISS flat | 10,000 | 162,628 | 15 | 31 | 0.62 / 1.67 | 1.000 |
-| Wax `save` | 100,000 | 9,674 | 417 | 112 | 1.09 / 1.57 | 0.998 |
-| Wax `importDocuments` | 100,000 | 57,250 | 286 | 109 | 1.05 / 1.55 | 0.998 |
+| Wax `save` | 100,000 | 9,674 | 417 | 121 | 1.09 / 1.57 | 0.998 |
+| Wax `importDocuments` | 100,000 | 57,250 | 286 | 108 | 1.05 / 1.55 | 0.998 |
 | Chroma HNSW | 100,000 | 2,541 | 408 | 511 | 1.13 / 1.41 | 0.976 |
 | sqlite-vec | 100,000 | 43,584 | 192 | 27 | 24.8 / 26.2 | 1.000 |
 | usearch HNSW | 100,000 | 16,738 | 168 | 62 | 0.27 / 0.34 | 0.966 |
@@ -256,10 +256,11 @@ interleaved with `a4a561d5a` (37,152 docs/s; 38,969 at `4009eb1f5` and load aver
 LanceDB and 10k rows are from the earlier runs at load average 30–125. Wax hybrid search
 (text and vector lanes fused) at 100k: p50 4.6 ms, p95 14.8 ms, p99 18.9 ms (before
 `386a642e1`: 7.7 / 27.6 / 37.2 ms, interleaved runs, load average 5.9). Wax cold open was
-measured again on 2026-11-13 at `bf35dcb72`: median of five query passes over a fresh 100k
-store of each kind, interleaved with `a4a561d5a` (135 and 136 ms), load average 6–8 (128
-and 149 ms at `0b76cadbb`, 225 and 252 ms at `17cd222e0`, 406 ms for `save` at
-`7f857833c`). The open loads the text and vector indexes concurrently, reads and verifies
+measured again on 2026-11-13 at `1e5e80c84`: median of five query passes over a fresh 100k
+store of each kind, interleaved with `bec498a1d` (138 and 125 ms), load average 10–34 with
+another virtual machine using two cores (127 and 126 ms at `bf35dcb72` against 151 and 150
+ms at `a4a561d5a` earlier that day at load average 6–8; 128 and 149 ms at `0b76cadbb`, 225
+and 252 ms at `17cd222e0`, 406 ms for `save` at `7f857833c`). The open loads the text and vector indexes concurrently, reads and verifies
 the vector runs two at a time, starts that read while the Metal device is created, skips
 copying vectors that are already unit length and decodes ASCII strings without the generic
 UTF-8 validator. It also decodes the table of contents on all cores while its SHA-256 is
@@ -267,7 +268,9 @@ checked, reserves the vector table before filling it, decodes a large vector run
 is hashed and keeps a lone run's arrays (an `importDocuments` store writes one 154 MB run),
 and reads frame fields in place for its coverage and access-stats scans. Since file
 format 3.1 it hashes the vector and text-index runs in 4 MiB chunks on all cores, and it
-creates the Metal device while the table of contents is read. Each step was
+creates the Metal device while the table of contents is read. Each decode chunk finds
+where its frame records start by searching its own share of the table of contents. Each
+step was
 checked against the build before it; the `save` store's open alone went from 446 to 115 ms.
 
 Competitors also ran at 1M: Chroma 4.1 GB at 2.7 ms p50, FAISS flat 1.5 GB at 15.4 ms,
@@ -396,7 +399,14 @@ Fixes on the branch, each with tests:
   new runs as the SHA-256 of their 4 MiB chunks' digests, hashed on all cores when written
   and when read; 3.0 stores open unchanged and their old runs keep whole-run checksums. The
   Metal device is now created while the store opens. Open and first query at 100k, in
-  interleaved runs: 135 → 112 ms (`save`) and 136 → 109 ms (`importDocuments`).
+  interleaved runs: 151 → 127 ms (`save`) and 150 → 126 ms (`importDocuments`).
+- **Table-of-contents decode (`1e5e80c84`).** The parallel decode first skipped every frame
+  record on one thread to find where each chunk starts, 15 ms of a 100k open. Each chunk now
+  searches its own share of the bytes for a record whose id is below the frame count,
+  followed by records with the next ids. Each chunk must end exactly where the next one
+  starts, so a wrong guess cannot change the frames; it decodes again the old way. No format
+  change: existing stores get it too. Open and first query at 100k, in interleaved runs:
+  138 → 121 ms (`save`) and 125 → 108 ms (`importDocuments`).
 - **Vector search overhead (`b2aab5121`, `402293c54`).** Every search ran the
   structured-memory lane's alias lookups (about seven SQLite queries) even in a store with
   no entities, and packing the context encoded each snippet twice. Vector p50 at 100k
@@ -420,10 +430,10 @@ Fixes on the branch, each with tests:
    ahead of sqlite-vec (43,584), LanceDB (22,584) and usearch (16,738) but behind FAISS
    flat (484k), which stores vectors only. Saving one at a time is still 4.5× behind
    sqlite-vec's bulk load. Wax was not run at 1M.
-4. **Cold open** is 112 ms at 100k (109 ms for an `importDocuments` store), ahead of
-   Chroma's 511 ms but still behind the vector-only stores (27–62 ms). What remains is
-   mostly the table-of-contents decode (about 39 ms on all cores, overlapping its 20 ms
-   SHA-256: a 15 ms sequential pass that finds where each chunk starts, then each frame's
-   strings and checksums, whose allocations keep more cores from helping), reading the
-   index runs (about 19 ms for 154 MB of vectors) and copying them into the engines.
-   Going much lower needs a frame offset table in the TOC or lazy loading.
+4. **Cold open** is 121 ms at 100k (108 ms for an `importDocuments` store), ahead of
+   Chroma's 511 ms but still behind the vector-only stores (27–62 ms). `Wax.open` takes
+   about 31 ms: the table of contents decodes on all cores in about 20 ms, under its 21 ms
+   SHA-256. The index loads that follow take about 40 ms (reading and checking 154 MB of
+   vector runs, choosing and building the engine) alongside about 27 ms for the text index
+   (reading its 57 MB image, writing it out and opening SQLite). Going much lower needs
+   lazy loading.
