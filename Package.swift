@@ -195,6 +195,22 @@ let package = Package(
             publicHeadersPath: "include"
         ),
         .target(
+            name: "WaxMILKernelsC",
+            dependencies: [],
+            path: "Sources/WaxMILKernelsC",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedLibrary("m", .when(platforms: [.linux])),
+            ]
+        ),
+        // Platform-neutral interpreter for the bundled Core ML ML Program (MIL) models, so
+        // embeddings and reranking can run without Core ML. Package-internal; not a product.
+        .target(
+            name: "WaxMILRuntime",
+            dependencies: ["WaxMILKernelsC"],
+            path: "Sources/WaxMILRuntime"
+        ),
+        .target(
             name: "WaxVectorSearch",
             dependencies: [
                 "WaxCore",
@@ -367,6 +383,14 @@ let package = Package(
                 "WaxCore",
             ],
             resources: [.process("Fixtures")]
+        ),
+        .testTarget(
+            name: "WaxMILRuntimeTests",
+            dependencies: [
+                "WaxMILRuntime",
+                "WaxMILKernelsC",
+            ],
+            path: "Tests/WaxMILRuntimeTests"
         ),
         .testTarget(
             name: "WaxIntegrationTests",
