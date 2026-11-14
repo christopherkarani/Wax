@@ -28,7 +28,7 @@ Source: `Sources/Wax/Memory.swift`
 
 ### Memory.Config
 
-`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`), `reranking` (`.disabled`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
+`public struct Config: Sendable` with `enableTextSearch` (true), `enableVectorSearch` (true), `enableStructuredMemory` (false), `enableAccessStatsScoring` (true), `enableAsyncEnrichment` (false), `ingestConcurrency` (1), `ingestBatchSize` (32), `requireOnDeviceProviders` (true), `embedding` (`.automatic`), `reranking` (`.automatic`); `public static let .default`. `enableAccessStatsScoring` applies a bounded rank offset from stored access stats. Search and recall are non-mutating; stats accrue from explicit get/promote (`memory_get` / `memory_promote`). Access stats persist as a system frame, not a user-visible content frame.
 
 ### Memory.EmbeddingSource
 
@@ -42,11 +42,12 @@ Source: `Sources/Wax/Memory.swift`
 
 `public enum RerankingSource: Sendable` — selects the reranker, if any, that reorders each search's top candidates before context assembly (`config.reranking`):
 
-- `.disabled` (default) — results keep their retrieval order.
+- `.automatic` (default) — hybrid and text searches rerank their top 20 candidates with the built-in `BuiltInReranker.msMarcoMiniLM` (`RerankingOptions.default`); vector-only searches are not reranked. The model loads on the first reranked search. Without the `MiniLMReranker` trait (on by default), before iOS 18/macOS 15, or when the reranker throws, results keep their retrieval order.
+- `.disabled` — results keep their retrieval order.
 - `.builtIn(BuiltInReranker, RerankingOptions = .default)` — a built-in reranker on the CPU; store creation throws `BuiltInRerankerError.unavailable` when its trait is not enabled or the OS is older than iOS 18/macOS 15.
 - `.custom(any RerankingProvider, RerankingOptions = .default)` — your own reranker, or one from `BuiltInRerankers.make(_:computeUnit:timeoutSeconds:)` to run a built-in one on another compute unit.
 
-The reranker scores the full frame text of the first `candidateCount` candidates (a chunk frame's chunk, otherwise the saved text). The search fetches at least `candidateCount` candidates even when `topK` is smaller, so reranking can promote a candidate into the results; candidates below the window keep their order after it. Item scores stay the retrieval scores (the order changes) and each reranked item gains a `rerank:` explanation. A reranker error, a score count that differs from the document count, or a non-finite score makes `search` throw.
+The reranker scores the full frame text of the first `candidateCount` candidates (a chunk frame's chunk, otherwise the saved text). The search fetches at least `candidateCount` candidates even when `topK` is smaller, so reranking can promote a candidate into the results; candidates below the window keep their order after it. Item scores stay the retrieval scores (the order changes) and each reranked item gains a `rerank:` explanation. With `.builtIn` or `.custom`, every search mode is reranked, and a reranker error, a score count that differs from the document count, or a non-finite score makes `search` throw.
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
