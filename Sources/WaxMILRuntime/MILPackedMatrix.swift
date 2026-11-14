@@ -35,13 +35,11 @@ final class MILPackedMatrix: @unchecked Sendable {
     }
 }
 
-/// Raw pointers handed to worker threads that write disjoint regions.
-struct MILSharedPointer<T>: @unchecked Sendable {
-    let base: UnsafeMutablePointer<T>
-}
-
-struct MILSharedConstPointer<T>: @unchecked Sendable {
-    let base: UnsafePointer<T>
+/// A pointer handed to worker threads. Callers guarantee the memory outlives the parallel
+/// region, inputs are only read, and each thread writes a disjoint part of the output.
+struct MILUnsafeSendable<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }
 
 enum MILParallel {
@@ -65,8 +63,16 @@ enum MILParallel {
         }
     }
 
+    /// Elements below which an elementwise or row-wise kernel stays on the calling thread.
+    static let minimumElementsPerThread = 1 << 15
+
     /// Threads worth using for `work` multiply-accumulates.
     static func threads(forWork work: Int, maximum: Int) -> Int {
         max(1, min(maximum, work / minimumWorkPerThread))
+    }
+
+    /// Threads worth using for a kernel that touches `elements` values.
+    static func threads(forElements elements: Int, maximum: Int) -> Int {
+        max(1, min(maximum, elements / minimumElementsPerThread))
     }
 }

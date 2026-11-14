@@ -150,14 +150,19 @@ void wax_mil_softmax(const float *x, float *y, size_t outer, size_t length, size
         if (inner == 1) {
             float maximum = in[0];
             for (size_t j = 1; j < length; j++) maximum = in[j] > maximum ? in[j] : maximum;
-            float sum = 0.0f;
-            for (size_t j = 0; j < length; j++) {
-                const float e = wax_expf(in[j] - maximum);
-                out[j] = e;
-                sum += e;
+            // Separate loops so the exp loop vectorises; the sum uses 8 partial accumulators
+            // because float addition may not be reassociated automatically.
+            for (size_t j = 0; j < length; j++) out[j] = wax_expf(in[j] - maximum);
+            float partial[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            size_t j = 0;
+            for (; j + 8 <= length; j += 8) {
+                for (size_t l = 0; l < 8; l++) partial[l] += out[j + l];
             }
+            float sum = 0.0f;
+            for (; j < length; j++) sum += out[j];
+            for (size_t l = 0; l < 8; l++) sum += partial[l];
             const float inv = 1.0f / sum;
-            for (size_t j = 0; j < length; j++) out[j] *= inv;
+            for (j = 0; j < length; j++) out[j] *= inv;
             continue;
         }
         for (size_t i = 0; i < inner; i++) {

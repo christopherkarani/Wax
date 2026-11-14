@@ -23,8 +23,8 @@ enum MILKernels {
         case .constexprBlockwiseShiftScale: return try blockwiseShiftScale(args)
         case .expandDims: return try expandDims(args)
         case .gather: return try gather(args)
-        case .gelu: return try gelu(args)
-        case .layerNorm: return try layerNorm(args)
+        case .gelu: return try gelu(args, threads: threads)
+        case .layerNorm: return try layerNorm(args, threads: threads)
         case .linear: return try linear(args, packed: instruction.packedWeight, threads: threads)
         case .matmul: return try matmul(args, threads: threads)
         case .reduceL2Norm: return try reduce(args, squared: true)
@@ -32,7 +32,7 @@ enum MILKernels {
         case .reshape: return try reshape(args)
         case .shape: return try shape(args)
         case .sliceByIndex: return try sliceByIndex(args)
-        case .softmax: return try softmax(args)
+        case .softmax: return try softmax(args, threads: threads)
         case .tanh: return try tanh(args)
         case .tile: return try tile(args)
         case .transpose: return try transpose(args)
@@ -332,7 +332,7 @@ enum MILKernels {
         }
     }
 
-    static func gelu(_ args: MILArguments) throws -> MILTensor {
+    static func gelu(_ args: MILArguments, threads: Int) throws -> MILTensor {
         let x = try args.tensor("x")
         let mode: Int32 = switch try args.string("mode", default: "EXACT") {
         case "EXACT": 0
@@ -341,7 +341,14 @@ enum MILKernels {
         case let other: throw args.failure("unsupported gelu mode \(other)")
         }
         return floatStorage(x).withUnsafeBufferPointer { input in
-            makeFloat(x.shape) { out in wax_mil_gelu(input.baseAddress, out.baseAddress, out.count, mode) }
+            makeFloat(x.shape) { out in
+                guard let o = out.baseAddress, let i = input.baseAddress else { return }
+                let (source, destination) = (MILUnsafeSendable(i), MILUnsafeSendable(o))
+                let workers = MILParallel.threads(forElements: out.count, maximum: threads)
+                MILParallel.forEachChunk(of: out.count, threads: workers) { range in
+                    wax_mil_gelu(source.value + range.lowerBound, destination.value + range.lowerBound, range.count, mode)
+                }
+            }
         }
     }
 
@@ -354,7 +361,7 @@ enum MILKernels {
 
     // MARK: - Normalisation
 
-    static func layerNorm(_ args: MILArguments) throws -> MILTensor {
+    static func layerNorm(_ args: MILArguments, threads: Int) throws -> MILTensor {
         let x = try args.tensor("x")
         let axes = try args.ints("axes").map { try args.axis($0, rank: x.rank) }.sorted()
         let trailing = Array((x.rank - axes.count)..<x.rank)
@@ -368,10 +375,18 @@ enum MILKernels {
         if let gamma, gamma.count != cols { throw args.failure("gamma has \(gamma.count) values for \(cols) features") }
         if let beta, beta.count != cols { throw args.failure("beta has \(beta.count) values for \(cols) features") }
         let epsilon = try args.float("epsilon", default: 1e-5)
+        let workers = MILParallel.threads(forElements: x.count, maximum: threads)
         return floatStorage(x).withUnsafeBufferPointer { input in
             makeFloat(x.shape) { out in
+                guard let o = out.baseAddress, let i = input.baseAddress else { return }
+                let (source, destination) = (MILUnsafeSendable(i), MILUnsafeSendable(o))
                 func run(_ g: UnsafePointer<Float>?, _ b: UnsafePointer<Float>?) {
-                    wax_mil_layer_norm(input.baseAddress, out.baseAddress, rows, cols, g, b, epsilon)
+                    let affine = MILUnsafeSendable((g, b))
+                    MILParallel.forEachChunk(of: rows, threads: workers) { range in
+                        let offset = range.lowerBound * cols
+                        wax_mil_layer_norm(source.value + offset, destination.value + offset, range.count, cols,
+                                           affine.value.0, affine.value.1, epsilon)
+                    }
                 }
                 switch (gamma, beta) {
                 case let (g?, b?): g.withUnsafeBufferPointer { gp in b.withUnsafeBufferPointer { bp in run(gp.baseAddress, bp.baseAddress) } }
@@ -383,14 +398,22 @@ enum MILKernels {
         }
     }
 
-    static func softmax(_ args: MILArguments) throws -> MILTensor {
+    static func softmax(_ args: MILArguments, threads: Int) throws -> MILTensor {
         let x = try args.tensor("x")
         let axis = try args.axis(try args.int("axis", default: -1), rank: x.rank)
         let length = x.rank == 0 ? 1 : x.shape[axis]
         let outer = x.rank == 0 ? 1 : x.shape[..<axis].reduce(1, *)
         let inner = x.rank == 0 ? 1 : x.shape[(axis + 1)...].reduce(1, *)
+        let workers = MILParallel.threads(forElements: x.count, maximum: threads)
         return floatStorage(x).withUnsafeBufferPointer { input in
-            makeFloat(x.shape) { out in wax_mil_softmax(input.baseAddress, out.baseAddress, outer, length, inner) }
+            makeFloat(x.shape) { out in
+                guard let o = out.baseAddress, let i = input.baseAddress else { return }
+                let (source, destination) = (MILUnsafeSendable(i), MILUnsafeSendable(o))
+                MILParallel.forEachChunk(of: outer, threads: workers) { range in
+                    let offset = range.lowerBound * length * inner
+                    wax_mil_softmax(source.value + offset, destination.value + offset, range.count, length, inner)
+                }
+            }
         }
     }
 
@@ -455,14 +478,14 @@ enum MILKernels {
                         }
                     }
                     let beta: Float = bias == nil ? 0 : 1
-                    let output = MILSharedPointer(base: o)
-                    let input = MILSharedConstPointer(base: xBase)
-                    let panelsPointer = MILSharedConstPointer(base: panelBase)
+                    let output = MILUnsafeSendable(o)
+                    let input = MILUnsafeSendable(xBase)
+                    let panelsPointer = MILUnsafeSendable(panelBase)
                     MILParallel.forEachChunk(of: panels, threads: workers) { range in
                         let nr = Int(WAX_MIL_SGEMM_NR)
-                        wax_mil_sgemm_packed(0, m, n, k, input.base, k, panelsPointer.base,
+                        wax_mil_sgemm_packed(0, m, n, k, input.value, k, panelsPointer.value,
                                              range.lowerBound * nr, min(range.upperBound * nr, n),
-                                             beta, output.base, n)
+                                             beta, output.value, n)
                     }
                 }
             }
@@ -503,15 +526,15 @@ enum MILKernels {
             floatStorage(y).withUnsafeBufferPointer { yb in
                 makeFloat(outShape) { out in
                     guard let o = out.baseAddress, let xBase = xb.baseAddress, let yBase = yb.baseAddress else { return }
-                    let output = MILSharedPointer(base: o)
-                    let left = MILSharedConstPointer(base: xBase)
-                    let right = MILSharedConstPointer(base: yBase)
+                    let output = MILUnsafeSendable(o)
+                    let left = MILUnsafeSendable(xBase)
+                    let right = MILUnsafeSendable(yBase)
                     MILParallel.forEachChunk(of: batches, threads: workers) { range in
                         for b in range {
                             wax_mil_sgemm(tx, ty, m, n, k,
-                                          left.base + xOffsets[b] * xRows * xCols, xCols,
-                                          right.base + yOffsets[b] * yRows * yCols, yCols,
-                                          0, output.base + b * m * n, n)
+                                          left.value + xOffsets[b] * xRows * xCols, xCols,
+                                          right.value + yOffsets[b] * yRows * yCols, yCols,
+                                          0, output.value + b * m * n, n)
                         }
                     }
                 }
