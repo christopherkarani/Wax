@@ -507,6 +507,7 @@ let package = Package(
             dependencies: [
                 "Wax",
                 "WaxCore",
+                "WaxTestSupport",
                 "wax-cli",
             ],
             path: "Tests/WaxCLITests",

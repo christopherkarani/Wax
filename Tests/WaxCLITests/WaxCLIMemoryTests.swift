@@ -5,6 +5,7 @@ import WaxCore
 @testable import Wax
 @testable import WaxCore
 @testable import wax_cli
+import WaxTestSupport
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -1766,8 +1767,7 @@ struct WaxCLIMemoryTests {
 
     @Test
     func mcpDoctorFailsWhenDailyToolSurfaceIsIncomplete() async throws {
-        let python = URL(fileURLWithPath: "/usr/bin/python3")
-        try #require(FileManager.default.isExecutableFile(atPath: python.path))
+        let python = try #require(TestExecutables.path("python3"), "python3 is not on PATH")
 
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-doctor-incomplete-\(UUID().uuidString)", isDirectory: true)
@@ -1777,7 +1777,7 @@ struct WaxCLIMemoryTests {
 
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         try #"""
-        #!/usr/bin/python3
+        #!\#(python)
         import json
         import sys
 
@@ -1900,8 +1900,7 @@ struct WaxCLIMemoryTests {
         exitingAfterStdinClosesIn exitDelay: Int,
         smokeTimeoutSeconds: Int
     ) async throws -> ProcessOutput {
-        let python = URL(fileURLWithPath: "/usr/bin/python3")
-        try #require(FileManager.default.isExecutableFile(atPath: python.path))
+        let python = try #require(TestExecutables.path("python3"), "python3 is not on PATH")
 
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-cli-doctor-exit-\(UUID().uuidString)", isDirectory: true)
@@ -1912,7 +1911,7 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         let tools = MCPDoctorSurface.dailyToolNames.map { #"{"name": "\#($0)"}"# }.joined(separator: ", ")
         try #"""
-        #!/usr/bin/python3
+        #!\#(python)
         import json
         import sys
         import time
@@ -2018,15 +2017,9 @@ struct WaxCLIMemoryTests {
         )
     }
 
+    /// Hashes in-process: `shasum` is absent on many Linux images.
     private func writeChecksumFile(for executableURL: URL) async throws {
-        let output = try await runProcess(
-            executableURL: URL(fileURLWithPath: "/usr/bin/shasum"),
-            arguments: ["-a", "256", executableURL.path]
-        )
-        guard output.status == EXIT_SUCCESS,
-              let token = output.stdout.split(whereSeparator: \.isWhitespace).first else {
-            throw CLIError("Unable to compute checksum for \(executableURL.path)")
-        }
+        let token = SHA256Checksum.digest(try Data(contentsOf: executableURL)).hexString
         let contents = "\(token)  \(executableURL.lastPathComponent)\n"
         try contents.write(
             to: executableURL.deletingPathExtension().appendingPathExtension("sha256"),

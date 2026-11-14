@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WaxCore
+import WaxTestSupport
 
 @Test func waxCLIExposesBrokerParityCommands() throws {
     let source = try WaxCLISource.load("WaxCLICommand.swift")
@@ -163,13 +164,13 @@ private struct PersistentBroker {
         // pgrep, not a full ps listing: WaxCLIProcess reads output only after
         // the child exits, so output past the pipe buffer would stall it.
         let matches = try await WaxCLIProcess.run(
-            executableURL: URL(fileURLWithPath: "/usr/bin/pgrep"),
+            executableURL: URL(fileURLWithPath: try #require(TestExecutables.path("pgrep"), "pgrep is not on PATH")),
             arguments: ["-f", "wax-cli daemon --store-path .*\(storeDirectory.lastPathComponent)"]
         )
         var brokers: [PersistentBroker] = []
         for pid in matches.stdout.split(separator: "\n").compactMap({ pid_t($0) }) {
             let command = try await WaxCLIProcess.run(
-                executableURL: URL(fileURLWithPath: "/bin/ps"),
+                executableURL: URL(fileURLWithPath: try #require(TestExecutables.path("ps"), "ps is not on PATH")),
                 arguments: ["-ww", "-o", "args=", "-p", String(pid)]
             )
             let fields = command.stdout.split(separator: " ").map(String.init)
