@@ -52,9 +52,10 @@ public struct RerankingOptions: Sendable, Equatable {
 
 /// Built-in on-device rerankers.
 public enum BuiltInReranker: String, CaseIterable, Sendable, Equatable, Codable {
-    /// `cross-encoder/ms-marco-MiniLM-L-6-v2` on CoreML (22 MB, INT8 weights). A document longer
-    /// than one 288-token window is scored as the maximum over overlapping windows. Requires
-    /// the `MiniLMReranker` package trait and iOS 18 / macOS 15.
+    /// `cross-encoder/ms-marco-MiniLM-L-6-v2` (22 MB, INT8 weights): Core ML on Apple platforms,
+    /// Wax's CPU interpreter on Linux. A document longer than one 288-token window is scored as
+    /// the maximum over overlapping windows. Requires the `MiniLMReranker` package trait, and
+    /// iOS 18 / macOS 15 on Apple platforms.
     case msMarcoMiniLM = "ms-marco-minilm-l6"
 }
 

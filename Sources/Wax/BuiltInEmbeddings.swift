@@ -3,12 +3,15 @@ import WaxCore
 import WaxVectorSearch
 
 /// Built-in Wax embedding providers that can be used without going through the CLI or MCP server.
+///
+/// Each runs on Core ML on Apple platforms and on Wax's CPU interpreter on Linux, with the same
+/// bundled model and the same `EmbeddingIdentity` on both, so stores move between platforms.
 public enum BuiltInEmbeddingProvider: String, CaseIterable, Sendable, Equatable, Codable {
-    /// The all-MiniLM-L6-v2 CoreML embedding provider.
+    /// The all-MiniLM-L6-v2 embedding provider.
     case miniLM = "minilm"
-    /// The Snowflake Arctic Embed Small CoreML embedding provider.
+    /// The Snowflake Arctic Embed Small embedding provider.
     case arctic
-    /// The `intfloat/e5-small-v2` CoreML embedding provider. Prepends `"query: "` to search
+    /// The `intfloat/e5-small-v2` embedding provider. Prepends `"query: "` to search
     /// queries and `"passage: "` to stored text, the prefixes the model was trained with.
     case e5
 
@@ -17,7 +20,8 @@ public enum BuiltInEmbeddingProvider: String, CaseIterable, Sendable, Equatable,
     }
 }
 
-/// CoreML compute-unit preference for built-in Wax embedders.
+/// CoreML compute-unit preference for built-in Wax embedders. Ignored on Linux, where the
+/// built-ins run on the CPU without Core ML.
 public enum BuiltInEmbeddingComputeUnit: String, CaseIterable, Sendable, Equatable, Codable {
     /// Run inference on the CPU only.
     case cpuOnly

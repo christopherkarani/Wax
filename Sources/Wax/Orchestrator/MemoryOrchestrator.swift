@@ -204,7 +204,7 @@ package actor MemoryOrchestrator {
             WaxDiagnostics.logSwallowed(
                 WaxError.io("vector search requested but no EmbeddingProvider configured"),
                 context: "MemoryOrchestrator init",
-                fallback: "text-only search; Memory(at:) auto-wires a built-in embedder on iOS 18/macOS 15+"
+                fallback: "text-only search; Memory(at:) auto-wires a built-in embedder on iOS 18/macOS 15+ and Linux"
             )
         } else if let embedder {
             lifecycle = .ready(

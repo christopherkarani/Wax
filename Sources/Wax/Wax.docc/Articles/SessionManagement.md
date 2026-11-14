@@ -29,7 +29,7 @@ WaxCore allows multiple readers and one writer. ``Memory`` acquires and releases
 
 ## Search Configuration
 
-Configure search behavior through ``Memory/Config``. For text-only usage, set `enableVectorSearch = false`. For semantic recall, keep `enableVectorSearch` enabled — a built-in embedder is wired automatically on iOS 18/macOS 15+ (e5 for new stores, default `E5Embeddings` trait; existing MiniLM stores keep MiniLM), or pass a custom `EmbeddingProvider` to ``Memory/init(at:config:embedding:)``.
+Configure search behavior through ``Memory/Config``. For text-only usage, set `enableVectorSearch = false`. For semantic recall, keep `enableVectorSearch` enabled — a built-in embedder is wired automatically on iOS 18/macOS 15+ and Linux (e5 for new stores, default `E5Embeddings` trait; existing MiniLM stores keep MiniLM), or pass a custom `EmbeddingProvider` to ``Memory/init(at:config:embedding:)``.
 
 Use ``Memory/stats()`` and ``RAGContext/diagnostics`` to verify which retrieval lanes are actually active.
 

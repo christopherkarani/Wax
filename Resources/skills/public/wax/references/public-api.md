@@ -108,9 +108,10 @@ Use `Memory` for text memory and search. `FrameStore` frames are not indexed.
 Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
 - `public enum BuiltInEmbeddingProvider { case miniLM, arctic, e5 }`
-  - `.miniLM` — all-MiniLM-L6-v2 CoreML embedder; iOS 18/macOS 15+, default `MiniLMEmbeddings` trait.
-  - `.arctic` — Snowflake Arctic Embed Small; iOS 18/macOS 15+, `ArcticEmbeddings` trait.
-  - `.e5` — `intfloat/e5-small-v2` (MIT), mean pooling, `"query: "` / `"passage: "` prefixes; iOS 18/macOS 15+, `E5Embeddings` trait.
+  - `.miniLM` — all-MiniLM-L6-v2 embedder; iOS 18/macOS 15+ (Core ML) or Linux, default `MiniLMEmbeddings` trait.
+  - `.arctic` — Snowflake Arctic Embed Small; iOS 18/macOS 15+ (Core ML) or Linux, `ArcticEmbeddings` trait.
+  - `.e5` — `intfloat/e5-small-v2` (MIT), mean pooling, `"query: "` / `"passage: "` prefixes; iOS 18/macOS 15+ (Core ML) or Linux, `E5Embeddings` trait.
+  - On Linux the built-ins run the same bundled models on Wax's CPU interpreter and record the same `EmbeddingIdentity`, so stores move between platforms. Compute units in `BuiltInEmbeddingProviderOptions` apply to Core ML only and are ignored there.
 - `public enum BuiltInEmbeddings { public static func make(_:options:) async throws -> any EmbeddingProvider }`
 - `public struct BuiltInEmbeddingProviderOptions` (`batchSize`, `prewarmBatchSize`, `allowLowPrecisionGPU`, `timeoutSeconds`, `computeUnitsOrder`).
 - `public enum BuiltInEmbeddingComputeUnit { cpuOnly, cpuAndGPU, cpuAndNeuralEngine, all }`
@@ -120,7 +121,7 @@ Source: `Sources/Wax/BuiltInEmbeddings.swift`
 
 Source: `Sources/Wax/Reranking/Reranking.swift`
 
-- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0) on CoreML, 22 MB INT8 weights, FP16 compute; iOS 18/macOS 15+, `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
+- `public enum BuiltInReranker { case msMarcoMiniLM }` — `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0), 22 MB INT8 weights: Core ML with FP16 compute on iOS 18/macOS 15+, Wax's CPU interpreter with FP32 compute on Linux (`computeUnit` is ignored there); `MiniLMReranker` trait. Each document is cut into 288-token `[CLS] query [SEP] window [SEP]` rows that share 64 tokens, up to 16 per document, and scored as the maximum over its windows.
 - `public struct RerankingOptions` — `candidateCount` (20, clamped to `RerankingOptions.candidateCountRange`, `1...200`) and `fusion` (`.reciprocalRank(k: 10)`).
 - `public enum RerankingFusion { case rerankerOrder, reciprocalRank(k: Int) }` — order by reranker score alone, or fuse `1/(k + retrievalRank) + 1/(k + rerankerRank)`; ties keep the retrieval order.
 - `public enum BuiltInRerankers { public static func make(_:computeUnit:timeoutSeconds:) async throws -> any RerankingProvider }` — loads are cached per compute unit for the process.

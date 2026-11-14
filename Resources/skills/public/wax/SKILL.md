@@ -26,7 +26,7 @@ Do not load this skill at session start or for MCP `remember` / `recall` /
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
-2. Open `Memory(at:)` — `.automatic` opens immediately while MiniLM loads (iOS 18/macOS 15+, default `MiniLMEmbeddings` trait), then live-attaches. Check `stats().embeddingStatus`.
+2. Open `Memory(at:)` — `.automatic` opens immediately while MiniLM loads (iOS 18/macOS 15+ or Linux, default `MiniLMEmbeddings` trait), then live-attaches. Check `stats().embeddingStatus`.
 3. Or select the embedder in config: `Memory(at: url) { $0.embedding = .custom(MyEmbedder()) }`, or force a built-in via `$0.embedding = .builtIn(.miniLM)` (throws when unavailable).
 4. Call `save(...)` to ingest and `search(...)` to retrieve `RAGContext`.
 5. Call `flush()` or `close()` to persist.
@@ -54,7 +54,7 @@ func demoDefault() async throws {
         .appendingPathComponent("wax-memory")
         .appendingPathExtension("wax")
 
-    // Semantic search out of the box on iOS 18/macOS 15+ (built-in MiniLM).
+    // Semantic search out of the box on iOS 18/macOS 15+ and Linux (built-in MiniLM).
     let memory = try await Memory(at: url)
     try await memory.save("User: prefers Swift over Java.")
 
@@ -147,7 +147,7 @@ func demoPhotoMemory(storeURL: URL, imageURL: URL) async throws {
 - `BuiltInMultimodalEmbeddings`: Factory for the on-device multimodal embedder used by the photo/video facades.
 - `RAGContext`: Retrieval output with items, total token count, and `diagnostics` (requested vs. effective mode).
 - `EmbeddingProvider`: Supplies text embeddings for vector search.
-- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` / `.e5` on-device CoreML embedders (iOS 18/macOS 15+).
+- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` / `.e5` on-device embedders (Core ML on iOS 18/macOS 15+, Wax's CPU interpreter on Linux).
 
 ## References
 - `references/public-api.md`

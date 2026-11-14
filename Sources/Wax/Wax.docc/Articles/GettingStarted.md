@@ -25,7 +25,7 @@ dependencies: [
 )
 ```
 
-Wax builds for iOS 17 / macOS 14 and later. Built-in MiniLM needs iOS 18 / macOS 15 and the default `MiniLMEmbeddings` trait. Foundation Models adapters need iOS 26 / macOS 26.
+Wax builds for iOS 17 / macOS 14 and later. Built-in MiniLM needs iOS 18 / macOS 15 (or Linux) and the default `MiniLMEmbeddings` trait. Foundation Models adapters need iOS 26 / macOS 26.
 
 > Note: Until the next tagged release that publishes the public Foundation Models adapters, `Config.embedding`, and `stats()`, paste samples should track `main`. Tag `0.1.24` still keeps Foundation Models types package-internal.
 
@@ -36,7 +36,7 @@ import Foundation
 import Wax
 
 func openDocsMemory() async throws -> Memory {
-    // Creates or opens the file. On iOS 18 / macOS 15+ a built-in embedder is wired
+    // Creates or opens the file. On iOS 18 / macOS 15+ and Linux a built-in embedder is wired
     // automatically: e5 for a new store, or the one an existing store was written with.
     try await Memory(at: URL.documentsDirectory.appending(path: "memory.wax"))
 }

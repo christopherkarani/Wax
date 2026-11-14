@@ -136,11 +136,11 @@ public actor MyEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 
 The WaxVectorSearchMiniLM module provides a ready-to-use on-device provider based on the all-MiniLM-L6-v2 model. See the WaxVectorSearchMiniLM documentation for details.
 
-Two more on-device CoreML providers ship as package traits. `E5Embeddings` is on by default, and `Memory.Config.embedding = .automatic` gives new stores e5; `ArcticEmbeddings` is opt-in. Select one explicitly through `BuiltInEmbeddingProvider` (for example `config.embedding = .builtIn(.arctic)`):
+Two more on-device providers ship as package traits. `E5Embeddings` is on by default, and `Memory.Config.embedding = .automatic` gives new stores e5; `ArcticEmbeddings` is opt-in. Select one explicitly through `BuiltInEmbeddingProvider` (for example `config.embedding = .builtIn(.arctic)`):
 
 | Provider | Model | Trait | Pooling | License |
 |----------|-------|-------|---------|---------|
 | `.arctic` | Snowflake Arctic Embed Small | `ArcticEmbeddings` | CLS, query prefix | Apache-2.0 |
 | `.e5` | `intfloat/e5-small-v2` | `E5Embeddings` | Mean, query/passage prefixes | MIT |
 
-Both produce 384-dimensional unit vectors, run on the CPU by default, and require iOS 18/macOS 15 or later. The e5 provider prepends `"query: "` to search queries and `"passage: "` to stored text, the prefixes the model was trained with.
+Both produce 384-dimensional unit vectors and run on the CPU by default: on Core ML on iOS 18/macOS 15 or later, and on Wax's CPU interpreter on Linux, which runs the same bundled models and records the same embedder identity. The e5 provider prepends `"query: "` to search queries and `"passage: "` to stored text, the prefixes the model was trained with.
