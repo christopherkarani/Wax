@@ -62,6 +62,30 @@ import Testing
         #expect(!Process.isUnreapedChild(1))
     }
 
+    #if os(Linux)
+    /// A background grandchild inherits Foundation's exit-notification socket,
+    /// so `isRunning` stays true after the child exits; the unreaped status
+    /// still reports the child's own exit, without reaping it.
+    @Test func unreapedExitStatusSeesAChildWhoseGrandchildOutlivesIt() async throws {
+        let (status, signalStatus, runningStatus) = try await BlockingWork.run {
+            () throws -> (Int32?, Int32?, Int32?) in
+            let exited = try launch("sleep 30 & exit 5")
+            let killed = try launch("sleep 30 & kill -KILL $$")
+            let running = try launch("exec sleep 60")
+            defer { running.waitForExit(timeout: 0) }
+            let deadline = Date().addingTimeInterval(30)
+            while exited.unreapedExitStatus() == nil || killed.unreapedExitStatus() == nil {
+                guard Date() < deadline else { throw NeverReaped() }
+                usleep(10_000)
+            }
+            return (exited.unreapedExitStatus(), killed.unreapedExitStatus(), running.unreapedExitStatus())
+        }
+        #expect(status == 5)
+        #expect(signalStatus == SIGKILL)
+        #expect(runningStatus == nil)
+    }
+    #endif
+
     private func launch(_ script: String) throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

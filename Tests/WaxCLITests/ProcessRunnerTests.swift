@@ -106,6 +106,19 @@ struct ProcessRunnerTests {
         #expect(output.stdout.contains("done"))
     }
 
+    /// The status is the direct child's, even while a grandchild it left
+    /// running still holds the pipes (on Linux, Foundation has not reaped the
+    /// child yet at that point).
+    @Test func runCapturedReportsTheChildStatusWhileABackgroundChildHoldsThePipes() async throws {
+        let output = try await runCaptured(
+            command: "/bin/sh",
+            arguments: ["-c", "sleep 20 & echo done; exit 3"],
+            timeoutSeconds: 2
+        )
+        #expect(output.status == 3)
+        #expect(output.stdout.contains("done"))
+    }
+
     @Test func runCapturedCapsCapturedOutput() async throws {
         let cap = ProcessRunner.maxCapturedBytesPerStream
         let output = try await runCaptured(

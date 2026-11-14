@@ -91,12 +91,13 @@ enum ProcessRunner {
         }
 
         let captured: ProcessPipeDrain.Output
+        let status: Int32
         if let timeoutSeconds {
             let deadline = Date().addingTimeInterval(timeoutSeconds)
-            while process.isRunning, Date() < deadline {
+            while childIsRunning(process), Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
-            if process.isRunning {
+            if childIsRunning(process) {
                 stop(process)
                 // Release the readers even if a grandchild still holds a pipe.
                 _ = drain.wait(until: .now() + pipeDrainGraceSeconds)
@@ -105,16 +106,44 @@ enum ProcessRunner {
             // The child exited; a background grandchild may still hold the pipes.
             let remaining = max(0, deadline.timeIntervalSinceNow) + pipeDrainGraceSeconds
             captured = drain.wait(until: .now() + remaining)
+            status = exitedChildStatus(process)
         } else {
             process.waitForExit(timeout: .infinity)
             captured = drain.wait()
+            status = process.terminationStatus
         }
 
         return CapturedProcessOutput(
-            status: process.terminationStatus,
+            status: status,
             stdout: decodeCaptured(captured.stdout, truncated: captured.stdoutTruncated),
             stderr: decodeCaptured(captured.stderr, truncated: captured.stderrTruncated)
         )
+    }
+
+    /// Whether the direct child is still running. On Linux, Foundation keeps
+    /// `isRunning` true while a background grandchild holds the child's
+    /// inherited exit-notification socket (see `Process.unreapedExitStatus()`),
+    /// so the child's own exit is checked too.
+    private static func childIsRunning(_ process: Process) -> Bool {
+        #if os(Linux)
+        return process.isRunning && process.unreapedExitStatus() == nil
+        #else
+        return process.isRunning
+        #endif
+    }
+
+    /// The status of a child `childIsRunning` reported as exited. On Linux
+    /// `terminationStatus` traps until Foundation has reaped the child, which a
+    /// grandchild can delay; read the unreaped status instead. If Foundation
+    /// reaps it in between, `isRunning` clears a moment later.
+    private static func exitedChildStatus(_ process: Process) -> Int32 {
+        #if os(Linux)
+        while process.isRunning {
+            if let status = process.unreapedExitStatus() { return status }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        #endif
+        return process.terminationStatus
     }
 
     private static let terminateGraceSeconds: TimeInterval = 2

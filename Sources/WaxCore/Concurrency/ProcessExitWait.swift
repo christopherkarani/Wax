@@ -65,6 +65,32 @@ extension Process {
         }
     }
 
+    #if os(Linux)
+    /// The child's exit status once the child itself has exited, read without
+    /// reaping it; nil while it runs or once it has been reaped.
+    ///
+    /// swift-corelibs-foundation learns that a child exited when a socket the
+    /// child inherited reaches EOF, and only then reaps it and clears
+    /// `isRunning`. A background grandchild inherits that socket too, so
+    /// `isRunning` stays true (and `terminationStatus` traps) until the
+    /// grandchild exits, long after the child has. `waitid` with `WNOWAIT` sees
+    /// the child's own exit and leaves the reap to Foundation.
+    ///
+    /// The status matches `terminationStatus`: the exit code, or the signal
+    /// number for a child killed by a signal.
+    package func unreapedExitStatus() -> Int32? {
+        let pid = processIdentifier
+        guard pid > 0 else { return nil }
+        var info = siginfo_t()
+        while waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) != 0 {
+            guard errno == EINTR else { return nil }
+        }
+        // WNOHANG with no exited child leaves si_pid zero.
+        guard info._sifields._sigchld.si_pid == pid else { return nil }
+        return info._sifields._sigchld.si_status
+    }
+    #endif
+
     private func pollUntilExited(deadline: Date) -> Bool {
         while isRunning {
             guard Date() < deadline else { return false }
