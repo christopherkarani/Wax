@@ -36,6 +36,21 @@ public struct BatchInputBuffers: @unchecked Sendable {
         )
     }
 }
+#endif // canImport(CoreML)
+
+/// A tokenized batch as plain `[batch][sequence]` Int32 rows, for runtimes without Core ML.
+///
+/// Built with the same truncation and padding rules as `BertTokenizer.buildBatchInputs`:
+/// `[CLS] tokens [SEP]` per row, truncated to `maxSequenceLength`, zero-padded (id and mask)
+/// to the batch's sequence length.
+package struct TokenIDBatch: Sendable, Equatable {
+    package let inputIDs: [[Int32]]
+    package let attentionMask: [[Int32]]
+    /// Columns in every row.
+    package let sequenceLength: Int
+    /// Unpadded length of each row, `[CLS]` and `[SEP]` included.
+    package let lengths: [Int]
+}
 
 public final class BertTokenizer: @unchecked Sendable {
     private static let sharedBasicTokenizer = BasicTokenizer()
@@ -102,6 +117,68 @@ public final class BertTokenizer: @unchecked Sendable {
         return decodedString
     }
 
+    /// Tokenizes `sentences` into Int32 rows with the rules `buildBatchInputs` uses: each row
+    /// is `[CLS] tokens [SEP]`, truncated to `maxSequenceLength` (default and cap 512, minimum 2),
+    /// then zero-padded to the longest row, or to the smallest bucket in `sequenceLengthBuckets`
+    /// that holds it and fits `maxSequenceLength`.
+    package func buildTokenIDBatch(
+        sentences: [String],
+        maxSequenceLength: Int? = nil,
+        sequenceLengthBuckets: [Int]? = nil
+    ) throws -> TokenIDBatch {
+        guard !sentences.isEmpty else {
+            return TokenIDBatch(inputIDs: [], attentionMask: [], sequenceLength: 0, lengths: [])
+        }
+        let maxAllowed = max(2, min(maxSequenceLength ?? maxLen, maxLen))
+        let clsToken = Int32(try tokenToIdOrThrow(token: "[CLS]"))
+        let sepToken = Int32(try tokenToIdOrThrow(token: "[SEP]"))
+
+        var tokenSequences: [[Int]] = []
+        tokenSequences.reserveCapacity(sentences.count)
+        var batchMax = 0
+        for sentence in sentences {
+            let tokens = Array(try tokenizeToIds(text: sentence).prefix(maxAllowed - 2))
+            batchMax = max(batchMax, tokens.count + 2)
+            tokenSequences.append(tokens)
+        }
+
+        let sequenceLength = Self.selectSequenceLength(
+            requiredLength: batchMax,
+            maxAllowed: maxAllowed,
+            buckets: sequenceLengthBuckets
+        )
+        var inputIDs: [[Int32]] = []
+        var attentionMask: [[Int32]] = []
+        var lengths: [Int] = []
+        inputIDs.reserveCapacity(sentences.count)
+        attentionMask.reserveCapacity(sentences.count)
+        lengths.reserveCapacity(sentences.count)
+        for tokens in tokenSequences {
+            let kept = max(0, min(tokens.count, sequenceLength - 2))
+            var ids = [Int32](repeating: 0, count: sequenceLength)
+            var mask = [Int32](repeating: 0, count: sequenceLength)
+            ids[0] = clsToken
+            mask[0] = 1
+            for index in 0..<kept {
+                ids[1 + index] = Int32(tokens[index])
+                mask[1 + index] = 1
+            }
+            let sepIndex = min(sequenceLength - 1, 1 + kept)
+            ids[sepIndex] = sepToken
+            mask[sepIndex] = 1
+            inputIDs.append(ids)
+            attentionMask.append(mask)
+            lengths.append(min(sequenceLength, kept + 2))
+        }
+        return TokenIDBatch(
+            inputIDs: inputIDs,
+            attentionMask: attentionMask,
+            sequenceLength: sequenceLength,
+            lengths: lengths
+        )
+    }
+
+    #if canImport(CoreML)
     public func buildModelInputs(from inputTokens: [Int]) throws -> (MLMultiArray, MLMultiArray) {
         let inputIds = try MLMultiArray.from(inputTokens, dims: 2)
         let maskValue = 1
@@ -321,6 +398,7 @@ public final class BertTokenizer: @unchecked Sendable {
         let tokenTypeIds = try MLMultiArray.from(tokenTypeIdValues, dims: 2)
         return (inputIds, attentionMask, tokenTypeIds)
     }
+    #endif // canImport(CoreML)
 
     public func tokenize(text: String) -> [String] {
         var tokens: [String] = []
@@ -416,7 +494,7 @@ private extension BertTokenizer {
         vocabCache.lock.unlock()
 
         let bundle = WaxBertBundleResolver.resolveModule(
-            named: "Wax_WaxBertTokenizer.bundle",
+            named: resourceBundleName,
             moduleFallback: .module
         )
         guard let url = bundle.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
@@ -443,6 +521,14 @@ private extension BertTokenizer {
         vocabCache.lock.unlock()
         return loaded
     }
+
+    /// SwiftPM names a target's resource bundle `<Package>_<Target>.bundle` on Apple platforms
+    /// and `<Package>_<Target>.resources` elsewhere.
+    #if canImport(Darwin)
+    static let resourceBundleName = "Wax_WaxBertTokenizer.bundle"
+    #else
+    static let resourceBundleName = "Wax_WaxBertTokenizer.resources"
+    #endif
 
     static func selectSequenceLength(
         requiredLength: Int,
@@ -477,8 +563,6 @@ extension BertTokenizer {
     }
 }
 #endif
-
-#endif // canImport(CoreML)
 
 final class BasicTokenizer: @unchecked Sendable {
     let neverSplit = [

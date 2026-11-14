@@ -1,4 +1,4 @@
-#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if canImport(WaxVectorSearchMiniLM)
 import Foundation
 import Testing
 @testable import WaxVectorSearchMiniLM

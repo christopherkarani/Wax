@@ -1,7 +1,8 @@
-#if canImport(WaxBertTokenizer) && canImport(CoreML)
-import CoreML
+#if canImport(WaxBertTokenizer)
 import Testing
 @testable import WaxBertTokenizer
+#if canImport(CoreML)
+import CoreML
 
 @Test
 func bertTokenizerBuildBatchInputsReusesBuffers() throws {
@@ -25,6 +26,7 @@ func bertTokenizerBuildBatchInputsReusesBuffers() throws {
     #expect(firstIdsPtr == secondIdsPtr)
     #expect(firstMaskPtr == secondMaskPtr)
 }
+#endif
 
 @Test
 func bertTokenizerVocabLoadsOnceAcrossInstances() throws {
@@ -61,6 +63,7 @@ func bertTokenizerTreatsNewlinesAsWhitespace() throws {
     #expect(newlineSeparatedTokens == whitespaceSeparatedTokens)
 }
 
+#if canImport(CoreML)
 @Test
 func bertTokenizerSingleSentenceTypeIdsKeepSepAndPaddingInSegmentZero() throws {
     let tokenizer = try BertTokenizer()
@@ -86,4 +89,5 @@ func bertTokenizerPairTypeIdsKeepOnlySecondSegmentActive() throws {
 
     #expect(MLMultiArray.toIntArray(tokenTypeIds) == [0, 0, 0, 1, 1, 0])
 }
+#endif // canImport(CoreML)
 #endif

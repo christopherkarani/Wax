@@ -63,7 +63,6 @@ import Testing
     let manifest = try PackageManifest.load()
     let requiredExcludes = [
         "AccessStatsBootstrapBenchmarks.swift",
-        "BertTokenizerFastPathTests.swift",
         "HandoffLookupBenchmarks.swift",
         "HybridVectorEngineBenchmark.swift",
         "PayloadLivenessBenchmarks.swift",
@@ -78,6 +77,18 @@ import Testing
 
     for file in requiredExcludes {
         #expect(manifest.source.contains(#""\#(file)""#))
+    }
+}
+
+/// Tokenizer and embedder suites that run on Linux through WaxMILRuntime must stay compiled there.
+@Test func waxIntegrationLinuxExcludesKeepPortableEmbedderTests() throws {
+    let excludes = try PackageManifest.load().linuxIntegrationExcludes()
+    let portable = [
+        "BertTokenizerFastPathTests.swift",
+        "BertTokenizerReuseTests.swift",
+    ]
+    for file in portable {
+        #expect(!excludes.contains(#""\#(file)""#), "\(file) is portable; do not exclude it on Linux")
     }
 }
 
@@ -144,6 +155,16 @@ private struct PackageManifest {
             .deletingLastPathComponent()
         let manifestURL = packageRoot.appendingPathComponent("Package.swift")
         return PackageManifest(source: try String(contentsOf: manifestURL, encoding: .utf8))
+    }
+
+    /// The Linux branch of `waxIntegrationLinuxExcludes`.
+    func linuxIntegrationExcludes() throws -> Substring {
+        guard let start = source.range(of: "waxIntegrationLinuxExcludes = [")?.upperBound,
+              let end = source[start...].range(of: "\n]")?.lowerBound
+        else {
+            throw ManifestError.missingTarget("waxIntegrationLinuxExcludes")
+        }
+        return source[start..<end]
     }
 
     func executableTarget(named targetName: String) throws -> Substring {
