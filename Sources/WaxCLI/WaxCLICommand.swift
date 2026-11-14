@@ -134,12 +134,22 @@ func normalizedKey(_ key: String?) -> String? {
     return trimmed
 }
 
-func resolveToolPath(_ tool: String) throws -> String {
+func resolveToolPath(
+    _ tool: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> String {
+    #if os(Linux)
+    // In-process: minimal Linux images often have no `which`.
+    if let path = ExecutableLookup.find(tool, environment: environment) {
+        return path
+    }
+    #else
     let output = try ProcessRunner.runCaptured(command: "which", arguments: [tool])
     if output.status == EXIT_SUCCESS {
         let path = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if !path.isEmpty { return path }
     }
+    #endif
 
     // Check well-known installation paths
     let home = FileManager.default.homeDirectoryForCurrentUser.path

@@ -253,7 +253,15 @@ extension MemorySemantics {
 
     private static func isGitAncestor(_ stored: String, of live: String, repoRootPath: String) -> Bool {
         let process = ChildProcess()
+        #if os(Linux)
+        // git is not always /usr/bin/git on Linux (Nix, Homebrew on Linux, /usr/local).
+        guard let git = ExecutableLookup.find("git", environment: ProcessInfo.processInfo.environment) else {
+            return false
+        }
+        process.executableURL = URL(fileURLWithPath: git)
+        #else
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        #endif
         process.arguments = ["-C", repoRootPath, "merge-base", "--is-ancestor", stored, live]
         process.standardOutput = Pipe()
         process.standardError = Pipe()

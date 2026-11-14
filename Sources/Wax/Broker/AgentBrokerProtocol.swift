@@ -555,6 +555,9 @@ package enum AgentBrokerPathing {
     ) -> String? {
         #if os(iOS) || os(tvOS) || os(watchOS)
         nil
+        #elseif os(Linux)
+        // In-process: minimal Linux images often have no `which`.
+        ExecutableLookup.find(tool, environment: environment)
         #else
         let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

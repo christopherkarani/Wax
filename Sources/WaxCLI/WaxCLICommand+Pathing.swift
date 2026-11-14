@@ -83,6 +83,12 @@ enum Pathing {
             return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
         }
 
+        #if os(Linux)
+        // In-process: minimal Linux images often have no `which`.
+        if let resolved = ExecutableLookup.find(raw, environment: ProcessInfo.processInfo.environment) {
+            return URL(fileURLWithPath: resolved).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        #else
         let lookup = try ProcessRunner.runCaptured(command: "which", arguments: [raw])
         if lookup.status == EXIT_SUCCESS {
             let resolved = lookup.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,6 +96,7 @@ enum Pathing {
                 return URL(fileURLWithPath: resolved).resolvingSymlinksInPath().standardizedFileURL.path
             }
         }
+        #endif
         return raw
     }
 
@@ -533,13 +540,21 @@ enum Pathing {
         }
     }
 
-    private static func sha256Hex(for url: URL) throws -> String {
-        let output = try ProcessRunner.runCaptured(command: "shasum", arguments: ["-a", "256", url.path])
-        guard output.status == EXIT_SUCCESS,
-              let token = output.stdout.split(whereSeparator: \.isWhitespace).first else {
-            throw CLIError("Unable to compute sha256 for \(url.path)")
+    /// Lowercase hex SHA-256 of the file at `url`, computed in-process: `shasum`
+    /// is a Perl script that minimal Linux images do not ship.
+    static func sha256Hex(for url: URL) throws -> String {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw CLIError("Unable to compute sha256 for \(url.path): \(error.localizedDescription)")
         }
-        return String(token)
+        defer { try? handle.close() }
+        var hasher = SHA256Checksum()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(chunk)
+        }
+        return hasher.finalize().hexString
     }
 
     private static func adHocSignExecutables(in directory: URL) throws {
