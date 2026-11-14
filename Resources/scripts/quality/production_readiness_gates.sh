@@ -36,6 +36,23 @@ unfinished_tests() {
       '
 }
 
+# Runs "$@" under a pseudo-terminal so Swift line-buffers, with all output in
+# $1. `exec` keeps the caller's `$!` on the `script` process itself.
+# BSD script (macOS) takes the command as arguments. util-linux script (Linux)
+# rejects -F, takes one shell string via -c, and needs -e to return the
+# command's exit status; it also writes "Script started/done" lines to the log.
+run_under_pty() {
+  local log_file="$1"
+  shift
+  if script --version 2>/dev/null | grep -q util-linux; then
+    local command_string
+    printf -v command_string '%q ' "$@"
+    # -c runs the string with $SHELL; %q quoting is bash syntax.
+    SHELL="${BASH:-/bin/bash}" exec script -q -f -e -c "$command_string" "$log_file"
+  fi
+  exec script -q -F "$log_file" "$@"
+}
+
 descendant_pids() {
   local child
   for child in $(pgrep -P "$1" 2>/dev/null); do
@@ -56,7 +73,7 @@ run_and_capture() {
   # swift-testing package deprecation warnings). Teeing it onto stdout stalls the GitHub
   # Actions log pipe (local Popen has the same failure). Keep the full
   # log on disk for skip/pass-rate checks; print only breadcrumbs.
-  # Run under `script -F` so Swift line-buffers; a plain file redirect
+  # Run under a PTY (`script`) so Swift line-buffers; a plain file redirect
   # froze the log while tests were still passing (CI 20m false timeout).
   echo "GATE_CMD: $*"
   echo "GATE_LOG: $log_file"
@@ -65,7 +82,7 @@ run_and_capture() {
 
   set +e
   if command -v script >/dev/null 2>&1; then
-    script -q -F "$log_file" "$@" >/dev/null 2>&1 &
+    run_under_pty "$log_file" "$@" >/dev/null 2>&1 &
   else
     "$@" >"$log_file" 2>&1 &
   fi

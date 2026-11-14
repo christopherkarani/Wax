@@ -71,8 +71,9 @@ jobs:
       - name: Website workflow contract
         run: bash Resources/scripts/quality/website_workflow_tests.sh
 
-  # The gate script's harness uses BSD `script -q -F`, so its self-tests run on
-  # macOS. No Xcode selection or Swift build is needed.
+  # The gate script's harness picks BSD `script -q -F` on macOS and util-linux
+  # `script -q -f -e -c` on Linux. This job covers the BSD branch; the Linux
+  # workflow runs the same self-tests. No Xcode selection or Swift build is needed.
   gate-script-tests:
     runs-on: macos-15
     timeout-minutes: 15
