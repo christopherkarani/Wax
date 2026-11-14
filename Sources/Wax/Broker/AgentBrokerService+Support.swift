@@ -344,4 +344,29 @@ extension AgentBrokerService {
         }
         return String(hash, radix: 16)
     }
+
+    /// Every store a recall can merge hits from: the durable store, the corpus store, and the
+    /// live and ended session stores under the session root. Missing stores are listed too;
+    /// the embedder probe skips them.
+    static func servedStoreURLs(
+        longTermStoreURL: URL,
+        corpusStoreURL: URL,
+        sessionRootURL: URL
+    ) -> [URL] {
+        var urls = [longTermStoreURL, corpusStoreURL]
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionRootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return urls
+        }
+        var sessionStores: [URL] = []
+        for case let candidate as URL in enumerator
+            where candidate.pathExtension.caseInsensitiveCompare("wax") == .orderedSame {
+            sessionStores.append(candidate.standardizedFileURL)
+        }
+        urls.append(contentsOf: sessionStores.sorted { $0.path < $1.path })
+        return urls
+    }
 }

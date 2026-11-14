@@ -122,7 +122,8 @@ jobs:
             )
           fi
           test -d "$PLATFORM_DIR/Wax_WaxVectorSearchMiniLM.bundle"
-          echo "MiniLM bundle present"
+          test -d "$PLATFORM_DIR/Wax_WaxVectorSearchE5.bundle"
+          echo "MiniLM and e5 bundles present"
 
       - name: Smoke check MCP server
         if: ${{ matrix.source_build }}

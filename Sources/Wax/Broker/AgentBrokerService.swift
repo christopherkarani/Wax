@@ -58,7 +58,6 @@ package actor AgentBrokerService {
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
         self.noEmbedder = noEmbedder
         self.requireVector = requireVector
-        self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
         self.enableAccessStatsScoring = enableAccessStatsScoring
         self.scopeContext = MemorySemantics.inferScopeContext()
@@ -77,6 +76,20 @@ package actor AgentBrokerService {
         if requireVector, noEmbedder {
             throw BrokerStartupError("Vector search required but --no-embedder was set.")
         }
+        // Resolved once, so every store this broker creates (durable, session, corpus,
+        // migration copies) shares the embedder its recalls merge across.
+        let resolvedChoice = if noEmbedder || embedderOverride != nil || !HostNewStoreEmbedder.isAutomatic(embedderChoice) {
+            embedderChoice
+        } else {
+            HostNewStoreEmbedder.provider(
+                servedStores: Self.servedStoreURLs(
+                    longTermStoreURL: longTermStoreURL,
+                    corpusStoreURL: corpusStoreURL,
+                    sessionRootURL: sessionRootURL
+                )
+            ).commandLineChoice
+        }
+        self.embedderChoice = resolvedChoice
         let request: EmbeddingOpenRequest
         if let embedderOverride {
             request = .custom(embedderOverride)
@@ -85,7 +98,7 @@ package actor AgentBrokerService {
                 request = try HostEmbeddingReadiness.request(
                     noEmbedder: noEmbedder,
                     requireVector: requireVector,
-                    embedderChoice: embedderChoice,
+                    embedderChoice: resolvedChoice,
                     options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
                 )
             } catch {
@@ -101,7 +114,7 @@ package actor AgentBrokerService {
         self.endedSessions = DiskEndedSessionStore(
             sessionRootURL: sessionRootURL,
             noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
+            embedderChoice: resolvedChoice,
             enableAccessStatsScoring: enableAccessStatsScoring,
             scopeContext: scopeContext,
             embedderTuning: embedderTuning,

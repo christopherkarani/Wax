@@ -31,7 +31,7 @@
 npx -y waxmcp@latest install
 ```
 
-That stages the MCP server, MiniLM runtime, and operator skill on Apple Silicon. Wire one host, paste the [playbook](#2-teach-the-model-when-to-use-wax), and the next session can `remember` / `recall`. If this is the memory layer you wanted, [star the repo](https://github.com/christopherkarani/Wax) so other agents find it.
+That stages the MCP server, the on-device embedders (e5 for new stores), and operator skill on Apple Silicon. Wire one host, paste the [playbook](#2-teach-the-model-when-to-use-wax), and the next session can `remember` / `recall`. If this is the memory layer you wanted, [star the repo](https://github.com/christopherkarani/Wax) so other agents find it.
 
 <p align="center">
   <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
