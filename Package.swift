@@ -390,7 +390,8 @@ let package = Package(
                 "WaxMILRuntime",
                 "WaxMILKernelsC",
             ],
-            path: "Tests/WaxMILRuntimeTests"
+            path: "Tests/WaxMILRuntimeTests",
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "WaxIntegrationTests",
