@@ -1384,6 +1384,42 @@ struct WaxCLIMemoryTests {
         #expect(validation.failures.contains { $0.contains("checksum mismatch for wax-mcp") })
     }
 
+    /// SwiftPM names resource bundles `<Package>_<Target>.bundle` on Apple platforms and
+    /// `.resources` elsewhere; a complete runtime must not be reported as missing them.
+    @Test func runtimeValidationLooksForThisPlatformsResourceBundles() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-runtime-bundles-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        try makeExecutableStub(at: tempRoot.appendingPathComponent("wax-cli"))
+        try makeExecutableStub(at: tempRoot.appendingPathComponent("wax-mcp"))
+        #if canImport(Darwin)
+        let bundles = [
+            "Wax_Wax.bundle", "Wax_WaxBertTokenizer.bundle", "Wax_WaxVectorSearch.bundle",
+            "MetalANNS_MetalANNSCore.bundle", "Wax_WaxVectorSearchMiniLM.bundle",
+        ]
+        #else
+        let bundles = [
+            "Wax_Wax.resources", "Wax_WaxBertTokenizer.resources", "Wax_WaxVectorSearch.resources",
+            "Wax_WaxVectorSearchMiniLM.resources",
+        ]
+        #endif
+        for bundle in bundles {
+            try FileManager.default.createDirectory(
+                at: tempRoot.appendingPathComponent(bundle, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let validation = try Pathing.validateMCPRuntime(
+            serverPath: tempRoot.appendingPathComponent("wax-mcp").path,
+            expectVectorRuntime: true
+        )
+        #expect(validation.failures.isEmpty)
+        #expect(validation.warnings.isEmpty, "\(validation.warnings)")
+    }
+
     @Test func buildWaxMCPBinariesWritesRelocatableChecksums() async throws {
         let sourceRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let fixtureRoot = FileManager.default.temporaryDirectory

@@ -469,12 +469,23 @@ enum Pathing {
             }
         }
 
+        #if canImport(Darwin)
         let recommendedBundles = [
             "Wax_Wax.bundle",
             "Wax_WaxBertTokenizer.bundle",
             "Wax_WaxVectorSearch.bundle",
             "MetalANNS_MetalANNSCore.bundle",
         ]
+        let vectorBundle = "Wax_WaxVectorSearchMiniLM.bundle"
+        #else
+        // SwiftPM names resource bundles `.resources` off Apple platforms; MetalANNS is Apple-only.
+        let recommendedBundles = [
+            "Wax_Wax.resources",
+            "Wax_WaxBertTokenizer.resources",
+            "Wax_WaxVectorSearch.resources",
+        ]
+        let vectorBundle = "Wax_WaxVectorSearchMiniLM.resources"
+        #endif
         for bundle in recommendedBundles {
             let bundlePath = directory.appendingPathComponent(bundle).path
             if !FileManager.default.fileExists(atPath: bundlePath) {
@@ -483,7 +494,7 @@ enum Pathing {
         }
 
         if expectVectorRuntime {
-            let vectorBundlePath = directory.appendingPathComponent("Wax_WaxVectorSearchMiniLM.bundle").path
+            let vectorBundlePath = directory.appendingPathComponent(vectorBundle).path
             if !FileManager.default.fileExists(atPath: vectorBundlePath) {
                 validation.warnings.append("Vector runtime bundle missing: \(vectorBundlePath)")
             }
