@@ -19,10 +19,7 @@ waxIntegrationLinuxExcludes = [
     "MetalVectorEnginePoolTests.swift",
     "MiniLMBatchBuilderTests.swift",
     "MiniLMEmbedderBatchPlanningTests.swift",
-    "MiniLMEmbedderTests.swift",
-    "MiniLMEmbeddingQualityTests.swift",
     "MiniLMFloat16DecodingTests.swift",
-    "MiniLMResourceFailureTests.swift",
     "Mocks/MockProviders.swift",
     "OptimizationComparisonBenchmark.swift",
     "PDFIngestTests.swift",
@@ -208,6 +205,17 @@ let package = Package(
             dependencies: ["WaxMILKernelsC"],
             path: "Sources/WaxMILRuntime"
         ),
+        // Tokenize-and-run helpers shared by the built-in models' WaxMILRuntime paths, which
+        // platforms without Core ML use. Package-internal; not a product.
+        .target(
+            name: "WaxMILEncoder",
+            dependencies: [
+                "WaxCore",
+                "WaxBertTokenizer",
+                "WaxMILRuntime",
+            ],
+            path: "Sources/WaxMILEncoder"
+        ),
         .target(
             name: "WaxVectorSearch",
             dependencies: [
@@ -226,6 +234,8 @@ let package = Package(
             dependencies: [
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
+                "WaxMILRuntime",
+                "WaxMILEncoder",
             ],
             resources: [
                 .copy("Resources/all-MiniLM-L6-v2.mlmodelc"),
@@ -236,6 +246,8 @@ let package = Package(
             dependencies: [
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
+                "WaxMILRuntime",
+                "WaxMILEncoder",
             ],
             resources: [
                 .copy("Resources/snowflake-arctic-embed-s.mlmodelc"),
@@ -246,6 +258,8 @@ let package = Package(
             dependencies: [
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
+                "WaxMILRuntime",
+                "WaxMILEncoder",
             ],
             resources: [
                 .copy("Resources/e5-small-v2.mlmodelc"),
@@ -258,6 +272,8 @@ let package = Package(
                 "WaxCore",
                 "WaxVectorSearch",
                 "WaxBertTokenizer",
+                "WaxMILRuntime",
+                "WaxMILEncoder",
             ],
             resources: [
                 .copy("Resources/ms-marco-MiniLM-L-6-v2.mlmodelc"),
@@ -387,6 +403,8 @@ let package = Package(
             dependencies: [
                 "WaxMILRuntime",
                 "WaxMILKernelsC",
+                "WaxMILEncoder",
+                "WaxBertTokenizer",
             ],
             path: "Tests/WaxMILRuntimeTests",
             resources: [.process("Fixtures")]

@@ -2,11 +2,11 @@ import Foundation
 import Wax
 import WaxCore
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 #endif
 
-#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+#if ArcticEmbeddings && canImport(WaxVectorSearchArctic)
 import WaxVectorSearchArctic
 #endif
 
@@ -16,7 +16,7 @@ enum StoreSession {
 
     /// Whether this binary was compiled with MiniLM embedding support.
     static var miniLMCompiled: Bool {
-        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+        #if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
         return true
         #else
         return false
@@ -25,7 +25,7 @@ enum StoreSession {
 
     /// Whether this binary was compiled with Arctic Embed Small support.
     static var arcticCompiled: Bool {
-        #if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+        #if ArcticEmbeddings && canImport(WaxVectorSearchArctic)
         return true
         #else
         return false

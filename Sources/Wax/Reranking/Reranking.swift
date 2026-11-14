@@ -68,7 +68,11 @@ public enum BuiltInRerankerError: LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unavailable(let reranker):
+            #if canImport(CoreML)
             "\(reranker.rawValue) reranking is unavailable: it requires iOS 18/macOS 15 or later and the `MiniLMReranker` package trait."
+            #else
+            "\(reranker.rawValue) reranking is unavailable: it requires the `MiniLMReranker` package trait."
+            #endif
         case .timedOut(let reranker):
             "\(reranker.rawValue) reranking timed out while loading its model."
         }

@@ -86,6 +86,9 @@ import Testing
     let portable = [
         "BertTokenizerFastPathTests.swift",
         "BertTokenizerReuseTests.swift",
+        "MiniLMEmbedderTests.swift",
+        "MiniLMEmbeddingQualityTests.swift",
+        "MiniLMResourceFailureTests.swift",
     ]
     for file in portable {
         #expect(!excludes.contains(#""\#(file)""#), "\(file) is portable; do not exclude it on Linux")

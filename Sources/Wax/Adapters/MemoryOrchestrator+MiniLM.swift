@@ -1,4 +1,4 @@
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import Foundation
 import WaxVectorSearchMiniLM
 

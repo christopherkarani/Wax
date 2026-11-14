@@ -1,4 +1,4 @@
-#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if canImport(WaxVectorSearchMiniLM)
 import Foundation
 import Testing
 import WaxCore
@@ -18,6 +18,7 @@ func miniLMEmbeddingsMakeTimesOutWhenModelLoadBlocks() async throws {
     }
 }
 
+#if canImport(Darwin)
 /// A Core ML load blocks its thread for the whole load, and a load that times out keeps
 /// running. On a cooperative thread it stalls every other task in the process, so the
 /// load must run on a GCD thread.
@@ -44,6 +45,7 @@ private final class LoadQueueLabel: @unchecked Sendable {
     func set(_ value: String) { lock.withLock { label = value } }
     func get() -> String? { lock.withLock { label } }
 }
+#endif
 
 @available(macOS 15.0, iOS 18.0, *)
 @Test

@@ -1,5 +1,7 @@
+#if canImport(WaxRerankerMiniLM)
 #if canImport(CoreML)
 import CoreML
+#endif
 import Foundation
 import Testing
 import WaxBertTokenizer
@@ -115,6 +117,7 @@ struct MiniLMRerankerOutputTests {
         #expect(MiniLMReranker.defaultBatchSize <= MiniLMRerankerModel.maximumPredictionBatchSize)
     }
 
+    #if canImport(CoreML)
     @available(macOS 15.0, iOS 18.0, *)
     @Test func decodesOneScorePerRow() throws {
         let array = try MLMultiArray(shape: [3, 1], dataType: .float32)
@@ -140,6 +143,7 @@ struct MiniLMRerankerOutputTests {
             try MiniLMRerankerModel.decode(nan, batchSize: 1)
         }
     }
+    #endif
 
     @available(macOS 15.0, iOS 18.0, *)
     @Test func bucketsPadToTheSmallestFittingLength() {
@@ -149,8 +153,8 @@ struct MiniLMRerankerOutputTests {
     }
 }
 
-/// Real Core ML inference against the bundled model. Guarded by WAX_TEST_RERANKER=1, like the
-/// embedders' inference suites.
+/// Real inference against the bundled model: Core ML on Apple platforms, WaxMILRuntime
+/// elsewhere. Guarded by WAX_TEST_RERANKER=1, like the embedders' inference suites.
 @Suite(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_RERANKER"] != "1",
                  "Set WAX_TEST_RERANKER=1 to run MiniLM reranker inference tests"))
 struct MiniLMRerankerInferenceTests {
@@ -159,11 +163,24 @@ struct MiniLMRerankerInferenceTests {
     /// matched the FP32 graph: LongMemEval R_all@5 0.938 both, LoCoMo 0.6085 against 0.6091.
     static let tolerance: Float = 0.1
 
+    #if canImport(CoreML)
     @available(macOS 15.0, iOS 18.0, *)
     @Test(arguments: [MLComputeUnits.cpuOnly, .cpuAndGPU, .all])
     func scoresMatchPyTorch(computeUnits: MLComputeUnits) async throws {
-        let reference = try RerankerReference.load()
         let reranker = try await MiniLMReranker.make(computeUnits: computeUnits, timeout: .seconds(300))
+        try await Self.expectScoresMatchPyTorch(reranker)
+    }
+    #else
+    /// WaxMILRuntime on INT8 weights in FP32: measured within 0.018 logits of PyTorch fp32.
+    @Test func scoresMatchPyTorch() async throws {
+        let reranker = try await MiniLMReranker.make(timeout: .seconds(300))
+        try await Self.expectScoresMatchPyTorch(reranker)
+    }
+    #endif
+
+    @available(macOS 15.0, iOS 18.0, *)
+    static func expectScoresMatchPyTorch(_ reranker: MiniLMReranker) async throws {
+        let reference = try RerankerReference.load()
         for item in reference.cases {
             let scores = try await reranker.scores(query: item.query, documents: item.documents)
             #expect(scores.count == item.scores.count)
@@ -176,7 +193,11 @@ struct MiniLMRerankerInferenceTests {
     @available(macOS 15.0, iOS 18.0, *)
     @Test func batchSizeDoesNotChangeScores() async throws {
         let reference = try RerankerReference.load()
+        #if canImport(CoreML)
         let model = try MiniLMRerankerModel.bundled(computeUnits: .cpuOnly)
+        #else
+        let model = try MiniLMRerankerModel.bundled()
+        #endif
         let single = try MiniLMReranker(model: model, tokenizer: BertTokenizer(), batchSize: 1)
         let batched = try MiniLMReranker(model: model, tokenizer: BertTokenizer(), batchSize: 64)
         let item = reference.cases[0]

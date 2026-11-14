@@ -2,8 +2,10 @@ import Foundation
 import WaxCore
 import WaxVectorSearch
 
-#if MiniLMReranker && canImport(WaxRerankerMiniLM) && canImport(CoreML)
+#if MiniLMReranker && canImport(WaxRerankerMiniLM)
+#if canImport(CoreML)
 import CoreML
+#endif
 import WaxRerankerMiniLM
 #endif
 
@@ -25,6 +27,14 @@ package enum BuiltInRerankerCompiler {
                     computeUnits: computeUnit.commandLineValue.coreMLValue,
                     timeout: timeout
                 )
+            } catch is AsyncTimeout.TimeoutError {
+                throw BuiltInRerankerError.timedOut(reranker)
+            }
+            #elseif MiniLMReranker && canImport(WaxRerankerMiniLM)
+            // WaxMILRuntime runs on the CPU; a Core ML compute unit does not apply.
+            _ = computeUnit
+            do {
+                return try await MiniLMReranker.make(timeout: timeout)
             } catch is AsyncTimeout.TimeoutError {
                 throw BuiltInRerankerError.timedOut(reranker)
             }

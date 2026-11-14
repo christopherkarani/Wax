@@ -1,4 +1,4 @@
-#if canImport(CoreML)
+#if canImport(WaxVectorSearchArctic)
 import Foundation
 import Testing
 @testable import WaxVectorSearchArctic

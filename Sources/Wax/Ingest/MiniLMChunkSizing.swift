@@ -1,5 +1,5 @@
 import Foundation
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 #endif
 
@@ -23,7 +23,7 @@ package enum MiniLMChunkSizing {
     /// Re-splits chunks that would exceed the MiniLM input window. A no-op when the MiniLM
     /// tokenizer is not built in (MiniLM cannot embed in that build either).
     package static func fit(_ chunks: [String]) async -> [String] {
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
         guard let tokenizer else { return chunks }
         return await TextChunker.fit(chunks, inputTokenLimit: inputTokenLimit) {
             tokenizer.tokenize(text: $0).count + 2
@@ -33,7 +33,7 @@ package enum MiniLMChunkSizing {
 #endif
     }
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
     private static let tokenizer: BertTokenizer? = {
         do {
             return try BertTokenizer()

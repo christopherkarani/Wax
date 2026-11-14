@@ -1,6 +1,7 @@
 import Foundation
 #if canImport(CoreML)
 @preconcurrency import CoreML
+#endif
 import WaxBertTokenizer
 import WaxCore
 import WaxVectorSearch
@@ -41,6 +42,7 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
         self.batchSize = min(max(1, batchSize), MiniLMRerankerModel.maximumPredictionBatchSize)
     }
 
+    #if canImport(CoreML)
     /// Loads the bundled model (cached per compute unit) under `timeout`.
     package static func make(
         computeUnits: MLComputeUnits = .cpuOnly,
@@ -58,6 +60,25 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
             }
         }
     }
+    #else
+    /// Loads the bundled model (once per process) under `timeout`. It runs on WaxMILRuntime on
+    /// the CPU, so there is no compute-unit choice.
+    package static func make(
+        batchSize: Int = defaultBatchSize,
+        timeout: Duration
+    ) async throws -> MiniLMReranker {
+        try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM reranker model load") {
+            // Parsing and dequantising the weights blocks its thread.
+            try await BlockingWork.run { () throws -> MiniLMReranker in
+                try MiniLMReranker(
+                    model: MiniLMRerankerModel.bundled(),
+                    tokenizer: BertTokenizer(),
+                    batchSize: batchSize
+                )
+            }
+        }
+    }
+    #endif
 
     package func scores(query: String, documents: [String]) async throws -> [Float] {
         guard !documents.isEmpty else { return [] }
@@ -141,4 +162,3 @@ package final class MiniLMReranker: RerankingProvider, @unchecked Sendable {
         return results
     }
 }
-#endif

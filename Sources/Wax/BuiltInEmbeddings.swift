@@ -119,6 +119,7 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unavailable(let provider):
+            #if canImport(CoreML)
             let requirement: String = switch provider {
             case .miniLM:
                 "requires iOS 18/macOS 15 or later and the default `MiniLMEmbeddings` package trait"
@@ -128,6 +129,18 @@ public enum BuiltInEmbeddingProviderError: LocalizedError, Sendable, Equatable {
                 "requires iOS 18/macOS 15 or later and the default `E5Embeddings` package trait"
             }
             return "\(provider.rawValue) embeddings are unavailable: \(requirement). On older OS versions, pass a custom EmbeddingProvider or use text-only search."
+            #else
+            // Without Core ML the built-ins run on WaxMILRuntime; only the trait gates them.
+            let requirement: String = switch provider {
+            case .miniLM:
+                "requires the default `MiniLMEmbeddings` package trait"
+            case .arctic:
+                "requires the `ArcticEmbeddings` package trait"
+            case .e5:
+                "requires the default `E5Embeddings` package trait"
+            }
+            return "\(provider.rawValue) embeddings are unavailable: \(requirement). Without it, pass a custom EmbeddingProvider or use text-only search."
+            #endif
         case .timedOut(let provider):
             return "\(provider.rawValue) embeddings timed out while loading. Retry; the compile is kept and a later open can reuse it."
         }

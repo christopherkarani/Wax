@@ -1,12 +1,14 @@
-#if canImport(WaxVectorSearchE5) && canImport(CoreML)
+#if canImport(WaxVectorSearchE5)
+#if canImport(CoreML)
 import CoreML
+#endif
 import Foundation
 import Testing
 import WaxVectorSearch
 @_spi(Testing) @testable import WaxVectorSearchE5
 
-/// Real Core ML inference against the bundled e5-small-v2 model. Guarded by WAX_TEST_E5=1,
-/// like the Arctic and MiniLM inference suites.
+/// Real inference against the bundled e5-small-v2 model: Core ML on Apple platforms,
+/// WaxMILRuntime elsewhere. Guarded by WAX_TEST_E5=1, like the Arctic and MiniLM inference suites.
 @Suite(.disabled(if: ProcessInfo.processInfo.environment["WAX_TEST_E5"] != "1",
                  "Set WAX_TEST_E5=1 to run e5 embedder tests"))
 struct E5EmbedderTests {
@@ -157,6 +159,7 @@ struct E5EmbedderTests {
         }
     }
 
+    #if canImport(CoreML)
     @Test
     func predictionErrorsPropagateInsteadOfBecomingNil() async throws {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
@@ -174,5 +177,6 @@ struct E5EmbedderTests {
         guard #available(macOS 15.0, iOS 18.0, *) else { return }
         #expect(try E5Embeddings().computeUnits == .cpuOnly)
     }
+    #endif
 }
 #endif

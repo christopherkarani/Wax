@@ -14,11 +14,11 @@ import Glibc
 import Musl
 #endif
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 #endif
 
-#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+#if ArcticEmbeddings && canImport(WaxVectorSearchArctic)
 import WaxVectorSearchArctic
 #endif
 

@@ -88,8 +88,10 @@ private struct CancellationIgnoringEmbedder: EmbeddingProvider, Sendable {
     }
 }
 
+#if canImport(WaxVectorSearchMiniLM) && canImport(WaxVectorSearchArctic)
 #if canImport(CoreML)
 import CoreML
+#endif
 @testable import WaxVectorSearchMiniLM
 @testable import WaxVectorSearchArctic
 
@@ -148,10 +150,14 @@ struct QueryAwareEmbeddingTests {
 
 @available(macOS 15.0, iOS 18.0, *)
 private func makeMiniLMEmbedderForTesting() throws -> MiniLMEmbedder {
+    #if canImport(CoreML)
     let modelConfiguration = MLModelConfiguration()
     modelConfiguration.computeUnits = .cpuOnly
     return try MiniLMEmbedder(
         config: .init(batchSize: 1, modelConfiguration: modelConfiguration)
     )
+    #else
+    return try MiniLMEmbedder(config: .init(batchSize: 1))
+    #endif
 }
 #endif

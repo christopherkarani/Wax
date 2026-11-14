@@ -4,7 +4,7 @@ import Testing
 import WaxCore
 import WaxVectorSearch
 
-#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if MiniLMEmbeddings && canImport(WaxVectorSearchMiniLM)
 import WaxVectorSearchMiniLM
 
 /// Claims an identity without running a model: chunk sizing only reads the identity.

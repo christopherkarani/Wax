@@ -1,8 +1,10 @@
 import Foundation
 import Testing
 
-#if canImport(WaxVectorSearchMiniLM) && canImport(CoreML)
+#if canImport(WaxVectorSearchMiniLM)
+#if canImport(CoreML)
 import CoreML
+#endif
 import WaxBertTokenizer
 import WaxVectorSearchMiniLM
 
@@ -11,17 +13,25 @@ private struct StubMiniLMModel: MiniLMEmbeddingModel {
     let single: [Float]?
     let batch: [[Float]]?
     var error: Error?
-    let computeUnits: MLComputeUnits = .cpuOnly
 
     func encode(sentence: String) async throws -> [Float]? {
         if let error { throw error }
         return single
     }
 
+    #if canImport(CoreML)
+    let computeUnits: MLComputeUnits = .cpuOnly
+
     func encode(batch sentences: [String], reuseBuffers: inout BatchInputBuffers?) async throws -> [[Float]]? {
         if let error { throw error }
         return batch
     }
+    #else
+    func encode(batch sentences: [String]) async throws -> [[Float]]? {
+        if let error { throw error }
+        return batch
+    }
+    #endif
 }
 
 private struct StubMiniLMError: Error {}
@@ -150,6 +160,7 @@ func miniLMEmbedderPrewarmDoesNotThrow() async throws {
     try await embedder.prewarm()
 }
 
+#if canImport(Darwin)
 /// Concurrent batch embedding keeps the prediction queue busy back to back. Before the
 /// queue drained its autorelease pool per work item, CoreML outputs piled up (~17 MB per
 /// 1,000 embeds) until IOSurface allocation failed and CoreML raised an uncaught NSException.
@@ -193,6 +204,7 @@ private func physicalFootprintMB() -> Double {
     precondition(result == KERN_SUCCESS, "task_info failed: \(result)")
     return Double(info.phys_footprint) / 1_048_576
 }
+#endif
 
 private func assertVectorsClose(_ lhs: [Float], _ rhs: [Float], tolerance: Float) {
     #expect(lhs.count == rhs.count)

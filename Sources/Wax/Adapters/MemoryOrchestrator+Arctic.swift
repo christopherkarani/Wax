@@ -1,4 +1,4 @@
-#if ArcticEmbeddings && canImport(WaxVectorSearchArctic) && canImport(CoreML)
+#if ArcticEmbeddings && canImport(WaxVectorSearchArctic)
 import Foundation
 import WaxVectorSearchArctic
 
