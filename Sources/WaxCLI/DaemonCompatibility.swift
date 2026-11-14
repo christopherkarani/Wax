@@ -155,14 +155,14 @@ private extension CLIDaemonSession {
         }
 
         let modeString = request.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "text"
-        let mode: Memory.RetrievalMode
+        let mode: SearchModeRequest
         switch modeString {
         case "text":
             mode = .textOnly
         case "vector":
             mode = .vectorOnly
         case "hybrid":
-            mode = .hybrid(alpha: 0.5)
+            mode = .hybrid(alpha: nil)
         default:
             throw CLIError("mode must be one of: text, vector, hybrid")
         }
