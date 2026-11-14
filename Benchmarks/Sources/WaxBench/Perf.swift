@@ -383,6 +383,8 @@ func expectedWaxVectorEngine(vectorCount: Int) -> String {
 func perfConfig(embedder: PrecomputedEmbeddings) -> Memory.Config {
     var config = Memory.Config.default
     config.embedding = .custom(embedder)
+    // The systems benchmark measures retrieval: no cross-encoder on the hybrid and text lanes.
+    config.reranking = .disabled
     return config
 }
 

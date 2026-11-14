@@ -95,7 +95,14 @@ public enum BuiltInRerankers {
 extension Memory {
     /// Selects the reranker, if any, that reorders a search's top candidates.
     public enum RerankingSource: Sendable {
-        /// No reranking (the default): search results keep their retrieval order.
+        /// The default: hybrid and text searches rerank their top 20 candidates with the
+        /// built-in ms-marco-MiniLM-L-6-v2 cross-encoder (``RerankingOptions/default``), the
+        /// configuration behind Wax's published LongMemEval and LoCoMo results. Vector-only
+        /// searches are not reranked. The model loads on the first reranked search. Without
+        /// the `MiniLMReranker` trait (on by default), before iOS 18 / macOS 15, or if the
+        /// model fails to load, results keep their retrieval order.
+        case automatic
+        /// No reranking: search results keep their retrieval order.
         case disabled
         /// Use one of Wax's built-in rerankers on the CPU. Store creation throws
         /// ``BuiltInRerankerError`` if it cannot load (trait compiled out, unsupported OS).
