@@ -5,10 +5,13 @@ import MCP
 import NIOCore
 import NIOPosix
 import Testing
+import WaxTestSupport
 @testable import wax_mcp
 
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 @Test(.timeLimit(.minutes(1)))
@@ -284,10 +287,12 @@ private func connectedSocketsBlocking(port: Int) throws -> Int {
 }
 
 private func connectLoopback(_ port: Int) throws -> Int32 {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    let fd = socket(AF_INET, TestPOSIX.sockStream, 0)
     guard fd >= 0 else { throw HTTPLeakTestError.socket }
     var address = sockaddr_in()
+    #if canImport(Darwin)
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    #endif
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = in_port_t(port).bigEndian
     address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))

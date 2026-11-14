@@ -13,6 +13,7 @@ import NIOEmbedded
 import NIOHTTP1
 @testable import wax_mcp
 @testable import Wax
+import WaxTestSupport
 import XCTest
 
 private let waxMCPTestSignalSetup: Void = {
@@ -329,12 +330,6 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     }
 }
 
-#if canImport(Darwin)
-private let testUnixStreamSocketType: Int32 = SOCK_STREAM
-#else
-private let testUnixStreamSocketType: Int32 = Int32(SOCK_STREAM.rawValue)
-#endif
-
 private func testBrokerConfiguration(root: URL, socketPath: String) -> AgentBrokerConfiguration {
     AgentBrokerConfiguration(
         brokerExecutablePath: "/nonexistent/wax-cli-must-not-start",
@@ -349,7 +344,7 @@ private func testBrokerConfiguration(root: URL, socketPath: String) -> AgentBrok
 }
 
 private func bindAndListenUnixSocket(at path: String) throws -> Int32 {
-    let fd = socket(AF_UNIX, testUnixStreamSocketType, 0)
+    let fd = socket(AF_UNIX, TestPOSIX.sockStream, 0)
     guard fd >= 0 else {
         throw TestUnixSocketError("socket: \(String(cString: strerror(errno)))")
     }
@@ -7388,7 +7383,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
                 Thread.sleep(forTimeInterval: 0.05)
             }
             if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
+                TestPOSIX.kill(process.processIdentifier, SIGKILL)
                 let forceDeadline = Date().addingTimeInterval(1)
                 while process.isRunning, Date() < forceDeadline {
                     Thread.sleep(forTimeInterval: 0.05)
@@ -7471,7 +7466,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         guard process.processIdentifier > 0 else {
             throw NSError(domain: "MCPServerProcessHarness", code: 1)
         }
-        Darwin.kill(process.processIdentifier, signal)
+        TestPOSIX.kill(process.processIdentifier, signal)
     }
 
     func waitForResponseLine(id: Int, timeout: TimeInterval = 5) async throws -> String {
@@ -7700,7 +7695,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             return nil
         }
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, TestPOSIX.sockStream, 0)
         guard fd >= 0 else {
             return nil
         }
@@ -7736,7 +7731,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         let payload = try JSONEncoder().encode(request)
         handle.write(payload)
         handle.write(Data([0x0A]))
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, TestPOSIX.shutWrite)
 
         let data = try handle.readToEnd() ?? Data()
         guard let line = String(data: data, encoding: .utf8)?
@@ -7754,7 +7749,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
             return
         }
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, TestPOSIX.sockStream, 0)
         guard fd >= 0 else {
             return
         }
@@ -7790,7 +7785,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         let payload = try JSONEncoder().encode(AgentBrokerRequest(command: "shutdown"))
         handle.write(payload)
         handle.write(Data([0x0A]))
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, TestPOSIX.shutWrite)
     }
 }
 
