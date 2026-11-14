@@ -263,7 +263,7 @@ struct WaxCrashHarness {
     }
 
     private static func runChildProcess(storeURL: URL, scenario: CrashScenario) throws -> (status: Int32, reason: Process.TerminationReason) {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         var env = ProcessInfo.processInfo.environment
         env[roleEnv] = "child"

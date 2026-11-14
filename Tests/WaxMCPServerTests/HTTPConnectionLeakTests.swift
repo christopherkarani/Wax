@@ -269,7 +269,7 @@ private func connectedSocketsBlocking(port: Int) throws -> Int {
     }) else {
         throw HTTPLeakTestError.lsofMissing
     }
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = URL(fileURLWithPath: lsofPath)
     process.arguments = ["-n", "-P", "-p", String(getpid())]
     let output = Pipe()

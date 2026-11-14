@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 extension MemorySemantics {
     /// Walks `path` by dropping string components. Never uses `URL.deletingLastPathComponent`,
@@ -251,7 +252,7 @@ extension MemorySemantics {
     }
 
     private static func isGitAncestor(_ stored: String, of live: String, repoRootPath: String) -> Bool {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", repoRootPath, "merge-base", "--is-ancestor", stored, live]
         process.standardOutput = Pipe()

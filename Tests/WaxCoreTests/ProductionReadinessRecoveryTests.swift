@@ -330,7 +330,7 @@ private func copyMigrationFixtureBlocking(named name: String) throws -> URL {
     let output = try FileHandle(forWritingTo: destination)
     defer { try? output.close() }
 
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = try gzipExecutableURL()
     process.arguments = ["-dc", bundled.path]
     process.standardOutput = output

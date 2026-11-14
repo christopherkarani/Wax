@@ -81,7 +81,7 @@ enum GitLogParser {
         // private serial queue: off the cooperative pool, and not queued behind other
         // work on a shared global queue.
         try await BlockingWork.run { () throws -> String in
-            let process = Process()
+            let process = ChildProcess()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = arguments
 

@@ -728,7 +728,7 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: hooksURL, withIntermediateDirectories: true)
 
         let cli = try builtProductPath(named: "wax-cli")
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: cli)
         process.arguments = [
             "daemon",
@@ -775,7 +775,7 @@ struct WaxCLIMemoryTests {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
 
         let cli = try builtProductPath(named: "wax-cli")
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: cli)
         process.arguments = [
             "daemon",
@@ -2062,7 +2062,7 @@ struct WaxCLIMemoryTests {
         input: String?,
         timeout: TimeInterval
     ) throws -> ProcessOutput {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = executableURL
         process.arguments = arguments
         var mergedEnvironment = ProcessInfo.processInfo.environment
@@ -2116,7 +2116,7 @@ struct WaxCLIMemoryTests {
     /// file can be refused. The daemon's `listening` test marker is written once it accepts.
     private func waitForListening(
         hooksDirectory: URL,
-        daemon: Process,
+        daemon: ChildProcess,
         timeout: TimeInterval
     ) async throws {
         let marker = hooksDirectory.appendingPathComponent("listening").path
@@ -2273,7 +2273,7 @@ struct WaxCLIMemoryTests {
         expectedToolName: String,
         timeout: TimeInterval
     ) throws -> ProcessOutput {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
         var mergedEnvironment = ProcessInfo.processInfo.environment

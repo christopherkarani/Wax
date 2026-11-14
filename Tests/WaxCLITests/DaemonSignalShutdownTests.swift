@@ -416,7 +416,7 @@ private struct DaemonFixture {
         environment: [String: String] = [:],
         stdio: Bool = false
     ) throws -> DaemonProcess {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
         process.arguments = [
             "daemon",
@@ -489,7 +489,7 @@ private struct DaemonFixture {
             "--no-embedder", "--format", "json", token,
         ]
         let (status, text) = try await BlockingWork.run { () throws -> (Int32?, String) in
-            let recall = Process()
+            let recall = ChildProcess()
             recall.executableURL = executable
             recall.arguments = arguments
             let output = Pipe()
@@ -549,13 +549,13 @@ private struct DaemonExit: CustomStringConvertible {
 }
 
 private final class DaemonProcess: @unchecked Sendable {
-    let process: Process
+    let process: ChildProcess
     let stdin: Pipe
     let stdout: Pipe
     private let exited = DispatchSemaphore(value: 0)
     private let exitClock = ExitClock()
 
-    init(process: Process, stdin: Pipe, stdout: Pipe) throws {
+    init(process: ChildProcess, stdin: Pipe, stdout: Pipe) throws {
         self.process = process
         self.stdin = stdin
         self.stdout = stdout

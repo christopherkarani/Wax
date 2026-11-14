@@ -263,7 +263,7 @@ private enum WaxCLIProcess {
         environment: [String: String],
         timeout: TimeInterval
     ) throws -> Output {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = executableURL
         process.arguments = arguments
         if !environment.isEmpty {

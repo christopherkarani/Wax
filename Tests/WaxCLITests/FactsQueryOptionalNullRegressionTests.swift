@@ -41,7 +41,7 @@ func factsQueryWithoutFiltersSucceedsViaCLI() async throws {
     }
 
     @Sendable func runBlocking(_ args: [String]) throws -> (Int32, String) {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = binary
         process.arguments = args
         var environment = ProcessInfo.processInfo.environment

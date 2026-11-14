@@ -60,22 +60,6 @@ import Glibc
         #expect(status == 0)
     }
 
-    @Test func aNilStreamIsTheNullDevice() async throws {
-        let (output, status) = try await BlockingWork.run { () throws -> (String, Int32) in
-            let pipe = Pipe()
-            let process = ChildProcess()
-            process.executableURL = URL(fileURLWithPath: "/bin/cat")
-            process.standardInput = nil
-            process.standardOutput = pipe
-            try process.run()
-            let output = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (String(decoding: output, as: UTF8.self), process.terminationStatus)
-        }
-        #expect(output.isEmpty)
-        #expect(status == 0)
-    }
-
     @Test func passesTheEnvironmentAndWorkingDirectory() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-child-\(UUID().uuidString)", isDirectory: true)
@@ -128,6 +112,23 @@ import Glibc
     }
 
     #if os(Linux)
+    /// corelibs maps a nil stream to /dev/null; Darwin's semantics are not asserted here.
+    @Test func aNilStreamIsTheNullDevice() async throws {
+        let (output, status) = try await BlockingWork.run { () throws -> (String, Int32) in
+            let pipe = Pipe()
+            let process = ChildProcess()
+            process.executableURL = URL(fileURLWithPath: "/bin/cat")
+            process.standardInput = nil
+            process.standardOutput = pipe
+            try process.run()
+            let output = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (String(decoding: output, as: UTF8.self), process.terminationStatus)
+        }
+        #expect(output.isEmpty)
+        #expect(status == 0)
+    }
+
     /// Foundation's children inherit any descriptor the parent opened without
     /// CLOEXEC after it listed `/proc/self/fd`. These children get stdio only.
     @Test func theChildInheritsOnlyStdio() async throws {
@@ -174,7 +175,96 @@ import Glibc
         #expect(status == 4)
         #expect(!isRunning)
     }
+
+    /// corelibs' `Process.run()` crashed a parallel test run (SIGSEGV in
+    /// memcpy under `findMaximumOpenFromProcSelfFD`) once the process held
+    /// about 1,350 descriptors: it copies each `/proc/self/fd` entry's whole
+    /// 256-byte `d_name` and reads past glibc's readdir buffer, which faults
+    /// when that buffer ends at the top of a malloc heap. Whether it faults
+    /// depends on the heap, so this test cannot make `Process` crash on demand;
+    /// it checks that `ChildProcess` spawns, shaped like the CLI test helper
+    /// that crashed (merged environment, two pipes, a termination handler,
+    /// several at once), keep working while the process holds that many.
+    @Test func spawnsConcurrentlyWhileTheProcessHoldsManyDescriptors() async throws {
+        let held = holdDescriptors(1_500)
+        defer { held.forEach { close($0) } }
+        let environment = ProcessInfo.processInfo.environment.merging(["WAX_CHILD_STRESS": "1"]) { $1 }
+        let workers = 8
+        let spawnsPerWorker = 25
+        let statuses = try await withThrowingTaskGroup(of: [Int32].self) { (group: inout ThrowingTaskGroup<[Int32], any Error>) in
+            for _ in 0..<workers {
+                group.addTask {
+                    try await BlockingWork.run { () throws -> [Int32] in
+                        var statuses: [Int32] = []
+                        for _ in 0..<spawnsPerWorker {
+                            statuses.append(try runLikeTheCLIHelper(environment: environment))
+                        }
+                        return statuses
+                    }
+                }
+            }
+            var all: [Int32] = []
+            for try await statuses in group { all += statuses }
+            return all
+        }
+        #expect(held.count == 1_500)
+        #expect(statuses.count == workers * spawnsPerWorker)
+        #expect(statuses.allSatisfy { $0 == 0 })
+    }
+
+    private func holdDescriptors(_ count: Int) -> [Int32] {
+        var held: [Int32] = []
+        for _ in 0..<count {
+            let descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
+            guard descriptor >= 0 else { break }
+            held.append(descriptor)
+        }
+        return held
+    }
+
+    private func runLikeTheCLIHelper(environment: [String: String]) throws -> Int32 {
+        let process = ChildProcess()
+        process.executableURL = URL(fileURLWithPath: "/bin/true")
+        process.environment = environment
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        let terminated = DispatchSemaphore(value: 0)
+        process.terminationHandler = { @Sendable (_: ChildProcess) in terminated.signal() }
+        try process.run()
+        _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        guard terminated.wait(timeout: .now() + 60) == .success else { throw TimedOut() }
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
     #endif
+
+    /// Every spawn in the package goes through `ChildProcess`, so none reaches
+    /// corelibs' `Process.run()` on Linux.
+    @Test func noSourceOrTestSpawnsWithFoundationProcess() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let construction = try Regex(#"\bProcess\(\)"#)
+        var offenders: [String] = []
+        for directory in ["Sources", "Tests"] {
+            let root = packageRoot.appendingPathComponent(directory)
+            guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            for case let file as URL in files where file.pathExtension == "swift" {
+                let source = try String(contentsOf: file, encoding: .utf8)
+                for (index, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+                    where line.contains(construction) {
+                    offenders.append("\(directory)/\(file.lastPathComponent):\(index + 1)")
+                }
+            }
+        }
+        #expect(offenders.isEmpty, "spawn with ChildProcess, not Process: \(offenders)")
+    }
 
     private func launch(_ path: String, _ arguments: [String]) throws -> ChildProcess {
         let process = ChildProcess()

@@ -31,7 +31,7 @@ final class CrashSafetyHarnessTests: XCTestCase {
     }
 
     private func runHarnessScenario(_ scenario: String) throws -> (status: Int32, stdout: String, stderr: String) {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = try harnessBinaryURL()
         process.arguments = ["--scenario", scenario]
         process.environment = ProcessInfo.processInfo.environment

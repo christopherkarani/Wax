@@ -197,7 +197,7 @@ package enum AgentBrokerClient {
             )
         }
 
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [
             configuration.brokerExecutablePath,
@@ -352,7 +352,7 @@ package enum AgentBrokerClient {
     /// the cooperative pool, where a cancelled caller cannot cut the grace short or
     /// skip the reap, and the reap is bounded so a child in uninterruptible I/O
     /// cannot hang the caller.
-    private static func terminateLaunchedBroker(_ process: Process) async {
+    private static func terminateLaunchedBroker(_ process: ChildProcess) async {
         guard process.isRunning else { return }
         let stillRunning = await BlockingWork.run {
             process.terminate()
@@ -373,7 +373,7 @@ package enum AgentBrokerClient {
     }
 
     /// Blocks until `process` exits or `seconds` pass. Returns whether it exited.
-    private static func waitForExit(_ process: Process, seconds: TimeInterval) -> Bool {
+    private static func waitForExit(_ process: ChildProcess, seconds: TimeInterval) -> Bool {
         let deadline = ContinuousClock.Instant.deadline(afterSeconds: seconds)
         while process.isRunning, ContinuousClock.now < deadline {
             usleep(10_000)

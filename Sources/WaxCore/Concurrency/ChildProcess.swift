@@ -1,8 +1,9 @@
-#if os(macOS)
+#if os(macOS) || targetEnvironment(macCatalyst)
 import Foundation
 
-/// A child process. On macOS this is Foundation's `Process`; on Linux it is a
-/// `posix_spawn` launcher with the same surface. See the Linux declaration.
+/// A child process. On Apple platforms this is Foundation's `Process`; on
+/// Linux it is a `posix_spawn` launcher with the same surface. See the Linux
+/// declaration.
 package typealias ChildProcess = Process
 
 #elseif os(Linux)
@@ -20,9 +21,10 @@ import Glibc
 ///   copies each entry's 256-byte `d_name` out of glibc's 32 KiB readdir
 ///   buffer. A record is only `d_reclen` bytes long, so once the process holds
 ///   about 1,350 descriptors the copy reads past the buffer, and it crashes
-///   with SIGSEGV when that buffer ends at the top of a malloc heap. Fixed
-///   upstream after 6.3. Here the child closes every descriptor above stderr
-///   itself (`posix_spawn_file_actions_addclosefrom_np`).
+///   with SIGSEGV when that buffer ends at the top of a malloc heap. It is
+///   fixed on corelibs' main branch, not in a release up to 6.3.1. Here the
+///   child closes every descriptor above stderr itself
+///   (`posix_spawn_file_actions_addclosefrom_np`).
 /// - It learns that a child exited only at EOF on a socket the child inherits
 ///   without `CLOEXEC`, and reaps it then. A grandchild, or a sibling spawned
 ///   on another thread at the same moment, can inherit that socket too, and
@@ -58,8 +60,9 @@ package final class ChildProcess: @unchecked Sendable {
 
     package init() {}
 
-    /// Called once, on a background thread, after the child has been reaped.
-    /// Set it before `run()`.
+    /// Called once, on a background thread, after the child has been reaped,
+    /// then cleared so a handler that captures the process does not keep it
+    /// alive. Set it before `run()`.
     package var terminationHandler: (@Sendable (ChildProcess) -> Void)? {
         get { condition.withLock { handler } }
         set { condition.withLock { handler = newValue } }
@@ -194,9 +197,9 @@ package final class ChildProcess: @unchecked Sendable {
         }
     }
 
-    /// The child's exit status once it has exited, nil while it runs. Matches
-    /// `Process.unreapedExitStatus()`, except that it keeps answering after
-    /// the reap.
+    /// The child's exit status once it has exited, nil while it runs. It reads
+    /// the exit with `waitid(WNOWAIT)` before the reaper has reaped the child,
+    /// and the recorded status after. The status matches `terminationStatus`.
     package func unreapedExitStatus() -> Int32? {
         condition.withLock {
             guard pid > 0 else { return nil }
@@ -260,6 +263,7 @@ package final class ChildProcess: @unchecked Sendable {
             }
             reaped = true
             condition.broadcast()
+            defer { self.handler = nil }
             return self.handler
         }
         handler?(self)

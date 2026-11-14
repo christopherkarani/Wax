@@ -10,7 +10,7 @@ func resolveRepoRoot(_ path: String) throws -> String {
         ? expanded
         : FileManager.default.currentDirectoryPath + "/" + expanded
 
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
     process.arguments = ["rev-parse", "--show-toplevel"]
     process.currentDirectoryURL = URL(fileURLWithPath: absolutePath)

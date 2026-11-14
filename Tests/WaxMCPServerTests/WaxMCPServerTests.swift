@@ -7276,7 +7276,7 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         let toolsList: String?
     }
 
-    private let process = Process()
+    private let process = ChildProcess()
     private let stdinPipe = Pipe()
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
@@ -9414,7 +9414,7 @@ private func expectVersion(executable: URL, expectedSubstring: String) async thr
 
 /// Runs `--version` on a GCD thread, off the cooperative pool.
 private func runVersion(executable: URL) throws -> (Int32, String, String) {
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = executable
     process.arguments = ["--version"]
     let stdout = Pipe()

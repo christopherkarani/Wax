@@ -556,7 +556,7 @@ package enum AgentBrokerPathing {
         #if os(iOS) || os(tvOS) || os(watchOS)
         nil
         #else
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["which", tool]
         process.environment = environment

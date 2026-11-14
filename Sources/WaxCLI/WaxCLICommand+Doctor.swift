@@ -422,7 +422,7 @@ extension ProcessRunner {
             }
         }
 
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
         process.environment = environment

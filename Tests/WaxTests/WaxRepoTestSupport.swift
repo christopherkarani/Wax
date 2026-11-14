@@ -116,7 +116,7 @@ enum WaxRepoProcess {
         currentDirectoryURL: URL?,
         timeout: TimeInterval
     ) throws -> Output {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = executableURL
         process.arguments = arguments
         process.currentDirectoryURL = currentDirectoryURL

@@ -13,7 +13,7 @@ head -c 200000 /dev/zero | tr '\\000' e 1>&2
 
 @Test(.timeLimit(.minutes(1)))
 func processPipeDrainCollectsLargeOutputOnBothStreams() throws {
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
     process.arguments = ["-c", bothStreamsScript]
     let stdout = Pipe()
@@ -49,7 +49,7 @@ func processPipeDrainStopsAtDeadlineWhileAWriterHoldsThePipe() throws {
 
 @Test(.timeLimit(.minutes(1)))
 func processPipeDrainKeepsReadingPastItsCap() throws {
-    let process = Process()
+    let process = ChildProcess()
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
     process.arguments = ["-c", bothStreamsScript]
     let stdout = Pipe()

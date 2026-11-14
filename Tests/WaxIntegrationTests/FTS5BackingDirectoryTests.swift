@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import WaxTextSearch
+import WaxCore
 
 /// A file-backed FTS5 index lives in a temp directory named for its owner's pid, so a later
 /// process removes copies whose owner exited before its engine's deinit could.
@@ -56,7 +57,7 @@ import Testing
 
     /// The pid of a child that has exited and been reaped.
     private func exitedProcessID() throws -> pid_t {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", "exit 0"]
         try process.run()

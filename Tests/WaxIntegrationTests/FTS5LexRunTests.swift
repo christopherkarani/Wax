@@ -215,7 +215,7 @@ private func copyLexMigrationFixture(named name: String) async throws -> URL {
         FileManager.default.createFile(atPath: destination.path, contents: nil)
         let output = try FileHandle(forWritingTo: destination)
         defer { try? output.close() }
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: gzip)
         process.arguments = ["-dc", bundled.path]
         process.standardOutput = output

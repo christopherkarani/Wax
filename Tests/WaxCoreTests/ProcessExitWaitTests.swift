@@ -3,7 +3,8 @@ import Foundation
 import Testing
 @testable import WaxCore
 
-/// `Process.waitForExit(timeout:)` returns for a child that is already gone,
+/// `ChildProcess.waitForExit(timeout:)` (Foundation's `Process` on macOS)
+/// returns for a child that is already gone,
 /// reports its status, and kills one that will not exit instead of waiting on it.
 @Suite struct ProcessExitWaitTests {
     private struct NeverReaped: Error, CustomStringConvertible {
@@ -63,9 +64,9 @@ import Testing
     }
 
     #if os(Linux)
-    /// A background grandchild inherits Foundation's exit-notification socket,
-    /// so `isRunning` stays true after the child exits; the unreaped status
-    /// still reports the child's own exit, without reaping it.
+    /// The child's own exit is reported while a background grandchild it left
+    /// running is still alive (under corelibs' `Process` that grandchild held
+    /// the child unreaped).
     @Test func unreapedExitStatusSeesAChildWhoseGrandchildOutlivesIt() async throws {
         let (status, signalStatus, runningStatus) = try await BlockingWork.run {
             () throws -> (Int32?, Int32?, Int32?) in
@@ -86,8 +87,8 @@ import Testing
     }
     #endif
 
-    private func launch(_ script: String) throws -> Process {
-        let process = Process()
+    private func launch(_ script: String) throws -> ChildProcess {
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
         process.standardOutput = FileHandle.nullDevice
@@ -96,8 +97,8 @@ import Testing
         return process
     }
 
-    /// Foundation clears isRunning once it has reaped the child.
-    private func waitUntilReaped(_ process: Process) throws {
+    /// isRunning clears once the child has been reaped.
+    private func waitUntilReaped(_ process: ChildProcess) throws {
         let deadline = Date().addingTimeInterval(30)
         while process.isRunning {
             guard Date() < deadline else { throw NeverReaped() }
