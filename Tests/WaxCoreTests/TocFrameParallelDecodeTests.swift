@@ -120,6 +120,65 @@ func chunkedFrameDecodeMatchesTheSequentialDecode(chunkCount: Int) throws {
     #expect(chunkedTruncated.error == sequentialTruncated.error)
 }
 
+/// Where each record starts: 0, then where the one before it ends.
+private func recordStarts(_ ends: [Int]) -> [Int] {
+    [0] + ends.dropLast()
+}
+
+@Test(arguments: [2, 7, 16])
+func chunkStartsAreFoundWithoutSkippingTheRecordsBeforeThem(chunkCount: Int) throws {
+    let frames = (0..<241).map(variedFrame)
+    var (bytes, ends) = try encodedFrames(frames)
+    bytes.append(contentsOf: [0xEE, 0xEE, 0xEE])
+    let starts = WaxTOC.speculativeChunkStarts(
+        count: frames.count,
+        chunkCount: chunkCount,
+        in: try BinaryDecoder(data: bytes)
+    )
+    #expect(starts.count == chunkCount)
+    #expect(starts.first == WaxTOC.FrameRecordStart(frame: 0, offset: 0))
+    #expect(zip(starts, starts.dropFirst()).allSatisfy { $0.frame < $1.frame && $0.offset < $1.offset })
+    let truth = recordStarts(ends)
+    for start in starts {
+        #expect(truth[start.frame] == start.offset)
+    }
+}
+
+/// A frame record with only its fixed fields, whose encoding is all ASCII when `id` is
+/// below 128.
+private func asciiFrame(_ id: Int) -> FrameMeta {
+    FrameMeta(
+        id: UInt64(id), timestamp: 1, payloadOffset: 1, payloadLength: 0,
+        checksum: Data(repeating: 0x41, count: 32), canonicalEncoding: .plain
+    )
+}
+
+/// A string that holds encoded frame records, so a search for where records start can land
+/// on records that are not there. The decode still returns exactly the sequential result.
+@Test func recordsInsideAStringDoNotChangeTheChunkedDecode() throws {
+    let fakes = try encodedFrames((100..<110).map(asciiFrame)).bytes
+    var fakeText = Data()
+    for _ in 0..<300 { fakeText.append(fakes) }
+    var frames = (0..<200).map(variedFrame)
+    frames[50].searchText = String(decoding: fakeText, as: UTF8.self)
+    #expect(frames[50].searchText?.utf8.count == fakeText.count)
+    var (bytes, ends) = try encodedFrames(frames)
+    let framesEnd = bytes.count
+    bytes.append(contentsOf: [0xEE, 0xEE, 0xEE])
+
+    let starts = WaxTOC.speculativeChunkStarts(
+        count: frames.count,
+        chunkCount: 8,
+        in: try BinaryDecoder(data: bytes)
+    )
+    let truth = recordStarts(ends)
+    #expect(starts.contains { truth[$0.frame] != $0.offset }, "the search lands inside frame 50's text")
+
+    let chunked = try decode(bytes, count: frames.count, chunkCount: 8)
+    #expect(chunked.frames == frames)
+    #expect(chunked.position == framesEnd)
+}
+
 @Test func tocAboveTheParallelThresholdDecodesTheFramesItEncoded() throws {
     var toc = WaxTOC.emptyV1()
     toc.frames = (0..<(WaxTOC.parallelFrameDecodeThreshold + 1_001)).map(variedFrame)

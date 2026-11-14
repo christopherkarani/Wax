@@ -63,7 +63,7 @@ func demoDefault() async throws {
 
     // Verify which retrieval mode actually ran.
     if let diagnostics = results.diagnostics {
-        print(diagnostics.effectiveMode)  // Memory.RetrievalMode (alias of SearchMode); prints "hybrid(alpha=0.500)" or "text"
+        print(diagnostics.effectiveMode)  // Memory.RetrievalMode (alias of SearchMode); prints "hybrid(alpha=0.400)" on an e5 store, "hybrid(alpha=0.500)" on others, or "text"
     }
 
     try await memory.close()
