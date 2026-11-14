@@ -493,7 +493,7 @@ package enum AgentBrokerClient {
     /// Kill a mute `wax-cli` broker we can identify, then let `startBrokerIfNeeded` relaunch it.
     /// Foreign listeners (tests, other apps) are left alone.
     private static func restartMuteOwnedBroker(configuration: AgentBrokerConfiguration) async throws -> Bool {
-        #if canImport(Darwin)
+        #if canImport(Darwin) || os(Linux)
         guard let pid = await ownedBrokerPeerPIDOffPool(socketPath: configuration.socketPath) else {
             return false
         }
@@ -562,6 +562,72 @@ package enum AgentBrokerClient {
         let path = String(decoding: buffer.prefix(Int(count)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name == "wax-cli"
+    }
+    #elseif os(Linux)
+    /// The pid of the `wax-cli` process listening at `socketPath`, or nil for no
+    /// listener, a foreign one, or one owned by another user. The connect runs
+    /// off the cooperative pool.
+    package static func ownedBrokerPeerPIDOffPool(socketPath: String) async -> pid_t? {
+        await BlockingWork.run {
+            guard let peer = peerCredentials(socketPath: socketPath),
+                  peer.uid == geteuid(),
+                  let path = executablePath(pid: peer.pid),
+                  executableName(fromProcExeLink: path) == "wax-cli" else {
+                return nil
+            }
+            return peer.pid
+        }
+    }
+
+    /// The pid and effective uid of the process that called `listen` on the socket
+    /// at `socketPath`, from `SO_PEERCRED`. Nil when nothing accepts connections there.
+    package static func peerCredentials(socketPath: String) -> (pid: pid_t, uid: uid_t)? {
+        let fd = socket(AF_UNIX, unixStreamSocketType, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return nil }
+        withUnsafeMutableBytes(of: &address.sun_path) { (buffer: UnsafeMutableRawBufferPointer) in
+            buffer.initializeMemory(as: CChar.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() {
+                buffer[index] = byte
+            }
+        }
+        let connected = withUnsafePointer(to: &address) { (pointer: UnsafePointer<sockaddr_un>) -> Bool in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { (sockaddrPointer: UnsafePointer<sockaddr>) -> Bool in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
+        guard connected else { return nil }
+        // `struct ucred` (pid_t pid, uid_t uid, gid_t gid). Glibc hides it behind
+        // _GNU_SOURCE, which Swift does not import, so it is spelled as a tuple.
+        var credentials: (pid: pid_t, uid: uid_t, gid: gid_t) = (0, 0, 0)
+        var length = socklen_t(MemoryLayout<(pid_t, uid_t, gid_t)>.size)
+        let result = getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length)
+        guard result == 0,
+              length == socklen_t(MemoryLayout<(pid_t, uid_t, gid_t)>.size),
+              credentials.pid > 1 else {
+            return nil
+        }
+        return (credentials.pid, credentials.uid)
+    }
+
+    /// The target of `/proc/<pid>/exe`, or nil when the process is gone or not readable.
+    package static func executablePath(pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+        let count = readlink("/proc/\(pid)/exe", &buffer, buffer.count - 1)
+        guard count > 0 else { return nil }
+        return String(decoding: buffer.prefix(count).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    /// The file name in a `/proc/<pid>/exe` link. The kernel appends " (deleted)" once
+    /// the binary is unlinked, as an upgrade does while the old broker keeps running.
+    package static func executableName(fromProcExeLink link: String) -> String {
+        let deletedMarker = " (deleted)"
+        let path = link.hasSuffix(deletedMarker) ? String(link.dropLast(deletedMarker.count)) : link
+        return URL(fileURLWithPath: path).lastPathComponent
     }
     #endif
 
