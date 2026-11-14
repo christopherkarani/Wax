@@ -290,7 +290,14 @@ func denseCachedSkipsSurrogateWhenFrameContentThrowsAndStillReturnsSnippets() as
         subset.metadata = meta
 
         let surrogateText = String(repeating: "Swift concurrency is deterministic. ", count: 500)
-        let surrogateId = try await wax.put(Data(surrogateText.utf8), options: subset, compression: .lzfse)
+        // LZFSE is Apple-only; Linux builds write lz4 and deflate, and store a
+        // requested lzfse payload uncompressed.
+        #if os(Linux)
+        let compression: CanonicalEncoding = .deflate
+        #else
+        let compression: CanonicalEncoding = .lzfse
+        #endif
+        let surrogateId = try await wax.put(Data(surrogateText.utf8), options: subset, compression: compression)
         try await wax.commit()
 
         let surrogateMeta = try await wax.frameMeta(frameId: surrogateId)
