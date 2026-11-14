@@ -2,8 +2,11 @@ import Foundation
 import Testing
 @testable import Wax
 import WaxCore
+import WaxTestSupport
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 @Suite struct BrokerClientRobustnessTests {
@@ -56,7 +59,7 @@ import Darwin
         #expect(missing == 7)
     }
 
-    #if os(macOS)
+    #if os(macOS) || os(Linux)
     /// A cancelled start must give the launched broker its SIGTERM grace. The
     /// child needs a moment to shut down cleanly, and writes its marker only
     /// if it is not SIGKILLed first.
@@ -119,6 +122,9 @@ import Darwin
         #expect(events == ["call-start", "sibling", "call-end"])
     }
 
+    // The owned-broker peer lookup reads LOCAL_PEERPID and proc_pidpath, which
+    // AgentBrokerClient implements only on Darwin.
+    #if canImport(Darwin)
     @Test func ownedBrokerPeerLookupDoesNotHoldTheCallersThread() async throws {
         guard #available(macOS 15.0, *) else { return }
         let fixture = try BrokerProcessFixture()
@@ -135,6 +141,7 @@ import Darwin
         #expect(pid == nil)
         #expect(events == ["call-start", "sibling", "call-end"])
     }
+    #endif
 
     /// The store lock probe waits up to 50ms while the lock is held.
     @Test func shutdownCompletionProbeDoesNotHoldTheCallersThread() async throws {
@@ -160,7 +167,7 @@ import Darwin
     #endif
 }
 
-#if os(macOS)
+#if os(macOS) || os(Linux)
 private struct BrokerProcessFixture {
     let root: URL
 
@@ -239,10 +246,12 @@ private struct BrokerProcessFixture {
     }
 
     func listen(at path: String) throws -> Int32 {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_UNIX, TestPOSIX.sockStream, 0)
         guard fd >= 0 else { throw BrokerFixtureError("socket failed") }
         var address = sockaddr_un()
+        #if canImport(Darwin)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
         address.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
         withUnsafeMutableBytes(of: &address.sun_path) { buffer in
@@ -256,12 +265,21 @@ private struct BrokerProcessFixture {
                 bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard bound == 0, Darwin.listen(fd, 8) == 0 else {
+        guard bound == 0, posixListen(fd, 8) == 0 else {
             close(fd)
             throw BrokerFixtureError("bind/listen failed at \(path)")
         }
         return fd
     }
+}
+
+/// `listen(2)`; inside ``BrokerProcessFixture`` the bare name resolves to its `listen(at:)`.
+private func posixListen(_ fd: Int32, _ backlog: Int32) -> Int32 {
+    #if canImport(Darwin)
+    return Darwin.listen(fd, backlog)
+    #else
+    return Glibc.listen(fd, backlog)
+    #endif
 }
 
 private struct BrokerFixtureError: Error, CustomStringConvertible {
