@@ -36,7 +36,8 @@ package enum MILBundledModels {
     ///
     /// SwiftPM names the bundle `<bundleBaseName>.bundle` on Apple platforms and
     /// `<bundleBaseName>.resources` elsewhere. Directories next to the (symlink-resolved)
-    /// executable are searched before `module`, the target's `Bundle.module`.
+    /// executable are searched first. Only then is `module`, the target's `Bundle.module`,
+    /// evaluated: SwiftPM's accessor stops the process when it finds no bundle.
     package static func modelDirectory(
         named name: String,
         bundleBaseName: String,
@@ -47,7 +48,9 @@ package enum MILBundledModels {
         #else
         let bundleName = bundleBaseName + ".resources"
         #endif
-        let bundle = WaxBundleResolver.resolveModule(named: bundleName, moduleFallback: module())
+        // `Bundle.main` stands in for "not found": the resolver returns its fallback then.
+        let located = WaxBundleResolver.resolveModule(named: bundleName, moduleFallback: .main)
+        let bundle = located.bundleURL.lastPathComponent == bundleName ? located : module()
         if let url = bundle.url(forResource: name, withExtension: "mlmodelc") {
             return url
         }

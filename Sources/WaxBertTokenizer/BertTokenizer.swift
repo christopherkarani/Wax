@@ -493,10 +493,14 @@ private extension BertTokenizer {
         }
         vocabCache.lock.unlock()
 
-        let bundle = WaxBertBundleResolver.resolveModule(
+        // `Bundle.main` stands in for "not found", so SwiftPM's `Bundle.module` accessor, which
+        // stops the process when it finds no bundle, runs only after the executable's
+        // directories were searched.
+        let located = WaxBertBundleResolver.resolveModule(
             named: resourceBundleName,
-            moduleFallback: .module
+            moduleFallback: .main
         )
+        let bundle = located.bundleURL.lastPathComponent == resourceBundleName ? located : .module
         guard let url = bundle.url(forResource: "bert_tokenizer_vocab", withExtension: "txt") else {
             throw BertTokenizerError.io("Missing vocabulary file: bert_tokenizer_vocab.txt")
         }
