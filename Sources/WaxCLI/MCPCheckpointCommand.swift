@@ -372,7 +372,7 @@ extension WaxCLI.MCP {
         var noEmbedder = false
 
         @Option(name: .customLong("embedder"), help: "Embedder identity used to locate the broker socket")
-        var embedder: String = EmbedderChoice.minilm.rawValue
+        var embedder: String = EmbedderChoice.auto.rawValue
 
         func run() throws {
             let outcome = MCPCheckpointRunner.run(

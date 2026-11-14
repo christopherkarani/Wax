@@ -26,7 +26,7 @@ Do not load this skill at session start or for MCP `remember` / `recall` /
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
-2. Open `Memory(at:)` — `.automatic` opens immediately while MiniLM loads (iOS 18/macOS 15+, default `MiniLMEmbeddings` trait), then live-attaches. Check `stats().embeddingStatus`.
+2. Open `Memory(at:)` — `.automatic` opens immediately while the built-in embedder loads (e5 for a new store, the one that wrote an existing store; iOS 18/macOS 15+, default `E5Embeddings` and `MiniLMEmbeddings` traits), then live-attaches. Check `stats().embeddingStatus`.
 3. Or select the embedder in config: `Memory(at: url) { $0.embedding = .custom(MyEmbedder()) }`, or force a built-in via `$0.embedding = .builtIn(.miniLM)` (throws when unavailable).
 4. Call `save(...)` to ingest and `search(...)` to retrieve `RAGContext`.
 5. Call `flush()` or `close()` to persist.

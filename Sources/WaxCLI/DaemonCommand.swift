@@ -21,7 +21,7 @@ struct DaemonCommand: AsyncParsableCommand {
 
     @Flag(
         name: .customLong("skip-prewarm"),
-        help: "Skip background embedder prewarm. Cold first writes may then wait on MiniLM."
+        help: "Skip background embedder prewarm. Cold first writes may then wait on the embedder."
     )
     var skipPrewarm = false
 

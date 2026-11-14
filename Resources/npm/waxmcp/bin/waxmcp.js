@@ -7,7 +7,8 @@
  *   npx waxmcp                    # Start MCP server (stdio, default store)
  *   npx waxmcp --transport http   # Start HTTP MCP server on :3000
  *   npx waxmcp --no-embedder      # Text-only search (no vector search)
- *   npx waxmcp --embedder arctic  # Opt in to Arctic embeddings (default: minilm)
+ *   npx waxmcp --embedder arctic  # Name the embedder for new stores (default: auto, which is
+ *                                 # e5 unless a store in use is bound to MiniLM)
  *   npx waxmcp mcp doctor         # Validate setup (routes to wax-cli)
  *
  * Environment:
@@ -32,6 +33,7 @@ const requiredRuntimeBundles = [
   "Wax_Wax.bundle",
   "Wax_WaxBertTokenizer.bundle",
   "Wax_WaxVectorSearch.bundle",
+  "Wax_WaxVectorSearchE5.bundle",
   "Wax_WaxVectorSearchMiniLM.bundle",
   "swift-crypto_Crypto.bundle",
   "swift-nio_NIOPosix.bundle",
@@ -51,7 +53,7 @@ Usage:
 
 Common server options:
   --transport http --http-host 127.0.0.1 --http-port 3000
-  --embedder minilm | --embedder arctic | --no-embedder
+  --embedder auto | --embedder minilm | --embedder e5 | --embedder arctic | --no-embedder
 
 Environment:
   WAX_MCP_INSTALL_ROOT   Install root (default: ~/.local/share/waxmcp)
@@ -595,7 +597,7 @@ exec "$install_root/runtime/${platformKey}/wax-mcp" \\
   --http-host 127.0.0.1 \\
   --http-port "\${WAX_MCP_HTTP_PORT:-3000}" \\
   --http-endpoint /mcp \\
-  --embedder minilm "$@"
+  --embedder auto "$@"
 `;
 
   const stagingRoot = fs.mkdtempSync(path.join(installRoot, ".waxmcp-stage-"));
@@ -767,8 +769,8 @@ if (forwardedArgs[0] === "install" || forwardedArgs[0] === "setup") {
   if (buildFromSource) {
     console.log("Building Wax from source (this may take a few minutes)...");
     const traits = installArgs.includes("--arctic")
-      ? "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
-      : "MiniLMEmbeddings,MCPServer";
+      ? "MiniLMEmbeddings,E5Embeddings,ArcticEmbeddings,MCPServer"
+      : "MiniLMEmbeddings,E5Embeddings,MCPServer";
 
     for (const product of ["wax-cli", "wax-mcp"]) {
       const result = spawnSync("swift", ["build", "--product", product, "--traits", traits], {
@@ -925,9 +927,9 @@ if (forwardedArgs[0] === "vector-health") {
         console.log("     npx -y waxmcp@latest install");
         console.log(`     ${persistentLauncher}`);
         console.log("   Then rerun: npx -y waxmcp@latest vector-health");
-        console.log("\n   Building from source? Build both binaries with MiniLM:");
-        console.log("     swift build --product wax-mcp --traits 'MiniLMEmbeddings,MCPServer'");
-        console.log("     swift build --product wax-cli --traits 'MiniLMEmbeddings'");
+        console.log("\n   Building from source? Build both binaries with MiniLM and e5:");
+        console.log("     swift build --product wax-mcp --traits 'MiniLMEmbeddings,E5Embeddings,MCPServer'");
+        console.log("     swift build --product wax-cli --traits 'MiniLMEmbeddings,E5Embeddings'");
       }
     }
   } finally {
@@ -1060,7 +1062,7 @@ while (i < forwardedArgs.length) {
 
 // Auto-detect if we should add default embedder
 if (!mcpFlags.includes("--no-embedder") && !mcpFlags.some(f => f.startsWith("--embedder"))) {
-  mcpFlags.unshift("--embedder", "minilm");
+  mcpFlags.unshift("--embedder", "auto");
 }
 
 runBinary("wax-mcp", mcpFlags);

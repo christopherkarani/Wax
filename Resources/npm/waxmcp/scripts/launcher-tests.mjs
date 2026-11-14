@@ -21,6 +21,7 @@ const requiredRuntimeBundles = [
   "Wax_Wax.bundle",
   "Wax_WaxBertTokenizer.bundle",
   "Wax_WaxVectorSearch.bundle",
+  "Wax_WaxVectorSearchE5.bundle",
   "Wax_WaxVectorSearchMiniLM.bundle",
   "swift-crypto_Crypto.bundle",
   "swift-nio_NIOPosix.bundle",
@@ -143,7 +144,7 @@ test("raw launcher and staged HTTP launcher both default to MiniLM", () => {
     assert.equal(raw.status, 0, raw.stderr);
     assert.deepEqual(
       fs.readFileSync(capturedArgs, "utf8").trim().split("\n").slice(0, 2),
-      ["--embedder", "minilm"]
+      ["--embedder", "auto"]
     );
 
     const installed = spawnSync(process.execPath, [launcher, "install"], {
@@ -155,7 +156,7 @@ test("raw launcher and staged HTTP launcher both default to MiniLM", () => {
       path.join(installRoot, "bin", "start-wax-mcp-http.sh"),
       "utf8"
     );
-    assert.match(stagedLauncher, /--embedder minilm/);
+    assert.match(stagedLauncher, /--embedder auto/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1002,7 +1003,7 @@ test("vector-health fails with useful diagnostics when query embedding is unavai
     assert.match(result.stdout, /DEGRADED|unavailable/i);
     assert.match(result.stdout, /MiniLM model failed to load/);
     assert.match(result.stdout, /Frames without vectors: 7/);
-    assert.match(result.stdout, /start-wax-mcp-http\.sh|--embedder minilm/);
+    assert.match(result.stdout, /start-wax-mcp-http\.sh|--embedder auto/);
     assert.doesNotMatch(result.stdout, /Vector search is working/);
     assert.equal(deleted, true, "degraded vector-health must close its MCP session");
   } finally {

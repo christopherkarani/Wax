@@ -32,8 +32,7 @@ npx -y waxmcp@latest \
   --transport http \
   --http-host 127.0.0.1 \
   --http-port 3000 \
-  --http-endpoint /mcp \
-  --embedder minilm
+  --http-endpoint /mcp
 ```
 
 A second server pointed at the same `.wax` file will hit the store lock, so one
@@ -167,7 +166,7 @@ point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 | Setting | How |
 |---|---|
 | Store path | `--store-path <path>` (default `~/.wax/memory.wax`) |
-| Embedder | `--embedder minilm` or `--embedder arctic`; omit and both raw and staged launchers default to MiniLM |
+| Embedder | `--embedder auto` (default in both raw and staged launchers), `minilm`, `e5` or `arctic`. `auto` gives new stores e5, unless a store the broker serves (the store, its session stores or the corpus store) is bound to MiniLM; then new stores follow MiniLM so one recall never mixes embedders. Existing stores keep the embedder that wrote them |
 | Text-only mode | `--no-embedder` |
 | Binary override | `WAX_MCP_BIN` / `WAX_CLI_BIN` environment variables |
 | Endpoint override | `WAX_MCP_HTTP_PORT` / `WAX_MCP_HTTP_ENDPOINT` (used by `vector-health`) |
