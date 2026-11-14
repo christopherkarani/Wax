@@ -11,15 +11,7 @@ func resolveRepoRoot(_ path: String) throws -> String {
         : FileManager.default.currentDirectoryPath + "/" + expanded
 
     let process = ChildProcess()
-    #if os(Linux)
-    // git is not always /usr/bin/git on Linux (Nix, Homebrew on Linux, /usr/local).
-    guard let git = ExecutableLookup.find("git", environment: ProcessInfo.processInfo.environment) else {
-        throw ValidationError("git was not found on PATH")
-    }
-    process.executableURL = URL(fileURLWithPath: git)
-    #else
     process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-    #endif
     process.arguments = ["rev-parse", "--show-toplevel"]
     process.currentDirectoryURL = URL(fileURLWithPath: absolutePath)
 
