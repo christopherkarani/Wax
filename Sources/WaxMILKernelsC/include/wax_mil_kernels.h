@@ -24,6 +24,28 @@ void wax_mil_sgemm(int trans_a, int trans_b,
 /// 1 when wax_mil_sgemm uses the AVX2+FMA micro-kernel on this CPU, else 0.
 int wax_mil_sgemm_uses_avx2(void);
 
+/// Panel width of the micro-kernel; column ranges passed to wax_mil_sgemm_packed start on a
+/// multiple of it.
+#define WAX_MIL_SGEMM_NR 16
+
+/// Number of floats wax_mil_sgemm_pack_b writes for an n x k op(B).
+size_t wax_mil_sgemm_packed_b_count(size_t n, size_t k);
+
+/// Packs op(B) (k x n; B is n x k with row stride ldb when trans_b != 0) once, for repeated
+/// use by wax_mil_sgemm_packed, e.g. a constant weight matrix.
+void wax_mil_sgemm_pack_b(int trans_b, size_t n, size_t k, const float *b, size_t ldb, float *packed);
+
+/// Like wax_mil_sgemm with a pre-packed op(B), computing only columns [j_begin, j_end) of C.
+/// j_begin is rounded down to a multiple of WAX_MIL_SGEMM_NR, so disjoint NR-aligned ranges
+/// can run on different threads.
+void wax_mil_sgemm_packed(int trans_a,
+                          size_t m, size_t n, size_t k,
+                          const float *a, size_t lda,
+                          const float *packed_b,
+                          size_t j_begin, size_t j_end,
+                          float beta,
+                          float *c, size_t ldc);
+
 /// IEEE 754 binary16 to binary32, including subnormals, infinities and NaN.
 void wax_mil_f16_to_f32(const uint16_t *src, float *dst, size_t count);
 
@@ -41,10 +63,12 @@ void wax_mil_blockwise_dequantize(float *values, size_t rank, const size_t *shap
 void wax_mil_layer_norm(const float *x, float *y, size_t rows, size_t cols,
                         const float *gamma, const float *beta, float epsilon);
 
-/// Softmax along the middle axis of an [outer, length, inner] view.
+/// Softmax along the middle axis of an [outer, length, inner] view. Uses a vectorisable expf
+/// (about 1 ulp) that returns exactly 0 for differences below about -87.3.
 void wax_mil_softmax(const float *x, float *y, size_t outer, size_t length, size_t inner);
 
-/// GELU. mode 0: exact (erf); 1: tanh approximation; 2: sigmoid approximation x*sigmoid(1.702x).
+/// GELU. mode 0: exact, 0.5x(1 + erf(x / sqrt 2)) with a vectorisable erf (absolute error below
+/// 1.5e-7); 1: tanh approximation; 2: sigmoid approximation x * sigmoid(1.702x).
 void wax_mil_gelu(const float *x, float *y, size_t count, int mode);
 
 void wax_mil_tanh(const float *x, float *y, size_t count);

@@ -55,6 +55,34 @@ struct MILGemmTests {
         #expect(worst <= 1e-6 * Double(c.k) + 1e-6, "\(c): max |diff| \(worst)")
     }
 
+    /// A pre-packed B gives bit-identical results to on-the-fly packing, and disjoint
+    /// NR-aligned column ranges (how linear layers are split across threads) cover C exactly.
+    @Test(arguments: [(5, 40, 7, false), (33, 600, 300, true), (1, 1536, 384, true), (97, 17, 513, false)])
+    func packedColumnRangesMatchTheUnpackedKernel(m: Int, n: Int, k: Int, transB: Bool) {
+        var rng = SplitMix64(seed: UInt64(m * 31 + n * 7 + k))
+        let a = rng.floats(m * k)
+        let b = rng.floats(n * k)
+        let ldb = transB ? k : n
+        var expected = [Float](repeating: 0, count: m * n)
+        wax_mil_sgemm(0, transB ? 1 : 0, m, n, k, a, k, b, ldb, 0, &expected, n)
+
+        var packed = [Float](repeating: .nan, count: wax_mil_sgemm_packed_b_count(n, k) + 16)
+        // The micro-kernel needs 32-byte-aligned panels; start at the first aligned element.
+        let actual = packed.withUnsafeMutableBufferPointer { buffer -> [Float] in
+            let raw = UInt(bitPattern: buffer.baseAddress!)
+            let base = buffer.baseAddress! + Int((64 - raw % 64) % 64) / MemoryLayout<Float>.stride
+            wax_mil_sgemm_pack_b(transB ? 1 : 0, n, k, b, ldb, base)
+            var out = [Float](repeating: .nan, count: m * n)
+            let nr = Int(WAX_MIL_SGEMM_NR)
+            let cuts = [0, nr, 3 * nr, n].map { min($0, n) }
+            for (lo, hi) in zip(cuts, cuts.dropFirst()) where lo < hi {
+                wax_mil_sgemm_packed(0, m, n, k, a, k, base, lo, hi, 0, &out, n)
+            }
+            return out
+        }
+        #expect(actual == expected)
+    }
+
     @Test func zeroInnerDimensionClearsOrKeepsTheOutput() {
         var out: [Float] = [1, 2, 3, 4]
         wax_mil_sgemm(0, 0, 2, 2, 0, nil, 1, nil, 1, 1, &out, 2)

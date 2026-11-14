@@ -4,7 +4,7 @@ import WaxMILKernelsC
 /// Op semantics follow the coremltools MIL op reference (iOS 15–18 opsets). Floating-point
 /// work is Float32; integer work is Int32 with the declared narrow type applied by `cast`.
 enum MILKernels {
-    static func run(_ instruction: Instruction, _ args: MILArguments) throws -> MILTensor {
+    static func run(_ instruction: Instruction, _ args: MILArguments, threads: Int) throws -> MILTensor {
         switch instruction.kind {
         case .add: return try binary(.add, args)
         case .sub: return try binary(.sub, args)
@@ -25,8 +25,8 @@ enum MILKernels {
         case .gather: return try gather(args)
         case .gelu: return try gelu(args)
         case .layerNorm: return try layerNorm(args)
-        case .linear: return try linear(args)
-        case .matmul: return try matmul(args)
+        case .linear: return try linear(args, packed: instruction.packedWeight, threads: threads)
+        case .matmul: return try matmul(args, threads: threads)
         case .reduceL2Norm: return try reduce(args, squared: true)
         case .reduceSum: return try reduce(args, squared: false)
         case .reshape: return try reshape(args)
@@ -421,35 +421,56 @@ enum MILKernels {
 
     // MARK: - Linear algebra
 
-    static func linear(_ args: MILArguments) throws -> MILTensor {
+    /// `x [..., K] · weightᵀ + bias` with `weight [N, K]`. Constant weights arrive pre-packed
+    /// (`packed`); a weight computed at run time is packed here. Column panels are split across
+    /// threads when the product is large enough.
+    static func linear(_ args: MILArguments, packed: MILPackedMatrix?, threads: Int) throws -> MILTensor {
         let x = try args.tensor("x")
-        let weight = try args.tensor("weight")
-        guard weight.rank == 2, x.rank >= 1, x.shape[x.rank - 1] == weight.shape[1] else {
-            throw args.failure("linear needs x [..., K] and weight [N, K]; got \(x.shape) and \(weight.shape)")
+        let weights: MILPackedMatrix
+        if let packed {
+            weights = packed
+        } else {
+            let weight = try args.tensor("weight")
+            guard weight.rank == 2 else { throw args.failure("linear weight must be [N, K]; got \(weight.shape)") }
+            weights = MILPackedMatrix(weight: weight)
         }
-        let k = weight.shape[1]
-        let n = weight.shape[0]
+        let (n, k) = (weights.n, weights.k)
+        guard x.rank >= 1, x.shape[x.rank - 1] == k else {
+            throw args.failure("linear needs x [..., \(k)] for weight [\(n), \(k)]; got \(x.shape)")
+        }
         let m = k == 0 ? 0 : x.count / k
         let bias = try args.optionalTensor("bias").map(floatStorage)
         if let bias, bias.count != n { throw args.failure("bias has \(bias.count) values for \(n) outputs") }
         let outShape = Array(x.shape.dropLast()) + [n]
+        let workers = MILParallel.threads(forWork: m * n * k, maximum: threads)
+        let panels = (n + Int(WAX_MIL_SGEMM_NR) - 1) / Int(WAX_MIL_SGEMM_NR)
         return floatStorage(x).withUnsafeBufferPointer { xb in
-            floatStorage(weight).withUnsafeBufferPointer { wb in
+            weights.withPanels { panelBase in
                 makeFloat(outShape) { out in
+                    guard let o = out.baseAddress, let xBase = xb.baseAddress else { return }
                     if let bias {
                         bias.withUnsafeBufferPointer { bb in
-                            for r in 0..<m {
-                                (out.baseAddress! + r * n).update(from: bb.baseAddress!, count: n)
-                            }
+                            guard let b = bb.baseAddress else { return }
+                            for r in 0..<m { (o + r * n).update(from: b, count: n) }
                         }
                     }
-                    wax_mil_sgemm(0, 1, m, n, k, xb.baseAddress, k, wb.baseAddress, k, bias == nil ? 0 : 1, out.baseAddress, n)
+                    let beta: Float = bias == nil ? 0 : 1
+                    let output = MILSharedPointer(base: o)
+                    let input = MILSharedConstPointer(base: xBase)
+                    let panelsPointer = MILSharedConstPointer(base: panelBase)
+                    MILParallel.forEachChunk(of: panels, threads: workers) { range in
+                        let nr = Int(WAX_MIL_SGEMM_NR)
+                        wax_mil_sgemm_packed(0, m, n, k, input.base, k, panelsPointer.base,
+                                             range.lowerBound * nr, min(range.upperBound * nr, n),
+                                             beta, output.base, n)
+                    }
                 }
             }
         }
     }
 
-    static func matmul(_ args: MILArguments) throws -> MILTensor {
+    /// Batched matrix product with broadcast batch axes; batches are split across threads.
+    static func matmul(_ args: MILArguments, threads: Int) throws -> MILTensor {
         var x = try args.tensor("x")
         var y = try args.tensor("y")
         let transposeX = try args.bool("transpose_x", default: false)
@@ -461,10 +482,12 @@ enum MILKernels {
         if vectorY { y = y.retyped(y.dataType, shape: [y.shape[0], 1]) }
         let xRows = x.shape[x.rank - 2], xCols = x.shape[x.rank - 1]
         let yRows = y.shape[y.rank - 2], yCols = y.shape[y.rank - 1]
-        let m = transposeX && !vectorX ? xCols : xRows
-        let k = transposeX && !vectorX ? xRows : xCols
-        let ky = transposeY && !vectorY ? yCols : yRows
-        let n = transposeY && !vectorY ? yRows : yCols
+        let tx: Int32 = transposeX && !vectorX ? 1 : 0
+        let ty: Int32 = transposeY && !vectorY ? 1 : 0
+        let m = tx == 1 ? xCols : xRows
+        let k = tx == 1 ? xRows : xCols
+        let ky = ty == 1 ? yCols : yRows
+        let n = ty == 1 ? yRows : yCols
         guard k == ky else { throw args.failure("matmul inner dimensions differ: \(x.shape) x \(y.shape)") }
         let xBatch = Array(x.shape.dropLast(2))
         let yBatch = Array(y.shape.dropLast(2))
@@ -475,17 +498,21 @@ enum MILKernels {
         var outShape = batch + [m, n]
         if vectorX { outShape.remove(at: outShape.count - 2) }
         if vectorY { outShape.removeLast() }
+        let workers = MILParallel.threads(forWork: batches * m * n * k, maximum: threads)
         return floatStorage(x).withUnsafeBufferPointer { xb in
             floatStorage(y).withUnsafeBufferPointer { yb in
                 makeFloat(outShape) { out in
-                    for b in 0..<batches {
-                        wax_mil_sgemm(
-                            transposeX && !vectorX ? 1 : 0, transposeY && !vectorY ? 1 : 0,
-                            m, n, k,
-                            xb.baseAddress! + xOffsets[b] * xRows * xCols, xCols,
-                            yb.baseAddress! + yOffsets[b] * yRows * yCols, yCols,
-                            0, out.baseAddress! + b * m * n, n
-                        )
+                    guard let o = out.baseAddress, let xBase = xb.baseAddress, let yBase = yb.baseAddress else { return }
+                    let output = MILSharedPointer(base: o)
+                    let left = MILSharedConstPointer(base: xBase)
+                    let right = MILSharedConstPointer(base: yBase)
+                    MILParallel.forEachChunk(of: batches, threads: workers) { range in
+                        for b in range {
+                            wax_mil_sgemm(tx, ty, m, n, k,
+                                          left.base + xOffsets[b] * xRows * xCols, xCols,
+                                          right.base + yOffsets[b] * yRows * yCols, yCols,
+                                          0, output.base + b * m * n, n)
+                        }
                     }
                 }
             }

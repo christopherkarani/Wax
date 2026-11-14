@@ -103,6 +103,45 @@ void wax_mil_layer_norm(const float *x, float *y, size_t rows, size_t cols,
     }
 }
 
+// Branch-free single-precision exp (Cephes expf: range reduction by ln 2 and a degree-6
+// polynomial, about 1 ulp), written so the loops that call it auto-vectorise, unlike libm.
+// Returns 0 below the float underflow threshold and saturates near FLT_MAX above.
+static inline float wax_expf(float x) {
+    const int underflow = x < -87.3365447505531f;
+    x = x > 88.3762626647949f ? 88.3762626647949f : x;
+    x = x < -87.3365447505531f ? -87.3365447505531f : x;
+    const float fx = x * 1.44269504088896341f + 0.5f;
+    float fn = (float)(int32_t)fx;
+    fn = fn > fx ? fn - 1.0f : fn; // floor
+    x = x - fn * 0.693359375f;
+    x = x - fn * -2.12194440e-4f;
+    const float z = x * x;
+    float y = 1.9875691500e-4f;
+    y = y * x + 1.3981999507e-3f;
+    y = y * x + 8.3334519073e-3f;
+    y = y * x + 4.1665795894e-2f;
+    y = y * x + 1.6666665459e-1f;
+    y = y * x + 5.0000001201e-1f;
+    y = y * z + x + 1.0f;
+    const uint32_t bits = (uint32_t)((int32_t)fn + 127) << 23;
+    float scale;
+    memcpy(&scale, &bits, sizeof scale);
+    return underflow ? 0.0f : y * scale;
+}
+
+// erf by Abramowitz & Stegun 7.1.26 (absolute error below 1.5e-7), vectorisable.
+static inline float wax_erff(float x) {
+    const float a = x < 0.0f ? -x : x;
+    const float t = 1.0f / (1.0f + 0.3275911f * a);
+    float p = 1.061405429f;
+    p = p * t - 1.453152027f;
+    p = p * t + 1.421413741f;
+    p = p * t - 0.284496736f;
+    p = p * t + 0.254829592f;
+    const float y = 1.0f - p * t * wax_expf(-a * a);
+    return x < 0.0f ? -y : y;
+}
+
 void wax_mil_softmax(const float *x, float *y, size_t outer, size_t length, size_t inner) {
     if (length == 0) return;
     for (size_t o = 0; o < outer; o++) {
@@ -113,7 +152,7 @@ void wax_mil_softmax(const float *x, float *y, size_t outer, size_t length, size
             for (size_t j = 1; j < length; j++) maximum = in[j] > maximum ? in[j] : maximum;
             float sum = 0.0f;
             for (size_t j = 0; j < length; j++) {
-                const float e = expf(in[j] - maximum);
+                const float e = wax_expf(in[j] - maximum);
                 out[j] = e;
                 sum += e;
             }
@@ -129,7 +168,7 @@ void wax_mil_softmax(const float *x, float *y, size_t outer, size_t length, size
             }
             float sum = 0.0f;
             for (size_t j = 0; j < length; j++) {
-                const float e = expf(in[j * inner + i] - maximum);
+                const float e = wax_expf(in[j * inner + i] - maximum);
                 out[j * inner + i] = e;
                 sum += e;
             }
@@ -143,7 +182,7 @@ void wax_mil_gelu(const float *x, float *y, size_t count, int mode) {
     switch (mode) {
     case 0: {
         const float inv_sqrt2 = 0.70710678118654752440f;
-        for (size_t i = 0; i < count; i++) y[i] = 0.5f * x[i] * (1.0f + erff(x[i] * inv_sqrt2));
+        for (size_t i = 0; i < count; i++) y[i] = 0.5f * x[i] * (1.0f + wax_erff(x[i] * inv_sqrt2));
         break;
     }
     case 1: {
@@ -155,7 +194,7 @@ void wax_mil_gelu(const float *x, float *y, size_t count, int mode) {
         break;
     }
     default:
-        for (size_t i = 0; i < count; i++) y[i] = x[i] / (1.0f + expf(-1.702f * x[i]));
+        for (size_t i = 0; i < count; i++) y[i] = x[i] / (1.0f + wax_expf(-1.702f * x[i]));
         break;
     }
 }

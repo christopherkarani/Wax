@@ -22,12 +22,20 @@ package struct MILOutput: Sendable, Equatable {
 /// `weights/weight.bin`), executed by a Float32 CPU interpreter without Core ML.
 ///
 /// Loading parses the program, maps the weight file, materialises every `const`, dequantises
-/// `constexpr_*` weights once and folds operations whose inputs are all constant. The result is
-/// immutable: `predict` keeps all per-run state local, so one model can serve concurrent calls.
+/// `constexpr_*` weights once, folds operations whose inputs are all constant and packs constant
+/// `linear` weights for the GEMM kernel. The result is immutable: `predict` keeps all per-run
+/// state local, so one model can serve concurrent calls.
 package final class MILModel: Sendable {
     package let functionName: String
     package let inputs: [MILNamedType]
     package let outputNames: [String]
+    /// Upper bound on threads one `predict` call uses for large matrix products.
+    package let maximumThreads: Int
+
+    /// The default for `maximumThreads`: the active processor count, capped at 8.
+    package static var defaultMaximumThreads: Int {
+        min(max(ProcessInfo.processInfo.activeProcessorCount, 1), 8)
+    }
 
     private let instructions: [Instruction]
     private let slotCount: Int
@@ -35,7 +43,7 @@ package final class MILModel: Sendable {
     private let outputSources: [Operand]
 
     /// Loads `model.mil` (and its weight files) from a compiled `.mlmodelc` directory.
-    package convenience init(contentsOf modelDirectory: URL, function: String = "main") throws {
+    package convenience init(contentsOf modelDirectory: URL, function: String = "main", maximumThreads: Int? = nil) throws {
         let programURL = modelDirectory.appendingPathComponent("model.mil")
         let text: String
         do {
@@ -43,21 +51,37 @@ package final class MILModel: Sendable {
         } catch {
             throw MILRuntimeError.blob("cannot read \(programURL.path): \(error)")
         }
-        try self.init(programText: text, modelDirectory: modelDirectory, function: function)
+        try self.init(programText: text, modelDirectory: modelDirectory, function: function, maximumThreads: maximumThreads)
     }
 
     /// Compiles MIL text. `modelDirectory` resolves `@model_path` in `BLOBFILE` paths.
-    package convenience init(programText: String, modelDirectory: URL? = nil, function: String = "main") throws {
-        try self.init(program: MILProgram(parsing: programText), modelDirectory: modelDirectory, function: function)
+    package convenience init(
+        programText: String,
+        modelDirectory: URL? = nil,
+        function: String = "main",
+        maximumThreads: Int? = nil
+    ) throws {
+        try self.init(
+            program: MILProgram(parsing: programText),
+            modelDirectory: modelDirectory,
+            function: function,
+            maximumThreads: maximumThreads
+        )
     }
 
-    package init(program: MILProgram, modelDirectory: URL? = nil, function: String = "main") throws {
+    package init(
+        program: MILProgram,
+        modelDirectory: URL? = nil,
+        function: String = "main",
+        maximumThreads: Int? = nil
+    ) throws {
         guard let main = program.functions[function] else {
             throw MILRuntimeError.missingFunction(function)
         }
         var compiler = MILCompiler(modelDirectory: modelDirectory)
         let compiled = try compiler.compile(main)
         functionName = function
+        self.maximumThreads = max(1, maximumThreads ?? Self.defaultMaximumThreads)
         inputs = main.inputs
         outputNames = main.outputs
         instructions = compiled.instructions
@@ -81,7 +105,7 @@ package final class MILModel: Sendable {
         }
         for instruction in instructions {
             let arguments = try MILArguments(instruction: instruction, slots: slots)
-            let result = try MILKernels.run(instruction, arguments)
+            let result = try MILKernels.run(instruction, arguments, threads: maximumThreads)
             slots[instruction.outputSlot] = .tensor(try instruction.conform(result))
             for slot in instruction.releases {
                 slots[slot] = nil
@@ -210,6 +234,8 @@ struct Instruction: Sendable {
     let outputSlot: Int
     let declared: MILType
     var releases: [Int] = []
+    /// A constant `linear` weight, pre-packed; its `weight` operand is then dropped.
+    var packedWeight: MILPackedMatrix?
 
     func conform(_ tensor: MILTensor) throws -> MILTensor {
         try WaxMILRuntime.conform(tensor, to: declared, opType: opType, line: line)
@@ -283,16 +309,23 @@ private struct MILCompiler {
             for (key, argument) in op.arguments {
                 operands[key] = try operand(argument, op: op)
             }
-            var instruction = Instruction(kind: kind, opType: op.opType, line: op.line, operands: operands, outputSlot: -1, declared: output.type)
             if operands.values.allSatisfy(\.isConstant) {
                 // Constant folding: constexpr_* dequantisation and any input-independent op.
+                let instruction = Instruction(kind: kind, opType: op.opType, line: op.line, operands: operands, outputSlot: -1, declared: output.type)
                 let arguments = try MILArguments(instruction: instruction, slots: [])
-                let folded = try instruction.conform(MILKernels.run(instruction, arguments))
+                let folded = try instruction.conform(MILKernels.run(instruction, arguments, threads: 1))
                 bindings[output.name] = .value(.tensor(folded))
                 continue
             }
+            var packedWeight: MILPackedMatrix?
+            if kind == .linear, case .value(.tensor(let weight))? = operands["weight"], weight.rank == 2 {
+                // Pack once; dropping the operand lets the unpacked copy be freed.
+                packedWeight = MILPackedMatrix(weight: weight)
+                operands["weight"] = nil
+            }
             let slot = newSlot()
-            instruction = Instruction(kind: kind, opType: op.opType, line: op.line, operands: operands, outputSlot: slot, declared: output.type)
+            var instruction = Instruction(kind: kind, opType: op.opType, line: op.line, operands: operands, outputSlot: slot, declared: output.type)
+            instruction.packedWeight = packedWeight
             bindings[output.name] = .slot(slot, name: output.name)
             instructions.append(instruction)
         }

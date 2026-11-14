@@ -176,6 +176,37 @@ struct MILNormalisationTests {
         expectClose(result.floats, expected, tolerance: 1e-6)
     }
 
+    /// The kernels use vectorisable exp and erf approximations instead of libm; sweep them.
+    @Test func exactGeluAndSoftmaxStayCloseToDoublePrecisionAcrossTheirRange() throws {
+        let xs = (0...1200).map { Float($0 - 600) / 100 } // -6 ... 6
+        let text = program(params: "tensor<fp32, [1201]> x", outputs: "g, s", """
+                string exact = const()[name = string("exact"), val = string("EXACT")];
+                tensor<fp32, [1201]> g = gelu(mode = exact, x = x)[name = string("g")];
+                int32 axis = const()[name = string("axis"), val = int32(-1)];
+                tensor<fp32, [1201]> s = softmax(axis = axis, x = x)[name = string("s")];
+        """)
+        let out = try MILModel(programText: text).predict(["x": floats(xs, [1201])])
+        let gelu = try #require(out["g"]).floats
+        let softmax = try #require(out["s"]).floats
+        let denominator = xs.reduce(0.0) { $0 + exp(Double($1) - 6) }
+        for (i, x) in xs.enumerated() {
+            let v = Double(x)
+            let expectedGelu = 0.5 * v * (1 + erf(v / 2.0.squareRoot()))
+            #expect(abs(Double(gelu[i]) - expectedGelu) <= 3e-7 * max(1, abs(v)), "gelu(\(x)) = \(gelu[i]), expected \(expectedGelu)")
+            let expectedSoftmax = exp(v - 6) / denominator
+            #expect(abs(Double(softmax[i]) - expectedSoftmax) <= 2e-6 * expectedSoftmax + 1e-12, "softmax at \(x)")
+        }
+    }
+
+    @Test func softmaxGivesExactZerosToMaskedScores() throws {
+        let text = program(params: "tensor<fp32, [4]> x", """
+                int32 axis = const()[name = string("axis"), val = int32(-1)];
+                tensor<fp32, [4]> y = softmax(axis = axis, x = x)[name = string("y")];
+        """)
+        let result = try runProgram(text, inputs: ["x": floats([0.5, -10000, 0.5, -1e30], [4])])
+        #expect(result.floats == [0.5, 0, 0.5, 0])
+    }
+
     @Test func reductionsKeepOrDropAxes() throws {
         let x: [Float] = [3, 4, 0, 1, 2, 2]
         let text = program(params: "tensor<fp32, [2, 3]> x", outputs: "s, k, n", """

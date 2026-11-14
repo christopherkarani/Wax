@@ -104,6 +104,19 @@ struct MILBundledModelTests {
         #expect(results.allSatisfy { $0 == expected })
     }
 
+    /// Linear layers split column panels across threads and matmuls split batches; neither
+    /// changes any element's arithmetic, so results are bit-identical to one thread.
+    @Test func threadCountDoesNotChangeResults() throws {
+        let single = try MILModel(contentsOf: BundledModel.miniLM.url, maximumThreads: 1)
+        let parallel = try MILModel(contentsOf: BundledModel.miniLM.url, maximumThreads: 4)
+        #expect(single.maximumThreads == 1 && parallel.maximumThreads == 4)
+        let rows = [Self.sequence(length: 64, seed: 41), Self.sequence(length: 64, seed: 42)]
+        let mask = rows.map { [Int32](repeating: 1, count: $0.count) }
+        let a = try single.predict(inputIDs: rows, attentionMask: mask)["embeddings"]
+        let b = try parallel.predict(inputIDs: rows, attentionMask: mask)["embeddings"]
+        #expect(a != nil && a == b)
+    }
+
     @Test func rejectsMisshapenOrUnexpectedTokenInputs() throws {
         let model = try BundledModel.miniLM.model
         #expect(throws: MILRuntimeError.self) {
