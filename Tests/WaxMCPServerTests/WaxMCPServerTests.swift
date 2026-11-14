@@ -9345,8 +9345,10 @@ struct WaxMCPProcessTests {
         #expect(harness.storeURL.path.contains(".local/share/waxmcp/sessions") == false)
 
         let storeParent = harness.storeURL.deletingLastPathComponent()
-        let siblingSessions = (try? FileManager.default.contentsOfDirectory(at: storeParent, includingPropertiesForKeys: nil)) ?? []
-        #expect(siblingSessions.contains { $0.lastPathComponent.hasPrefix("sessions-") })
+        // The store sits in the shared temporary directory. List it by path: on Linux the
+        // URL listing stats each subdirectory and fails when a parallel test removes one.
+        let siblingSessions = (try? FileManager.default.contentsOfDirectory(atPath: storeParent.path)) ?? []
+        #expect(siblingSessions.contains { $0.hasPrefix("sessions-") })
     }
 
     @Test(.timeLimit(.minutes(1)))

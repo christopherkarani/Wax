@@ -29,10 +29,7 @@ func memoryOrchestratorRememberFlushRecallReopenAndNoSidecars() async throws {
         #expect(!ctx1.items.isEmpty)
         #expect(ctx1.items.filter { $0.kind == .expanded }.count <= 1)
 
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let related = contents.filter { $0.lastPathComponent.hasPrefix(baseName) }
+        let related = try TempFiles.storeFamily(of: url)
         #expect(related.count == 1)
 
         try await orchestrator.close()

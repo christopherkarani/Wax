@@ -22,10 +22,7 @@ func fastRAGIntegrationCreateRecallReopen() async throws {
         let ctx1 = try await builder.build(query: "concurrency", wax: wax, config: config)
         #expect(!ctx1.items.isEmpty)
 
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let related = contents.filter { $0.lastPathComponent.hasPrefix(baseName) }
+        let related = try TempFiles.storeFamily(of: url)
         #expect(related.count == 1)
         #expect(related.first?.resolvingSymlinksInPath() == url.resolvingSymlinksInPath())
 

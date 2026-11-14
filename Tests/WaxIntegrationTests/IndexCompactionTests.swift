@@ -26,10 +26,7 @@ func compactIndexesDoesNotCreateSidecarsAndRecallStillWorks() async throws {
         _ = try await orchestrator.compactIndexes()
         try await orchestrator.close()
 
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let related = contents.filter { $0.lastPathComponent.hasPrefix(baseName) }
+        let related = try TempFiles.storeFamily(of: url)
         #expect(related.count == 1)
 
         let reopened = try await MemoryOrchestrator(at: url, config: config)
@@ -68,10 +65,7 @@ func compactIndexesStagesPendingTextIndex() async throws {
         #expect(!ctx.items.isEmpty)
         try await reopened.close()
 
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let related = contents.filter { $0.lastPathComponent.hasPrefix(baseName) }
+        let related = try TempFiles.storeFamily(of: url)
         #expect(related.count == 1)
     }
 }
@@ -109,10 +103,7 @@ func compactIndexesPreservesDenseCachedSurrogateRecall() async throws {
         #expect(ctx.items.contains { $0.kind == .surrogate })
         try await reopened.close()
 
-        let baseName = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        let contents = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        let related = contents.filter { $0.lastPathComponent.hasPrefix(baseName) }
+        let related = try TempFiles.storeFamily(of: url)
         #expect(related.count == 1)
     }
 }
