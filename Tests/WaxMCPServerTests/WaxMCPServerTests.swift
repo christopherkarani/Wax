@@ -7609,9 +7609,8 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
     }
 
     private static func waxMCPBinaryURL(packageRoot: URL) throws -> URL {
-        let bundleDebugDir = Bundle(for: XCTestCase.self).bundleURL.deletingLastPathComponent()
         let candidates = [
-            bundleDebugDir.appendingPathComponent("wax-mcp"),
+            testProductsDirectory().appendingPathComponent("wax-mcp"),
             packageRoot.appendingPathComponent(".build/debug/wax-mcp"),
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-mcp"),
         ]
@@ -7787,6 +7786,19 @@ private final class MCPServerProcessHarness: @unchecked Sendable {
         handle.write(Data([0x0A]))
         shutdown(fd, TestPOSIX.shutWrite)
     }
+}
+
+/// Directory that holds the test bundle and the package's built executables.
+private func testProductsDirectory() -> URL {
+    #if canImport(Darwin)
+    return Bundle(for: XCTestCase.self).bundleURL.deletingLastPathComponent()
+    #else
+    // swift-corelibs-foundation crashes in CFBundleGetAllBundles under
+    // Bundle(for:). On Linux the test bundle is the running executable.
+    let executable = (try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/self/exe"))
+        ?? CommandLine.arguments[0]
+    return URL(fileURLWithPath: executable).deletingLastPathComponent()
+    #endif
 }
 
 private func toolNamesListedInMCPResponse(_ line: String) throws -> Set<String> {
