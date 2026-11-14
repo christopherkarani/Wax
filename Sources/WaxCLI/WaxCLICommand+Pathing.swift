@@ -150,8 +150,9 @@ enum Pathing {
             return nil
         }
 
+        // npm packages carry `dist/darwin-arm64`, `dist/linux-x64` or `dist/linux-arm64`.
         let platformName = directoryURL.lastPathComponent
-        guard platformName.hasPrefix("darwin-") else {
+        guard platformName.hasPrefix("darwin-") || platformName.hasPrefix("linux-") else {
             return nil
         }
 
@@ -289,7 +290,7 @@ enum Pathing {
         guard let runtimeDir = bundledRuntimeDirectory(forExecutablePath: path) else {
             return nil
         }
-        // .../package/dist/darwin-arm64 -> package root
+        // .../package/dist/<platform>-<arch> -> package root
         let distDir = runtimeDir.deletingLastPathComponent()
         guard distDir.lastPathComponent == "dist" else { return nil }
         return distDir.deletingLastPathComponent()

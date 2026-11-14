@@ -7,6 +7,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,8 @@ const launcher = path.join(packageRoot, "bin", "waxmcp.js");
 const packageVersion = JSON.parse(
   fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")
 ).version;
-const requiredRuntimeBundles = [
+const runtimePlatforms = createRequire(import.meta.url)("../bin/runtime-platforms.js");
+const appleRuntimeBundles = [
   "GRDB_GRDB.bundle",
   "MetalANNS_MetalANNSCore.bundle",
   "Wax_Wax.bundle",
@@ -25,19 +27,28 @@ const requiredRuntimeBundles = [
   "swift-crypto_Crypto.bundle",
   "swift-nio_NIOPosix.bundle",
 ];
+const linuxRuntimeBundles = [
+  "GRDB_GRDB.resources",
+  "Wax_Wax.resources",
+  "Wax_WaxBertTokenizer.resources",
+  "Wax_WaxVectorSearch.resources",
+  "Wax_WaxVectorSearchMiniLM.resources",
+];
+// SwiftPM names resource bundles `.resources` off Apple platforms.
+const requiredRuntimeBundles = process.platform === "linux" ? linuxRuntimeBundles : appleRuntimeBundles;
 
 function makeExecutable(file, content) {
   fs.writeFileSync(file, content, { mode: 0o755 });
   fs.chmodSync(file, 0o755);
 }
 
-function makeRuntimeSource(directory, serverContent, cliContent) {
+function makeRuntimeSource(directory, serverContent, cliContent, bundles = requiredRuntimeBundles) {
   fs.mkdirSync(directory);
   const server = path.join(directory, "wax-mcp");
   const cli = path.join(directory, "wax-cli");
   makeExecutable(server, serverContent);
   makeExecutable(cli, cliContent);
-  for (const bundle of requiredRuntimeBundles) {
+  for (const bundle of bundles) {
     const bundlePath = path.join(directory, bundle);
     fs.mkdirSync(bundlePath);
     fs.writeFileSync(path.join(bundlePath, "resource.txt"), `${bundle}\n`);
@@ -1174,6 +1185,121 @@ test("install without --build ignores ./.build/debug in the working directory", 
     assert.match(result.stderr, /both wax-mcp and wax-cli are required/);
     const platformKey = `${os.platform()}-${os.arch()}`;
     assert.equal(fs.existsSync(path.join(installRoot, "runtime", platformKey, "wax-mcp")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime platforms map hosts to dist directories and resource bundle names", () => {
+  assert.equal(runtimePlatforms.distPlatformKey("darwin", "arm64"), "darwin-arm64");
+  assert.equal(runtimePlatforms.distPlatformKey("darwin", "x64"), null);
+  assert.equal(runtimePlatforms.distPlatformKey("linux", "x64"), "linux-x64");
+  assert.equal(runtimePlatforms.distPlatformKey("linux", "arm64"), "linux-arm64");
+  assert.equal(runtimePlatforms.distPlatformKey("win32", "x64"), null);
+  assert.deepEqual(runtimePlatforms.runtimeLayout("darwin").requiredBundles, appleRuntimeBundles);
+  assert.deepEqual(runtimePlatforms.runtimeLayout("linux").requiredBundles, linuxRuntimeBundles);
+  assert.equal(runtimePlatforms.distPlatforms["linux-x64"].vectorBundle, "Wax_WaxVectorSearchMiniLM.resources");
+  assert.equal(runtimePlatforms.distPlatforms["darwin-arm64"].vectorBundle, "Wax_WaxVectorSearchMiniLM.bundle");
+});
+
+test("install on Linux stages .resources bundles and ignores Apple .bundle names", {
+  skip: process.platform !== "linux",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-linux-resources-test-"));
+  try {
+    const appleSource = makeRuntimeSource(
+      path.join(root, "apple"),
+      "#!/bin/sh\necho server\n",
+      "#!/bin/sh\necho cli\n",
+      appleRuntimeBundles
+    );
+    const rejected = spawnSync(process.execPath, [launcher, "install"], {
+      env: {
+        ...process.env,
+        WAX_MCP_BIN: appleSource.server,
+        WAX_CLI_BIN: appleSource.cli,
+        WAX_MCP_INSTALL_ROOT: path.join(root, "installed-apple"),
+      },
+      encoding: "utf8",
+    });
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /Wax_WaxVectorSearchMiniLM\.resources/);
+
+    const linuxSource = makeRuntimeSource(
+      path.join(root, "linux"),
+      "#!/bin/sh\necho server\n",
+      "#!/bin/sh\necho cli\n",
+      [...linuxRuntimeBundles, "Wax_WaxCLITests.resources"]
+    );
+    const installRoot = path.join(root, "installed");
+    const result = spawnSync(process.execPath, [launcher, "install"], {
+      env: {
+        ...process.env,
+        WAX_MCP_BIN: linuxSource.server,
+        WAX_CLI_BIN: linuxSource.cli,
+        WAX_MCP_INSTALL_ROOT: installRoot,
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const runtimeDir = path.join(installRoot, "runtime", `linux-${os.arch()}`);
+    const manifest = JSON.parse(fs.readFileSync(path.join(installRoot, "install.json"), "utf8"));
+    assert.equal(manifest.platform, `linux-${os.arch()}`);
+    assert.deepEqual(manifest.runtime.bundles, linuxRuntimeBundles);
+    for (const bundle of linuxRuntimeBundles) {
+      assert.equal(fs.existsSync(path.join(runtimeDir, bundle, "resource.txt")), true);
+    }
+    assert.equal(fs.existsSync(path.join(runtimeDir, "Wax_WaxCLITests.resources")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function makeDistPackage(root, pkgFields, platform, bundles) {
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "waxmcp", ...pkgFields }));
+  const dir = path.join(root, "dist", platform);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of ["wax-cli", "wax-mcp"]) {
+    makeExecutable(path.join(dir, name), "#!/bin/sh\n");
+    fs.writeFileSync(path.join(dir, `${name}.sha256`), `${"0".repeat(64)}  ${name}\n`);
+  }
+  for (const bundle of bundles) fs.mkdirSync(path.join(dir, bundle));
+}
+
+function runVerifyDist(packageDir) {
+  return spawnSync(process.execPath, [path.join(scriptsDir, "verify-dist.mjs")], {
+    env: { ...process.env, WAXMCP_PACKAGE_DIR: packageDir },
+    encoding: "utf8",
+  });
+}
+
+test("verify-dist checks the dist directories the package declares", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-verify-dist-test-"));
+  try {
+    const linuxPackage = path.join(root, "linux");
+    makeDistPackage(linuxPackage, { os: ["linux"], cpu: ["x64"] }, "linux-x64", linuxRuntimeBundles);
+    const linux = runVerifyDist(linuxPackage);
+    assert.equal(linux.status, 0, linux.stderr);
+    assert.match(linux.stdout, /linux-x64/);
+
+    const appleNamed = path.join(root, "linux-with-apple-bundles");
+    makeDistPackage(appleNamed, { os: ["linux"], cpu: ["x64"] }, "linux-x64", appleRuntimeBundles);
+    const rejected = runVerifyDist(appleNamed);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /dist\/linux-x64\/Wax_WaxVectorSearchMiniLM\.resources/);
+
+    const missingLinux = path.join(root, "linux-without-dist");
+    makeDistPackage(missingLinux, { os: ["darwin", "linux"], cpu: ["arm64"] }, "darwin-arm64", appleRuntimeBundles);
+    const partial = runVerifyDist(missingLinux);
+    assert.notEqual(partial.status, 0);
+    assert.match(partial.stderr, /dist\/linux-arm64\/wax-cli/);
+
+    const darwinPackage = path.join(root, "darwin");
+    makeDistPackage(darwinPackage, { os: ["darwin"], cpu: ["arm64"] }, "darwin-arm64", appleRuntimeBundles);
+    const darwin = runVerifyDist(darwinPackage);
+    assert.equal(darwin.status, 0, darwin.stderr);
+    assert.match(darwin.stdout, /darwin-arm64/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

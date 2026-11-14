@@ -26,16 +26,10 @@ const fs = require("node:fs");
 
 const forwardedArgs = process.argv.slice(2);
 const packageRoot = path.join(__dirname, "..");
-const requiredRuntimeBundles = [
-  "GRDB_GRDB.bundle",
-  "MetalANNS_MetalANNSCore.bundle",
-  "Wax_Wax.bundle",
-  "Wax_WaxBertTokenizer.bundle",
-  "Wax_WaxVectorSearch.bundle",
-  "Wax_WaxVectorSearchMiniLM.bundle",
-  "swift-crypto_Crypto.bundle",
-  "swift-nio_NIOPosix.bundle",
-];
+const runtimePlatforms = require("./runtime-platforms.js");
+// `.bundle` resources on Apple platforms, `.resources` on Linux.
+const hostRuntimeLayout = runtimePlatforms.runtimeLayout() || runtimePlatforms.runtimeLayout("darwin");
+const requiredRuntimeBundles = hostRuntimeLayout.requiredBundles;
 const runtimeManifestName = "runtime-manifest.json";
 
 function printLauncherHelp() {
@@ -70,14 +64,13 @@ function isExecutable(filePath) {
 }
 
 function platformDistDir() {
-  if (os.platform() !== "darwin") {
+  // dist/darwin-arm64 (Apple Silicon only: MetalANNS Float16), dist/linux-x64
+  // or dist/linux-arm64; null on any other host.
+  const key = runtimePlatforms.distPlatformKey();
+  if (!key) {
     return null;
   }
-  // Prebuilt npm artifacts are Apple Silicon only (MetalANNS Float16).
-  if (os.arch() !== "arm64") {
-    return null;
-  }
-  return path.join(__dirname, "..", "dist", "darwin-arm64");
+  return path.join(__dirname, "..", "dist", key);
 }
 
 function resolveBundledBinary(name) {
@@ -321,7 +314,8 @@ function listRegularFiles(root, relative = "") {
 
 function runtimeBundleNames(directory) {
   return fs.readdirSync(directory)
-    .filter(name => name.endsWith(".bundle") && !name.endsWith("Tests.bundle"))
+    .filter(name => name.endsWith(hostRuntimeLayout.bundleSuffix)
+      && !name.endsWith(`Tests${hostRuntimeLayout.bundleSuffix}`))
     .filter(name => fs.lstatSync(path.join(directory, name)).isDirectory())
     .sort();
 }
@@ -725,7 +719,7 @@ function runBinary(name, args) {
     process.env.WAX_MCP_BIN
       ? `  1. $WAX_MCP_BIN = ${process.env.WAX_MCP_BIN}`
       : "  1. $WAX_MCP_BIN (not set)",
-    `  2. Bundled binary at dist/darwin-${os.arch()}/${name}`,
+    `  2. Bundled binary at dist/${runtimePlatforms.platformKey()}/${name}`,
     `  3. '${name}' in PATH`,
   ];
   console.error(`
