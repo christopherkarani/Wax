@@ -381,8 +381,8 @@ package extension MemoryOrchestrator {
                 throw WaxError.io("rewriteLiveSet destination changed before promotion")
             }
             let backupName = ".\(destinationURL.lastPathComponent)-previous-\(UUID().uuidString)"
-            _ = try fileManager.replaceItemAt(
-                destinationURL,
+            _ = try AtomicFileReplacement.replaceItem(
+                at: destinationURL,
                 withItemAt: stagingURL,
                 backupItemName: backupName,
                 // Retain the prior live set until finalization has verified
@@ -617,8 +617,8 @@ package extension MemoryOrchestrator {
         }
 
         let backupName = "\(sourceURL.lastPathComponent).pre-liveset-\(UUID().uuidString)"
-        _ = try fileManager.replaceItemAt(
-            sourceURL,
+        _ = try AtomicFileReplacement.replaceItem(
+            at: sourceURL,
             withItemAt: candidateURL,
             backupItemName: backupName,
             // Keep the prior live store until finalization verifies the

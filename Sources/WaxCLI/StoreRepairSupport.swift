@@ -299,8 +299,8 @@ enum StoreRepairSupport {
                 throw CLIError("verified repair output refuses a destination symlink")
             }
             let backupName = ".\(canonicalDestination.lastPathComponent)-previous-\(UUID().uuidString)"
-            _ = try FileManager.default.replaceItemAt(
-                destinationPath,
+            _ = try AtomicFileReplacement.replaceItem(
+                at: destinationPath,
                 withItemAt: stagingPath,
                 backupItemName: backupName,
                 // Keep the prior output until finalizePromotion has verified

@@ -98,8 +98,8 @@ struct HostHookTransactionWriter: Sendable {
         }
 
         if FileManager.default.fileExists(atPath: destination.path) {
-            _ = try FileManager.default.replaceItemAt(
-                destination,
+            _ = try AtomicFileReplacement.replaceItem(
+                at: destination,
                 withItemAt: temp,
                 backupItemName: nil,
                 options: []
