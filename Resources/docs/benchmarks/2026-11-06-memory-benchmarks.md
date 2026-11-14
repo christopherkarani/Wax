@@ -19,7 +19,7 @@ harness in [`Benchmarks/`](../../../Benchmarks/README.md), which documents how t
 | Systems, 100k passages | cold open + first query | **121 ms** | Chroma HNSW 511 ms | 840 ms |
 
 Wax leads every retrieval and QA benchmark here. With the e5-small-v2 embedder (the default for new stores)
-(33M parameters, against Contriever's 110M) and the opt-in MiniLM cross-encoder reranker
+(33M parameters, against Contriever's 110M) and the MiniLM cross-encoder reranker (on by default)
 (22 MB, on device), LongMemEval-S retrieval reaches 0.938 R_all@5 against Contriever's 0.902,
 and QA accuracy 89.4% against 87.7% over three reader and judge runs each (the lowest
 reranked run, 89.0%, beats Contriever's highest, 87.8%). Task-averaged QA is a tie (90.2%
@@ -100,8 +100,8 @@ shipped.
 
 ### Reranking
 
-`Memory.Config.reranking = .builtIn(.msMarcoMiniLM)` (opt-in, off by default) rescores the
-top candidates with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
+Reranking is on by default: `Memory.Config.reranking = .automatic` rescores the top 20
+hybrid and text candidates (vector-only searches are not reranked; `.disabled` turns it off) with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
 behind the `MiniLMReranker` trait. Each frame is scored as its best 288-token window, and
 the reranker order is fused with the retrieval order by reciprocal rank (k = 10). The
 graph computes in FP16 over INT8 weights; scores match PyTorch to 0.084 logits on the CPU
@@ -111,7 +111,9 @@ The runs are paired: the reranked run's pre-rerank order matched the base run on
 LongMemEval queries. On LongMemEval, reranking the top 20 takes R_all@5 from 0.905 to
 0.938 (17 questions gained, 3 lost; sign test p = 0.003). On LoCoMo, reranking the top 50
 takes it from 0.555 to 0.609 (102 gained, 19 lost). Reproduce with `wax-bench retrieve ...
---rerank minilm --rerank-candidates 20 --rerank-fusion rrf:10`.
+--rerank minilm --rerank-candidates 20 --rerank-fusion rrf:10`. The default configuration
+reranks the top 20: it gave the same LongMemEval rankings as that explicit run, and on LoCoMo
+it reaches 0.601 R_all@5 (0.663 at 10) against 0.609 with the top 50.
 
 Search with reranking, p50 and p95 per query on the CPU (M3 Max, `--rerank-compute cpu`,
 prediction batch 8, four jobs at once, back-to-back runs on a loaded machine):
@@ -134,6 +136,7 @@ the 1,535 with evidence turns are scored. R_all@k: every evidence turn is in the
 | Retriever | R_all@5 | R_all@10 | R_all@30 |
 |---|---|---|---|
 | Wax hybrid, e5-small-v2, text weight 0.4, MiniLM reranker (top 50, RRF k=10) | **0.609** | **0.686** | **0.767** |
+| Wax hybrid, e5-small-v2, text weight 0.4, MiniLM reranker (top 20, the default) | 0.601 | 0.663 | 0.743 |
 | Wax hybrid, e5-small-v2, text weight 0.4 | 0.555 | 0.636 | 0.744 |
 | Wax hybrid, e5-small-v2 | 0.545 | 0.623 | 0.734 |
 | Wax hybrid, Arctic | 0.537 | 0.618 | 0.725 |
