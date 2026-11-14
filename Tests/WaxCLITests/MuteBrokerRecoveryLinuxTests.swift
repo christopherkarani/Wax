@@ -41,6 +41,13 @@ func muteWaxCLIBrokerIsReplacedOnLinux() async throws {
 
     #expect(kill(mute, SIGSTOP) == 0)
     defer { kill(mute, SIGKILL) }
+    // kill() only queues SIGSTOP. The kernel wakes one thread to start the group
+    // stop, and until that thread is scheduled the others keep running and can
+    // still answer a ping. The broker is mute only once every thread has stopped.
+    try #require(
+        await allThreadsStopped(pid: mute, within: .seconds(30)),
+        "broker \(mute) did not stop after SIGSTOP: \(threadStates(pid: mute))"
+    )
 
     let secondLaunch = LaunchedPIDs()
     let startedSecond = try await AgentBrokerClient.ensureAvailable(
@@ -68,6 +75,36 @@ private func siblingWaxCLIPath() throws -> String {
         FileManager.default.isExecutableFile(atPath: sibling) ? sibling : nil,
         "wax-cli is not built beside \(testBinary.path)"
     )
+}
+
+/// Polls until every thread of `pid` is in the stopped state ('T' in
+/// `/proc/<pid>/task/<tid>/stat`), or `limit` passes. False for a process that
+/// is gone, so a broker that died cannot pass as stopped.
+private func allThreadsStopped(pid: pid_t, within limit: Duration) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: limit)
+    while ContinuousClock.now < deadline {
+        let states = threadStates(pid: pid)
+        if !states.isEmpty, states.allSatisfy({ (state: Character) -> Bool in state == "T" }) {
+            return true
+        }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
+}
+
+/// One state letter per thread of `pid`, as `/proc/<pid>/task/<tid>/stat` reports
+/// it. A thread that exits mid-scan is left out.
+private func threadStates(pid: pid_t) -> String {
+    let taskDirectory = "/proc/\(pid)/task"
+    let threads = (try? FileManager.default.contentsOfDirectory(atPath: taskDirectory)) ?? []
+    return String(threads.compactMap { (tid: String) -> Character? in
+        guard let stat = try? String(contentsOfFile: "\(taskDirectory)/\(tid)/stat", encoding: .utf8),
+              let commEnd = stat.lastIndex(of: ")") else {
+            return nil
+        }
+        // "<tid> (<comm>) <state> ...": the comm may contain spaces or parentheses.
+        return stat[stat.index(after: commEnd)...].first { (character: Character) -> Bool in character != " " }
+    })
 }
 
 private final class LaunchedPIDs: @unchecked Sendable {
