@@ -74,9 +74,15 @@ extension WaxCLI.MCP {
                 let storeURL = URL(fileURLWithPath: expandedStore)
                 do {
                     if try !StoreLockProbe.tryExclusiveAccess(at: storeURL) {
+                        #if canImport(Darwin)
                         warnings.append(
                             "store is held by another process (likely the HTTP LaunchAgent); smoke-checking an isolated store"
                         )
+                        #else
+                        warnings.append(
+                            "store is held by another process (likely the shared HTTP server); smoke-checking an isolated store"
+                        )
+                        #endif
                         storePath = FileManager.default.temporaryDirectory
                             .appendingPathComponent("wax-doctor-smoke-\(UUID().uuidString).wax")
                             .path

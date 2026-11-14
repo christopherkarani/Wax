@@ -171,9 +171,10 @@ package enum AgentBrokerClient {
                     onBrokerLaunched: onBrokerLaunched
                 )
             }
-            throw BrokerUnresponsiveError(
-                "Broker socket is live at \(configuration.socketPath) but did not answer (socket_live=true answered=false committed=false). Not starting a second daemon. Restart wax-mcp or `launchctl kickstart -k gui/$(id -u)/ai.wax.mcp-http`, then session_open with conversation_id. Do not invent a session_id."
-            )
+            throw BrokerUnresponsiveError(muteBrokerMessage(
+                socketPath: configuration.socketPath,
+                restartClause: ServiceRestartHint.restartClause()
+            ))
         }
 
         return try await startBrokerIfNeeded(
@@ -181,6 +182,12 @@ package enum AgentBrokerClient {
             timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
             onBrokerLaunched: onBrokerLaunched
         )
+    }
+
+    /// The `broker_unresponsive` message. `restartClause` names this platform's
+    /// service manager; see ``ServiceRestartHint``.
+    package static func muteBrokerMessage(socketPath: String, restartClause: String) -> String {
+        "Broker socket is live at \(socketPath) but did not answer (socket_live=true answered=false committed=false). Not starting a second daemon. \(restartClause), then session_open with conversation_id. Do not invent a session_id."
     }
 
     private static func startBrokerIfNeeded(

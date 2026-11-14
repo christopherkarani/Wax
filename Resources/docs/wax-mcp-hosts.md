@@ -57,6 +57,43 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ai.wax.mcp-http.plist
 launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
 ```
 
+On Linux the login service is the systemd user unit `wax-mcp-http.service`
+(source tree: `Resources/systemd/wax-mcp-http.service`). It runs the same
+launcher, restarts whenever it exits, and gives the server and its broker
+daemon 5 s to stop on SIGTERM before systemd sends SIGKILL. Write it to
+`~/.config/systemd/user/wax-mcp-http.service`:
+
+```ini
+[Unit]
+Description=Wax MCP HTTP server (shared memory for local agents)
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/waxmcp/bin/start-wax-mcp-http.sh
+Environment=WAX_BROKER_START_TIMEOUT_SECS=60
+Restart=always
+RestartSec=10
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Enable it, and restart it after install or upgrade:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now wax-mcp-http.service
+systemctl --user restart wax-mcp-http.service
+journalctl --user -u wax-mcp-http.service
+```
+
+To keep it running while you are logged out, run `loginctl enable-linger`.
+With a custom `WAX_MCP_INSTALL_ROOT`, point `ExecStart` at
+`<root>/bin/start-wax-mcp-http.sh`.
+
 Then prove vectors against that service:
 
 ```bash
@@ -457,7 +494,7 @@ hermes plugins doctor wax-memory
 `vector-health` must print both vector flags true. If it is degraded:
 
 1. `npx -y waxmcp@latest install`
-2. Restart HTTP: `launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"` when that LaunchAgent is loaded; otherwise run `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`
+2. Restart HTTP: `launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"` when that LaunchAgent is loaded (on Linux, `systemctl --user restart wax-mcp-http.service` when that unit is installed); otherwise run `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`
 3. Rerun `npx -y waxmcp@latest vector-health`
 
 If Hermes doctors fail to register or import, reinstall the plugin with

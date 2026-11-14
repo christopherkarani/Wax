@@ -109,6 +109,8 @@ do not start a second writer:
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
+# on Linux, with the wax-mcp-http.service user unit installed:
+# systemctl --user restart wax-mcp-http.service
 # or, if that LaunchAgent is not loaded:
 # ~/.local/share/waxmcp/bin/start-wax-mcp-http.sh
 ```

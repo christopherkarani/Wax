@@ -313,9 +313,7 @@ enum WaxMCPTools {
                     "committed": .bool(false),
                     "socket_live": .bool(true),
                     "answered": .bool(false),
-                    "next_action": .string(
-                        "Restart wax-mcp or launchctl kickstart the HTTP service, then session_open with conversation_id. The write did not land; do not spawn children."
-                    ),
+                    "next_action": .string(Self.brokerUnresponsiveNextAction),
                 ]
             )
         } catch {
@@ -326,6 +324,15 @@ enum WaxMCPTools {
     /// Confines the command's path argument. `roots/list` is captured in the
     /// background after initialize, so a path outside the cached roots
     /// fetches host roots once before it is refused. Accepted paths never wait.
+    /// `next_action` for `broker_unresponsive`, naming this platform's service manager.
+    static var brokerUnresponsiveNextAction: String {
+        #if canImport(Darwin)
+        "Restart wax-mcp or launchctl kickstart the HTTP service, then session_open with conversation_id. The write did not land; do not spawn children."
+        #else
+        "\(ServiceRestartHint.restartClause()), then session_open with conversation_id. The write did not land; do not spawn children."
+        #endif
+    }
+
     private static func confinePaths(
         command: String,
         arguments: inout [String: Value],
