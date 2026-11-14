@@ -263,8 +263,14 @@ private func connectedSockets(port: Int) async throws -> Int {
 }
 
 private func connectedSocketsBlocking(port: Int) throws -> Int {
+    // macOS ships lsof in /usr/sbin; Linux distributions install it in /usr/bin.
+    guard let lsofPath = ["/usr/sbin/lsof", "/usr/bin/lsof"].first(where: {
+        FileManager.default.isExecutableFile(atPath: $0)
+    }) else {
+        throw HTTPLeakTestError.lsofMissing
+    }
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    process.executableURL = URL(fileURLWithPath: lsofPath)
     process.arguments = ["-n", "-P", "-p", String(getpid())]
     let output = Pipe()
     process.standardOutput = output
@@ -342,5 +348,6 @@ private enum HTTPLeakTestError: Error {
     case write
     case noSession
     case lsofTimedOut
+    case lsofMissing
 }
 #endif
