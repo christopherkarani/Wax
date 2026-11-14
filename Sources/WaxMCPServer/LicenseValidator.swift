@@ -118,6 +118,9 @@ enum LicenseValidator {
         guard status == errSecSuccess else { return nil }
         guard let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+        #elseif os(Linux)
+        // No Keychain on Linux: a 0600 file under the XDG config directory.
+        return LicenseKeyFileStore(environment: ProcessInfo.processInfo.environment).read()
         #else
         return nil
         #endif
@@ -143,6 +146,13 @@ enum LicenseValidator {
             var add = query
             add[kSecValueData as String] = encoded
             _ = SecItemAdd(add as CFDictionary, nil)
+        }
+        #elseif os(Linux)
+        do {
+            try LicenseKeyFileStore(environment: ProcessInfo.processInfo.environment).write(key)
+        } catch {
+            // Like a failed Keychain add: validation goes on, the key is just not remembered.
+            FileHandle.standardError.write(Data("wax-mcp: could not save the license key: \(error.localizedDescription)\n".utf8))
         }
         #else
         _ = key
