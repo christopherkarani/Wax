@@ -178,10 +178,18 @@ package actor EmbeddingReadinessSession {
 
 /// Maps existing host flags onto embedding-readiness sources. No new flags.
 package enum HostEmbeddingReadiness {
-    package static func resolveProvider(_ embedderChoice: String) throws -> BuiltInEmbeddingProvider {
+    /// The built-in for a new store. `auto` (or empty) follows ``HostNewStoreEmbedder`` over
+    /// `servedStores`, every store the host recalls across; a named built-in always wins.
+    package static func resolveProvider(
+        _ embedderChoice: String,
+        servedStores: [URL] = []
+    ) throws -> BuiltInEmbeddingProvider {
+        if HostNewStoreEmbedder.isAutomatic(embedderChoice) {
+            return HostNewStoreEmbedder.provider(servedStores: servedStores)
+        }
         let choice = embedderChoice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch choice {
-        case "auto", "minilm", "":
+        case "minilm":
             return .miniLM
         case "arctic":
             return .arctic
@@ -198,12 +206,13 @@ package enum HostEmbeddingReadiness {
         noEmbedder: Bool,
         requireVector: Bool,
         embedderChoice: String,
-        options: BuiltInEmbeddingProviderOptions = .default
+        options: BuiltInEmbeddingProviderOptions = .default,
+        servedStores: [URL] = []
     ) throws -> EmbeddingOpenRequest {
         if noEmbedder {
             return .disabled
         }
-        let provider = try resolveProvider(embedderChoice)
+        let provider = try resolveProvider(embedderChoice, servedStores: servedStores)
         if requireVector {
             return .builtIn(provider, options)
         }

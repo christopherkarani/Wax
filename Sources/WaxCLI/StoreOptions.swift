@@ -10,7 +10,7 @@ struct StoreOptions: ParsableArguments {
     @Flag(name: .customLong("direct-store"), help: "Bypass the local broker and open the store file directly")
     var directStore: Bool = false
 
-    @Flag(name: .customLong("no-embedder"), help: "Disable MiniLM embedder (text-only search)")
+    @Flag(name: .customLong("no-embedder"), help: "Disable the embedder (text-only search)")
     var noEmbedder: Bool = false
 
     @Option(name: .customLong("format"), help: "Output format: json (default) or text")
@@ -18,6 +18,8 @@ struct StoreOptions: ParsableArguments {
 }
 
 enum EmbedderChoice: String, CaseIterable, ExpressibleByArgument, Sendable {
+    /// e5 for new stores, unless a store this command or its broker serves is bound to MiniLM.
+    case auto
     case minilm
     case arctic
     case e5
@@ -28,8 +30,8 @@ struct VectorStoreOptions: ParsableArguments {
 
     @OptionGroup var runtime: EmbedderRuntimeOptions
 
-    @Option(name: .customLong("embedder"), help: "Embedder for a new store: minilm (default), arctic, or e5. A store with vectors keeps the built-in that wrote them unless --require-vector is set")
-    var embedder: EmbedderChoice = .minilm
+    @Option(name: .customLong("embedder"), help: "Embedder for a new store: auto (default), minilm, arctic, or e5. auto picks e5 unless a store already in use is bound to MiniLM. A store with vectors keeps the built-in that wrote them unless --require-vector is set")
+    var embedder: EmbedderChoice = .auto
 
     @Flag(
         name: .customLong("require-vector"),

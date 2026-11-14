@@ -522,6 +522,12 @@ struct WaxCLIMemoryTests {
         #expect(!AgentDaemonPolicy.shouldUseDaemonForRemember(store: textStore))
     }
 
+    @Test func vectorStoreOptionsDefaultToTheAutomaticEmbedder() throws {
+        // `auto` lets the broker give new stores e5 unless a store it serves is bound to MiniLM.
+        #expect(try VectorStoreOptions.parse([]).embedder == .auto)
+        #expect(try VectorStoreOptions.parse(["--embedder", "minilm"]).embedder == .minilm)
+    }
+
     @Test func agentDaemonConfigurationUsesStableSocketPaths() throws {
         let daemonRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxdc-\(UUID().uuidString.prefix(8))", isDirectory: true)

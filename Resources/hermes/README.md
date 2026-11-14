@@ -28,7 +28,7 @@ swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPSer
 Start the Wax MCP server:
 
 ```bash
-.build/debug/wax-mcp --embedder minilm --transport http --http-host 127.0.0.1 --http-port 3000
+.build/debug/wax-mcp --transport http --http-host 127.0.0.1 --http-port 3000
 ```
 
 ### Install
