@@ -25,6 +25,7 @@ scripts/longmemeval_baselines.py  bm25 / bm25norm / minilm / contriever / stella
 scripts/longmemeval_qa.py         reader prompts (CoT, json history), per-type judge prompts, scoring
 scripts/locomo.py                 LoCoMo prepare / recall / reader / judge / score (Mem0 prompts)
 scripts/llm_run.py                resumable parallel runner over `claude -p`
+scripts/mem0_locomo.py            mem0 (open-source mem0ai) on LoCoMo: ingest, search, reader prompts
 scripts/embed_server.py           local HTTP embedder, so Wax and a baseline can share one model
 scripts/perf_*.py, perf_run_all.sh  systems benchmark data prep, competitors, driver, summary
 ```
@@ -129,6 +130,26 @@ python3 -I $S/locomo.py reader --data $DATA/locomo/locomo10.json --gold $RUNS/lo
 ```
 
 Categories 1-4 only (1,540 questions); category 5 has no gold answer.
+
+### mem0 on LoCoMo
+
+`mem0_locomo.py` runs open-source mem0 (`pip install mem0ai spacy fastembed`, then
+`python -m spacy download en_core_web_sm`, in its own venv) through the same reader, judge and
+scoring. Ingest follows mem0's own LoCoMo code (two users per conversation, two messages per
+`add`, session date as `timestamp` metadata, the run's custom instructions); its extraction
+LLM is claude-haiku-5-5 through `claude -p`, embeddings are local all-MiniLM-L6-v2, and the
+vector store is mem0's local Qdrant default. The script's docstring lists every difference
+from mem0's hosted run.
+
+```bash
+PY=/path/to/mem0-venv/bin/python
+$PY -I $S/mem0_locomo.py ingest --data $DATA/locomo/locomo10.json --store-dir $RUNS/mem0  # ~6,000 claude -p calls, resumable
+$PY -I $S/mem0_locomo.py search --data $DATA/locomo/locomo10.json --gold $RUNS/locomo.gold.jsonl \
+  --store-dir $RUNS/mem0 --top-k 30 --out $RUNS/mem0-memories-top30.jsonl         # top 30 per speaker, as mem0's run
+$PY -I $S/mem0_locomo.py reader --gold $RUNS/locomo.gold.jsonl --memories $RUNS/mem0-memories-top30.jsonl \
+  --prompt wax --out reader.jsonl   # or --prompt mem0: mem0's own answer prompt
+# then llm_run.py (haiku), locomo.py judge, llm_run.py (sonnet), locomo.py score, as above
+```
 
 ## 4. Systems benchmark
 
