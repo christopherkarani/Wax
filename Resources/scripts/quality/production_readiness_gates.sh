@@ -191,6 +191,16 @@ assert_full_pass_rate() {
   local summary
   summary="$(grep -E "Executed [0-9]+ tests?" "$log_file" | tail -n1 || true)"
   if [[ -z "$summary" ]]; then
+    # swift test on Linux prints no XCTest summary when no XCTest case is
+    # selected; the Swift Testing count must then be positive, as below.
+    if grep -E "Test run with 0 tests? (in [0-9]+ suites? )?passed" "$log_file" >/dev/null; then
+      echo "FAIL: swift-testing ran 0 tests and no XCTest summary was found." >&2
+      return 1
+    fi
+    if grep -E "Test run with [1-9][0-9]* tests? (in [0-9]+ suites? )?passed" "$log_file" >/dev/null; then
+      echo "PASS_RATE: 100.00% (swift-testing; no XCTest summary line)"
+      return 0
+    fi
     echo "PASS_RATE: 100.00% (no XCTest summary line found, using command exit status)"
     return 0
   fi
@@ -236,7 +246,11 @@ require_swiftpm_traits() {
     echo "FAIL: Swift $swift_version is too old; this package needs Swift 6.2+." >&2
     return 1
   fi
-  if ! swift test --help | grep -q -- "--traits <traits>"; then
+  # Capture first: under pipefail, `grep -q` exiting early SIGPIPEs swift and
+  # fails the pipeline even when the option is listed (seen on Linux).
+  local test_help
+  test_help="$(swift test --help 2>&1 || true)"
+  if ! grep -q -- "--traits <traits>" <<<"$test_help"; then
     echo "FAIL: current Swift toolchain does not support package traits (--traits)." >&2
     echo "Install a Swift toolchain that supports package traits (Swift 6.2+)." >&2
     return 1
@@ -454,6 +468,26 @@ run_opt_in_configs() {
   fi
 }
 
+# Real built-in embedder and reranker inference: the env-gated suites that
+# `full` skips. On Linux they run on WaxMILRuntime instead of Core ML. Every
+# gate env var is set, so none of their skip reasons may appear.
+run_embedder_inference() {
+  local log_file="$GATE_LOG_DIR/wax-gate-embedder-inference.log"
+  local skip_reason
+
+  run_and_capture "$log_file" env \
+    WAX_TEST_MINILM=1 WAX_TEST_E5=1 WAX_TEST_ARCTIC=1 WAX_TEST_RERANKER=1 \
+    swift test --parallel --skip "$(full_gate_skip_regex)" \
+      --filter 'E5|Arctic|Reranker|WaxMILRuntimeTests|MiniLM|BertTokenizer'
+  for skip_reason in \
+    "Set WAX_TEST_MINILM=1" "Set WAX_TEST_E5=1" "Set WAX_TEST_ARCTIC=1" "Set WAX_TEST_RERANKER=1"
+  do
+    assert_opt_in_suite_ran "$log_file" "$skip_reason"
+  done
+  assert_no_skips "$log_file"
+  assert_full_pass_rate "$log_file"
+}
+
 main() {
   local mode="${1:-all}"
   case "$mode" in
@@ -469,13 +503,16 @@ main() {
     opt-in-configs)
       run_opt_in_configs
       ;;
+    embedder-inference)
+      run_embedder_inference
+      ;;
     all)
       run_full
       run_soak_smoke
       run_burn_smoke
       ;;
     *)
-      echo "Usage: $0 [full|soak-smoke|burn-smoke|opt-in-configs|all]" >&2
+      echo "Usage: $0 [full|soak-smoke|burn-smoke|opt-in-configs|embedder-inference|all]" >&2
       exit 64
       ;;
   esac

@@ -86,6 +86,14 @@ assert_rejects_summary \
   "swift-testing-zero-tests-passed" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds\n􁁛  Test run with 0 tests passed after 0.007 seconds.'
 
+assert_accepts_summary \
+  "linux-swift-testing-without-xctest-summary" \
+  $'\033[90m\xe2\x9c\x98\033[0m Test run with 2489 tests in 93 suites passed after 69.236 seconds with 3 known issues.'
+
+assert_rejects_summary \
+  "linux-zero-swift-testing-without-xctest-summary" \
+  $'\xe2\x97\x87 Test run with 0 tests in 0 suites passed after 0.007 seconds.'
+
 assert_rejects_summary \
   "xctest-wrapper-zero-without-swift-testing" \
   $'Test Suite \'Selected tests\' passed at 2026-09-08 15:17:03.816.\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.007) seconds'
@@ -229,6 +237,11 @@ if assert_opt_in_suite_ran "$OPT_IN_SKIPPED_LOG" "Set WAX_TEST_MINILM=1" >/dev/n
 fi
 if ! grep -F 'opt-in-configs)' "$SCRIPT" >/dev/null; then
   echo "FAIL: gate script must expose the opt-in-configs mode" >&2
+  exit 1
+fi
+
+if ! grep -F 'embedder-inference)' "$SCRIPT" >/dev/null; then
+  echo "FAIL: gate script must expose the embedder-inference mode" >&2
   exit 1
 fi
 
@@ -414,6 +427,20 @@ assert_stability_gate_sets_search_mode \
   "ProductionReadinessStabilityTests.testSoakSmokeStability" \
   "vector" \
   "vector"
+
+# embedder-inference sets every inference gate and keeps the bench skip regex.
+: >"$CAPTURED_COMMANDS"
+run_embedder_inference >/dev/null
+inference_command="$(cat "$CAPTURED_COMMANDS")"
+for expected in WAX_TEST_MINILM=1 WAX_TEST_E5=1 WAX_TEST_ARCTIC=1 WAX_TEST_RERANKER=1 \
+  "--skip $(full_gate_skip_regex)" "WaxMILRuntimeTests"
+do
+  if [[ "$inference_command" != *"$expected"* ]]; then
+    echo "FAIL: embedder-inference command is missing $expected" >&2
+    echo "Captured: $inference_command" >&2
+    exit 1
+  fi
+done
 
 assert_lists_unfinished_tests() {
   local log_file="$TMP_DIR/unfinished.log"
