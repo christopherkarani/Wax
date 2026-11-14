@@ -96,6 +96,39 @@ struct ProcessRunnerTests {
         #expect(kill(pid, 0) != 0, "child \(pid) outlived the timeout")
     }
 
+    /// The timed-out child is reaped before `runCaptured` throws, even while
+    /// another process holds descriptors the child inherited. Under a parallel
+    /// run a sibling spawned at the same moment could inherit the child's exit
+    /// socket, and swift-corelibs-foundation reaps only at EOF on that socket,
+    /// so the killed child stayed a zombie. A background grandchild holds the
+    /// same descriptors here, which makes that case deterministic.
+    @Test func runCapturedTimeoutReapsTheKilledChildWhileAnotherProcessHoldsItsDescriptors() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-runner-reap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let pidFile = directory.appendingPathComponent("child")
+        let holderFile = directory.appendingPathComponent("holder")
+        defer {
+            if let text = try? String(contentsOf: holderFile, encoding: .utf8),
+               let holder = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                kill(holder, SIGKILL)
+            }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let script = """
+        trap '' TERM; sleep 30 & echo $! > '\(holderFile.path)'; \
+        echo $$ > '\(pidFile.path)'; exec sleep 30
+        """
+
+        await #expect(throws: CLIError.self) {
+            _ = try await runCaptured(command: "/bin/sh", arguments: ["-c", script], timeoutSeconds: 0.5)
+        }
+        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+        let pid = try #require(pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
+        // kill(pid, 0) succeeds for a zombie too: the child must be reaped.
+        #expect(kill(pid, 0) != 0, "child \(pid) was not reaped before runCaptured threw")
+    }
+
     @Test func runCapturedReturnsWhenABackgroundChildHoldsThePipes() async throws {
         let (output, seconds) = try await timedRunCaptured(
             command: "/bin/sh",

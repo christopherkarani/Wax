@@ -27,7 +27,7 @@ enum ProcessRunner {
         passthrough: Bool = false,
         allowNonZeroExit: Bool = false
     ) throws -> Int32 {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
         process.environment = environment ?? ProcessInfo.processInfo.environment
@@ -57,7 +57,7 @@ enum ProcessRunner {
         input: String? = nil,
         timeoutSeconds: TimeInterval? = nil
     ) throws -> CapturedProcessOutput {
-        let process = Process()
+        let process = ChildProcess()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
         process.environment = environment ?? ProcessInfo.processInfo.environment
@@ -94,10 +94,10 @@ enum ProcessRunner {
         let status: Int32
         if let timeoutSeconds {
             let deadline = Date().addingTimeInterval(timeoutSeconds)
-            while childIsRunning(process), Date() < deadline {
+            while process.isRunning, Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
-            if childIsRunning(process) {
+            if process.isRunning {
                 stop(process)
                 // Release the readers even if a grandchild still holds a pipe.
                 _ = drain.wait(until: .now() + pipeDrainGraceSeconds)
@@ -106,7 +106,7 @@ enum ProcessRunner {
             // The child exited; a background grandchild may still hold the pipes.
             let remaining = max(0, deadline.timeIntervalSinceNow) + pipeDrainGraceSeconds
             captured = drain.wait(until: .now() + remaining)
-            status = exitedChildStatus(process)
+            status = process.terminationStatus
         } else {
             process.waitForExit(timeout: .infinity)
             captured = drain.wait()
@@ -120,38 +120,13 @@ enum ProcessRunner {
         )
     }
 
-    /// Whether the direct child is still running. On Linux, Foundation keeps
-    /// `isRunning` true while a background grandchild holds the child's
-    /// inherited exit-notification socket (see `Process.unreapedExitStatus()`),
-    /// so the child's own exit is checked too.
-    private static func childIsRunning(_ process: Process) -> Bool {
-        #if os(Linux)
-        return process.isRunning && process.unreapedExitStatus() == nil
-        #else
-        return process.isRunning
-        #endif
-    }
-
-    /// The status of a child `childIsRunning` reported as exited. On Linux
-    /// `terminationStatus` traps until Foundation has reaped the child, which a
-    /// grandchild can delay; read the unreaped status instead. If Foundation
-    /// reaps it in between, `isRunning` clears a moment later.
-    private static func exitedChildStatus(_ process: Process) -> Int32 {
-        #if os(Linux)
-        while process.isRunning {
-            if let status = process.unreapedExitStatus() { return status }
-            Thread.sleep(forTimeInterval: 0.001)
-        }
-        #endif
-        return process.terminationStatus
-    }
-
     private static let terminateGraceSeconds: TimeInterval = 2
     private static let pipeDrainGraceSeconds: TimeInterval = 1
 
     /// SIGTERM, a grace period, then SIGKILL, so a child that ignores
-    /// SIGTERM cannot outlive the timeout. Waits a bounded time for the reap.
-    private static func stop(_ process: Process) {
+    /// SIGTERM cannot outlive the timeout. Waits a bounded time for the reap,
+    /// which on Linux `ChildProcess` does by pid as soon as the child dies.
+    private static func stop(_ process: ChildProcess) {
         process.terminate()
         process.waitForExit(timeout: terminateGraceSeconds)
     }
