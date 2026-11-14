@@ -332,7 +332,26 @@ private final class OneThreadExecutor: TaskExecutor, @unchecked Sendable {
     /// Runs `call` on a fresh one-thread executor with a sibling task queued
     /// behind it, and returns the order of the call's start, the sibling, and
     /// the call's end.
+    ///
+    /// A call that blocks the executor's only thread can never let the sibling
+    /// run first, so one run with the sibling before the call's end proves the
+    /// call suspended. The reverse order proves nothing: when the off-pool work
+    /// finishes before the caller has finished suspending, the runtime resumes
+    /// the caller inline and the sibling runs afterwards. So a run in that
+    /// order is repeated, and only a call that never yields fails.
     static func eventsAround<T: Sendable>(
+        _ call: @escaping @Sendable () async -> T
+    ) async -> ([String], T) {
+        var outcome = await eventsAroundOnce(call)
+        var attempts = 1
+        while outcome.0 != ["call-start", "sibling", "call-end"], attempts < 50 {
+            outcome = await eventsAroundOnce(call)
+            attempts += 1
+        }
+        return outcome
+    }
+
+    private static func eventsAroundOnce<T: Sendable>(
         _ call: @escaping @Sendable () async -> T
     ) async -> ([String], T) {
         let executor = OneThreadExecutor()
