@@ -2,11 +2,14 @@ import Foundation
 import Testing
 @testable import Wax
 
-// SQLite3 C API inspector: only available where the system SQLite3 module
-// exists (macOS/iOS). On Linux, tests that require direct SQLite3 C calls
-// are excluded at compile time; the CI only runs WaxCoreTests on Linux.
+// The SQLite C API comes from the SDK's SQLite3 module on Apple platforms and
+// from GRDB's GRDBSQLite system library (libsqlite3) elsewhere.
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 #if canImport(SQLite3)
 import SQLite3
+#else
+import GRDBSQLite
+#endif
 import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
@@ -261,7 +264,7 @@ private enum SQLiteBlobInspector {
         return Data(bytes: raw, count: Int(size))
     }
 }
-#endif // canImport(SQLite3)
+#endif // canImport(SQLite3) || canImport(GRDBSQLite)
 
 @Test func ftsSchemaCreates() async throws {
     let engine = try FTS5SearchEngine.inMemory()
@@ -415,7 +418,7 @@ private enum SQLiteBlobInspector {
     #expect(results.map(\.frameId) == [0])
 }
 
-#if canImport(SQLite3)
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 @Test func serializedBlobHasSchemaIdentityPragmas() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Hello, World!")
@@ -485,7 +488,7 @@ private enum SQLiteBlobInspector {
     #expect(sql.contains("tokenize"))
     #expect(sql.contains("unicode61"))
 }
-#endif // canImport(SQLite3)
+#endif // canImport(SQLite3) || canImport(GRDBSQLite)
 
 @Test func serializeSupportsOptionalCompaction() async throws {
     let engine = try FTS5SearchEngine.inMemory()

@@ -2,11 +2,14 @@ import Foundation
 import Testing
 import Wax
 
-// SQLite3 C API tests are only compiled where the system SQLite3 module is
-// available (macOS/iOS). On Linux the CI only runs WaxCoreTests, so these
-// tests are excluded at compile time rather than at runtime.
+// The SQLite C API comes from the SDK's SQLite3 module on Apple platforms and
+// from GRDB's GRDBSQLite system library (libsqlite3) elsewhere.
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 #if canImport(SQLite3)
 import SQLite3
+#else
+import GRDBSQLite
+#endif
 import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
@@ -329,4 +332,4 @@ private enum SQLiteBlobInspector {
     #expect(userVersion == 9)
 }
 
-#endif // canImport(SQLite3)
+#endif // canImport(SQLite3) || canImport(GRDBSQLite)

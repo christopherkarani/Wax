@@ -1,10 +1,15 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 import Testing
 @testable import Wax
 import WaxTestSupport
 import WaxCore
 
+// Photo and video RAG are Apple-only (Sources gate them on ImageIO); the
+// FastRAG, Wax.putBatch and reranking checks below run everywhere.
+#if canImport(ImageIO)
 // MARK: - Shared test stubs
 
 /// Text → `[1, 0, 0, 0]`, image → `[0, 1, 0, 0]`.
@@ -365,6 +370,8 @@ func videoRAGIngestMissingFileThrows() async throws {
     }
 }
 
+#endif // canImport(ImageIO)
+
 // MARK: - FastRAGContextBuilder.validateExpansionPayloadSize
 
 @Test
@@ -415,6 +422,7 @@ func validateExpansionPayloadSizeZeroMaxBytesIsNoOp() throws {
     )
 }
 
+#if canImport(ImageIO)
 // MARK: - PhotoRAG recall empty store
 
 @Test
@@ -449,6 +457,8 @@ func photoRAGRecallOnEmptyStoreReturnsEmptyContext() async throws {
         try await orchestrator.flush()
     }
 }
+
+#endif // canImport(ImageIO)
 
 // MARK: - Wax.putBatch count mismatch throws
 

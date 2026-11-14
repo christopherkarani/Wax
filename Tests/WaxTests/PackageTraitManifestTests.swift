@@ -59,36 +59,70 @@ import Testing
     #expect(!source.contains("try fileManager.removeItem(at: standardizedTarget)\n        try fileManager.moveItem(at: buildURL, to: standardizedTarget)"))
 }
 
+/// Benchmarks and the Apple-only photo, video and benchmark-support files stay out of
+/// the Linux build: they need XCTMetric, ImageIO, CoreGraphics or AVFoundation.
 @Test func waxIntegrationLinuxExcludesDarwinOnlyBenchmarks() throws {
-    let manifest = try PackageManifest.load()
+    let excludes = try PackageManifest.load().linuxIntegrationExcludes()
     let requiredExcludes = [
         "AccessStatsBootstrapBenchmarks.swift",
         "HandoffLookupBenchmarks.swift",
         "HybridVectorEngineBenchmark.swift",
         "PayloadLivenessBenchmarks.swift",
+        "RAGBenchmarkSupport.swift",
         "RememberDedupBenchmarks.swift",
         "SessionRuntimeStatsBenchmarks.swift",
-        "StructuredMemoryCRUDTests.swift",
-        "StructuredMemorySchemaTests.swift",
         "SurrogateSourceBenchmarks.swift",
-        "TextSearchEngineTests.swift",
-        "VersionRelationTests.swift",
+        "VideoRAGTestSupport.swift",
     ]
 
     for file in requiredExcludes {
-        #expect(manifest.source.contains(#""\#(file)""#))
+        #expect(excludes.contains(#""\#(file)""#), "\(file) needs Apple frameworks; exclude it on Linux")
     }
 }
 
-/// Tokenizer and embedder suites that run on Linux through WaxMILRuntime must stay compiled there.
+/// Every Linux exclude names a file that exists, so a rename cannot leave a stale entry.
+@Test func waxIntegrationLinuxExcludesNameExistingFiles() throws {
+    let excludes = try PackageManifest.load().linuxIntegrationExcludes()
+    let testsRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("WaxIntegrationTests", isDirectory: true)
+    let files = excludes.split(separator: "\n").compactMap { (line: Substring) -> String? in
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("\""), trimmed.hasSuffix("\","), trimmed.count > 3 else { return nil }
+        return String(trimmed.dropFirst().dropLast(2))
+    }
+    #expect(!files.isEmpty)
+    for file in files {
+        #expect(
+            FileManager.default.fileExists(atPath: testsRoot.appendingPathComponent(file).path),
+            "waxIntegrationLinuxExcludes lists missing file \(file)"
+        )
+    }
+}
+
+/// Suites that run on Linux (tokenizer and embedders through WaxMILRuntime, SQLite
+/// through GRDBSQLite, CPU vector search) must stay compiled there. Files that mix in
+/// Apple-only cases gate just those cases with `#if canImport(...)`.
 @Test func waxIntegrationLinuxExcludesKeepPortableEmbedderTests() throws {
     let excludes = try PackageManifest.load().linuxIntegrationExcludes()
     let portable = [
+        "BenchmarkTextFactory.swift",
         "BertTokenizerFastPathTests.swift",
         "BertTokenizerReuseTests.swift",
+        "CoverageGapTests.swift",
+        "FTS5SerializerTests.swift",
+        "MemoryOrchestratorTests.swift",
         "MiniLMEmbedderTests.swift",
         "MiniLMEmbeddingQualityTests.swift",
         "MiniLMResourceFailureTests.swift",
+        "RAGConfigClampingTests.swift",
+        "StructuredMemoryCRUDTests.swift",
+        "StructuredMemorySchemaTests.swift",
+        "TextSearchEngineTests.swift",
+        "UnifiedSearchTests.swift",
+        "VectorSearchEngineTests.swift",
+        "VersionRelationTests.swift",
     ]
     for file in portable {
         #expect(!excludes.contains(#""\#(file)""#), "\(file) is portable; do not exclude it on Linux")

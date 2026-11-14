@@ -3,11 +3,14 @@ import Testing
 @testable import WaxTextSearch
 @testable import WaxCore
 
-// SQLite3 C API tests are only compiled where the system SQLite3 module is
-// available (macOS/iOS). On Linux the CI only runs WaxCoreTests, so these
-// tests are excluded at compile time rather than at runtime.
+// The SQLite C API comes from the SDK's SQLite3 module on Apple platforms and
+// from GRDB's GRDBSQLite system library (libsqlite3) elsewhere.
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 #if canImport(SQLite3)
 import SQLite3
+#else
+import GRDBSQLite
+#endif
 
 @Test func fts5SerializerRoundTrip() throws {
     var db: OpaquePointer?
@@ -106,4 +109,4 @@ import SQLite3
     #expect(sqlite3_exec(targetConn, "CREATE TABLE ok(x);", nil, nil, nil) == SQLITE_OK)
 }
 
-#endif // canImport(SQLite3)
+#endif // canImport(SQLite3) || canImport(GRDBSQLite)

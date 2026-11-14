@@ -1,4 +1,6 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 import Testing
 @testable import Wax
@@ -7,6 +9,9 @@ import WaxCore
 
 private let ragClampTestNowMs: Int64 = 1_700_000_000_000
 
+// PhotoRAGOrchestrator is Apple-only (Sources gate it on ImageIO); the config
+// clamping checks run everywhere.
+#if canImport(ImageIO)
 private let tinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 private let tinyPhotoQueryImage = PhotoQueryImage(data: tinyPNGData, format: .png)
 
@@ -100,6 +105,8 @@ private func firstAssetIDForPhotoBlendWeight(_ textEmbeddingWeight: Float) async
     }
 }
 
+#endif // canImport(ImageIO)
+
 @Test
 func photoRAGConfigDefaultMatchesExplicitDefaults() {
     #expect(PhotoRAGConfig() == PhotoRAGConfig.default)
@@ -159,6 +166,7 @@ func photoRAGConfigClampsNonFiniteBlendValues() {
     #expect(infConfig.textEmbeddingWeight == 0.0)
 }
 
+#if canImport(ImageIO)
 @Test
 func photoRAGTextImageBlendWeightChangesOrdering() async throws {
     let textPreferredFirst = try await firstAssetIDForPhotoBlendWeight(1.0)
@@ -167,6 +175,7 @@ func photoRAGTextImageBlendWeightChangesOrdering() async throws {
     let imagePreferredFirst = try await firstAssetIDForPhotoBlendWeight(0.0)
     #expect(imagePreferredFirst == "photo-image")
 }
+#endif
 
 @Test
 func videoRAGConfigDefaultMatchesExplicitDefaults() {

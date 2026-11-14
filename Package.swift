@@ -5,49 +5,48 @@ import PackageDescription
 
 let waxIntegrationLinuxExcludes: [String]
 #if os(Linux)
+// WaxIntegrationTests files that need Apple frameworks. Keep the list honest
+// (PackageTraitManifestTests): a portable file with a few Apple-only cases gates
+// just those cases with `#if canImport(...)` instead of being listed here.
 waxIntegrationLinuxExcludes = [
+    // Benchmarks and soak harnesses: XCTest measure options/XCTMetric (Darwin
+    // XCTest only); the gate skips them everywhere with its bench regex.
     "AccessStatsBootstrapBenchmarks.swift",
-    "CoverageGapTests.swift",
     "BatchEmbeddingBenchmark.swift",
     "BufferSerializationBenchmark.swift",
-    "FoundationModelsToolAvailabilityTests.swift",
     "HandoffLookupBenchmarks.swift",
+    "HybridVectorEngineBenchmark.swift",
     "LongMemoryBenchmarkHarness.swift",
-    "MLMultiArrayBatchBuilderTests.swift",
-    "MemoryOrchestratorTests.swift",
     "MetalVectorEngineBenchmark.swift",
-    "MetalVectorEnginePoolTests.swift",
-    "MiniLMBatchBuilderTests.swift",
-    "MiniLMEmbedderBatchPlanningTests.swift",
-    "MiniLMFloat16DecodingTests.swift",
-    "Mocks/MockProviders.swift",
     "OptimizationComparisonBenchmark.swift",
-    "PDFIngestTests.swift",
     "PayloadLivenessBenchmarks.swift",
-    "PhotoRAGConstraintQueriesTests.swift",
-    "PhotoRAGIngestDedupeTests.swift",
-    "PhotoRAGOrchestratorTests.swift",
     "ProductionReadinessStabilityTests.swift",
     "RAGBenchmarkSupport.swift",
     "RAGBenchmarks.swift",
     "RAGBenchmarksMiniLM.swift",
-    "RAGConfigClampingTests.swift",
     "RememberDedupBenchmarks.swift",
     "SessionRuntimeStatsBenchmarks.swift",
-    "StructuredMemoryCRUDTests.swift",
-    "StructuredMemorySchemaTests.swift",
     "SurrogateSourceBenchmarks.swift",
-    "TextSearchEngineTests.swift",
-    "UnifiedSearchTests.swift",
-    "VersionRelationTests.swift",
-    "HybridVectorEngineBenchmark.swift",
-    "VectorSearchEngineTests.swift",
+    "TokenizerBenchmark.swift",
+    // Core ML (MLMultiArray, Core ML batch shapes), Metal, FoundationModels.
+    "FoundationModelsToolAvailabilityTests.swift",
+    "MLMultiArrayBatchBuilderTests.swift",
+    "MetalVectorEnginePoolTests.swift",
+    "MiniLMBatchBuilderTests.swift",
+    "MiniLMEmbedderBatchPlanningTests.swift",
+    "MiniLMFloat16DecodingTests.swift",
+    // PDF, photo and video RAG are Apple-only product features (PDFKit, ImageIO,
+    // CoreGraphics, AVFoundation, Photos); Sources gate them out on Linux.
+    "Mocks/MockProviders.swift",
+    "PDFIngestTests.swift",
+    "PhotoRAGConstraintQueriesTests.swift",
+    "PhotoRAGIngestDedupeTests.swift",
+    "PhotoRAGOrchestratorTests.swift",
     "VideoRAGDeleteVectorDurabilityTests.swift",
     "VideoRAGFileIngestIntegrationTests.swift",
     "VideoRAGRecallOnlyTests.swift",
     "VideoRAGSegmentationMathTests.swift",
     "VideoRAGTestSupport.swift",
-    "TokenizerBenchmark.swift",
 ]
 #else
 waxIntegrationLinuxExcludes = []

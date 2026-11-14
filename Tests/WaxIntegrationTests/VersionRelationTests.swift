@@ -80,7 +80,7 @@ import Wax
     )
     #expect(current.hits.isEmpty)
 
-    #if canImport(SQLite3)
+    #if canImport(SQLite3) || canImport(GRDBSQLite)
     let serialized = try await engine.serialize()
     #expect(try VersionRelationSQLiteFixture.spanRelations(fromSerialized: serialized) == [
         Int64(VersionRelation.sets.rawValue),
@@ -249,8 +249,12 @@ import Wax
     }
 }
 
+#if canImport(SQLite3) || canImport(GRDBSQLite)
 #if canImport(SQLite3)
 import SQLite3
+#else
+import GRDBSQLite
+#endif
 import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
@@ -787,7 +791,7 @@ private enum VersionRelationSQLiteFixture {
     )
     #expect(secondWindow.hits.map(\.system.toMs) == [30])
 
-    #if canImport(SQLite3)
+    #if canImport(SQLite3) || canImport(GRDBSQLite)
     let serialized = try await engine.serialize()
     #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 2)
     #endif
@@ -824,7 +828,7 @@ private enum VersionRelationSQLiteFixture {
     )
     #expect(current.hits.map(\.system.toMs) == [nil])
 
-    #if canImport(SQLite3)
+    #if canImport(SQLite3) || canImport(GRDBSQLite)
     let serialized = try await engine.serialize()
     #expect(try VersionRelationSQLiteFixture.spanCount(fromSerialized: serialized) == 2)
     #endif
