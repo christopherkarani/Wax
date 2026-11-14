@@ -162,6 +162,20 @@ extension WaxCLI.MCP {
 
             printHostRegistrationMatrix(name: name)
 
+            #if os(Linux)
+            let linuxReport = LinuxRuntimeDoctor.report(
+                LinuxRuntimeDoctor.liveProbes(environment: ProcessInfo.processInfo.environment),
+                expectVectorRuntime: !noEmbedder
+            )
+            print("")
+            print("## Linux runtime")
+            for line in linuxReport.lines {
+                print(line)
+            }
+            warnings.append(contentsOf: linuxReport.warnings)
+            failures.append(contentsOf: linuxReport.failures)
+            #endif
+
             for warning in warnings {
                 print("WARN: \(warning)")
             }
