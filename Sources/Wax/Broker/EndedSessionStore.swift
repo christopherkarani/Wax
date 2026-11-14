@@ -5,13 +5,13 @@ import WaxVectorSearch
 package struct EndedSessionSearchQuery: Sendable {
     package var manifest: BrokerSessionManifest
     package var query: String
-    package var mode: Memory.RetrievalMode
+    package var mode: SearchModeRequest
     package var topK: Int
 
     package init(
         manifest: BrokerSessionManifest,
         query: String,
-        mode: Memory.RetrievalMode,
+        mode: SearchModeRequest,
         topK: Int
     ) {
         self.manifest = manifest
@@ -24,14 +24,14 @@ package struct EndedSessionSearchQuery: Sendable {
 package struct EndedSessionRecallQuery: Sendable {
     package var manifest: BrokerSessionManifest
     package var query: String
-    package var mode: Memory.RetrievalMode
+    package var mode: SearchModeRequest
     package var topK: Int
     package var frameFilter: FrameFilter?
 
     package init(
         manifest: BrokerSessionManifest,
         query: String,
-        mode: Memory.RetrievalMode,
+        mode: SearchModeRequest,
         topK: Int,
         frameFilter: FrameFilter?
     ) {

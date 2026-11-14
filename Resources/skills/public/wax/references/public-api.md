@@ -50,7 +50,8 @@ The reranker scores the full frame text of the first `candidateCount` candidates
 
 ### Memory.SearchOptions / RetrievalMode / TimeRange
 
-- `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: Memory.RetrievalMode` (`.hybrid()`), `maxContextTokens: Int?` (nil), `inferTimeRange: Bool` (true).
+- `public struct SearchOptions` with `topK` (10), `includeSurrogates` (false), `timeRange: TimeRange?` (nil), `mode: Memory.RetrievalMode` (unset), `maxContextTokens: Int?` (nil), `inferTimeRange: Bool` (true). The initializer takes `mode: Memory.RetrievalMode? = nil`.
+  - `mode` — unset searches hybrid at the store's default text weight: 0.4 when the store's embedder is e5-small-v2, 0.5 otherwise. Reading an unset `mode` returns `.hybrid()`. A mode passed to the initializer or assigned to `mode` (`.hybrid()` included) is used as given. `RAGContext.Diagnostics` reports the weight that ran.
   - `maxContextTokens` — token budget for the returned `RAGContext`. `nil` uses the store default (1,500). Values are clamped to `Memory.SearchOptions.maxContextTokensRange` (`64...32_768`). Raise it when a large `topK` returns fewer items than requested.
   - `inferTimeRange` — when `true` and `timeRange` is `nil`, a past-looking phrase in the query ("yesterday", "last week", "last month") filters results to memories saved in that window. Future-looking phrases ("tomorrow", "next week") never filter, because they describe event time, not save time; a past phrase elsewhere in the same query still can. The applied window is reported in `RAGContext.Diagnostics.inferredTimeRange`. Set `false` to search all time.
 - `public enum SearchMode: Sendable, Equatable, CustomStringConvertible { case textOnly, vectorOnly, hybrid(alpha: Float = 0.5) }` — module-scope canonical lane type. `Memory.RetrievalMode` is a public typealias of `SearchMode`; both names are valid in app code. `diagnosticsSummary` / `CustomStringConvertible` yield the stable `"text"` / `"vector"` / `"hybrid(alpha=0.500)"` form used by docs, MCP, and broker.
@@ -146,7 +147,7 @@ Source: `Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift`
 
 When `canImport(FoundationModels)`: `memory.foundationModelsMemoryTool()`, `memory.foundationModelsTools(kit:)`, `memory.foundationModelsCombinedTools()` expose remember/recall/search as on-device model tools.
 
-- `public enum Memory.EmbeddingPolicy { case automatic, always, never }` — retrieval lane for the tools and session config (`WaxMemoryToolConfig.embeddingPolicy`, session config `embeddingPolicy`): `.automatic` → hybrid, `.always` → vector-only, `.never` → text-only.
+- `public enum Memory.EmbeddingPolicy { case automatic, always, never }` — retrieval lane for the tools and session config (`WaxMemoryToolConfig.embeddingPolicy`, session config `embeddingPolicy`): `.automatic` → hybrid, `.always` → vector-only, `.never` → text-only. `WaxMemoryToolConfig.init` takes `searchAlpha: Float? = nil`; with no `searchAlpha` and no per-call `alpha`, hybrid uses the store's default text weight (0.4 for e5-small-v2 stores, 0.5 otherwise), and reading `searchAlpha` returns 0.5.
 
 ## Photo and video memory (experimental, Darwin)
 

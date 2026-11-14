@@ -7,7 +7,7 @@ package enum CompactAssembly {
     package struct Request: Sendable {
         package var query: String
         package var identity: RecallIdentity
-        package var mode: Memory.RetrievalMode
+        package var mode: SearchModeRequest
         package var tokenBudget: Int
         package var maxItems: Int
         package var explicitProject: String?
@@ -22,7 +22,7 @@ package enum CompactAssembly {
         package init(
             query: String,
             sessionID: UUID?,
-            mode: Memory.RetrievalMode,
+            mode: SearchModeRequest,
             tokenBudget: Int,
             maxItems: Int,
             scope: LayeredRecall.Scope = .project,

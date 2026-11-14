@@ -249,7 +249,7 @@ package enum LayeredRecall {
         package var identity: RecallIdentity
         package var limit: Int
         package var searchTopK: Int
-        package var mode: Memory.RetrievalMode?
+        package var mode: SearchModeRequest?
         package var explicitProject: String?
         package var explicitRepo: String?
         package var clientCWD: String?
@@ -280,7 +280,7 @@ package enum LayeredRecall {
             identity: RecallIdentity,
             limit: Int,
             searchTopK: Int,
-            mode: Memory.RetrievalMode? = nil,
+            mode: SearchModeRequest? = nil,
             explicitProject: String? = nil,
             explicitRepo: String? = nil,
             clientCWD: String? = nil,
@@ -306,7 +306,7 @@ package enum LayeredRecall {
 
     package struct SearchRequest: Sendable {
         package var query: String
-        package var mode: Memory.RetrievalMode
+        package var mode: SearchModeRequest
         package var topK: Int
         package var identity: MemorySearchIdentity
 
@@ -315,7 +315,7 @@ package enum LayeredRecall {
 
         package init(
             query: String,
-            mode: Memory.RetrievalMode,
+            mode: SearchModeRequest,
             topK: Int,
             identity: MemorySearchIdentity
         ) {
@@ -327,7 +327,7 @@ package enum LayeredRecall {
 
         package init(
             query: String,
-            mode: Memory.RetrievalMode,
+            mode: SearchModeRequest,
             topK: Int,
             sessionID: UUID? = nil,
             horizons: HorizonSet

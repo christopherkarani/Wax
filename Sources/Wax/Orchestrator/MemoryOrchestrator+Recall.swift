@@ -38,7 +38,7 @@ extension MemoryOrchestrator {
 
     package func recall(
         query: String,
-        mode: SearchMode,
+        mode: SearchModeRequest,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         topK: Int? = nil
@@ -52,9 +52,11 @@ extension MemoryOrchestrator {
         ).context
     }
 
+    /// - Parameter mode: `nil` uses ``FastRAGConfig/searchMode`` (text-only for exact-match
+    ///   queries); a hybrid request without a weight uses ``defaultHybridAlpha``.
     package func recallExecution(
         query: String,
-        mode: SearchMode? = nil,
+        mode: SearchModeRequest? = nil,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil,
         topK: Int? = nil,
@@ -93,9 +95,8 @@ extension MemoryOrchestrator {
         if let searchTopK {
             recallConfig.searchTopK = max(1, searchTopK)
         }
-        if let searchMode {
-            recallConfig.searchMode = searchMode
-        }
+        recallConfig.searchMode = searchMode
+            ?? recallConfig.searchModeRequest.resolved(defaultHybridAlpha: defaultHybridAlpha)
         if let maxContextTokens {
             // A caller-sized budget should be able to hold every requested hit.
             recallConfig.maxContextTokens = maxContextTokens
@@ -137,14 +138,14 @@ extension MemoryOrchestrator {
     ///
     /// - Parameters:
     ///   - query: Query text.
-    ///   - mode: ``Memory/RetrievalMode`` — text-only, vector-only, or hybrid.
-    ///     Hybrid may fall back to text when the vector lane is unavailable.
+    ///   - mode: Text-only, vector-only, or hybrid; hybrid without a weight uses
+    ///     ``defaultHybridAlpha``. Hybrid may fall back to text when the vector lane is unavailable.
     ///     `vectorOnly` throws if vector search is disabled or no embedder is configured.
     ///   - topK: Maximum number of hits to return.
     /// - Returns: Ranked raw hits.
     package func search(
         query: String,
-        mode: SearchMode = .hybrid(),
+        mode: SearchModeRequest = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
@@ -160,11 +161,13 @@ extension MemoryOrchestrator {
 
     package func searchExecution(
         query: String,
-        mode: SearchMode = .hybrid(),
+        mode modeRequest: SearchModeRequest = .hybrid(),
         topK: Int = 10,
         frameFilter: FrameFilter? = nil,
         timeRange: SearchTimeRange? = nil
     ) async throws -> SearchExecution {
+        // Resolved before any suspension, so it follows the provider snapshotted below.
+        let mode = modeRequest.resolved(defaultHybridAlpha: defaultHybridAlpha)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return SearchExecution(
@@ -322,7 +325,7 @@ extension MemoryOrchestrator {
         frameFilter: FrameFilter?,
         timeRange: SearchTimeRange?,
         topK: Int?,
-        requestedMode: SearchMode?,
+        requestedMode: SearchModeRequest?,
         scopeContext: MemoryScopeContext? = nil,
         maxContextTokens: Int? = nil,
         inferTimeRange: Bool = true
@@ -331,10 +334,17 @@ extension MemoryOrchestrator {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let implicitExactIntent = requestedMode == nil
             && RuleBasedQueryClassifier.isExactIntentQuery(trimmedQuery)
-        let resolvedRequestedMode = requestedMode
-            ?? (implicitExactIntent ? .textOnly : recallConfig.searchMode)
-        let embeddingPolicy: QueryEmbeddingPolicy = if let requestedMode {
-            Self.queryEmbeddingPolicy(for: requestedMode)
+        // Resolved before any suspension, so it follows the provider snapshotted below.
+        let storeHybridAlpha = defaultHybridAlpha
+        let resolvedRequestedMode: SearchMode = if let requestedMode {
+            requestedMode.resolved(defaultHybridAlpha: storeHybridAlpha)
+        } else if implicitExactIntent {
+            .textOnly
+        } else {
+            recallConfig.searchModeRequest.resolved(defaultHybridAlpha: storeHybridAlpha)
+        }
+        let embeddingPolicy: QueryEmbeddingPolicy = if requestedMode != nil {
+            Self.queryEmbeddingPolicy(for: resolvedRequestedMode)
         } else if implicitExactIntent {
             .never
         } else {
