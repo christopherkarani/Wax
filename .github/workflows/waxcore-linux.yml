@@ -5,17 +5,53 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Package.resolved: Package.swift declares SwiftTUI and Noora (WaxRepo, macOS
+# only) under `#if os(macOS)`, so SwiftPM on Linux rewrites Package.resolved
+# without their pins (and without pins the current traits do not use). The
+# rewrite stays in this ephemeral checkout: no step commits or uploads it, and
+# no step fails on the diff. package_resolved_linux_check.sh fails only if
+# Linux resolution added a pin or moved one off its committed revision.
+# Never commit a Package.resolved written on Linux.
+
 jobs:
-  waxcore-linux:
-    runs-on: ubuntu-latest
+  # Product builds, the CLI demo, SIGTERM shutdown, and release builds.
+  linux-build:
+    name: linux-build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Swift
+        if: matrix.arch == 'x86_64'
         uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
         with:
           swift-version: "6.2"
+
+      # setup-swift v2 only downloads x86_64 Ubuntu toolchains. On arm, install
+      # the release its "6.2" resolves to (6.2.1) from swift.org, verified
+      # against swift.org's signing keys.
+      - name: Setup Swift (aarch64)
+        if: matrix.arch == 'aarch64'
+        env:
+          SWIFT_RELEASE: "6.2.1"
+        run: bash Resources/scripts/quality/install_swift_linux_aarch64.sh
 
       - name: Install Linux codec dependencies
         run: |
@@ -34,7 +70,6 @@ jobs:
       - name: Build wax-cli product
         run: swift build --product wax-cli --traits default,MCPServer
 
-
       - name: Run wax-cli Linux demo stress
         run: |
           BIN="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)/wax-cli"
@@ -50,5 +85,79 @@ jobs:
           BIN_DIR="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)"
           bash Resources/scripts/quality/daemon_sigterm_smoke.sh "$BIN_DIR/wax-cli" "$BIN_DIR/wax-mcp"
 
-      - name: Run WaxCore tests
-        run: swift test --filter WaxCoreTests
+      # Build only: daemon_sigterm_smoke.sh drives DaemonTestHooks, which
+      # release builds compile out (#if DEBUG).
+      - name: Build release wax-cli and wax-mcp
+        run: |
+          swift build -c release --product wax-cli --traits default,MCPServer
+          swift build -c release --product wax-mcp --traits default,MCPServer
+
+      - name: Check Linux Package.resolved pins
+        run: bash Resources/scripts/quality/package_resolved_linux_check.sh
+
+  # The production gate's `full` mode, as on macOS: the default-trait suite with
+  # the bench skip regex, then the three MCPServer slices (wax_mcpTests,
+  # WaxCLIMemoryTests doctor smokes, serial WaxMCPProcessTests). Then the
+  # env-gated MiniLM/e5/Arctic/reranker inference suites, which run on
+  # WaxMILRuntime here. The gate's soak/burn benches and opt-in-configs
+  # (WaxRepo is macOS-only) stay in quality-gates.yml on macOS.
+  linux-tests:
+    name: linux-tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Swift
+        if: matrix.arch == 'x86_64'
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+        with:
+          swift-version: "6.2"
+
+      - name: Setup Swift (aarch64)
+        if: matrix.arch == 'aarch64'
+        env:
+          SWIFT_RELEASE: "6.2.1"
+        run: bash Resources/scripts/quality/install_swift_linux_aarch64.sh
+
+      # lsof, procps (pgrep/ps) and python3 are spawned by tests; they are on
+      # the runner images, installed here so an image change cannot drop them.
+      - name: Install Linux test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-dev zlib1g-dev libsqlite3-dev lsof procps python3
+
+      - name: Production gate script self-tests
+        run: bash Resources/scripts/quality/production_readiness_gates_tests.sh
+
+      - name: Run production gate (full)
+        env:
+          GATE_LOG_DIR: ${{ runner.temp }}/wax-gate-logs
+        run: bash Resources/scripts/quality/production_readiness_gates.sh full
+
+      - name: Run embedder inference suites
+        env:
+          GATE_LOG_DIR: ${{ runner.temp }}/wax-gate-logs
+        run: bash Resources/scripts/quality/production_readiness_gates.sh embedder-inference
+
+      - name: Check Linux Package.resolved pins
+        run: bash Resources/scripts/quality/package_resolved_linux_check.sh
+
+      # The job log shows only the failures; the full logs carry every test's duration.
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-gate-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/wax-gate-logs
+          retention-days: 7
+          if-no-files-found: ignore
