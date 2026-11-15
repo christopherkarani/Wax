@@ -219,13 +219,20 @@ package enum UnifiedRanking {
             guard let preview = result.previewText, !preview.isEmpty else { return total }
 
             let comparablePreview = dehighlightedPreviewText(preview)
-            let previewTerms = Set(analyzer.normalizedTerms(query: comparablePreview))
-            let previewEntities = analyzer.entityTerms(query: comparablePreview)
-            let previewYears = analyzer.yearTerms(in: comparablePreview)
-            let previewDateKeys = analyzer.normalizedDateKeys(in: comparablePreview)
+            // Each preview feature is read only when the query has the matching signal,
+            // so skip extracting it otherwise (the window is scored on every search).
+            let previewTerms: Set<String> = queryTerms.isEmpty
+                ? [] : Set(analyzer.normalizedTerms(query: comparablePreview))
+            let previewEntities: Set<String> = queryEntities.isEmpty
+                ? [] : analyzer.entityTerms(query: comparablePreview)
+            let previewYears: Set<String> = queryYears.isEmpty
+                ? [] : analyzer.yearTerms(in: comparablePreview)
+            let previewDateKeys: Set<String> = queryDateKeys.isEmpty
+                ? [] : analyzer.normalizedDateKeys(in: comparablePreview)
             let previewAlphaEntities = previewEntities.filter { isLettersOnly($0) }
             let lower = comparablePreview.lowercased()
-            let normalizedLower = normalizedPhraseComparableText(comparablePreview)
+            let normalizedLower = normalizedPhrases.isEmpty
+                ? "" : normalizedPhraseComparableText(comparablePreview)
             let vectorInfluenced = result.sources.contains(.vector)
 
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
