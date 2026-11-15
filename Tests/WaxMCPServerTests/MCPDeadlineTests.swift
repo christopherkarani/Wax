@@ -30,41 +30,54 @@ func deadlineFiresWhileTheCooperativePoolIsHeld() async {
 }
 
 /// Blocks every cooperative thread at the caller's priority until `release()`, or
-/// for at most `limit`.
+/// for at most `limit`. The pool's width differs by host and mode (one thread per core,
+/// one under `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`), so the hold reads it from the
+/// runtime: it adds holders one at a time until one cannot start.
 @available(macOS 15.0, iOS 18.0, *)
 private final class CooperativePoolHold: @unchecked Sendable {
     static let limit: DispatchTimeInterval = .seconds(20)
+    /// How long a new holder may wait for a thread before the pool counts as held.
+    /// Too short only leaves a thread free (a weaker test), never a false failure.
+    private static let probeWait: DispatchTimeInterval = .milliseconds(500)
+    private static let maxHolders = 256
 
-    /// The pool runs one thread per core for each priority, and one under
-    /// `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` (measured on macOS).
-    private let width = ProcessInfo.processInfo.environment["LIBDISPATCH_COOPERATIVE_POOL_STRICT"] == "1"
-        ? 1
-        : ProcessInfo.processInfo.activeProcessorCount
     private let started = DispatchSemaphore(value: 0)
     private let gate = DispatchSemaphore(value: 0)
     private let lock = NSLock()
+    private var spawned = 0
     private var released = false
     private var gaveUp = false
 
-    /// Returns true once a holder blocks every cooperative thread, or false if that
-    /// takes longer than `limit`. Call it off the pool: it blocks while it waits.
+    /// Returns true once holders block every cooperative thread, or false when none
+    /// could start within `limit` or the pool never filled within `maxHolders`. Call
+    /// it off the pool: it blocks while it waits.
     func engage() -> Bool {
-        for _ in 0..<width {
-            Task(executorPreference: globalConcurrentExecutor) { self.block() }
+        // The first holder may queue behind the suite's other jobs.
+        guard addHolder(waitingUpTo: Self.limit) else { return false }
+        for _ in 1..<Self.maxHolders where !addHolder(waitingUpTo: Self.probeWait) {
+            // This holder found no free thread. It stays queued and takes the next
+            // thread that frees, so the pool stays held.
+            return true
         }
-        for _ in 0..<width where started.wait(timeout: .now() + Self.limit) == .timedOut {
-            return false
-        }
-        return true
+        return false
     }
 
     /// Ends the hold. True when no holder gave up first.
     func release() -> Bool {
-        lock.withLock { released = true }
-        for _ in 0..<width {
+        let holders = lock.withLock { () -> Int in
+            released = true
+            return spawned
+        }
+        for _ in 0..<holders {
             gate.signal()
         }
         return lock.withLock { !gaveUp }
+    }
+
+    private func addHolder(waitingUpTo wait: DispatchTimeInterval) -> Bool {
+        lock.withLock { spawned += 1 }
+        Task(executorPreference: globalConcurrentExecutor) { self.block() }
+        return started.wait(timeout: .now() + wait) == .success
     }
 
     private func block() {
