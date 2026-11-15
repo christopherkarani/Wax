@@ -74,3 +74,17 @@ func asyncTimeoutHugeDurationDoesNotTrap() async throws {
     let large = try await AsyncTimeout.run(timeout: .seconds(10_000_000_000), operation: "large-timeout") { 8 }
     #expect(large == 8)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func asyncTimeoutCountsFromWhenTheOperationStarts() async throws {
+    // In a busy process the operation's task can wait for a thread longer than the
+    // timeout; that wait is not the operation's. `beforeOperation` stands in for it.
+    let value = try await AsyncTimeout.run(
+        timeout: .milliseconds(200),
+        operation: "late-start",
+        beforeOperation: { try? await Task.sleep(for: .milliseconds(600)) }
+    ) {
+        42
+    }
+    #expect(value == 42)
+}
