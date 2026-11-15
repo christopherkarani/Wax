@@ -136,9 +136,9 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
 
         let limit = min(Self.clampTopK(topK), frameIds.count)
         let preparedQuery = preparedVector(query)
+        #if canImport(Accelerate)
         var scores = [Float](repeating: 0, count: frameIds.count)
 
-        #if canImport(Accelerate)
         vectors.withUnsafeBufferPointer { matrixBuffer in
             preparedQuery.withUnsafeBufferPointer { queryBuffer in
                 scores.withUnsafeMutableBufferPointer { scoreBuffer in
@@ -163,34 +163,56 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 scores[index] = -(squaredNorms[index] + queryNorm - (2 * scores[index]))
             }
         }
-        #else
-        // SIMD kernels (CPUVectorScoring) in place of vDSP; for L2 the kernel applies the
-        // same -(norm + queryNorm - 2 dot) step by step.
-        let queryNorm = metric == .l2 ? squaredNorm(of: preparedQuery) : 0
-        let rowCount = frameIds.count
-        let dimensions = dimensions
-        let useNorms = metric == .l2
-        vectors.withUnsafeBufferPointer { (matrixBuffer: UnsafeBufferPointer<Float>) -> Void in
-            preparedQuery.withUnsafeBufferPointer { (queryBuffer: UnsafeBufferPointer<Float>) -> Void in
-                squaredNorms.withUnsafeBufferPointer { (normBuffer: UnsafeBufferPointer<Float>) -> Void in
-                    scores.withUnsafeMutableBufferPointer { (scoreBuffer: inout UnsafeMutableBufferPointer<Float>) -> Void in
-                        CPUVectorScoring.score(
-                            rows: matrixBuffer.baseAddress!,
-                            rowCount: rowCount,
-                            dimensions: dimensions,
-                            query: queryBuffer.baseAddress!,
-                            squaredNorms: useNorms ? normBuffer.baseAddress : nil,
-                            queryNorm: queryNorm,
-                            into: scoreBuffer.baseAddress!
-                        )
-                    }
-                }
-            }
-        }
-        #endif
 
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
+        #else
+        return await kernelHits(for: preparedQuery, limit: limit)
+        #endif
     }
+
+    #if !canImport(Accelerate)
+    /// Exact hits from the SIMD kernels (``CPUVectorScoring``) in place of vDSP; for L2 the
+    /// kernel applies the same -(norm + queryNorm - 2 dot) step by step.
+    private func kernelHits(for preparedQuery: [Float], limit: Int) async -> [(frameId: UInt64, score: Float)] {
+        let rowCount = frameIds.count
+        let dimensions = dimensions
+        let queryNorm = metric == .l2 ? squaredNorm(of: preparedQuery) : 0
+        let norms: [Float]? = metric == .l2 ? squaredNorms : nil
+        let chunks = CPUVectorScoring.parallelChunkCount(rowCount: rowCount, dimensions: dimensions)
+        guard chunks > 1 else {
+            // A small store is scanned right here, as fast as a hop to another thread.
+            let scores = CPUVectorScoring.scores(
+                rows: vectors,
+                rowCount: rowCount,
+                dimensions: dimensions,
+                query: preparedQuery,
+                squaredNorms: norms,
+                queryNorm: queryNorm,
+                chunks: 1
+            )
+            return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
+        }
+        // A large store is scanned on all cores. concurrentPerform blocks its caller, so the
+        // scan and selection run on a GCD thread, not the cooperative pool. They read a
+        // snapshot of the store: a mutation while the scan runs copies the arrays it changes
+        // instead of racing the readers, and this search answers for the store as it was
+        // when it started.
+        let rows = vectors
+        let ids = frameIds
+        return await BlockingWork.run { () -> [(frameId: UInt64, score: Float)] in
+            let scores = CPUVectorScoring.scores(
+                rows: rows,
+                rowCount: rowCount,
+                dimensions: dimensions,
+                query: preparedQuery,
+                squaredNorms: norms,
+                queryNorm: queryNorm,
+                chunks: chunks
+            )
+            return VectorTopK.select(frameIds: ids, scores: scores, limit: limit)
+        }
+    }
+    #endif
 
     /// Records the index's dimension and similarity for the commit; the commit writes the
     /// pending embeddings and removals themselves from the WAL.

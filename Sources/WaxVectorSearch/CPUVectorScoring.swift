@@ -1,3 +1,5 @@
+import Dispatch
+import Foundation
 import WaxVectorSearchC
 
 /// SIMD scoring of row-major Float32 rows against a query, for platforms without Accelerate.
@@ -68,6 +70,108 @@ package enum CPUVectorScoring {
             squaredNorms,
             queryNorm,
             scores
+        )
+    }
+
+    /// Floats each parallel chunk scans at least. The scan is memory bound: one thread
+    /// streams about 11 GB/s on a 4-core x86-64 VM and four about 40 GB/s, so splitting pays
+    /// once a chunk is a few MB (2 MB here; 1,365 rows of 384 dims).
+    package static let minimumParallelChunkElements = 1 << 19
+
+    /// Chunks to split a scan of `rowCount` rows into: 1 (stay on the calling thread) below
+    /// two chunks' worth of floats, else at most one per processor.
+    package static func parallelChunkCount(
+        rowCount: Int,
+        dimensions: Int,
+        processors: Int = ProcessInfo.processInfo.activeProcessorCount
+    ) -> Int {
+        let (elements, overflow) = rowCount.multipliedReportingOverflow(by: dimensions)
+        let work = overflow ? Int.max : elements
+        return max(1, min(processors, work / minimumParallelChunkElements))
+    }
+
+    /// One score per row of `rows` (row-major, `rowCount` x `dimensions`), as
+    /// ``score(rows:rowCount:dimensions:query:squaredNorms:queryNorm:into:kernel:)`` computes
+    /// it, with the rows split into `chunks` contiguous ranges scored concurrently. Every row
+    /// is scored the same way in any range, so the result does not depend on `chunks`.
+    ///
+    /// With more than one chunk this blocks the calling thread in
+    /// `DispatchQueue.concurrentPerform`: call it from a GCD thread (``BlockingWork``), not
+    /// from the Swift concurrency pool.
+    package static func scores(
+        rows: [Float],
+        rowCount: Int,
+        dimensions: Int,
+        query: [Float],
+        squaredNorms: [Float]?,
+        queryNorm: Float,
+        chunks requestedChunks: Int,
+        kernel: Kernel? = nil
+    ) -> [Float] {
+        precondition(rows.count == rowCount * dimensions, "rows must hold rowCount vectors")
+        precondition(query.count == dimensions, "query width must match dimensions")
+        precondition(squaredNorms.map { (norms: [Float]) -> Bool in norms.count == rowCount } ?? true, "one norm per row")
+        guard rowCount > 0 else { return [] }
+        let chunks = max(1, min(requestedChunks, rowCount))
+        let norms = squaredNorms ?? []
+        return [Float](unsafeUninitializedCapacity: rowCount) { (output: inout UnsafeMutableBufferPointer<Float>, initialized: inout Int) -> Void in
+            rows.withUnsafeBufferPointer { (rowBuffer: UnsafeBufferPointer<Float>) -> Void in
+                query.withUnsafeBufferPointer { (queryBuffer: UnsafeBufferPointer<Float>) -> Void in
+                    norms.withUnsafeBufferPointer { (normBuffer: UnsafeBufferPointer<Float>) -> Void in
+                        let scan = ChunkedScan(
+                            rows: rowBuffer.baseAddress!,
+                            rowCount: rowCount,
+                            dimensions: dimensions,
+                            query: queryBuffer.baseAddress!,
+                            squaredNorms: squaredNorms == nil ? nil : normBuffer.baseAddress,
+                            queryNorm: queryNorm,
+                            scores: output.baseAddress!,
+                            chunks: chunks,
+                            kernel: kernel
+                        )
+                        if chunks == 1 {
+                            scan.run(chunk: 0)
+                        } else {
+                            DispatchQueue.concurrentPerform(iterations: chunks) { (chunk: Int) -> Void in
+                                scan.run(chunk: chunk)
+                            }
+                        }
+                    }
+                }
+            }
+            initialized = rowCount
+        }
+    }
+}
+
+/// One scan's chunk work, shared by the `concurrentPerform` workers.
+///
+/// `@unchecked Sendable`: the pointers reference buffers the caller keeps alive and
+/// unmodified for the whole join, and each worker writes only its own rows' scores.
+private struct ChunkedScan: @unchecked Sendable {
+    let rows: UnsafePointer<Float>
+    let rowCount: Int
+    let dimensions: Int
+    let query: UnsafePointer<Float>
+    let squaredNorms: UnsafePointer<Float>?
+    let queryNorm: Float
+    let scores: UnsafeMutablePointer<Float>
+    let chunks: Int
+    let kernel: CPUVectorScoring.Kernel?
+
+    func run(chunk: Int) {
+        let first = chunk * rowCount / chunks
+        let end = (chunk + 1) * rowCount / chunks
+        guard first < end else { return }
+        CPUVectorScoring.score(
+            rows: rows + first * dimensions,
+            rowCount: end - first,
+            dimensions: dimensions,
+            query: query,
+            squaredNorms: squaredNorms.map { (norms: UnsafePointer<Float>) -> UnsafePointer<Float> in norms + first },
+            queryNorm: queryNorm,
+            into: scores + first,
+            kernel: kernel
         )
     }
 }

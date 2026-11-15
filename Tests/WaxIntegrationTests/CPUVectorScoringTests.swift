@@ -472,3 +472,81 @@ func accelerateEngineTiesIdenticalRows(metric: VectorMetric) async throws {
         #expect(lhs.score > rhs.score || (lhs.score == rhs.score && lhs.frameId < rhs.frameId), "\(lhs) before \(rhs)")
     }
 }
+
+// MARK: - Parallel scoring
+
+@Test("Parallel CPU scoring gives the same bits for any number of chunks", arguments: [VectorMetric.dot, .l2])
+func cpuParallelScoringIsIndependentOfChunkCount(metric: VectorMetric) async {
+    let dimensions = 385
+    let rowCount = 1_003
+    var random = KernelRandom(seed: 0xC4C)
+    let rows = random.floats(rowCount * dimensions)
+    let query = random.floats(dimensions)
+    let norms: [Float]? = metric == .l2
+        ? (0..<rowCount).map { (row: Int) -> Float in squaredNorm(rows[(row * dimensions)..<((row + 1) * dimensions)]) }
+        : nil
+    let queryNorm = squaredNorm(query[...])
+    // concurrentPerform blocks its caller, so the scoring runs on a GCD thread.
+    let results = await BlockingWork.run { () -> [[UInt32]] in
+        [1, 2, 3, 4, 7, 16, rowCount, rowCount + 5].map { (chunks: Int) -> [UInt32] in
+            CPUVectorScoring.scores(
+                rows: rows,
+                rowCount: rowCount,
+                dimensions: dimensions,
+                query: query,
+                squaredNorms: norms,
+                queryNorm: queryNorm,
+                chunks: chunks
+            ).map(\.bitPattern)
+        }
+    }
+    let serial = kernelScores(
+        rows: rows, rowCount: rowCount, dimensions: dimensions, query: query,
+        squaredNorms: norms, queryNorm: queryNorm, kernel: nil
+    ).map(\.bitPattern)
+    for (index, result) in results.enumerated() {
+        #expect(result == serial, "chunking \(index) differs from one serial call")
+    }
+}
+
+@Test func cpuParallelChunkCountKeepsSmallStoresOnOneThread() {
+    let minimum = CPUVectorScoring.minimumParallelChunkElements
+    // Below two chunks' worth of work the scan stays on the calling thread.
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: 1, dimensions: 384, processors: 8) == 1)
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: (2 * minimum - 1) / 384, dimensions: 384, processors: 8) == 1)
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: 2 * minimum / 384 + 1, dimensions: 384, processors: 8) == 2)
+    // Never more chunks than processors, and never more than one on one processor.
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: 1_000_000, dimensions: 384, processors: 4) == 4)
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: 1_000_000, dimensions: 384, processors: 1) == 1)
+    #expect(CPUVectorScoring.parallelChunkCount(rowCount: Int.max, dimensions: 384, processors: 6) == 6)
+}
+
+#if !canImport(Accelerate)
+@Test("AccelerateVectorEngine's parallel kernel scan matches one serial scan", arguments: [VectorMetric.cosine, .dot, .l2])
+func accelerateEngineParallelScanMatchesSerialScan(metric: VectorMetric) async throws {
+    let dimensions = 384
+    // Enough rows for several chunks.
+    let count = 4 * CPUVectorScoring.minimumParallelChunkElements / dimensions + 3
+    var random = KernelRandom(seed: 0x9A2)
+    let rows = unitRows(&random, count: count, dimensions: dimensions)
+    let frameIds: [UInt64] = (0..<count).map { (index: Int) -> UInt64 in UInt64((index * 7_919) % 100_003) }
+    let engine = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
+    try await engine.addBatch(frameIds: frameIds, vectors: rows)
+    let flat = Array(rows.joined())
+    let norms: [Float]? = metric == .l2 ? rows.map { (row: [Float]) -> Float in squaredNorm(row[...]) } : nil
+
+    for _ in 0..<3 {
+        let query = unitRows(&random, count: 1, dimensions: dimensions)[0]
+        let serial = kernelScores(
+            rows: flat, rowCount: count, dimensions: dimensions, query: query,
+            squaredNorms: norms, queryNorm: squaredNorm(query[...]), kernel: nil
+        )
+        for topK in [10, 100] {
+            let expected = VectorTopK.select(frameIds: frameIds, scores: serial, limit: topK)
+            let hits = try await engine.search(vector: query, topK: topK)
+            #expect(hits.map(\.frameId) == expected.map(\.frameId), "\(metric) topK \(topK)")
+            #expect(hits.map(\.score.bitPattern) == expected.map(\.score.bitPattern), "\(metric) topK \(topK)")
+        }
+    }
+}
+#endif
