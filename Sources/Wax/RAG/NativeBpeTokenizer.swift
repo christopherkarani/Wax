@@ -64,15 +64,16 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         var tokens: [UInt32] = []
         tokens.reserveCapacity(text.utf8.count)
 
-        // ASCII text splits without ICU, which was about half of a short save's CPU time.
-        let scannedASCII = text.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
-            guard Cl100kASCIIPreTokenizer.isASCII(bytes) else { return false }
-            for range in Cl100kASCIIPreTokenizer.pieceRanges(bytes) {
+        // Text splits without ICU, which was about half of a short save's CPU time, unless
+        // it holds a scalar ICU may class differently.
+        let scanned = text.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
+            guard let ranges = Cl100kPreTokenizer.pieceRanges(bytes) else { return false }
+            for range in ranges {
                 appendTokens(forPiece: UnsafeBufferPointer(rebasing: bytes[range]), to: &tokens)
             }
             return true
         } ?? false
-        if scannedASCII { return tokens }
+        if scanned { return tokens }
 
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in matches {
