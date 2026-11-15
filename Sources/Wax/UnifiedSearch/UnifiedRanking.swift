@@ -646,9 +646,7 @@ package enum UnifiedRanking {
     }
 
     private static func normalizedPhraseComparableText(_ text: String) -> String {
-        text
-            .lowercased()
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        QueryAnalyzer.alphanumericRuns(text.lowercased())
             .map(String.init)
             .joined(separator: " ")
     }

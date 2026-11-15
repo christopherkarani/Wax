@@ -344,3 +344,33 @@ import Testing
     }
     #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
 }
+
+@Test func alphanumericRunsSplitLikeCharacterProperties() {
+    func expected(_ text: String) -> [Substring] {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+    }
+    let fixed = [
+        "", "abc", "Hello, world! 2026", "a\r\nb", "\r\n", "  x--y__z9 ", "@[`{~\u{7F}\u{0}",
+        "café naïve", "東京 tower", "e\u{301}x", "١٢٣ abc", "½ⅫA", "a\u{200D}b",
+    ]
+    for text in fixed {
+        #expect(QueryAnalyzer.alphanumericRuns(text) == expected(text), "\(text.debugDescription)")
+    }
+    var state: UInt64 = 0xA1_FA_17
+    var mismatches: [String] = []
+    let extras: [Character] = ["é", "\u{301}", "東", "½", "\r\n", " "]
+    for round in 0..<20_000 {
+        var text = ""
+        for _ in 0..<(1 + round % 40) {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let pick = Int(state >> 33)
+            if round % 4 == 0, pick % 7 == 0 {
+                text.append(extras[pick % extras.count])
+            } else if let scalar = Unicode.Scalar(UInt32(pick % 128)) {
+                text.unicodeScalars.append(scalar)
+            }
+        }
+        if QueryAnalyzer.alphanumericRuns(text) != expected(text) { mismatches.append(text.debugDescription) }
+    }
+    #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
+}

@@ -76,10 +76,37 @@ package struct QueryAnalyzer: Sendable {
     }
 
     /// Normalize query text into deterministic lexical terms for matching/reranking.
+    /// `text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })`. That split was a
+    /// large part of reranking previews, so ASCII text splits on its bytes: each Character
+    /// is one byte, or "\r\n", a separator either way, and the letters and numbers are
+    /// exactly A-Z, a-z and 0-9.
+    static func alphanumericRuns(_ text: String) -> [Substring] {
+        let utf8 = text.utf8
+        guard utf8.allSatisfy({ $0 < 0x80 }) else {
+            return text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        }
+        var runs: [Substring] = []
+        var runStart: String.Index?
+        var index = utf8.startIndex
+        while index != utf8.endIndex {
+            let byte = utf8[index]
+            let lowered = byte | 0x20
+            let isAlphanumeric = (lowered >= UInt8(ascii: "a") && lowered <= UInt8(ascii: "z"))
+                || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+            if isAlphanumeric {
+                if runStart == nil { runStart = index }
+            } else if let start = runStart {
+                runs.append(text[start..<index])
+                runStart = nil
+            }
+            utf8.formIndex(after: &index)
+        }
+        if let runStart { runs.append(text[runStart..<utf8.endIndex]) }
+        return runs
+    }
+
     package func normalizedTerms(query: String) -> [String] {
-        query
-            .lowercased()
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        Self.alphanumericRuns(query.lowercased())
             .map(String.init)
             .map(normalizeToken)
             .filter { !$0.isEmpty && !Self.stopWords.contains($0) }
@@ -94,8 +121,7 @@ package struct QueryAnalyzer: Sendable {
 
     /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
     package func entityTerms(query: String) -> Set<String> {
-        let original = query
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let original = Self.alphanumericRuns(query)
             .map(String.init)
             .filter { !$0.isEmpty }
         let raw = original.map { $0.lowercased() }
@@ -148,8 +174,7 @@ package struct QueryAnalyzer: Sendable {
     /// Four-digit year cues extracted from text (for timeline disambiguation).
     package func yearTerms(in text: String) -> Set<String> {
         Set(
-            text
-                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            Self.alphanumericRuns(text)
                 .map(String.init)
                 .filter {
                     $0.count == 4 &&
