@@ -304,7 +304,9 @@ full_gate_test_targets() {
 # One `swift test` run per test target. A single run of every target starts all of
 # the package's ~2,600 tests at once, and on a 3-core runner a test that times itself
 # (a deadline, a readiness wait) then waits behind the whole backlog. Every shard runs
-# even after one fails, so one failure cannot hide another.
+# even after one fails, so one failure cannot hide another. Shards reuse the build
+# that `swift test list` made (--skip-build): on the macos-15 runner each shard
+# otherwise recompiled every Wax module, about 3.5 minutes apiece.
 run_full_shards() {
   local list_log="$1"
   local skip_regex="$2"
@@ -322,7 +324,7 @@ run_full_shards() {
     shard_log="$GATE_LOG_DIR/wax-gate-full-$target.log"
     echo "FULL_SHARD: $target"
     if ! run_and_capture "$shard_log" \
-      swift test --parallel --filter "^${target}\." --skip "$skip_regex"; then
+      swift test --parallel --skip-build --filter "^${target}\." --skip "$skip_regex"; then
       failed+=("$target")
       continue
     fi

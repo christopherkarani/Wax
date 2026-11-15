@@ -501,11 +501,11 @@ assert_runs_one_target_per_shard() {
   fi
   local expected
   expected="$(printf '%s\n' \
-    'swift test --parallel --filter ^WaxCoreTests\. --skip (Bench)' \
-    'swift test --parallel --filter ^waxTests\. --skip (Bench)' \
-    'swift test --parallel --filter ^WaxCLITests\. --skip (Bench)')"
+    'swift test --parallel --skip-build --filter ^WaxCoreTests\. --skip (Bench)' \
+    'swift test --parallel --skip-build --filter ^waxTests\. --skip (Bench)' \
+    'swift test --parallel --skip-build --filter ^WaxCLITests\. --skip (Bench)')"
   if [[ "$(cat "$CAPTURED_COMMANDS")" != "$expected" ]]; then
-    echo "FAIL: run_full_shards must run each target alone with the skip list" >&2
+    echo "FAIL: run_full_shards must run each target alone, on the build the list made, with the skip list" >&2
     echo "Expected: $expected" >&2
     echo "Captured: $(cat "$CAPTURED_COMMANDS")" >&2
     return 1
