@@ -34,6 +34,11 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
     }
 
     private let encoder: [Data: UInt32]
+    /// `encoder` restricted to pieces of at most `shortPieceMaxBytes` bytes, keyed by
+    /// `shortKey`: most pieces are short single tokens, and an integer key hashes far
+    /// faster than `Data`.
+    private let shortEncoder: [UInt64: UInt32]
+    private static let shortPieceMaxBytes = 7
     private let decoder: [UInt32: Data]
     private let regex: NSRegularExpression
     private let bpeCache = LockedCache<Data, [UInt32]>()
@@ -42,6 +47,11 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         let (encoder, decoder) = try Self.loadEncoding(encoding)
         self.encoder = encoder
         self.decoder = decoder
+        var shortEncoder: [UInt64: UInt32] = [:]
+        for (bytes, rank) in encoder where bytes.count <= Self.shortPieceMaxBytes {
+            shortEncoder[Self.shortKey(bytes)] = rank
+        }
+        self.shortEncoder = shortEncoder
         self.regex = Self.cl100kBaseRegex
     }
 
@@ -74,8 +84,22 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         return tokens
     }
 
+    /// The piece's bytes in the low bytes and its length in the top byte, so pieces of
+    /// different lengths never collide. Only for pieces of at most `shortPieceMaxBytes`.
+    private static func shortKey<Bytes: Collection<UInt8>>(_ bytes: Bytes) -> UInt64 {
+        var key = UInt64(bytes.count) << 56
+        for (index, byte) in bytes.enumerated() {
+            key |= UInt64(byte) << (8 * UInt64(index))
+        }
+        return key
+    }
+
     private func appendTokens(forPiece bytes: UnsafeBufferPointer<UInt8>, to tokens: inout [UInt32]) {
         if bytes.isEmpty { return }
+        if bytes.count <= Self.shortPieceMaxBytes, let token = shortEncoder[Self.shortKey(bytes)] {
+            tokens.append(token)
+            return
+        }
 
         let data = Data(buffer: bytes)
         // Most pieces are one token. The vocabulary is immutable, so looking it up first
