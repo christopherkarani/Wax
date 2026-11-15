@@ -44,6 +44,15 @@ void wax_sign_codes_query(
 /// whole blocks.
 #define WAX_SIGN_CODE_BLOCK_ROWS 16
 
+/// Hints the cache to load `bytes` bytes at `address` (one hint per 128-byte line). Used to
+/// overlap the loads of rows about to be rescored; it has no effect on results.
+static inline void wax_prefetch(const void *address, int64_t bytes) {
+    const char *base = (const char *)address;
+    for (int64_t offset = 0; offset < bytes; offset += 128) {
+        __builtin_prefetch(base + offset);
+    }
+}
+
 /// Writes `row_count` row-major codes (`words` u64 per row) into the blocked layout as rows
 /// first_row..first_row+row_count-1.
 void wax_sign_codes_store_blocked(
