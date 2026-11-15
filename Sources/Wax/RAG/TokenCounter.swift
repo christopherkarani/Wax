@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 
 /// Deterministic token counter backed by the built-in NativeBpeTokenizer.
 /// Optimized with LRU caching to avoid redundant tokenization operations.
@@ -19,15 +20,27 @@ package actor TokenCounter {
 
     private actor NativeBpeCache {
         private var cache: [Encoding: NativeBpeTokenizer] = [:]
+        private var loading: [Encoding: Task<NativeBpeTokenizer, any Error>] = [:]
         private var stats = BpeCacheStats()
 
-        func tokenizer(for encoding: Encoding) throws -> NativeBpeTokenizer {
+        /// Callers that arrive during a load wait for that load instead of starting another.
+        func tokenizer(for encoding: Encoding) async throws -> NativeBpeTokenizer {
             if let cached = cache[encoding] { return cached }
-            let nativeEncoding: NativeBpeTokenizer.Encoding = .cl100kBase
-            let loaded = try NativeBpeTokenizer(encoding: nativeEncoding)
+            if let inFlight = loading[encoding] { return try await inFlight.value }
+            let load = Task { try await Self.load() }
+            loading[encoding] = load
+            defer { loading[encoding] = nil }
+            let loaded = try await load.value
             cache[encoding] = loaded
             stats.loadCount += 1
             return loaded
+        }
+
+        /// Parsing the encoding runs for most of a second of CPU in a debug build,
+        /// so it runs off the cooperative pool.
+        private static func load() async throws -> NativeBpeTokenizer {
+            await TokenizerLoadGate.wait()
+            return try await BlockingWork.run { try NativeBpeTokenizer(encoding: .cl100kBase) }
         }
 
         func isLoaded(encoding: Encoding) -> Bool {
@@ -439,5 +452,25 @@ private actor TokenCounterCache {
         let created = try await TokenCounter(encoding: encoding, cacheCapacity: cacheCapacity)
         counters[encoding] = (counter: created, cacheCapacity: cacheCapacity)
         return created
+    }
+}
+
+/// Test-only: holds the tokenizer load in a process whose environment sets
+/// `WAX_TEST_TOKENIZER_LOAD_GATE`, until a file appears at that path, so a test
+/// can show which work waits for the load. Debug builds only; release builds
+/// never wait.
+enum TokenizerLoadGate {
+    #if DEBUG
+    private static let path = ProcessInfo.processInfo.environment["WAX_TEST_TOKENIZER_LOAD_GATE"]
+        .flatMap { $0.isEmpty ? nil : $0 }
+    #endif
+
+    static func wait() async {
+        #if DEBUG
+        guard let path else { return }
+        while !FileManager.default.fileExists(atPath: path), !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        #endif
     }
 }
