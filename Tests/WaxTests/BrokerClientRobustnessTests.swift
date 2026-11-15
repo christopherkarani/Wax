@@ -122,9 +122,8 @@ import Glibc
         #expect(events == ["call-start", "sibling", "call-end"])
     }
 
-    // The owned-broker peer lookup reads LOCAL_PEERPID and proc_pidpath, which
-    // AgentBrokerClient implements only on Darwin.
-    #if canImport(Darwin)
+    // The owned-broker peer lookup reads LOCAL_PEERPID and proc_pidpath on
+    // Darwin, and SO_PEERCRED and /proc/<pid>/exe on Linux.
     @Test func ownedBrokerPeerLookupDoesNotHoldTheCallersThread() async throws {
         guard #available(macOS 15.0, *) else { return }
         let fixture = try BrokerProcessFixture()
@@ -141,7 +140,6 @@ import Glibc
         #expect(pid == nil)
         #expect(events == ["call-start", "sibling", "call-end"])
     }
-    #endif
 
     /// The store lock probe waits up to 50ms while the lock is held.
     @Test func shutdownCompletionProbeDoesNotHoldTheCallersThread() async throws {

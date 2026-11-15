@@ -3,6 +3,8 @@ import Testing
 @testable import Wax
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 @Test
@@ -15,7 +17,7 @@ func pollTimeoutRoundsSubMillisecondRemainderUp() {
     #expect(AgentBrokerClient.pollTimeoutMilliseconds(remaining: 1e12) == Int32.max)
 }
 
-#if os(macOS)
+#if os(macOS) || os(Linux)
 /// A launched broker that never answers must not outlive a cancelled start.
 ///
 /// The time limit only catches a hang: the launch handshake has no deadline, and
