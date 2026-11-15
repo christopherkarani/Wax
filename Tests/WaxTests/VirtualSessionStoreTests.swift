@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 private func withVirtualSessionStore<T>(
     brokerInstanceID: String = UUID().uuidString,
@@ -565,8 +566,12 @@ struct VirtualSessionStoreTests {
             let sessionID = first.state.id
 
             let endTask = Task { try await store.end(sessionID: sessionID) }
-            for _ in 0..<200 {
-                try? store.refreshManifest(sessionID)
+            // 200 synchronous manifest writes race the end from a GCD thread, so they
+            // don't hold a cooperative thread through every fsync.
+            await BlockingWork.run {
+                for _ in 0..<200 {
+                    try? store.refreshManifest(sessionID)
+                }
             }
             let ended = try await endTask.value
             #expect(ended.ended == true)
