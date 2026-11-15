@@ -110,19 +110,7 @@ package actor TokenCounter {
     package func truncate(_ text: String, maxTokens: Int) async -> String {
         guard maxTokens > 0 else { return "" }
 
-        // Check cache for existing encoding
-        if let cachedTokens = encodingCache.get(text) {
-            if cachedTokens.count <= maxTokens {
-                return text
-            }
-            let sliced = Array(cachedTokens.prefix(maxTokens))
-            return decode(sliced)
-        }
-
-        // Encode and cache
-        let tokens = encode(text)
-        encodingCache.put(text, tokens)
-
+        let tokens = encodingCache.tokens(for: text, orEncode: encode)
         if tokens.count <= maxTokens {
             return text
         }
@@ -134,13 +122,7 @@ package actor TokenCounter {
     /// of twice when it already fits.
     package func truncateCounted(_ text: String, maxTokens: Int) async -> (text: String, tokens: Int) {
         guard maxTokens > 0 else { return ("", count("")) }
-        let tokens: [UInt32]
-        if let cachedTokens = encodingCache.get(text) {
-            tokens = cachedTokens
-        } else {
-            tokens = encode(text)
-            encodingCache.put(text, tokens)
-        }
+        let tokens = encodingCache.tokens(for: text, orEncode: encode)
         // `count(text)` is `encode(text).count`, which is what the cache holds for `text`.
         if tokens.count <= maxTokens {
             return (text, tokens.count)
@@ -333,112 +315,155 @@ package actor TokenCounter {
 }
 
 /// LRU cache for tokenization results to avoid redundant encoding operations.
-/// Uses a doubly-linked list for O(1) access and eviction. Owned by one `TokenCounter` and
-/// used only on its executor, so a lookup is a call rather than an actor hop.
-private final class TokenizationCache {
-    private struct Entry {
-        var key: String
-        var value: [UInt32]
-        var prev: String?
-        var next: String?
+/// Owned by one `TokenCounter` and used only on its executor, so a lookup is a call rather
+/// than an actor hop.
+///
+/// Entries live in slots linked by index, so a hit hashes its key once and an insert at
+/// most three times (lookup, insert, evicting the oldest). Keys are whole texts, often
+/// hundreds of bytes, so each hash is a real cost; linking neighbours by key rehashed up
+/// to eight of them per insert.
+final class TokenizationCache {
+    /// A text compared and hashed by its UTF-8 bytes. Tokens come from the bytes, while
+    /// `String` equality is canonical equivalence: "caf\u{E9}" and "cafe\u{301}" are equal
+    /// strings with 2 and 3 tokens. The bytes are hashed once, when the key is made, since
+    /// a miss looks the key up, inserts it and later evicts it.
+    private struct UTF8Key: Hashable {
+        let text: String
+        let bytesHash: Int
+
+        init(_ text: String) {
+            self.text = text
+            var hasher = Hasher()
+            let hashed: Void? = text.utf8.withContiguousStorageIfAvailable {
+                hasher.combine(bytes: UnsafeRawBufferPointer($0))
+            }
+            if hashed == nil {
+                Array(text.utf8).withUnsafeBytes { hasher.combine(bytes: $0) }
+            }
+            self.bytesHash = hasher.finalize()
+        }
+
+        static func == (lhs: UTF8Key, rhs: UTF8Key) -> Bool {
+            lhs.bytesHash == rhs.bytesHash
+                && lhs.text.utf8.count == rhs.text.utf8.count
+                && lhs.text.utf8.elementsEqual(rhs.text.utf8)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(bytesHash)
+        }
     }
 
+    private struct Slot {
+        var key: UTF8Key
+        var value: [UInt32]
+        var older: Int
+        var newer: Int
+    }
+
+    private static let none = -1
+
     private let capacity: Int
-    private var entries: [String: Entry]
-    private var head: String?
-    private var tail: String?
+    private var slotByKey: [UTF8Key: Int]
+    private var slots: [Slot] = []
+    private var freeSlots: [Int] = []
+    /// Most recently used slot.
+    private var newest = TokenizationCache.none
+    /// Least recently used slot, evicted first.
+    private var oldest = TokenizationCache.none
 
     init(capacity: Int) {
         self.capacity = max(1, capacity)
-        self.entries = Dictionary(minimumCapacity: capacity)
+        self.slotByKey = Dictionary(minimumCapacity: self.capacity + 1)
     }
 
-    /// Get cached tokens. O(1) time complexity.
+    var count: Int { slotByKey.count }
+
+    /// Cached tokens for `text`, marking it most recently used.
     func get(_ text: String) -> [UInt32]? {
-        guard var entry = entries[text] else { return nil }
-        moveToFront(&entry)
-        return entry.value
+        guard let slot = slotByKey[UTF8Key(text)] else { return nil }
+        moveToNewest(slot)
+        return slots[slot].value
     }
 
-    /// Cache tokens. Evicts LRU entry if at capacity. O(1) time complexity.
+    /// Cached tokens for `text`, or `encode(text)` cached as most recently used.
+    func tokens(for text: String, orEncode encode: (String) -> [UInt32]) -> [UInt32] {
+        let key = UTF8Key(text)
+        if let slot = slotByKey[key] {
+            moveToNewest(slot)
+            return slots[slot].value
+        }
+        let tokens = encode(text)
+        insert(key, tokens)
+        return tokens
+    }
+
+    /// Caches `tokens` for `text` as most recently used, evicting the least recently used
+    /// entry when over capacity.
     func put(_ text: String, _ tokens: [UInt32]) {
-        if var existing = entries[text] {
-            existing.value = tokens
-            moveToFront(&existing)
+        let key = UTF8Key(text)
+        if let slot = slotByKey[key] {
+            slots[slot].value = tokens
+            moveToNewest(slot)
             return
         }
+        insert(key, tokens)
+    }
 
-        let entry = Entry(key: text, value: tokens, prev: nil, next: head)
-        if let headKey = head, var currentHead = entries[headKey] {
-            currentHead.prev = text
-            entries[headKey] = currentHead
+    /// Adds `key`, which must not be cached, as most recently used.
+    private func insert(_ key: UTF8Key, _ tokens: [UInt32]) {
+        let entry = Slot(key: key, value: tokens, older: newest, newer: Self.none)
+        let slot: Int
+        if let reused = freeSlots.popLast() {
+            slots[reused] = entry
+            slot = reused
         } else {
-            tail = text
+            slots.append(entry)
+            slot = slots.count - 1
         }
-        head = text
-        entries[text] = entry
+        if newest != Self.none { slots[newest].newer = slot }
+        newest = slot
+        if oldest == Self.none { oldest = slot }
+        slotByKey[key] = slot
 
-        if entries.count > capacity, let tailKey = tail {
-            remove(tailKey)
+        if slotByKey.count > capacity {
+            evictOldest()
         }
     }
 
     func clear() {
-        entries.removeAll()
-        head = nil
-        tail = nil
+        slotByKey.removeAll()
+        slots.removeAll()
+        freeSlots.removeAll()
+        newest = Self.none
+        oldest = Self.none
     }
 
-    private func moveToFront(_ entry: inout Entry) {
-        let key = entry.key
-        if head == key {
-            entries[key] = entry
-            return
-        }
-
-        let prevKey = entry.prev
-        let nextKey = entry.next
-
-        if let prevKey, var prev = entries[prevKey] {
-            prev.next = nextKey
-            entries[prevKey] = prev
-        }
-        if let nextKey, var next = entries[nextKey] {
-            next.prev = prevKey
-            entries[nextKey] = next
-        }
-        if tail == key {
-            tail = prevKey
-        }
-
-        entry.prev = nil
-        entry.next = head
-        if let headKey = head, var currentHead = entries[headKey] {
-            currentHead.prev = key
-            entries[headKey] = currentHead
-        }
-        head = key
-        entries[key] = entry
+    private func moveToNewest(_ slot: Int) {
+        guard slot != newest else { return }
+        unlink(slot)
+        slots[slot].older = newest
+        slots[slot].newer = Self.none
+        if newest != Self.none { slots[newest].newer = slot }
+        newest = slot
+        if oldest == Self.none { oldest = slot }
     }
 
-    private func remove(_ key: String) {
-        guard let entry = entries[key] else { return }
-        let prevKey = entry.prev
-        let nextKey = entry.next
+    private func evictOldest() {
+        let slot = oldest
+        guard slot != Self.none else { return }
+        unlink(slot)
+        slotByKey.removeValue(forKey: slots[slot].key)
+        slots[slot].key = UTF8Key("")
+        slots[slot].value = []
+        freeSlots.append(slot)
+    }
 
-        if let prevKey, var prev = entries[prevKey] {
-            prev.next = nextKey
-            entries[prevKey] = prev
-        } else {
-            head = nextKey
-        }
-        if let nextKey, var next = entries[nextKey] {
-            next.prev = prevKey
-            entries[nextKey] = next
-        } else {
-            tail = prevKey
-        }
-        entries.removeValue(forKey: key)
+    private func unlink(_ slot: Int) {
+        let older = slots[slot].older
+        let newer = slots[slot].newer
+        if older != Self.none { slots[older].newer = newer } else { oldest = newer }
+        if newer != Self.none { slots[newer].older = older } else { newest = older }
     }
 }
 

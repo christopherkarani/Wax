@@ -182,6 +182,53 @@ func signCodeIndexEditsMatchFreshEncoding() {
     #expect(index.candidates(for: replacement, limit: 1) == [42])
 }
 
+@Test("Sign-code index edits across 16-row block boundaries match a fresh encoding")
+func signCodeIndexEditsAcrossBlockBoundaries() {
+    // Codes are stored in 16-row blocks and scanned in 64-row groups: grow and shrink
+    // through partial blocks and groups, checking every row's estimate rank each step.
+    let dimensions = 384
+    let source = embeddingLikeRows(count: 140, dimensions: dimensions, unitNorm: true, seed: 0xB10C)
+    let probes = queries(near: source, count: 3, seed: 0xB10D)
+    var rows: [[Float]] = []
+    var index = SignCodeIndex(dimensions: dimensions)
+
+    func expectMatchesFresh(_ step: String) {
+        let fresh = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
+        #expect(index.count == rows.count, "\(step)")
+        for query in probes {
+            for limit in [1, 5, rows.count] where limit <= rows.count {
+                #expect(
+                    index.candidates(for: query, limit: limit) == fresh.candidates(for: query, limit: limit),
+                    "\(step) limit \(limit)"
+                )
+            }
+        }
+    }
+
+    var next = 0
+    for batch in [1, 14, 1, 1, 46, 1, 1, 63, 2] {
+        index.append(rows: source[next..<(next + batch)].flatMap { $0 })
+        rows.append(contentsOf: source[next..<(next + batch)])
+        next += batch
+        expectMatchesFresh("append to \(rows.count)")
+    }
+    // Swap-removes from the front, middle and end until one row is left.
+    var step = 0
+    while rows.count > 1 {
+        let row = [0, rows.count / 2, rows.count - 1][step % 3]
+        index.removeSwappingLast(row: row)
+        rows[row] = rows[rows.count - 1]
+        rows.removeLast()
+        step += 1
+        if [64, 63, 17, 16, 15, 1].contains(rows.count) || step % 9 == 0 {
+            expectMatchesFresh("remove to \(rows.count)")
+        }
+    }
+    index.append(rows: source[0..<17].flatMap { $0 })
+    rows.append(contentsOf: source[0..<17])
+    expectMatchesFresh("regrow to \(rows.count)")
+}
+
 private struct SliceAgreement: Sendable {
     var limit = 0
     var singleCounts: [Int] = []

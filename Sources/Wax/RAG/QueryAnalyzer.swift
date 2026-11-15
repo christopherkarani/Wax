@@ -76,19 +76,52 @@ package struct QueryAnalyzer: Sendable {
     }
 
     /// Normalize query text into deterministic lexical terms for matching/reranking.
+    /// `text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })`. That split was a
+    /// large part of reranking previews, so ASCII text splits on its bytes: each Character
+    /// is one byte, or "\r\n", a separator either way, and the letters and numbers are
+    /// exactly A-Z, a-z and 0-9.
+    static func alphanumericRuns(_ text: String) -> [Substring] {
+        let utf8 = text.utf8
+        guard utf8.allSatisfy({ $0 < 0x80 }) else {
+            return text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        }
+        var runs: [Substring] = []
+        var runStart: String.Index?
+        var index = utf8.startIndex
+        while index != utf8.endIndex {
+            let byte = utf8[index]
+            let lowered = byte | 0x20
+            let isAlphanumeric = (lowered >= UInt8(ascii: "a") && lowered <= UInt8(ascii: "z"))
+                || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+            if isAlphanumeric {
+                if runStart == nil { runStart = index }
+            } else if let start = runStart {
+                runs.append(text[start..<index])
+                runStart = nil
+            }
+            utf8.formIndex(after: &index)
+        }
+        if let runStart { runs.append(text[runStart..<utf8.endIndex]) }
+        return runs
+    }
+
     package func normalizedTerms(query: String) -> [String] {
-        query
-            .lowercased()
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        Self.alphanumericRuns(query.lowercased())
             .map(String.init)
             .map(normalizeToken)
             .filter { !$0.isEmpty && !Self.stopWords.contains($0) }
     }
 
+    /// `CharacterSet.uppercaseLetters.contains(scalar)`. Foundation's lookup was most of
+    /// entity extraction during reranks, and its ASCII members are exactly A-Z.
+    static func isUppercaseLetter(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.isASCII { return ("A"..."Z").contains(scalar) }
+        return CharacterSet.uppercaseLetters.contains(scalar)
+    }
+
     /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
     package func entityTerms(query: String) -> Set<String> {
-        let original = query
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let original = Self.alphanumericRuns(query)
             .map(String.init)
             .filter { !$0.isEmpty }
         let raw = original.map { $0.lowercased() }
@@ -119,7 +152,7 @@ package struct QueryAnalyzer: Sendable {
                 guard !Self.stopWords.contains(normalized) else { continue }
                 guard !Self.entityNoiseTerms.contains(normalized) else { continue }
 
-                let hasUppercase = token.unicodeScalars.contains { CharacterSet.uppercaseLetters.contains($0) }
+                let hasUppercase = token.unicodeScalars.contains(where: Self.isUppercaseLetter)
                 let hasEntityCue =
                     index > 0 &&
                     Self.entityCueWords.contains(raw[index - 1]) &&
@@ -141,8 +174,7 @@ package struct QueryAnalyzer: Sendable {
     /// Four-digit year cues extracted from text (for timeline disambiguation).
     package func yearTerms(in text: String) -> Set<String> {
         Set(
-            text
-                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            Self.alphanumericRuns(text)
                 .map(String.init)
                 .filter {
                     $0.count == 4 &&
@@ -158,6 +190,9 @@ package struct QueryAnalyzer: Sendable {
     /// - `D Month YYYY` and `D Mon YYYY`
     /// - ISO-like `YYYY-MM-DD`, plus `/` or `.` separators and 1-2 digit month/day
     package func dateLiterals(in text: String) -> [String] {
+        // Every supported format has a four-digit year (`\d{4}`), so text without four
+        // consecutive decimal digits has none; most snippets have none.
+        guard Self.containsFourConsecutiveDecimalDigits(text) else { return [] }
         let full = Self.captureMatches(regex: Self.fullMonthDateRegex, text: text, captureGroup: 0)
         let abbreviated = Self.captureMatches(regex: Self.abbreviatedMonthDateRegex, text: text, captureGroup: 0)
         let dayFirst = Self.captureMatches(regex: Self.dayFirstMonthDateRegex, text: text, captureGroup: 0)
@@ -315,6 +350,20 @@ package struct QueryAnalyzer: Sendable {
         "november": 11, "nov": 11,
         "december": 12, "dec": 12,
     ]
+
+    /// True when `text` has four consecutive decimal digits as ICU's `\d` matches them
+    /// (General_Category Nd).
+    static func containsFourConsecutiveDecimalDigits(_ text: String) -> Bool {
+        var run = 0
+        for scalar in text.unicodeScalars {
+            let isDigit = scalar.isASCII
+                ? (scalar.value >= 0x30 && scalar.value <= 0x39)
+                : scalar.properties.generalCategory == .decimalNumber
+            run = isDigit ? run + 1 : 0
+            if run == 4 { return true }
+        }
+        return false
+    }
 
     private static func containsLetters(_ token: String) -> Bool {
         token.unicodeScalars.contains { CharacterSet.letters.contains($0) }

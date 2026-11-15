@@ -18,6 +18,11 @@ import Wax
 //   all     ingest, then query (the query phase reopens the store in the same process).
 // Run ingest and query as separate processes to keep ingest state out of the query numbers.
 //
+// --dump-results <path.jsonl> writes every measured query's results (items with exact
+// score bits, total tokens; no timings) as one JSON line each, so two builds can be
+// diffed for identical output. Writing costs time inside the loop: do not use the
+// latencies of a dumping run.
+//
 // --flush-every exists because `Memory` never commits on its own while embeddings are
 // pending: its 8 MiB WAL cannot auto-commit before the vector index is staged, so a long
 // run of saves without flush() fails with "WAL capacity exceeded" after a few thousand
@@ -36,6 +41,7 @@ struct PerfOptions {
     var flushEvery = 1_000
     var saveBatch = 1
     var importAll = false
+    var dumpResultsPath: String?
 
     static func parse(_ args: ArraySlice<String>) throws -> PerfOptions {
         var options = PerfOptions()
@@ -63,6 +69,7 @@ struct PerfOptions {
             case "--flush-every": options.flushEvery = try integer(flag)
             case "--save-batch": options.saveBatch = max(1, try integer(flag))
             case "--import": options.importAll = true
+            case "--dump-results": options.dumpResultsPath = try value(flag)
             default: throw BenchError.usage("unknown flag \(flag)")
             }
         }
@@ -505,6 +512,42 @@ func rankedRows(_ results: Memory.Results, topK: Int) -> [Int] {
     return rows
 }
 
+/// One query's results as written by --dump-results: everything a caller sees except
+/// diagnostics, with scores as raw bits so equal lines mean identical floats.
+struct DumpedResults: Encodable {
+    struct Item: Encodable {
+        let kind: String
+        let frameId: UInt64
+        let scoreBits: UInt32
+        let sources: [String]
+        let text: String
+        let metadata: [String: String]
+        let explanations: [String]
+    }
+
+    let mode: String
+    let query: Int
+    let totalTokens: Int
+    let items: [Item]
+
+    init(mode: String, query: Int, results: Memory.Results) {
+        self.mode = mode
+        self.query = query
+        totalTokens = results.totalTokens
+        items = results.items.map { item in
+            Item(
+                kind: "\(item.kind)",
+                frameId: item.frameId,
+                scoreBits: item.score.bitPattern,
+                sources: item.sources.map { "\($0)" },
+                text: item.text,
+                metadata: item.metadata,
+                explanations: item.explanations
+            )
+        }
+    }
+}
+
 func runQueries(_ options: PerfOptions, dataset: PerfDataset, embedder: PrecomputedEmbeddings) async throws -> QueryResult {
     let groundTruthPath = URL(fileURLWithPath: options.dataDir)
         .appendingPathComponent("groundtruth-\(options.count).npy").path
@@ -524,6 +567,17 @@ func runQueries(_ options: PerfOptions, dataset: PerfDataset, embedder: Precompu
     let firstSearchMs = elapsedMs(since: firstStart)
     perfLog("open \(Int(openMs)) ms, first \(firstMode) search \(Int(firstSearchMs)) ms")
 
+    var dump: FileHandle?
+    if let dumpPath = options.dumpResultsPath {
+        guard FileManager.default.createFile(atPath: dumpPath, contents: nil) else {
+            throw BenchError.failed("cannot create \(dumpPath)")
+        }
+        dump = try FileHandle(forWritingTo: URL(fileURLWithPath: dumpPath))
+    }
+    defer { try? dump?.close() }
+    let dumpEncoder = JSONEncoder()
+    dumpEncoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+
     var modeResults: [ModeResult] = []
     for mode in options.modes {
         let searchOptions = searchOptions(mode: mode, topK: options.topK)
@@ -539,6 +593,11 @@ func runQueries(_ options: PerfOptions, dataset: PerfDataset, embedder: Precompu
             let start = ContinuousClock.now
             let results = try await memory.search(query, options: searchOptions)
             latencies.append(elapsedMs(since: start))
+            if let dump {
+                var line = try dumpEncoder.encode(DumpedResults(mode: mode, query: index, results: results))
+                line.append(0x0A)
+                try dump.write(contentsOf: line)
+            }
             let label = results.diagnostics.map { "\($0.effectiveMode)" } ?? "unknown"
             effective[label, default: 0] += 1
             let rows = rankedRows(results, topK: options.topK)
