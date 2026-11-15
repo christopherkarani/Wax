@@ -8,7 +8,7 @@ WaxVectorSearch ships package-only CPU and GPU vector engines for Wax internals.
 
 ## AccelerateVectorEngine (CPU)
 
-``AccelerateVectorEngine`` stores flat vectors and performs exact CPU search. It uses Accelerate for matrix multiplication when available and a Swift fallback elsewhere.
+``AccelerateVectorEngine`` stores flat vectors and performs exact CPU search. It uses Accelerate for matrix multiplication when available. Elsewhere, including Linux, it scores with SIMD kernels (SSE2 or AVX2 with FMA on x86_64, NEON on arm64) and scans large stores on all cores; results match the Accelerate path within float rounding.
 
 ### Configuration
 
