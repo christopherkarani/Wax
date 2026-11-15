@@ -1,9 +1,14 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 import Testing
 @testable import Wax
 @testable import WaxCore
+import WaxTestSupport
 @testable import wax_cli
 
 /// SIGTERM must shut the broker daemon down gracefully: drop clients still
@@ -534,7 +539,7 @@ private struct DaemonFixture {
 }
 
 private struct DaemonExit: CustomStringConvertible {
-    let reason: Process.TerminationReason
+    let reason: ChildProcess.TerminationReason
     let status: Int32
     /// Seconds from the signal to the exit, timed when the process ended.
     let elapsed: TimeInterval
@@ -561,9 +566,10 @@ private final class DaemonProcess: @unchecked Sendable {
         self.stdout = stdout
         let exited = exited
         let exitClock = exitClock
-        // Foundation calls this on its own queue as it reaps the child, so the
-        // time does not depend on when the test's tasks next get a thread.
-        process.terminationHandler = { _ in
+        // Called as the child is reaped (on Foundation's queue on Apple
+        // platforms, on ChildProcess's reaper thread on Linux), so the time does
+        // not depend on when the test's tasks next get a thread.
+        process.terminationHandler = { (_: ChildProcess) in
             exitClock.stop()
             exited.signal()
         }
@@ -608,39 +614,43 @@ private final class SocketClient: @unchecked Sendable {
     let fd: Int32
 
     init(path: String) throws {
-        fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        fd = socket(AF_UNIX, TestPOSIX.sockStream, 0)
         guard fd >= 0 else { throw DaemonTestError("socket failed") }
+        #if canImport(Darwin)
         var noSIGPIPE: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
+        #endif
         var address = sockaddr_un()
+        #if canImport(Darwin)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        #endif
         address.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
-        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+        withUnsafeMutableBytes(of: &address.sun_path) { (buffer: UnsafeMutableRawBufferPointer) in
             buffer.initializeMemory(as: UInt8.self, repeating: 0)
             for (index, byte) in bytes.enumerated() {
                 buffer[index] = byte
             }
         }
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        let connected = withUnsafePointer(to: &address) { (pointer: UnsafePointer<sockaddr_un>) -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { (sockaddrPointer: UnsafePointer<sockaddr>) -> Int32 in
+                connect(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         guard connected == 0 else {
             let reason = String(cString: strerror(errno))
-            Darwin.close(fd)
+            closeDescriptor(fd)
             throw DaemonTestError("connect to \(path) failed: \(reason)")
         }
     }
 
     func close() {
-        Darwin.close(fd)
+        closeDescriptor(fd)
     }
 
     func send(_ text: String) throws {
         let bytes = Array(text.utf8)
-        let sent = write(fd, bytes, bytes.count)
+        let sent = socketWrite(fd, bytes, bytes.count)
         guard sent == bytes.count else {
             let reason = sent < 0 ? String(cString: strerror(errno)) : "short write of \(sent) bytes"
             throw DaemonTestError("socket write failed: \(reason)")
@@ -656,7 +666,7 @@ private final class SocketClient: @unchecked Sendable {
         // 2-minute limit to start, and `stop()` waited for it to finish.
         DispatchQueue(label: "com.wax.tests.trickle").async {
             while !trickle.isStopped {
-                _ = write(fd, " ", 1)
+                _ = socketWrite(fd, [0x20], 1)
                 usleep(interval)
             }
             trickle.markDone()
@@ -669,10 +679,10 @@ private final class SocketClient: @unchecked Sendable {
     /// peer has closed (EPIPE) still reads what the daemon sent.
     func finish(_ line: String) async throws -> String {
         let bytes = Array((line + "\n").utf8)
-        if write(fd, bytes, bytes.count) != bytes.count, errno != EPIPE {
+        if socketWrite(fd, bytes, bytes.count) != bytes.count, errno != EPIPE {
             throw DaemonTestError("socket write failed: \(String(cString: strerror(errno)))")
         }
-        shutdown(fd, SHUT_WR)
+        shutdown(fd, TestPOSIX.shutWrite)
         let fd = fd
         return try await BlockingWork.run { try readLine(fd: fd) }
     }
@@ -736,13 +746,47 @@ private final class Trickle: @unchecked Sendable {
 
 /// How many worker threads GCD runs at once for its non-overcommit queues,
 /// such as `.global()` and the queues that target it.
+///
+/// On Linux, libdispatch runs its own thread pool instead of the kernel
+/// workqueue, sized for those queues to the active CPU count. It adds threads
+/// past that only while the ones it has are blocked, one per check of its
+/// monitor, so this many waiting clients fill the pool for the moment the
+/// test signals. The online count is used, which is never below the active one.
 private func constrainedWorkerThreadLimit() throws -> Int {
+    #if canImport(Darwin)
     var limit: UInt32 = 0
     var size = MemoryLayout<UInt32>.size
     guard sysctlbyname("kern.wq_max_constrained_threads", &limit, &size, nil, 0) == 0, limit > 0 else {
         throw DaemonTestError("could not read kern.wq_max_constrained_threads")
     }
     return Int(limit)
+    #else
+    let online = sysconf(Int32(_SC_NPROCESSORS_ONLN))
+    guard online > 0 else {
+        throw DaemonTestError("could not read the online CPU count")
+    }
+    return online
+    #endif
+}
+
+/// Writes to a client socket. Darwin sockets here set `SO_NOSIGPIPE`; Linux
+/// has no such option, so each send passes `MSG_NOSIGNAL` instead, and a peer
+/// that has gone fails the write with EPIPE instead of killing the test runner.
+private func socketWrite(_ fd: Int32, _ bytes: [UInt8], _ count: Int) -> Int {
+    #if canImport(Darwin)
+    return write(fd, bytes, count)
+    #else
+    return send(fd, bytes, count, Int32(MSG_NOSIGNAL))
+    #endif
+}
+
+/// `close(2)`; inside ``SocketClient`` the bare name resolves to its `close()`.
+private func closeDescriptor(_ fd: Int32) {
+    #if canImport(Darwin)
+    _ = Darwin.close(fd)
+    #else
+    _ = Glibc.close(fd)
+    #endif
 }
 
 /// Reads one newline-terminated line. The 30s poll bound only catches a hang.
