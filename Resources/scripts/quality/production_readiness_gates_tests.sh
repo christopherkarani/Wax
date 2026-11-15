@@ -451,4 +451,91 @@ assert_lists_unfinished_tests() {
 
 assert_lists_unfinished_tests
 
+# `full` runs one test target per `swift test` invocation: with every target in one
+# run, swift-testing starts all of the package's tests at once and a timing-sensitive
+# test waits behind every other one on a small runner.
+assert_finds_test_targets() {
+  local list_log="$TMP_DIR/default-test-list.log"
+  printf '%b\n' \
+    '[1/3] Compiling Wax Memory.swift' \
+    'Build complete! (1.20s)' \
+    'warning: Wax.Memory is deprecated' \
+    'WaxCoreTests.AdversarialCoreTests/asyncTimeoutFiresWhenOperationHangs()' \
+    'WaxCoreTests.CrashSafetyHarnessTests/testCrashSafetyHarnessScenarios' \
+    '\033[0mwaxTests.sessionTrafficProbe()\r' \
+    'WaxIntegrationTests.UnifiedSearchTests/pendingPreview()' \
+    'waxTests.BrokerAdmissionTests/textRoutes()' \
+    'wax_mcpTests.toolsListContainsExpectedTools()' \
+    >"$list_log"
+
+  local captured expected
+  captured="$(full_gate_test_targets "$list_log" | tr '\n' ' ')"
+  expected="WaxCoreTests waxTests WaxIntegrationTests wax_mcpTests "
+  if [[ "$captured" != "$expected" ]]; then
+    echo "FAIL: full_gate_test_targets found the wrong targets" >&2
+    echo "Expected: $expected" >&2
+    echo "Captured: $captured" >&2
+    return 1
+  fi
+}
+
+assert_runs_one_target_per_shard() {
+  local list_log="$TMP_DIR/shard-test-list.log"
+  printf '%s\n' 'WaxCoreTests.a()' 'waxTests.b()' 'WaxCLITests.c()' >"$list_log"
+
+  # The real run_and_capture runs `script`, which reads stdin: a shard loop fed
+  # through stdin would hand the remaining target names to the first shard. The
+  # calls below give run_full_shards an empty stdin so this stub cannot block.
+  run_and_capture() {
+    local log_file="$1"
+    shift
+    printf '%s\n' "$*" >>"$CAPTURED_COMMANDS"
+    cat >/dev/null
+    : >"$log_file"
+  }
+  : >"$CAPTURED_COMMANDS"
+  assert_full_pass_rate() { :; }
+  if ! run_full_shards "$list_log" "(Bench)" </dev/null >/dev/null 2>&1; then
+    echo "FAIL: run_full_shards must pass when every shard passes" >&2
+    return 1
+  fi
+  local expected
+  expected="$(printf '%s\n' \
+    'swift test --parallel --skip-build --filter ^WaxCoreTests\. --skip (Bench)' \
+    'swift test --parallel --skip-build --filter ^waxTests\. --skip (Bench)' \
+    'swift test --parallel --skip-build --filter ^WaxCLITests\. --skip (Bench)')"
+  if [[ "$(cat "$CAPTURED_COMMANDS")" != "$expected" ]]; then
+    echo "FAIL: run_full_shards must run each target alone, on the build the list made, with the skip list" >&2
+    echo "Expected: $expected" >&2
+    echo "Captured: $(cat "$CAPTURED_COMMANDS")" >&2
+    return 1
+  fi
+
+  # A failing shard does not hide the others' results, and fails the gate.
+  : >"$CAPTURED_COMMANDS"
+  assert_full_pass_rate() { [[ "$1" != *waxTests* ]]; }
+  if run_full_shards "$list_log" "(Bench)" </dev/null >/dev/null 2>&1; then
+    echo "FAIL: run_full_shards must fail when a shard fails" >&2
+    return 1
+  fi
+  if [[ "$(wc -l <"$CAPTURED_COMMANDS" | tr -d ' ')" != "3" ]]; then
+    echo "FAIL: run_full_shards must run the shards after a failed one" >&2
+    cat "$CAPTURED_COMMANDS" >&2
+    return 1
+  fi
+
+  printf '%s\n' 'Build complete! (1.20s)' >"$list_log"
+  if run_full_shards "$list_log" "(Bench)" </dev/null >/dev/null 2>&1; then
+    echo "FAIL: run_full_shards must fail when the list names no test target" >&2
+    return 1
+  fi
+}
+
+assert_finds_test_targets
+assert_runs_one_target_per_shard
+if grep -F 'swift test --parallel --skip "$skip_regex"' "$SCRIPT" >/dev/null; then
+  echo "FAIL: full must not run every test target in one swift test invocation" >&2
+  exit 1
+fi
+
 echo "production_readiness_gates_tests: ok"
