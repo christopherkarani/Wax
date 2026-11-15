@@ -4,7 +4,6 @@ import Testing
 
 private actor ReadinessTestGate {
     private var open = false
-    private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {
@@ -14,15 +13,9 @@ private actor ReadinessTestGate {
 
     func release() {
         open = true
-        released = true
         for waiter in waiters { waiter.resume() }
         waiters.removeAll()
     }
-
-    /// True once the watchdog fired. A text result that arrives while this
-    /// is false provably did not wait on provider readiness — no wall clock
-    /// needed, so loaded CI runners cannot flake it.
-    func wasReleased() -> Bool { released }
 }
 
 private enum ReadinessTestError: Error { case unavailable }
@@ -80,11 +73,11 @@ struct BrokerReadinessWaitTests {
                 "mode": .string("text"),
             ]))
             #expect(result.ok)
-            // Deterministic non-waiting proof: a result that arrives before
-            // the watchdog fired cannot have waited on provider readiness.
-            // (A wall-clock bound here flaked on loaded CI runners where even
-            // warmed text queries exceed one second.)
-            #expect(await gate.wasReleased() == false)
+            // Deterministic non-waiting proof: the query never suspended on
+            // provider readiness. (Requiring the result before the watchdog
+            // fired was a 10 s wall-clock bound, which the parallel suite's
+            // opening burst exceeded on 3-vCPU CI runners.)
+            #expect(await service.longTermMemory.readinessWaitCount == 0)
         }
     }
 

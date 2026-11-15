@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 /// The scanner must split text exactly where the cl100k_base regex does.
 @Suite struct Cl100kPreTokenizerTests {
@@ -35,86 +36,100 @@ import Testing
         return String(view)
     }
 
-    @Test func everyFourCharacterCombinationOfTheRegexClassesSplitsLikeTheRegex() {
-        // Letters (including contraction letters in both cases), digits, every ASCII
-        // whitespace ICU's \s matches, an apostrophe, punctuation and a control byte.
-        let alphabet: [UInt8] = Array("aAsSrReElLx1 '.".utf8) + [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x00]
-        var mismatches: [String] = []
-        for a in alphabet {
-            for b in alphabet {
-                for c in alphabet {
-                    for d in alphabet {
-                        let text = Self.string([a, b, c, d])
-                        if Self.scannerPieces(text) != Self.regexPieces(text) {
-                            mismatches.append(text.debugDescription)
+    // The sweeps below run seconds of regex matching without suspending, so they run
+    // off the cooperative pool and return what to check.
+    @Test func everyFourCharacterCombinationOfTheRegexClassesSplitsLikeTheRegex() async {
+        let mismatches = await BlockingWork.run { () -> [String] in
+            // Letters (including contraction letters in both cases), digits, every ASCII
+            // whitespace ICU's \s matches, an apostrophe, punctuation and a control byte.
+            let alphabet: [UInt8] = Array("aAsSrReElLx1 '.".utf8) + [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x00]
+            var mismatches: [String] = []
+            for a in alphabet {
+                for b in alphabet {
+                    for c in alphabet {
+                        for d in alphabet {
+                            let text = Self.string([a, b, c, d])
+                            if Self.scannerPieces(text) != Self.regexPieces(text) {
+                                mismatches.append(text.debugDescription)
+                            }
                         }
                     }
                 }
             }
+            return mismatches
         }
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(10))")
     }
 
-    @Test func randomASCIITextSplitsLikeTheRegex() {
-        var rng = SplitMix64(seed: 0x5EED_C1_00)
-        // Bias towards characters with distinct regex roles so long runs and mixes occur.
-        let common: [UInt8] = Array("aeiou st'rvmldSTRVMLD0123456789  \n\r\t.,-!?".utf8)
-        var mismatches: [String] = []
-        for _ in 0..<20_000 {
-            let length = Int(rng.next() % 64)
-            let bytes: [UInt8] = (0..<length).map { _ in
-                rng.next() % 3 == 0 ? UInt8(rng.next() % 128) : common[Int(rng.next() % UInt64(common.count))]
+    @Test func randomASCIITextSplitsLikeTheRegex() async {
+        let mismatches = await BlockingWork.run { () -> [String] in
+            var rng = SplitMix64(seed: 0x5EED_C1_00)
+            // Bias towards characters with distinct regex roles so long runs and mixes occur.
+            let common: [UInt8] = Array("aeiou st'rvmldSTRVMLD0123456789  \n\r\t.,-!?".utf8)
+            var mismatches: [String] = []
+            for _ in 0..<20_000 {
+                let length = Int(rng.next() % 64)
+                let bytes: [UInt8] = (0..<length).map { _ in
+                    rng.next() % 3 == 0 ? UInt8(rng.next() % 128) : common[Int(rng.next() % UInt64(common.count))]
+                }
+                let text = Self.string(bytes)
+                if Self.scannerPieces(text) != Self.regexPieces(text) {
+                    mismatches.append(text.debugDescription)
+                }
             }
-            let text = Self.string(bytes)
-            if Self.scannerPieces(text) != Self.regexPieces(text) {
-                mismatches.append(text.debugDescription)
-            }
+            return mismatches
         }
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(10))")
     }
 
     /// Every scalar the scanner accepts, placed where its class decides the split: inside
     /// and after letters, after an apostrophe, between digits, and in whitespace runs.
-    @Test func everyAcceptedScalarSplitsLikeTheRegex() {
-        var accepted: [Unicode.Scalar] = []
-        for value in UInt32(0x80)...0x10FFFF {
-            guard let scalar = Unicode.Scalar(value) else { continue }
-            if Self.scannerPieces(String(Character(scalar))) != nil { accepted.append(scalar) }
-        }
-        #expect(accepted.count > 100_000, "accepted \(accepted.count) scalars")
+    @Test func everyAcceptedScalarSplitsLikeTheRegex() async {
+        let (acceptedCount, mismatches) = await BlockingWork.run { () -> (Int, [String]) in
+            var accepted: [Unicode.Scalar] = []
+            for value in UInt32(0x80)...0x10FFFF {
+                guard let scalar = Unicode.Scalar(value) else { continue }
+                if Self.scannerPieces(String(Character(scalar))) != nil { accepted.append(scalar) }
+            }
 
-        var mismatches: [String] = []
-        let chunkSize = 64
-        for chunkStart in stride(from: 0, to: accepted.count, by: chunkSize) {
-            var scalars: [Unicode.Scalar] = []
-            for scalar in accepted[chunkStart..<min(chunkStart + chunkSize, accepted.count)] {
-                let contexts: [Unicode.Scalar] = [
-                    "a", scalar, "b", "'", scalar, "e", " ", "1", scalar, "2", " ", " ", scalar, "\n", scalar, " ",
-                ]
-                scalars += contexts
+            var mismatches: [String] = []
+            let chunkSize = 64
+            for chunkStart in stride(from: 0, to: accepted.count, by: chunkSize) {
+                var scalars: [Unicode.Scalar] = []
+                for scalar in accepted[chunkStart..<min(chunkStart + chunkSize, accepted.count)] {
+                    let contexts: [Unicode.Scalar] = [
+                        "a", scalar, "b", "'", scalar, "e", " ", "1", scalar, "2", " ", " ", scalar, "\n", scalar, " ",
+                    ]
+                    scalars += contexts
+                }
+                let text = Self.string(scalars)
+                if Self.scannerPieces(text) != Self.regexPieces(text) {
+                    mismatches.append("chunk from U+\(String(accepted[chunkStart].value, radix: 16, uppercase: true))")
+                }
             }
-            let text = Self.string(scalars)
-            if Self.scannerPieces(text) != Self.regexPieces(text) {
-                mismatches.append("chunk from U+\(String(accepted[chunkStart].value, radix: 16, uppercase: true))")
-            }
+            return (accepted.count, mismatches)
         }
+        #expect(acceptedCount > 100_000, "accepted \(acceptedCount) scalars")
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(10))")
     }
 
-    @Test func randomUnicodeTextSplitsLikeTheRegex() {
-        var rng = SplitMix64(seed: 0xC1_00_0FF)
-        let trickyText: String =
-            "aZ09 '\r\n\t\u{0B}\u{0C}\u{85}\u{A0}\u{1680}\u{2000}\u{200B}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}"
-                + "sStTlLeEmMdDrRvV\u{17F}\u{212A}é\u{301}\u{308}ß東京🚀😀\u{200D}\u{FE0F}٣²Ⅻ½-_.,!?\"()<>@#%&*+=/|~;:"
-        let tricky = Array(trickyText.unicodeScalars)
-        var mismatches: [String] = []
-        for _ in 0..<20_000 {
-            let length = 1 + Int(rng.next() % 24)
-            let scalars = (0..<length).map { _ in tricky[Int(rng.next() % UInt64(tricky.count))] }
-            let text = Self.string(scalars)
-            if Self.scannerPieces(text) != Self.regexPieces(text) {
-                mismatches.append(text.debugDescription)
+    @Test func randomUnicodeTextSplitsLikeTheRegex() async {
+        let mismatches = await BlockingWork.run { () -> [String] in
+            var rng = SplitMix64(seed: 0xC1_00_0FF)
+            let trickyText: String =
+                "aZ09 '\r\n\t\u{0B}\u{0C}\u{85}\u{A0}\u{1680}\u{2000}\u{200B}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}"
+                    + "sStTlLeEmMdDrRvV\u{17F}\u{212A}é\u{301}\u{308}ß東京🚀😀\u{200D}\u{FE0F}٣²Ⅻ½-_.,!?\"()<>@#%&*+=/|~;:"
+            let tricky = Array(trickyText.unicodeScalars)
+            var mismatches: [String] = []
+            for _ in 0..<20_000 {
+                let length = 1 + Int(rng.next() % 24)
+                let scalars = (0..<length).map { _ in tricky[Int(rng.next() % UInt64(tricky.count))] }
+                let text = Self.string(scalars)
+                if Self.scannerPieces(text) != Self.regexPieces(text) {
+                    mismatches.append(text.debugDescription)
+                }
             }
+            return mismatches
         }
         #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(10))")
     }
@@ -138,8 +153,8 @@ import Testing
         #expect(invalid.withUnsafeBufferPointer { Cl100kPreTokenizer.pieceRanges($0) } == nil)
     }
 
-    @Test func scannerAndRegexPathsProduceTheSameTokens() throws {
-        let native = try NativeBpeTokenizer(encoding: .cl100kBase)
+    @Test func scannerAndRegexPathsProduceTheSameTokens() async throws {
+        let native = try await SharedCl100kTokenizer.get()
         let samples = [
             "Hello, world! It's 2026; they'll say we've won 1234567 times.",
             "Tabs\tand\r\nWindows newlines\n\n   indented\u{0B}vertical\u{0C}feed  ",

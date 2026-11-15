@@ -42,7 +42,7 @@ func memoryOrchestratorRecallUsesVectorEmbedding() async throws {
 
 @Test
 func memoryOrchestratorRejectsNetworkEmbedderByDefault() async throws {
-    await TempFiles.withTempFile { url in
+    try await TempFiles.withTempFile { url in
         var config = OrchestratorConfig.default
         config.enableVectorSearch = true
         do {

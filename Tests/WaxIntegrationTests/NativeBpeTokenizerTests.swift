@@ -1,9 +1,23 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
-@Test func nativeTokenizerEncodesAndDecodes() throws {
-    let native = try NativeBpeTokenizer(encoding: .cl100kBase)
+/// Parsing the encoding takes most of a second of CPU in a debug build. The tokenizer
+/// tests share one parse, run off the cooperative pool, instead of each holding a pool
+/// thread for it while the parallel suite starts.
+enum SharedCl100kTokenizer {
+    private static let load = Task {
+        try await BlockingWork.run { try NativeBpeTokenizer(encoding: .cl100kBase) }
+    }
+
+    static func get() async throws -> NativeBpeTokenizer {
+        try await load.value
+    }
+}
+
+@Test func nativeTokenizerEncodesAndDecodes() async throws {
+    let native = try await SharedCl100kTokenizer.get()
 
     let samples = [
         "Hello, world!",
@@ -26,8 +40,8 @@ import Testing
     }
 }
 
-@Test func nativeTokenizerEmptyInput() throws {
-    let native = try NativeBpeTokenizer(encoding: .cl100kBase)
+@Test func nativeTokenizerEmptyInput() async throws {
+    let native = try await SharedCl100kTokenizer.get()
     let tokens = native.encode("")
     #expect(tokens.isEmpty)
     let decoded = native.decode([])
@@ -38,8 +52,8 @@ import Testing
 /// pre-tokenization stay exact: pieces of 7 and 8 bytes, contractions (including `ſ`,
 /// which `(?i)` matches as `s`), non-ASCII letters, digits and whitespace, emoji
 /// sequences, and private-use and Unicode 15 scalars, which take the regex.
-@Test func nativeTokenizerMatchesRecordedTokens() throws {
-    let native = try NativeBpeTokenizer(encoding: .cl100kBase)
+@Test func nativeTokenizerMatchesRecordedTokens() async throws {
+    let native = try await SharedCl100kTokenizer.get()
     let cases: [(text: String, tokens: [UInt32])] = [
         ("Hello, world!", [9906, 11, 1917, 0]),
         ("hello world", [15339, 1917]),

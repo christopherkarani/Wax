@@ -54,6 +54,8 @@ package actor MemoryOrchestrator {
     private var automaticEmbeddingBackfillTask: Task<Void, Never>?
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var readinessWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    /// Callers that have suspended for provider readiness, so a test can show a path never waited.
+    package internal(set) var readinessWaitCount = 0
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var readinessFollowInFlight = false
     package var searchSnapshotHoldForTesting: Duration? = nil

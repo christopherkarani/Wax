@@ -342,7 +342,7 @@ private func expectRescoredHits(
 )
 func metalANNSQuantizedScanRescoresExactly(metric: VectorMetric) async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 6_000, dimensions: dimensions, unitNorm: metric == .cosine, seed: 0xA5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 6_000, dimensions: dimensions, unitNorm: metric == .cosine, seed: 0xA5) }
     let (engine, exact, frameIds) = try await makeEngines(
         metric: metric, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: rows.count
     )
@@ -364,7 +364,7 @@ func metalANNSQuantizedScanRescoresExactly(metric: VectorMetric) async throws {
 )
 func metalANNSExactScanBelowQuantizedThreshold() async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 2_000, dimensions: dimensions, unitNorm: true, seed: 0xB5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: dimensions, unitNorm: true, seed: 0xB5) }
     let (engine, exact, _) = try await makeEngines(
         metric: .cosine, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: rows.count + 1
     )
@@ -382,12 +382,12 @@ func metalANNSExactScanBelowQuantizedThreshold() async throws {
     .enabled(if: MetalANNSVectorEngine.isAvailable)
 )
 func metalANNSExactScanWhereSignCodesDoNotApply() async throws {
-    let wide = embeddingLikeRows(count: 2_000, dimensions: 128, unitNorm: true, seed: 0xC5)
+    let wide = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: 128, unitNorm: true, seed: 0xC5) }
     let l2 = try await makeEngines(metric: .l2, rows: wide, dimensions: 128, quantizedScanMinVectorCount: 1)
     _ = try await l2.engine.search(vector: wide[3], topK: 10)
     #expect(await l2.engine.quantizedScanCount == 0)
 
-    let narrow = embeddingLikeRows(count: 2_000, dimensions: 64, unitNorm: true, seed: 0xC6)
+    let narrow = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: 64, unitNorm: true, seed: 0xC6) }
     let small = try await makeEngines(metric: .cosine, rows: narrow, dimensions: 64, quantizedScanMinVectorCount: 1)
     _ = try await small.engine.search(vector: narrow[3], topK: 10)
     #expect(await small.engine.quantizedScanCount == 0)
@@ -407,7 +407,7 @@ func metalANNSExactScanWhereSignCodesDoNotApply() async throws {
 )
 func metalANNSQuantizedScanTracksMutations() async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 4_000, dimensions: dimensions, unitNorm: true, seed: 0xE5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 4_000, dimensions: dimensions, unitNorm: true, seed: 0xE5) }
     let (engine, exact, frameIds) = try await makeEngines(
         metric: .cosine, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: 1_000
     )

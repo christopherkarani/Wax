@@ -44,8 +44,10 @@ extension Wax {
 #if DEBUG
     /// Internal only because of the file split.
     static func maybeCrashAfterCheckpoint(_ checkpoint: CrashInjectionCheckpoint) {
-        let env = ProcessInfo.processInfo.environment
-        guard env[CrashInjectionCheckpoint.envKey] == checkpoint.rawValue else { return }
+        // One variable lookup: every commit passes five checkpoints, and building the
+        // whole environment dictionary at each was a visible share of commit CPU.
+        guard let value = getenv(CrashInjectionCheckpoint.envKey),
+              String(cString: value) == checkpoint.rawValue else { return }
         // SIGKILL is delivered asynchronously and may be delayed or masked in sandboxed
         // environments (containers, test harnesses). The fatalError below is a safety net
         // for those cases; it should never be reached in normal crash-injection runs but
