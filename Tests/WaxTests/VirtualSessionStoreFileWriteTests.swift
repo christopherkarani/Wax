@@ -23,7 +23,7 @@ import Testing
         let writes = WriteRecorder()
         store.setFileWriteHookForTesting { [weak store] in
             writes.record(
-                queue: String(cString: __dispatch_queue_get_label(nil)),
+                queue: currentQueueLabel(),
                 stateLockHeld: store?.stateLockIsHeldForTesting() ?? false
             )
         }
@@ -52,6 +52,15 @@ import Testing
         #expect(manifest.status == .ended)
         #expect(manifest.latestHandoff == "probe")
     }
+}
+
+private func currentQueueLabel() -> String {
+    #if canImport(Darwin)
+    String(cString: __dispatch_queue_get_label(nil))
+    #else
+    // Linux Dispatch has no current-queue label lookup; the state-lock check still runs.
+    ""
+    #endif
 }
 
 private final class WriteRecorder: @unchecked Sendable {
