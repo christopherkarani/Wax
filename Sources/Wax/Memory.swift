@@ -21,6 +21,11 @@ public actor Memory {
         /// ``RerankingSource/automatic``: hybrid searches are reranked by the built-in
         /// cross-encoder when the build includes it.
         public var reranking: RerankingSource
+        /// When true (default), saves whose metadata gives an observation day under
+        /// `wax.observed_at` add the absolute date after English relative date phrases
+        /// ("yesterday" becomes "yesterday (21 Aug 2023)"). Saves without one are stored as
+        /// given. See ``Memory/RelativeDates``.
+        public var resolvesRelativeDates: Bool
 
         public init(
             enableTextSearch: Bool = true,
@@ -32,7 +37,8 @@ public actor Memory {
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
             embedding: EmbeddingSource = .automatic,
-            reranking: RerankingSource = .automatic
+            reranking: RerankingSource = .automatic,
+            resolvesRelativeDates: Bool = true
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -44,6 +50,7 @@ public actor Memory {
             self.requireOnDeviceProviders = requireOnDeviceProviders
             self.embedding = embedding
             self.reranking = reranking
+            self.resolvesRelativeDates = resolvesRelativeDates
         }
 
         public static let `default` = Config()
@@ -149,10 +156,14 @@ public actor Memory {
     public typealias Error = WaxError
 
     private let orchestrator: MemoryOrchestrator
+    /// ``Config/resolvesRelativeDates``.
+    let resolvesRelativeDates: Bool
 
-    /// Package-visible wrap of an existing orchestrator for in-module adapters.
+    /// Package-visible wrap of an existing orchestrator for in-module adapters. Saves keep
+    /// their text as given.
     package init(orchestrator: MemoryOrchestrator) {
         self.orchestrator = orchestrator
+        self.resolvesRelativeDates = false
     }
 
     /// Create or open a memory store at the given URL.
@@ -179,6 +190,7 @@ public actor Memory {
         readinessFactory: (@Sendable () async throws -> any EmbeddingProvider)?
     ) async throws {
         let reranking = try await BuiltInRerankerCompiler.stage(for: config.reranking)
+        self.resolvesRelativeDates = config.resolvesRelativeDates
         self.orchestrator = try await EmbeddingReadinessBinding.openOrchestrator(
             at: url,
             config: Self.makeOrchestratorConfig(config, reranking: reranking),
@@ -206,7 +218,8 @@ public actor Memory {
     ///   in search results.
     @discardableResult
     public func save(_ text: String, metadata: [String: String] = [:]) async throws -> UInt64 {
-        try await orchestrator.remember(text, metadata: metadata).frameId
+        let prepared = try prepareForSave(text, metadata: metadata)
+        return try await orchestrator.remember(prepared.text, metadata: prepared.metadata).frameId
     }
 
     /// Persist many texts that share one metadata dictionary, embedding and writing
@@ -237,7 +250,7 @@ public actor Memory {
     public func save(
         contentsOf documents: some Sequence<(text: String, metadata: [String: String])>
     ) async throws -> [UInt64] {
-        try await orchestrator.remember(batch: Array(documents))
+        try await orchestrator.remember(batch: prepareForSave(documents))
     }
 
     /// Import many documents, each with its own metadata, as one atomic write: the fast way
@@ -273,7 +286,7 @@ public actor Memory {
     public func importDocuments(
         _ documents: some Sequence<(text: String, metadata: [String: String])>
     ) async throws -> [UInt64] {
-        try await orchestrator.importDocuments(Array(documents))
+        try await orchestrator.importDocuments(prepareForSave(documents))
     }
 
     /// Persist multiple texts in one call, in order.

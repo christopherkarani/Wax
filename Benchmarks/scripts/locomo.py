@@ -15,7 +15,8 @@ Steps:
   prepare   --data locomo10.json --jobs jobs.jsonl --gold gold.jsonl
   recall    --gold gold.jsonl --ranked ranked.jsonl          (evidence-turn recall@k)
   reader    --data locomo10.json --gold gold.jsonl --context {retrieval,full}
-            [--ranked ranked.jsonl --top-k 30] --out reader.requests.jsonl
+            [--ranked ranked.jsonl --top-k 30 [--hit-text]] --out reader.requests.jsonl
+            (--hit-text: each turn's text as Wax returned it, from `wax-bench --emit-text`)
   judge     --gold gold.jsonl --hypotheses reader.responses.jsonl --out judge.requests.jsonl
   score     --gold gold.jsonl --hypotheses reader.responses.jsonl --judgements judge.responses.jsonl
 """
@@ -23,6 +24,7 @@ import argparse
 import json
 import re
 from collections import defaultdict
+from datetime import datetime
 
 CATEGORY_NAMES = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 
@@ -83,6 +85,11 @@ def conversation_turns(sample: dict) -> list:
     return turns
 
 
+def observed_date(session_date: str) -> str:
+    """LoCoMo session dates ("1:56 pm on 8 May, 2023") as yyyy-MM-dd."""
+    return datetime.strptime(session_date, "%I:%M %p on %d %B, %Y").date().isoformat()
+
+
 def parse_evidence(evidence: list) -> list:
     """LoCoMo evidence ids are mostly "D<session>:<turn>"; a few entries pack several ids."""
     ids = []
@@ -112,7 +119,10 @@ def prepare(args: argparse.Namespace) -> None:
                     "answer": str(qa["answer"]),
                     "evidence": [doc for doc in parse_evidence(qa["evidence"]) if doc in known],
                 }) + "\n")
-            docs = [{"id": turn["id"], "text": f"{turn['speaker']}: {turn['text']}"} for turn in turns]
+            docs = [
+                {"id": turn["id"], "text": f"{turn['speaker']}: {turn['text']}", "observed_at": observed_date(turn["date"])}
+                for turn in turns
+            ]
             jobs_out.write(json.dumps({"queries": queries, "docs": docs}) + "\n")
 
 
@@ -137,8 +147,13 @@ def recall(args: argparse.Namespace) -> None:
             json.dump(report, handle, indent=2)
 
 
-def context_lines(turns: list) -> str:
-    return "".join(f"{turn['date']} | {turn['speaker']}: {turn['text']}\n" for turn in turns)
+def context_lines(turns: list, hit_text: dict = None) -> str:
+    """One line per turn; with `hit_text`, the turn's text is the "<speaker>: <text>" Wax returned."""
+    lines = []
+    for turn in turns:
+        text = (hit_text or {}).get(turn["id"]) or f"{turn['speaker']}: {turn['text']}"
+        lines.append(f"{turn['date']} | {text}\n")
+    return "".join(lines)
 
 
 def reader(args: argparse.Namespace) -> None:
@@ -146,8 +161,15 @@ def reader(args: argparse.Namespace) -> None:
         samples = json.load(handle)
     turns_by_conv = [conversation_turns(sample) for sample in samples]
     ranked = {}
+    hit_text = {}
     if args.context == "retrieval":
-        ranked = {entry["qid"]: entry["ranked"] for entry in load_jsonl(args.ranked)}
+        for entry in load_jsonl(args.ranked):
+            ranked[entry["qid"]] = entry["ranked"]
+            if args.hit_text:
+                texts = {}
+                for hit in entry.get("hits", []):
+                    texts.setdefault(hit["id"], hit.get("text"))
+                hit_text[entry["qid"]] = texts
     with open(args.out, "w") as out:
         for entry in load_jsonl(args.gold):
             turns = turns_by_conv[entry["conv"]]
@@ -157,7 +179,9 @@ def reader(args: argparse.Namespace) -> None:
                 selected = [turn for turn in turns if turn["id"] in keep]
             else:
                 selected = turns
-            prompt = READER_PROMPT.format(question=entry["question"], context=context_lines(selected))
+            prompt = READER_PROMPT.format(
+                question=entry["question"], context=context_lines(selected, hit_text.get(entry["qid"]))
+            )
             out.write(json.dumps({"id": entry["qid"], "system": READER_SYSTEM, "prompt": prompt}) + "\n")
 
 
@@ -246,6 +270,7 @@ def main() -> None:
     p.add_argument("--context", choices=["retrieval", "full"], required=True)
     p.add_argument("--ranked")
     p.add_argument("--top-k", type=int, default=30)
+    p.add_argument("--hit-text", action="store_true")
     p.add_argument("--out", required=True)
     p = sub.add_parser("judge")
     p.add_argument("--gold", required=True)
