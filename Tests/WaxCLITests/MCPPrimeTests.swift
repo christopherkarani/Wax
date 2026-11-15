@@ -638,6 +638,25 @@ struct MCPPrimeTests {
             let rememberedOK = try #require(remembered)
             #expect(rememberedOK.ok)
 
+            // A fresh broker parses the cl100k tokenizer in the background, and its first
+            // recall waits for that parse: most of a second of CPU in a debug build, and
+            // more than the prime's 1.5 s on a loaded runner. Warm it here so the prime
+            // below measures socket reuse, not the cold parse.
+            let warmed = try await AgentBrokerClient.probeOffPool(
+                request: AgentBrokerRequest(
+                    command: "recall",
+                    arguments: [
+                        "query": .string("long-lived broker socket"),
+                        "scope": .string("project"),
+                        "project": .string(root.lastPathComponent),
+                        "cwd": .string(root.path),
+                    ]
+                ),
+                configuration: configuration,
+                timeoutSeconds: 8
+            )
+            #expect(try #require(warmed).ok)
+
             let primeRequest = MCPPrimeRunner.Request(
                 host: "claude",
                 cwd: root.path,
