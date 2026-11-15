@@ -39,9 +39,9 @@ Do not load this skill at session start or for MCP `remember` / `recall` /
 - Video RAG does not transcribe by itself. Use `VideoMemory`; the host supplies transcripts. The store keeps text and metadata, not media bytes.
 
 ## Performance & Determinism Tips
-- The first-ever built-in embedder load pays a one-time CoreML compile; later launches reuse the cached compiled model.
+- On Apple platforms the first-ever built-in embedder load pays a one-time CoreML compile; later launches reuse the cached compiled model. Linux runs the bundled models on Wax's CPU interpreter instead.
 - Use `.textOnly` mode for fast deterministic lexical lookups.
-- The Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller stores use an exact CPU flat index.
+- On Apple Silicon the Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller stores use an exact CPU flat index. Linux has no Metal engine.
 
 ## Examples
 

@@ -57,6 +57,12 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/ai.wax.mcp-http.plist
 launchctl kickstart -k "gui/$(id -u)/ai.wax.mcp-http"
 ```
 
+On Linux, `npx waxmcp install` is not available: no Linux binaries are
+published yet and npm installs the package only on Apple Silicon Macs. Build
+`wax-cli` and `wax-mcp` from source and stage them with the launcher from the
+checkout, as [platform support](platform-support.md#build-from-source-on-linux)
+describes. That stages the same `start-wax-mcp-http.sh`.
+
 On Linux the login service is the systemd user unit `wax-mcp-http.service`
 (source tree: `Resources/systemd/wax-mcp-http.service`). It runs the same
 launcher, restarts whenever it exits, and gives the server and its broker
@@ -479,7 +485,7 @@ format reserves a `requiresLiveInjectionProbe` marker for a future live
 ```bash
 npx -y waxmcp@latest doctor
 # same check:
-# ~/.local/share/waxmcp/runtime/darwin-arm64/wax-cli mcp doctor
+# ~/.local/share/waxmcp/runtime/darwin-arm64/wax-cli mcp doctor   (linux-x64 or linux-arm64 on Linux)
 
 npx -y waxmcp@latest vector-health
 ```

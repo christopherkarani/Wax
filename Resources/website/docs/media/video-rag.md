@@ -8,7 +8,7 @@ Use the experimental `VideoMemory` facade to index videos and recall ranked segm
 
 ## Status
 
-Video RAG is experimental public API on Darwin (`canImport(ImageIO)`). Application code uses `VideoMemory` and `BuiltInMultimodalEmbeddings`. For photos, use `PhotoMemory` with the same embedder factory. `VideoRAGOrchestrator` is package-only and not public API — do not construct it in app or docs samples.
+Video RAG is experimental public API on Darwin (`canImport(ImageIO)`). It is not available on Linux. Application code uses `VideoMemory` and `BuiltInMultimodalEmbeddings`. For photos, use `PhotoMemory` with the same embedder factory. `VideoRAGOrchestrator` is package-only and not public API — do not construct it in app or docs samples.
 
 Wax does not transcribe and does not store media bytes. The host supplies transcripts.
 

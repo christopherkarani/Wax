@@ -89,7 +89,7 @@ The README [Agent Quick Start](../../README.md#agent-quick-start) shows both as 
 npx -y waxmcp@latest doctor
 # or from a local build:
 swift run --traits MCPServer wax-cli mcp doctor
-# staged CLI after `waxmcp install`:
+# staged CLI after `waxmcp install` (linux-x64 or linux-arm64 on Linux):
 # ~/.local/share/waxmcp/runtime/darwin-arm64/wax-cli mcp doctor
 ```
 
@@ -169,7 +169,10 @@ npx -y waxmcp@latest mcp serve
 ```
 
 This package includes Apple Silicon binaries under `dist/darwin-arm64/` and
-the operator skill at `skills/wax-mcp/`. `waxmcp install` stages both binaries,
+the operator skill at `skills/wax-mcp/`. npm installs it only on Apple Silicon
+Macs. On Linux, build `wax-cli` and `wax-mcp` from source and run the launcher
+from the checkout as `node Resources/npm/waxmcp/bin/waxmcp.js <command>`; see
+[platform support](platform-support.md). `waxmcp install` stages both binaries,
 the skill, the Hermes provider, a version manifest, and
 `bin/start-wax-mcp-http.sh` under `~/.local/share/waxmcp`. It does not write
 the `ai.wax.mcp-http` LaunchAgent; see [wax-mcp-hosts.md](wax-mcp-hosts.md).
@@ -185,4 +188,6 @@ For local development:
 ```bash
 export WAX_CLI_BIN=/path/to/Wax/.build/debug/wax-cli
 npx --yes ./Resources/npm/waxmcp doctor
+# on Linux, where npm refuses the package:
+# node ./Resources/npm/waxmcp/bin/waxmcp.js doctor
 ```

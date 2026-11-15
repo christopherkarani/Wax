@@ -8,7 +8,7 @@ Use the experimental `PhotoMemory` facade to ingest photos and recall ranked pho
 
 ## Status
 
-Photo RAG is experimental public API on Darwin (`canImport(ImageIO)`). Application code uses `PhotoMemory` and `BuiltInMultimodalEmbeddings`. For video, use `VideoMemory` with the same embedder factory. `PhotoRAGOrchestrator` is package-only and not public API — do not construct it in app or docs samples.
+Photo RAG is experimental public API on Darwin (`canImport(ImageIO)`). It is not available on Linux. Application code uses `PhotoMemory` and `BuiltInMultimodalEmbeddings`. For video, use `VideoMemory` with the same embedder factory. `PhotoRAGOrchestrator` is package-only and not public API — do not construct it in app or docs samples.
 
 ```swift
 let embedder = try await BuiltInMultimodalEmbeddings.make(.miniLM)

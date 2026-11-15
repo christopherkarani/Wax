@@ -35,7 +35,7 @@ Every major subsystem is an actor with its own serial executor:
 | `FTS5SearchEngine` | BM25 indexing/search, structured memory persistence |
 | `AccelerateVectorEngine` | CPU vector index |
 | `MetalANNSVectorEngine` | GPU vector index |
-| `MiniLMEmbedder` | CoreML inference |
+| `MiniLMEmbedder` | Core ML inference on Apple platforms; Wax's CPU interpreter on Linux |
 
 ### Actor Boundaries
 

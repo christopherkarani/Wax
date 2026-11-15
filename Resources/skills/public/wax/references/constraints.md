@@ -5,6 +5,9 @@
 - A single `.wax` file stores data, indexes, metadata, and WAL. Source: `README.md`.
 - Wax is not a cloud sync service. Source: `README.md`.
 
+## Platforms
+- Apple platforms and glibc Linux. Linux is built from source (x86_64 tested, aarch64 not yet; no published Linux binaries). On Linux there is no `PhotoMemory` / `VideoMemory`, no PDF ingest, no `wax-repo`, and no Metal vector engine (vectors are searched on the CPU); embedders run on the CPU only. Frames compressed with LZFSE are readable only on Apple platforms; Wax does not write LZFSE by default. Source: `Resources/docs/platform-support.md`.
+
 ## Public API Surface
 - The public Swift API is `Memory` plus experimental `PhotoMemory` / `VideoMemory` (`import Wax`). Use `BuiltInMultimodalEmbeddings.make` for the photo/video embedder. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `WaxSession`, and the `Wax` actor are package-only internals. Source: `Resources/skills/public/wax/references/public-api.md`.
 - Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API. Source: `README.md`.
@@ -15,10 +18,10 @@
 - On a fresh store with vector search enabled but no embedder, vector search is auto-disabled (text-only); `memory.stats().vectorSearchEnabled` reports the effective state. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator.swift`.
 - `Memory.RetrievalMode.hybrid` (default; alias of the canonical `SearchMode`) falls back to the text lane when the vector lane is unavailable; `vectorOnly` throws. `RAGContext.diagnostics` reports requested vs. effective mode. Source: `Sources/Wax/Memory.swift`.
 - If query embedding times out, a circuit breaker pauses query embedding for a cooldown (default 60s), then half-opens and retries; a success closes it. Source: `Sources/Wax/Orchestrator/MemoryOrchestrator+Recall.swift` (open/close), `Sources/Wax/Orchestrator/MemoryOrchestrator+EmbedderState.swift` (cooldown check).
-- The Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index. Source: `Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift`.
+- On Apple Silicon the Metal HNSW vector engine activates automatically at 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index. Linux has no Metal engine. Source: `Sources/WaxVectorSearch/LoadedVectorSearchEngine.swift`.
 
 ## Photo and Video RAG Constraints
-- Apps use experimental `PhotoMemory` / `VideoMemory` (`import Wax`). `PhotoRAGOrchestrator` and `VideoRAGOrchestrator` are package-only. Source: `Resources/skills/public/wax/references/public-api.md`.
+- Apps use experimental `PhotoMemory` / `VideoMemory` (`import Wax`) on Apple platforms; they are not available on Linux. `PhotoRAGOrchestrator` and `VideoRAGOrchestrator` are package-only. Source: `Resources/skills/public/wax/references/public-api.md`.
 - Video RAG requires host-supplied transcripts; Wax does not transcribe in v1. Source: `README.md`, `Sources/Wax/VideoRAG/VideoRAGProtocols.swift`.
 - Video RAG stores text and metadata only; it does not store video/audio clip bytes. Source: `README.md`.
 - The video pipeline requires normalized embeddings when `vectorEnginePreference != .cpuOnly` (Metal-backed search). Source: `Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift`.

@@ -52,7 +52,7 @@ Every major subsystem is an actor with its own serial executor:
 | `FTS5SearchEngine` | package | BM25 indexing/search, structured memory persistence |
 | `AccelerateVectorEngine` | package | CPU vector index (default below 10,000 vectors) |
 | `MetalANNSVectorEngine` | package | GPU vector index (auto-activates at 10,000+ vectors) |
-| `MiniLMEmbedder` | package | CoreML inference |
+| `MiniLMEmbedder` | package | Core ML inference on Apple platforms; Wax's CPU interpreter on Linux |
 
 ### Actor Boundaries
 

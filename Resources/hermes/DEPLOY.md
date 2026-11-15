@@ -7,7 +7,7 @@ This guide covers how to publish and distribute Wax so Hermes Agent users can in
 | Channel | What | User Experience | Status |
 |---|---|---|---|
 | **npm** (`waxmcp`) | Pre-built binaries + launcher | `npx waxmcp --transport http` | ✅ Automated CI/CD |
-| **GitHub** | Source + releases | Clone or download release | ✅ Available now |
+| **GitHub** | Source + releases | Clone or download release; Linux builds from source | ✅ Available now |
 | **Directory plugin** | Direct copy to `$HERMES_HOME/plugins` | `cp -r wax-memory-plugin "$HERMES_HOME/plugins/wax-memory"` | ✅ Available now |
 | **PyPI** (`hermes-wax-memory`) | Python package install | `pip install hermes-wax-memory` | 🚧 Needs setup |
 | **Homebrew** | macOS package manager | `brew install wax` | 🚧 Needs formula update |
@@ -16,13 +16,13 @@ This guide covers how to publish and distribute Wax so Hermes Agent users can in
 
 ## 1. npm — Primary Distribution (Automated)
 
-The `waxmcp` npm package bundles pre-built `wax-cli` and `wax-mcp` binaries for darwin-arm64 and darwin-x64.
+The `waxmcp` npm package bundles pre-built `wax-cli` and `wax-mcp` binaries for darwin-arm64 (Apple Silicon). It does not install on Linux or Intel Macs. Linux users build from source; see [Platform support](../docs/platform-support.md).
 
 ### Current Release Pipeline
 
 ```
 Git tag: waxmcp-v0.1.24
-  → GitHub Actions builds binaries (darwin-x64, darwin-arm64)
+  → GitHub Actions builds binaries (darwin-arm64)
   → Validates + publishes to npm
 ```
 
@@ -48,7 +48,6 @@ scripts/bump-version.sh 0.1.23
 - `Resources/npm/waxmcp/` — npm package with:
   - `bin/waxmcp.js` — launcher script
   - `dist/darwin-arm64/` — arm64 binaries + resource bundles
-  - `dist/darwin-x64/` — x64 binaries + resource bundles
 
 ### For Users
 
@@ -225,5 +224,5 @@ scripts/validate-congruency.sh
 
 - [ ] **Homebrew formula** — `brew install wax` for one-command install
 - [ ] **PyPI auto-publish** — GitHub Actions workflow for `hermes-wax-memory`
-- [ ] **Linux binaries** — Build and distribute for Linux (blocked by CoreML dependency)
+- [ ] **Linux binaries** — Publish prebuilt Linux binaries. Wax no longer needs Core ML on Linux: it builds and passes its tests from source on x86_64 (see [Platform support](../docs/platform-support.md)), but no Linux release artifacts are built or published yet
 - [ ] **Docker image** — Containerized Wax MCP for server deployments

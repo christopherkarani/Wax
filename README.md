@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/waxmcp"><img src="https://img.shields.io/npm/v/waxmcp?style=flat-square&logo=npm&label=waxmcp" alt="npm waxmcp" /></a>
   <a href="https://github.com/christopherkarani/Wax/releases"><img src="https://img.shields.io/github/v/release/christopherkarani/Wax?style=flat-square&logo=swift&logoColor=white&label=Swift" alt="Swift" /></a>
-  <a href="https://developer.apple.com/"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms" /></a>
+  <a href="Resources/docs/platform-support.md"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Linux%20(from%20source)-lightgrey?style=flat-square" alt="Platforms" /></a>
   <a href="https://github.com/christopherkarani/Wax/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License" /></a>
   <a href="https://github.com/christopherkarani/Wax/stargazers"><img src="https://img.shields.io/github/stars/christopherkarani/Wax?style=flat-square&logo=github" alt="Stars" /></a>
   <a href="https://discord.gg/NHgNh7HJ6M"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
@@ -31,7 +31,7 @@
 npx -y waxmcp@latest install
 ```
 
-That stages the MCP server, MiniLM runtime, and operator skill on Apple Silicon. Wire one host, paste the [playbook](#2-teach-the-model-when-to-use-wax), and the next session can `remember` / `recall`. If this is the memory layer you wanted, [star the repo](https://github.com/christopherkarani/Wax) so other agents find it.
+That stages the MCP server, MiniLM runtime, and operator skill on Apple Silicon. On Linux, build `wax-cli` and `wax-mcp` from source ([platform support](Resources/docs/platform-support.md)). Wire one host, paste the [playbook](#2-teach-the-model-when-to-use-wax), and the next session can `remember` / `recall`. If this is the memory layer you wanted, [star the repo](https://github.com/christopherkarani/Wax) so other agents find it.
 
 <p align="center">
   <img src="Resources/docs/assets/demo-terminal.svg" width="720" alt="Wax CLI Demo">
@@ -365,7 +365,7 @@ Text search works with no embedder. Semantic search auto-configures a built-in e
 <details>
 <summary><strong>How the file is laid out</strong></summary>
 
-Wax bundles documents, metadata, and indexes in one binary. SQLite FTS5 for text. Metal-accelerated HNSW for vectors once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with the same recall.
+Wax bundles documents, metadata, and indexes in one binary. SQLite FTS5 for text. Metal-accelerated HNSW for vectors once an index holds 10,000+ vectors; smaller indexes use an exact Accelerate/CPU flat index with the same recall. Linux has no Metal engine and searches vectors on the CPU.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -415,6 +415,9 @@ WAL plus dual headers. The next open recovers.
 
 **Does this run on Intel Macs?**  
 The engine can run via Rosetta. Metal vector acceleration and the `waxmcp` npm package target Apple Silicon. Build `wax-cli` from source on Intel.
+
+**Does this run on Linux?**  
+Yes, built from source on glibc Linux: the Swift library, `wax-cli`, `wax-mcp`, the broker, the built-in embedders, and the Hermes provider. x86_64 is tested; aarch64 is not yet. No Linux binaries are published yet, and the `waxmcp` npm package installs only on Apple Silicon Macs. PDF ingest, `PhotoMemory` / `VideoMemory`, `wax-repo`, and the Metal engine are Apple-only. Build steps and the full matrix: [platform support](Resources/docs/platform-support.md).
 
 **I get "embedder unavailable" on hybrid search.**  
 Hybrid and vector need a local embedding model. Swift `Memory(at:)` loads a built-in embedder (e5 for new stores, MiniLM for MiniLM stores) on iOS 18 / macOS 15+ and Linux, or set `Memory.Config.embedding = .custom(...)`. Older OS: text-only or bring your own embedder. CLI/MCP fail loud; Swift reports the effective mode on `diagnostics`.

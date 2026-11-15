@@ -31,6 +31,8 @@ API reference also ships as DocC inside the package (`Sources/Wax/Wax.docc`).
 | Built-in MiniLM embeddings | iOS 18 / iPadOS 18 |
 | Foundation Models tools & session | iOS 26 / iPadOS 26 |
 
+macOS and Linux (the Swift library, `wax-cli` and `wax-mcp`, built from source on Linux) are covered in [Platform support](https://github.com/christopherkarani/Wax/blob/main/Resources/docs/platform-support.md).
+
 ## Public vs internal APIs
 
 Use **`import Wax`** with **`Memory`**, and experimental **`PhotoMemory` / `VideoMemory`** for media. Types like `MemoryOrchestrator`, `PhotoRAGOrchestrator`, and `VideoRAGOrchestrator` are package-internal; app targets cannot call them. Older pages under Orchestrator / WaxCore describe internals for contributors — not the app-facing surface.

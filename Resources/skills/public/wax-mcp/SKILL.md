@@ -37,6 +37,12 @@ Stage binaries once:
 npx -y waxmcp@latest install
 ```
 
+That works on Apple Silicon Macs only. On Linux, build `wax-cli` and
+`wax-mcp` from source, then stage them from the checkout with
+`node Resources/npm/waxmcp/bin/waxmcp.js install`, with `WAX_MCP_BIN` and
+`WAX_CLI_BIN` set to the built binaries; see
+`Resources/docs/platform-support.md`.
+
 Then wire the **host**, not a new prompt:
 
 | Host | What to do |

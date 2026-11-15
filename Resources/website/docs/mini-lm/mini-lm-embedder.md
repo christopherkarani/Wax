@@ -10,6 +10,8 @@ Set up, configure, and optimize the on-device MiniLM embedding provider.
 
 `MiniLMEmbedder` is an actor that implements both `EmbeddingProvider` and `BatchEmbeddingProvider`. It manages CoreML model loading, tokenization, and inference with automatic batch optimization.
 
+The Core ML sections on this page apply to Apple platforms. Linux has no Core ML: there the embedder runs the same bundled model on Wax's CPU interpreter, on the CPU only, and records the same embedding identity, so stores move between platforms.
+
 ## Setup
 
 Create an embedder with default settings:

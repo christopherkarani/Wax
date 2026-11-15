@@ -220,10 +220,14 @@ recovery: reinstall, restart the LaunchAgent or launcher, rerun the check.
 
 ## Platform support
 
-The bundled npm runtime ships `darwin-arm64` artifacts (Apple Silicon). Intel
-Mac builds are not packaged because MetalANNS Float16 requires Apple Silicon.
-The underlying server builds from source on macOS and Linux, including HTTP
-transport for gateway deployments.
+The bundled npm runtime ships `darwin-arm64` artifacts (Apple Silicon), and
+npm installs this package only there. Intel Mac builds are not packaged because
+MetalANNS Float16 requires Apple Silicon. No Linux binaries are published yet.
+On Linux, build `wax-cli` and `wax-mcp` from source (x86_64 is tested, aarch64
+is not yet) and run this launcher from the checkout with
+`node Resources/npm/waxmcp/bin/waxmcp.js install`, with `WAX_MCP_BIN` and
+`WAX_CLI_BIN` set to the built binaries. Steps and the feature
+matrix: [platform support](https://github.com/christopherkarani/Wax/blob/main/Resources/docs/platform-support.md).
 
 ## Local development
 

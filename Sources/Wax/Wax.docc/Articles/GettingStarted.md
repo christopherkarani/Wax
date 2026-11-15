@@ -27,6 +27,8 @@ dependencies: [
 
 Wax builds for iOS 17 / macOS 14 and later. Built-in MiniLM needs iOS 18 / macOS 15 (or Linux) and the default `MiniLMEmbeddings` trait. Foundation Models adapters need iOS 26 / macOS 26.
 
+On Linux (glibc, built from source), ``Memory`` and the built-in embedders work; ``PhotoMemory`` and ``VideoMemory`` are not available, and the embedders run on the CPU. See [Platform support](https://github.com/christopherkarani/Wax/blob/main/Resources/docs/platform-support.md) for the full matrix and build steps.
+
 > Note: Until the next tagged release that publishes the public Foundation Models adapters, `Config.embedding`, and `stats()`, paste samples should track `main`. Tag `0.1.24` still keeps Foundation Models types package-internal.
 
 ## Create a Memory Store
