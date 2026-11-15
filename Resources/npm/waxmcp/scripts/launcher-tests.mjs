@@ -119,7 +119,7 @@ test("install stages and idempotently upgrades the complete runtime", () => {
   }
 });
 
-test("raw launcher and staged HTTP launcher both default to MiniLM", () => {
+test("raw launcher and staged HTTP launcher both default to --embedder auto", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-embedder-default-test-"));
   try {
     const sourceDir = path.join(root, "source");

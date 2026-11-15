@@ -12,7 +12,7 @@ import Wax
 //   {"qid": "...", "ranked": ["doc-id", ...], "hits": [...], "ingest_ms": 0, "search_ms": 0, ...}
 //
 // Without `--rerank`, searches use `Memory`'s default reranking (the built-in cross-encoder on
-// hybrid and text searches). `--rerank none` turns it off; `--rerank minilm` reranks every
+// hybrid searches). `--rerank none` turns it off; `--rerank minilm` reranks every
 // search with the built-in cross-encoder and these settings: `--rerank-candidates N`,
 // `--rerank-fusion ce|rrf:<k>`, `--rerank-compute cpu|gpu|ane|all`.
 
