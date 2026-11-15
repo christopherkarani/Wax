@@ -133,9 +133,11 @@ package actor MemoryOrchestrator {
         automaticNewStoreProvider: BuiltInEmbeddingProvider? = nil,
         nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
-        // Prewarm tokenizer in parallel with Wax file operations
-        // This overlaps BPE loading (~9-13ms) with I/O-bound file operations
-        async let tokenizerPrewarm: Bool = { 
+        // Prewarm the tokenizer without waiting for it: only chunking and token
+        // budgets need it, and they wait for the same load. In a debug build the
+        // load is most of a broker's startup CPU, and a broker that waited for it
+        // missed its client's start deadline on a loaded runner.
+        Task {
             do {
                 _ = try await TokenCounter.preload()
             } catch {
@@ -145,8 +147,7 @@ package actor MemoryOrchestrator {
                     fallback: "cold start on first use"
                 )
             }
-            return true
-        }()
+        }
 
         if config.requireOnDeviceProviders, let localEmbedder = embedder {
             try ProviderValidation.validateOnDevice(
@@ -287,8 +288,6 @@ package actor MemoryOrchestrator {
             self.embedderLifecycle = .ready(attached: attached, degradedReason: degradedReason)
         }
 
-        // Wait for tokenizer prewarm to complete (should already be done by now)
-        _ = await tokenizerPrewarm
         if let enrichmentPipeline {
             let session = self.session
             await enrichmentPipeline.start { task in

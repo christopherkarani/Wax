@@ -392,6 +392,38 @@ import Testing
     }
 }
 
+/// A client gives a broker it launches 10s to answer. Loading the BPE tokenizer
+/// is most of a debug broker's startup CPU, and a write needs it only once it
+/// chunks text, so the broker must answer before the load ends. With the load
+/// held, a broker that waits for it never answers.
+@Suite struct DaemonStartupTests {
+    @Test(.timeLimit(.minutes(2)))
+    func daemonAnswersBeforeTheTokenizerFinishesLoading() async throws {
+        let fixture = try DaemonFixture()
+        defer { fixture.remove() }
+        let gate = fixture.root.appendingPathComponent("tokenizer-gate").path
+        let daemon = try fixture.launch(
+            arguments: ["--socket-path", fixture.socketPath],
+            environment: ["WAX_TEST_TOKENIZER_LOAD_GATE": gate]
+        )
+        defer { daemon.forceStop() }
+        try await fixture.waitForSocket(daemon)
+
+        let stats = try await SocketClient.roundTrip(
+            #"{"command":"stats","arguments":{}}"#,
+            path: fixture.socketPath
+        )
+        #expect(stats.contains(#""ok":true"#), "stats failed while the tokenizer loaded: \(stats)")
+
+        #expect(FileManager.default.createFile(atPath: gate, contents: nil))
+        let remembered = try await SocketClient.roundTrip(
+            #"{"command":"remember","arguments":{"content":"\#(fixture.token) after the tokenizer loaded"}}"#,
+            path: fixture.socketPath
+        )
+        #expect(remembered.contains(#""ok":true"#), "remember failed: \(remembered)")
+    }
+}
+
 private struct DaemonFixture {
     let root: URL
     let token = "sigterm-\(UUID().uuidString.prefix(8).lowercased())"
