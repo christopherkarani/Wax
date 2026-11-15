@@ -216,11 +216,16 @@ func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
     let server = UnixStatsResponder(listener: listener)
     server.start(holdFirstRequest: false)
     defer { server.stop() }
+    defer { server.reportRetries() }
 
-    let started = try await AgentBrokerClient.ensureAvailable(
-        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
-    )
-    #expect(started == false)
+    do {
+        let started = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        #expect(started == false, "stub log:\n\(server.logText())")
+    } catch {
+        Issue.record("ensureAvailable threw \(error)\nstub log:\n\(server.logText())")
+    }
 }
 
 @Test(.timeLimit(.minutes(2)))
@@ -288,11 +293,16 @@ func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     let server = UnixStatsResponder(listener: listener)
     server.start(holdFirstRequest: true)
     defer { server.stop() }
+    defer { server.reportRetries() }
 
-    let started = try await AgentBrokerClient.ensureAvailable(
-        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
-    )
-    #expect(started == false)
+    do {
+        let started = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        #expect(started == false, "stub log:\n\(server.logText())")
+    } catch {
+        Issue.record("ensureAvailable threw \(error)\nstub log:\n\(server.logText())")
+    }
 }
 
 @Test(.timeLimit(.minutes(2)))
@@ -407,9 +417,49 @@ private final class UnixStatsResponder: @unchecked Sendable {
     private var heldFDs: [Int32] = []
     private var holdFirstRequest = false
     private var heldFirstRequest = false
+    // Every connection event, so a failure shows which branch the stub took.
+    private let startedAt = DispatchTime.now().uptimeNanoseconds
+    private var events: [String] = []
+    private var eintrRetries = 0
 
     init(listener: Int32) {
         self.listener = listener
+    }
+
+    func logText() -> String {
+        lock.withLock { events.joined(separator: "\n") }
+    }
+
+    /// One line per run, so CI output shows whether EINTR occurs at all. With
+    /// WAX_TEST_REPORT_STUB_EINTR=1 a retry is also recorded as an issue.
+    func reportRetries() {
+        let (retries, count) = lock.withLock { (eintrRetries, events.count) }
+        print("ATTACH_STUB: eintr_retries=\(retries) events=\(count)")
+        if retries > 0, ProcessInfo.processInfo.environment["WAX_TEST_REPORT_STUB_EINTR"] == "1" {
+            Issue.record("stub retried EINTR \(retries) times\n\(logText())")
+        }
+    }
+
+    private func log(_ event: String) {
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+        lock.withLock { events.append(String(format: "%9.3f ms ", ms) + event) }
+    }
+
+    private func countRetry(_ event: String) {
+        lock.withLock { eintrRetries += 1 }
+        log(event)
+    }
+
+    /// The socket's inode: an fd closed or reused under the stub reads EBADF or a new inode.
+    private func identity(_ fd: Int32) -> String {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return "fstat errno=\(errno)" }
+        return "ino=\(info.st_ino)"
+    }
+
+    private func closeConnection(_ fd: Int32, reason: String, errno code: Int32 = 0) {
+        log("close fd=\(fd) \(identity(fd)) reason=\(reason) errno=\(code)")
+        close(fd)
     }
 
     func start(holdFirstRequest: Bool) {
@@ -426,14 +476,25 @@ private final class UnixStatsResponder: @unchecked Sendable {
                 let pollResult = poll(&descriptor, 1, 50)
                 if pollResult == 0 { continue }
                 if pollResult < 0 {
-                    if errno == EINTR { continue }
+                    let code = errno
+                    if code == EINTR {
+                        self.countRetry("listener poll EINTR")
+                        continue
+                    }
+                    self.log("listener poll failed errno=\(code); responder exits")
                     return
                 }
                 let client = accept(self.listener, nil, nil)
                 if client < 0 {
-                    if errno == EINTR { continue }
+                    let code = errno
+                    if code == EINTR {
+                        self.countRetry("accept EINTR")
+                        continue
+                    }
+                    self.log("accept failed errno=\(code); responder exits")
                     return
                 }
+                self.log("accept fd=\(client) \(self.identity(client))")
                 self.handle(client: client)
             }
         }
@@ -447,7 +508,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
         heldFDs.removeAll()
         lock.unlock()
         for fd in held {
-            close(fd)
+            closeConnection(fd, reason: "stop (held)")
         }
     }
 
@@ -463,16 +524,33 @@ private final class UnixStatsResponder: @unchecked Sendable {
         // the stub hang up first, so the ping looked unanswered. Liveness probes
         // close right after connecting and end this wait at once.
         var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
-        let pollResult = poll(&descriptor, 1, 30_000)
+        var pollResult: Int32
+        repeat {
+            pollResult = poll(&descriptor, 1, 30_000)
+            if pollResult < 0, errno == EINTR {
+                countRetry("poll EINTR fd=\(client)")
+                continue
+            }
+            break
+        } while true
         if pollResult <= 0 {
-            close(client)
+            closeConnection(client, reason: pollResult == 0 ? "poll timeout" : "poll failed", errno: errno)
             return
         }
+        log("poll fd=\(client) revents=0x\(String(descriptor.revents, radix: 16))")
 
         var chunk = [UInt8](repeating: 0, count: 4096)
-        let count = recv(client, &chunk, chunk.count, 0)
+        var count: Int
+        repeat {
+            count = recv(client, &chunk, chunk.count, 0)
+            if count < 0, errno == EINTR {
+                countRetry("recv EINTR fd=\(client)")
+                continue
+            }
+            break
+        } while true
         if count <= 0 {
-            close(client)
+            closeConnection(client, reason: count == 0 ? "recv EOF" : "recv failed", errno: count == 0 ? 0 : errno)
             return
         }
 
@@ -487,21 +565,23 @@ private final class UnixStatsResponder: @unchecked Sendable {
             return false
         }()
         if shouldHold {
+            log("held fd=\(client) bytes=\(count)")
             return
         }
 
         let response = AgentBrokerResponse.success(id: "__ping__", payload: .object([:]))
         guard let payload = try? JSONEncoder().encode(response) else {
-            close(client)
+            closeConnection(client, reason: "encode failed")
             return
         }
         var data = payload
         data.append(0x0A)
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            _ = write(client, base, data.count)
+        let written = data.withUnsafeBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return -1 }
+            return write(client, base, data.count)
         }
-        close(client)
+        log("answered fd=\(client) request_bytes=\(count) written=\(written)/\(data.count)")
+        closeConnection(client, reason: "answered", errno: written < 0 ? errno : 0)
     }
 }
 
