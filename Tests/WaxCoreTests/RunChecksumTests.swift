@@ -271,13 +271,17 @@ private let checksumSchemes: [UInt32?] = [nil, RunChecksum.treeChunkBytes]
 /// runs and the tree checksum of new ones; damage to its header is a checksum mismatch, not
 /// a decode error.
 @Test(arguments: checksumSchemes)
-func aLargeVectorRunVerifiesUnderEitherChecksumScheme(chunkBytes: UInt32?) throws {
+func aLargeVectorRunVerifiesUnderEitherChecksumScheme(chunkBytes: UInt32?) async throws {
     let dimension = 384
     let rows = 2 * Int(RunChecksum.treeChunkBytes) / (dimension * 4) + 7
-    var vectors: [Float] = []
-    vectors.reserveCapacity(rows * dimension)
-    for row in 0..<rows {
-        vectors.append(contentsOf: largeVector(row, dimension: dimension))
+    // Seconds of debug-build CPU without a suspension point: build it off the pool.
+    let vectors = await BlockingWork.run { () -> [Float] in
+        var vectors: [Float] = []
+        vectors.reserveCapacity(rows * dimension)
+        for row in 0..<rows {
+            vectors.append(contentsOf: largeVector(row, dimension: dimension))
+        }
+        return vectors
     }
     let run = VecRun(
         dimension: UInt32(dimension),

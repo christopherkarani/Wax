@@ -31,6 +31,7 @@ extension MemoryOrchestrator {
                             continuation.resume(throwing: CancellationError())
                         } else {
                             readinessWaiters[waiterID] = continuation
+                            readinessWaitCount += 1
                         }
                     }
                 } onCancel: {
