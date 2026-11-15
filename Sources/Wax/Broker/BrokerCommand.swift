@@ -84,7 +84,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var limit: Int
         package var searchTopK: Int
         package var identity: RecallIdentity
-        package var mode: SearchMode?
+        package var mode: SearchModeRequest?
         package var filters: ParsedSearchFilters
         package var explicitProject: String?
         package var explicitRepo: String?
@@ -101,14 +101,14 @@ package enum BrokerCommand: Sendable, Equatable {
 
     package struct Search: Sendable, Equatable {
         package var query: String
-        package var mode: SearchMode
+        package var mode: SearchModeRequest
         package var topK: Int
         package var filters: ParsedSearchFilters
     }
 
     package struct MemorySearch: Sendable, Equatable {
         package var query: String
-        package var mode: SearchMode
+        package var mode: SearchModeRequest
         package var topK: Int
         /// Wire `session_id` before handler resolution. Omitted id may still mean
         /// the one live session; do not treat this pair as ``MemorySearchIdentity``.
@@ -235,7 +235,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var sessionID: UUID?
         package var tokenBudget: Int
         package var maxItems: Int
-        package var mode: SearchMode
+        package var mode: SearchModeRequest
     }
 
     package struct MarkdownExport: Sendable, Equatable {
@@ -290,7 +290,7 @@ package enum BrokerCommand: Sendable, Equatable {
         package var query: String
         package var recursive: Bool
         package var rebuild: Bool
-        package var mode: SearchMode
+        package var mode: SearchModeRequest
         package var topK: Int
         package var expand: Bool = false
         package var sessionID: UUID? = nil

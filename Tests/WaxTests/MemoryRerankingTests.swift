@@ -40,9 +40,8 @@ private func withTextStore<T>(
     var config = Memory.Config.default
     config.enableVectorSearch = false
     config.enableStructuredMemory = false
-    if let reranking {
-        config.reranking = reranking
-    }
+    // `nil` is the plain retrieval order, not the automatic default.
+    config.reranking = reranking ?? .disabled
     let memory = try await Memory(at: url, config: config)
     do {
         for (index, text) in documents.enumerated() {
@@ -73,13 +72,6 @@ private func docIDs(_ results: Memory.Results) -> [String] {
 }
 
 @Suite struct MemoryRerankingTests {
-    @Test func rerankingIsDisabledByDefault() {
-        guard case .disabled = Memory.Config.default.reranking else {
-            Issue.record("Memory.Config.default.reranking should be .disabled")
-            return
-        }
-    }
-
     @Test func disabledRerankingLeavesResultsUnchanged() async throws {
         let baseline = try await withTextStore(reranking: nil, documents: appleDocuments) {
             try await $0.search("apple", options: textOnly)

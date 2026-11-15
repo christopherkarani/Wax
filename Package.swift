@@ -110,7 +110,7 @@ let package = Package(
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
     ],
     traits: [
-        .default(enabledTraits: ["MiniLMEmbeddings", "E5Embeddings"]),
+        .default(enabledTraits: ["MiniLMEmbeddings", "E5Embeddings", "MiniLMReranker"]),
         .init(
             name: "MiniLMEmbeddings",
             description: "Includes the built-in MiniLM embedding provider",

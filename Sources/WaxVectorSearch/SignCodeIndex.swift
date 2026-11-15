@@ -6,7 +6,9 @@ import WaxVectorSearchC
 /// rescore.
 ///
 /// Each row is kept as its sign bits (`dimensions / 8` bytes, 1/32 of the Float32 row)
-/// plus its set-bit count and mean absolute value. A search quantizes the query to 4-bit
+/// plus its set-bit count and mean absolute value. The sign bits are stored in 16-row
+/// blocks, byte-interleaved (see `WAX_SIGN_CODE_BLOCK_ROWS`), so the scan scores 16 rows
+/// per table lookup. A search quantizes the query to 4-bit
 /// levels and estimates every row's dot product as `meanAbs * (query · sign(row))`, then
 /// keeps the rows with the largest estimates. Callers rescore those rows exactly, so the
 /// returned scores and their order are exact; the approximation is only which rows reach
@@ -20,10 +22,16 @@ package struct SignCodeIndex: Sendable {
     package static let candidatesPerResult = 16
     private static let minRowsPerSlice = 25_000
     private static let maxSlices = 4
+    private static let blockRows = Int(WAX_SIGN_CODE_BLOCK_ROWS)
+    /// Slice boundaries fall on whole scan groups (four blocks).
+    private static let sliceAlignment = 64
 
     package let dimensions: Int
     private let words: Int
-    private var codes: [UInt64] = []
+    /// Sign-code bytes per row.
+    private var bytes: Int { words * 8 }
+    /// Blocked sign codes, whole blocks of `blockRows` rows (`bytes * blockRows` each).
+    private var blocked: [UInt8] = []
     private var popcounts: [UInt32] = []
     private var meanAbs: [Float] = []
 
@@ -53,7 +61,8 @@ package struct SignCodeIndex: Sendable {
         let newRows = rows.count / dimensions
         guard newRows > 0 else { return }
         let start = count
-        codes.append(contentsOf: repeatElement(0, count: newRows * words))
+        let neededBytes = Self.blockCount(rows: start + newRows) * Self.blockRows * bytes
+        blocked.append(contentsOf: repeatElement(0, count: neededBytes - blocked.count))
         popcounts.append(contentsOf: repeatElement(0, count: newRows))
         meanAbs.append(contentsOf: repeatElement(0, count: newRows))
         encode(rows, intoRowsStartingAt: start, rowCount: newRows)
@@ -71,15 +80,27 @@ package struct SignCodeIndex: Sendable {
         precondition(row >= 0 && row < count, "row out of range")
         let last = count - 1
         if row != last {
-            for word in 0..<words {
-                codes[row * words + word] = codes[last * words + word]
+            let words = Int64(words)
+            blocked.withUnsafeMutableBufferPointer { blockedBuffer in
+                wax_sign_codes_copy_blocked_row(blockedBuffer.baseAddress!, words, Int64(last), Int64(row))
             }
             popcounts[row] = popcounts[last]
             meanAbs[row] = meanAbs[last]
         }
-        codes.removeLast(words)
         popcounts.removeLast()
         meanAbs.removeLast()
+        let keptBytes = Self.blockCount(rows: last) * Self.blockRows * bytes
+        if keptBytes < blocked.count {
+            blocked.removeLast(blocked.count - keptBytes)
+        } else {
+            // The vacated slot stays inside a kept block; zero it so storage is a function
+            // of the rows alone.
+            let words = Int64(words)
+            let zero = [UInt64](repeating: 0, count: Int(words))
+            blocked.withUnsafeMutableBufferPointer { blockedBuffer in
+                wax_sign_codes_store_blocked(zero, 1, words, blockedBuffer.baseAddress!, Int64(last))
+            }
+        }
     }
 
     /// Up to `limit` rows with the largest estimated dot product with `query`, in no
@@ -97,25 +118,28 @@ package struct SignCodeIndex: Sendable {
         var b: Float = 0
         var c: Float = 0
         wax_sign_codes_query(query, Int64(dimensions), Int64(words), &planes, &a, &b, &c)
+        var tables = [UInt8](repeating: 0, count: words * 256)
+        wax_sign_codes_query_tables(planes, Int64(words), &tables)
 
         let slices = max(1, min(requestedSlices ?? Self.sliceCount(rowCount: rowCount), rowCount))
-        let sliceRows = (rowCount + slices - 1) / slices
+        let alignment = Self.sliceAlignment
+        let sliceRows = ((rowCount + slices - 1) / slices + alignment - 1) / alignment * alignment
         var heapScores = [Float](repeating: 0, count: cap * slices)
         var heapRows = [UInt32](repeating: 0, count: cap * slices)
         var kept = [Int](repeating: 0, count: slices)
 
-        codes.withUnsafeBufferPointer { codeBuffer in
+        blocked.withUnsafeBufferPointer { blockedBuffer in
             popcounts.withUnsafeBufferPointer { popcountBuffer in
                 meanAbs.withUnsafeBufferPointer { meanAbsBuffer in
-                    planes.withUnsafeBufferPointer { planeBuffer in
+                    tables.withUnsafeBufferPointer { tableBuffer in
                         heapScores.withUnsafeMutableBufferPointer { scoreBuffer in
                             heapRows.withUnsafeMutableBufferPointer { rowBuffer in
                                 kept.withUnsafeMutableBufferPointer { keptBuffer in
                                     let scan = SliceScan(
-                                        codes: codeBuffer.baseAddress!,
+                                        blocked: blockedBuffer.baseAddress!,
                                         popcounts: popcountBuffer.baseAddress!,
                                         meanAbs: meanAbsBuffer.baseAddress!,
-                                        planes: planeBuffer.baseAddress!,
+                                        tables: tableBuffer.baseAddress!,
                                         words: words,
                                         rowCount: rowCount,
                                         sliceRows: sliceRows,
@@ -160,12 +184,17 @@ package struct SignCodeIndex: Sendable {
         return topIndices.prefix(selected).map { Int(mergedRows[Int($0)]) }
     }
 
+    private static func blockCount(rows: Int) -> Int {
+        (rows + blockRows - 1) / blockRows
+    }
+
     private static func sliceCount(rowCount: Int) -> Int {
         let cores = ProcessInfo.processInfo.activeProcessorCount
         return max(1, min(maxSlices, cores, rowCount / minRowsPerSlice))
     }
 
     private mutating func encode(_ rows: [Float], intoRowsStartingAt start: Int, rowCount: Int) {
+        var codes = [UInt64](repeating: 0, count: rowCount * words)
         rows.withUnsafeBufferPointer { rowBuffer in
             codes.withUnsafeMutableBufferPointer { codeBuffer in
                 popcounts.withUnsafeMutableBufferPointer { popcountBuffer in
@@ -175,13 +204,16 @@ package struct SignCodeIndex: Sendable {
                             Int64(rowCount),
                             Int64(dimensions),
                             Int64(words),
-                            codeBuffer.baseAddress! + start * words,
+                            codeBuffer.baseAddress!,
                             popcountBuffer.baseAddress! + start,
                             meanAbsBuffer.baseAddress! + start
                         )
                     }
                 }
             }
+        }
+        blocked.withUnsafeMutableBufferPointer { blockedBuffer in
+            wax_sign_codes_store_blocked(codes, Int64(rowCount), Int64(words), blockedBuffer.baseAddress!, Int64(start))
         }
     }
 }
@@ -190,12 +222,12 @@ package struct SignCodeIndex: Sendable {
 ///
 /// `@unchecked Sendable`: the pointers reference buffers the caller keeps alive and
 /// unmodified for the whole join; each worker writes only its own heap region and
-/// `kept` slot.
+/// `kept` slot. Slices start on block boundaries (`sliceRows` is a multiple of 64).
 private final class SliceScan: @unchecked Sendable {
-    let codes: UnsafePointer<UInt64>
+    let blocked: UnsafePointer<UInt8>
     let popcounts: UnsafePointer<UInt32>
     let meanAbs: UnsafePointer<Float>
-    let planes: UnsafePointer<UInt64>
+    let tables: UnsafePointer<UInt8>
     let words: Int
     let rowCount: Int
     let sliceRows: Int
@@ -206,10 +238,10 @@ private final class SliceScan: @unchecked Sendable {
     let kept: UnsafeMutablePointer<Int>
 
     init(
-        codes: UnsafePointer<UInt64>,
+        blocked: UnsafePointer<UInt8>,
         popcounts: UnsafePointer<UInt32>,
         meanAbs: UnsafePointer<Float>,
-        planes: UnsafePointer<UInt64>,
+        tables: UnsafePointer<UInt8>,
         words: Int,
         rowCount: Int,
         sliceRows: Int,
@@ -219,10 +251,10 @@ private final class SliceScan: @unchecked Sendable {
         heapRows: UnsafeMutablePointer<UInt32>,
         kept: UnsafeMutablePointer<Int>
     ) {
-        self.codes = codes
+        self.blocked = blocked
         self.popcounts = popcounts
         self.meanAbs = meanAbs
-        self.planes = planes
+        self.tables = tables
         self.words = words
         self.rowCount = rowCount
         self.sliceRows = sliceRows
@@ -242,13 +274,13 @@ private final class SliceScan: @unchecked Sendable {
         }
         let scores = heapScores + slice * cap
         let rows = heapRows + slice * cap
-        let count = Int(wax_sign_codes_scan_top(
-            codes + first * words,
+        let count = Int(wax_sign_codes_scan_top_blocked(
+            blocked + first * words * 8,
             popcounts + first,
             meanAbs + first,
             Int64(end - first),
             Int64(words),
-            planes,
+            tables,
             coefficients.a,
             coefficients.b,
             coefficients.c,

@@ -199,7 +199,8 @@ func reopenCosineStoreWithUndeclaredSimilarityKeepsWorking() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func dotProductStoreReopensWhileProviderLoadsThenAttaches() async throws {
     try await TempFiles.withTempFile { url in
         try await seed(url, with: KeyedEmbedder(similarity: .dotProduct))
@@ -220,7 +221,8 @@ func dotProductStoreReopensWhileProviderLoadsThenAttaches() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func lateAttachWithDifferentSimilarityMarksEmbedderUnavailable() async throws {
     try await TempFiles.withTempFile { url in
         try await seed(url, with: KeyedEmbedder(similarity: .cosine))
@@ -247,7 +249,8 @@ func lateAttachWithDifferentSimilarityMarksEmbedderUnavailable() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func lateAttachOnEmptyStoreUsesProviderSimilarity() async throws {
     try await TempFiles.withTempFile { url in
         let gate = Gate()
@@ -275,25 +278,10 @@ func lateAttachOnEmptyStoreUsesProviderSimilarity() async throws {
 
 // MARK: - Helpers
 
-private func waitForEmbedderSettled(
-    _ memory: Memory,
-    timeout: Duration = .seconds(10)
-) async throws -> EmbeddingStatus {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        let status = await memory.stats().embeddingStatus
-        switch status {
-        case .active, .degraded, .unavailable:
-            return status
-        case .loading, .disabled:
-            try await Task.sleep(for: .milliseconds(20))
-        }
-    }
-    throw SimilarityTestError.timedOut
-}
-
-private enum SimilarityTestError: Error {
-    case timedOut
+/// Waits on the store's readiness continuation, not a wall clock: in the full parallel run
+/// the attach can start tens of seconds after the provider returns.
+private func waitForEmbedderSettled(_ memory: Memory) async throws -> EmbeddingStatus {
+    try await memory.embeddingStatusAfterPendingLoad()
 }
 
 private actor Gate {

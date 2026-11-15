@@ -182,6 +182,53 @@ func signCodeIndexEditsMatchFreshEncoding() {
     #expect(index.candidates(for: replacement, limit: 1) == [42])
 }
 
+@Test("Sign-code index edits across 16-row block boundaries match a fresh encoding")
+func signCodeIndexEditsAcrossBlockBoundaries() {
+    // Codes are stored in 16-row blocks and scanned in 64-row groups: grow and shrink
+    // through partial blocks and groups, checking every row's estimate rank each step.
+    let dimensions = 384
+    let source = embeddingLikeRows(count: 140, dimensions: dimensions, unitNorm: true, seed: 0xB10C)
+    let probes = queries(near: source, count: 3, seed: 0xB10D)
+    var rows: [[Float]] = []
+    var index = SignCodeIndex(dimensions: dimensions)
+
+    func expectMatchesFresh(_ step: String) {
+        let fresh = SignCodeIndex(dimensions: dimensions, rows: rows.flatMap { $0 })
+        #expect(index.count == rows.count, "\(step)")
+        for query in probes {
+            for limit in [1, 5, rows.count] where limit <= rows.count {
+                #expect(
+                    index.candidates(for: query, limit: limit) == fresh.candidates(for: query, limit: limit),
+                    "\(step) limit \(limit)"
+                )
+            }
+        }
+    }
+
+    var next = 0
+    for batch in [1, 14, 1, 1, 46, 1, 1, 63, 2] {
+        index.append(rows: source[next..<(next + batch)].flatMap { $0 })
+        rows.append(contentsOf: source[next..<(next + batch)])
+        next += batch
+        expectMatchesFresh("append to \(rows.count)")
+    }
+    // Swap-removes from the front, middle and end until one row is left.
+    var step = 0
+    while rows.count > 1 {
+        let row = [0, rows.count / 2, rows.count - 1][step % 3]
+        index.removeSwappingLast(row: row)
+        rows[row] = rows[rows.count - 1]
+        rows.removeLast()
+        step += 1
+        if [64, 63, 17, 16, 15, 1].contains(rows.count) || step % 9 == 0 {
+            expectMatchesFresh("remove to \(rows.count)")
+        }
+    }
+    index.append(rows: source[0..<17].flatMap { $0 })
+    rows.append(contentsOf: source[0..<17])
+    expectMatchesFresh("regrow to \(rows.count)")
+}
+
 private struct SliceAgreement: Sendable {
     var limit = 0
     var singleCounts: [Int] = []
@@ -295,7 +342,7 @@ private func expectRescoredHits(
 )
 func metalANNSQuantizedScanRescoresExactly(metric: VectorMetric) async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 6_000, dimensions: dimensions, unitNorm: metric == .cosine, seed: 0xA5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 6_000, dimensions: dimensions, unitNorm: metric == .cosine, seed: 0xA5) }
     let (engine, exact, frameIds) = try await makeEngines(
         metric: metric, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: rows.count
     )
@@ -317,7 +364,7 @@ func metalANNSQuantizedScanRescoresExactly(metric: VectorMetric) async throws {
 )
 func metalANNSExactScanBelowQuantizedThreshold() async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 2_000, dimensions: dimensions, unitNorm: true, seed: 0xB5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: dimensions, unitNorm: true, seed: 0xB5) }
     let (engine, exact, _) = try await makeEngines(
         metric: .cosine, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: rows.count + 1
     )
@@ -335,12 +382,12 @@ func metalANNSExactScanBelowQuantizedThreshold() async throws {
     .enabled(if: MetalANNSVectorEngine.isAvailable)
 )
 func metalANNSExactScanWhereSignCodesDoNotApply() async throws {
-    let wide = embeddingLikeRows(count: 2_000, dimensions: 128, unitNorm: true, seed: 0xC5)
+    let wide = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: 128, unitNorm: true, seed: 0xC5) }
     let l2 = try await makeEngines(metric: .l2, rows: wide, dimensions: 128, quantizedScanMinVectorCount: 1)
     _ = try await l2.engine.search(vector: wide[3], topK: 10)
     #expect(await l2.engine.quantizedScanCount == 0)
 
-    let narrow = embeddingLikeRows(count: 2_000, dimensions: 64, unitNorm: true, seed: 0xC6)
+    let narrow = await offCooperativePool { embeddingLikeRows(count: 2_000, dimensions: 64, unitNorm: true, seed: 0xC6) }
     let small = try await makeEngines(metric: .cosine, rows: narrow, dimensions: 64, quantizedScanMinVectorCount: 1)
     _ = try await small.engine.search(vector: narrow[3], topK: 10)
     #expect(await small.engine.quantizedScanCount == 0)
@@ -360,7 +407,7 @@ func metalANNSExactScanWhereSignCodesDoNotApply() async throws {
 )
 func metalANNSQuantizedScanTracksMutations() async throws {
     let dimensions = 128
-    let rows = embeddingLikeRows(count: 4_000, dimensions: dimensions, unitNorm: true, seed: 0xE5)
+    let rows = await offCooperativePool { embeddingLikeRows(count: 4_000, dimensions: dimensions, unitNorm: true, seed: 0xE5) }
     let (engine, exact, frameIds) = try await makeEngines(
         metric: .cosine, rows: rows, dimensions: dimensions, quantizedScanMinVectorCount: 1_000
     )

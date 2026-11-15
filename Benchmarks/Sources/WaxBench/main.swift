@@ -11,8 +11,10 @@ import Wax
 // `Memory` API, runs the searches, and writes one line per query with the ranked doc ids:
 //   {"qid": "...", "ranked": ["doc-id", ...], "hits": [...], "ingest_ms": 0, "search_ms": 0, ...}
 //
-// `--rerank minilm` reranks each search's top candidates with the built-in cross-encoder
-// (`--rerank-candidates N`, `--rerank-fusion ce|rrf:<k>`, `--rerank-compute cpu|gpu|ane|all`).
+// Without `--rerank`, searches use `Memory`'s default reranking (the built-in cross-encoder on
+// hybrid searches). `--rerank none` turns it off; `--rerank minilm` reranks every
+// search with the built-in cross-encoder and these settings: `--rerank-candidates N`,
+// `--rerank-fusion ce|rrf:<k>`, `--rerank-compute cpu|gpu|ane|all`.
 
 struct Job: Decodable {
     struct Doc: Decodable {
@@ -80,6 +82,8 @@ struct Options {
     var concurrency = 4
     /// Set by `--rerank minilm`: rerank with the built-in cross-encoder.
     var reranker: BuiltInReranker?
+    /// Set by `--rerank none`: no reranking. Unset keeps `Memory`'s default.
+    var rerankDisabled = false
     var rerankOptions = RerankingOptions.default
     var rerankComputeUnit: BuiltInEmbeddingComputeUnit = .cpuOnly
     var storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("wax-bench").path
@@ -111,8 +115,12 @@ struct Options {
                 options.embedder = provider
             case "--rerank":
                 switch try value(flag) {
-                case "minilm": options.reranker = .msMarcoMiniLM
-                case "none": options.reranker = nil
+                case "minilm":
+                    options.reranker = .msMarcoMiniLM
+                    options.rerankDisabled = false
+                case "none":
+                    options.reranker = nil
+                    options.rerankDisabled = true
                 case let other: throw BenchError.usage("rerank must be minilm or none, got \(other)")
                 }
             case "--rerank-candidates":
@@ -200,6 +208,8 @@ func runJob(
     config.enableVectorSearch = options.mode != .textOnly
     if let reranker {
         config.reranking = .custom(reranker, options.rerankOptions)
+    } else if options.rerankDisabled {
+        config.reranking = .disabled
     }
     let memory = try await Memory(at: storeURL, config: config)
 

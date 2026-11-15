@@ -6,7 +6,7 @@ Native Hermes memory provider backed by [Wax](https://github.com/christopherkara
 
 ```bash
 # 1. Start Wax MCP with vector search
-npx waxmcp --embedder minilm --transport http
+npx waxmcp --transport http
 
 # 2. Install the plugin into the active Hermes profile
 npx waxmcp install-hermes-plugin

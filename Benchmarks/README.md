@@ -84,8 +84,10 @@ Contriever was trained for dot product, so pass `--embedder-similarity dot` (def
 `cosine`): Wax then keeps the server's unnormalized vectors and ranks by inner product, as
 the bare baseline does. It applies to `--embedder http://...` only.
 
-`--rerank minilm` turns on the built-in cross-encoder reranker (`MiniLMReranker` trait,
-enabled in this package). `--rerank-candidates N` (default 20) sets how many candidates it
+Without `--rerank`, `retrieve` uses `Memory`'s default reranking: the built-in cross-encoder
+(`MiniLMReranker` trait) reranks the top 20 candidates of hybrid searches, fused by
+reciprocal rank (k = 10). `--rerank none` turns it off. `--rerank minilm` reranks every search
+with the settings below. `--rerank-candidates N` (default 20) sets how many candidates it
 scores, `--rerank-fusion rrf:<k> | ce` (default `rrf:10`) how its order is fused with the
 retrieval order, and `--rerank-compute cpu | gpu | ane | all` (default `cpu`) where CoreML
 runs. Reranked hits carry a `rerank: score S, retrieval rank R` explanation in the output.

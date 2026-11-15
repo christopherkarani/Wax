@@ -18,7 +18,8 @@ public actor Memory {
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
         /// Which reranker, if any, reorders each search's top candidates. Defaults to
-        /// ``RerankingSource/disabled``.
+        /// ``RerankingSource/automatic``: hybrid searches are reranked by the built-in
+        /// cross-encoder when the build includes it.
         public var reranking: RerankingSource
 
         public init(
@@ -31,7 +32,7 @@ public actor Memory {
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
             embedding: EmbeddingSource = .automatic,
-            reranking: RerankingSource = .disabled
+            reranking: RerankingSource = .automatic
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
@@ -98,7 +99,16 @@ public actor Memory {
         public var topK: Int
         public var includeSurrogates: Bool
         public var timeRange: TimeRange?
-        public var mode: RetrievalMode
+        /// Retrieval mode. Left unset, search is hybrid with the store's default text
+        /// weight: 0.4 when the store's embedder is e5-small-v2, 0.5 otherwise. Reading an
+        /// unset mode returns `.hybrid()`. A mode passed to the initializer or assigned here,
+        /// `.hybrid()` included, is used exactly as given.
+        public var mode: RetrievalMode {
+            get { chosenMode ?? .hybrid() }
+            set { chosenMode = newValue }
+        }
+        /// The caller's mode; `nil` leaves the hybrid text weight to the store.
+        private var chosenMode: RetrievalMode?
         /// Token budget for the returned context. `nil` uses the store default
         /// (1,500 tokens). Clamped to ``maxContextTokensRange``. Raise it when a
         /// large ``topK`` returns fewer items than requested.
@@ -115,19 +125,24 @@ public actor Memory {
             topK: Int = 10,
             includeSurrogates: Bool = false,
             timeRange: TimeRange? = nil,
-            mode: RetrievalMode = .hybrid(),
+            mode: RetrievalMode? = nil,
             maxContextTokens: Int? = nil,
             inferTimeRange: Bool = true
         ) {
             self.topK = topK
             self.includeSurrogates = includeSurrogates
             self.timeRange = timeRange
-            self.mode = mode
+            self.chosenMode = mode
             self.maxContextTokens = maxContextTokens
             self.inferTimeRange = inferTimeRange
         }
 
         public static let `default` = SearchOptions()
+
+        /// The mode a store resolves: unset is hybrid at the store's default weight.
+        package var modeRequest: SearchModeRequest {
+            chosenMode.map(SearchModeRequest.init) ?? .hybrid(alpha: nil)
+        }
     }
 
     public typealias Results = RAGContext
@@ -279,7 +294,7 @@ public actor Memory {
         }
         let execution = try await orchestrator.recallExecution(
             query: query,
-            mode: options.mode,
+            mode: options.modeRequest,
             frameFilter: frameFilter,
             timeRange: mappedTimeRange,
             topK: options.topK,
@@ -415,6 +430,19 @@ public actor Memory {
             framesWithoutVectors: runtime.framesWithoutVectors,
             walReplayTruncationCount: runtime.wal.replayTruncationCount
         )
+    }
+
+    /// Waits for an automatic embedder load in flight to attach or fail, then returns the
+    /// embedding status. Returns at once when no load is in flight.
+    package func embeddingStatusAfterPendingLoad() async throws -> EmbeddingStatus {
+        do {
+            try await orchestrator.waitUntilReadyForRemember()
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            // A failed or mismatched load is reported by the status, not as an error.
+        }
+        return await orchestrator.runtimeStats().embeddingStatus
     }
 
     package func setSearchSnapshotHoldForTesting(_ duration: Duration?) async {

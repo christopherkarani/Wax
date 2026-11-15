@@ -67,34 +67,43 @@ import WaxCore
 /// The bounded selection must return exactly what a stable full sort followed by a prefix
 /// returns, including frame order among equal timestamps.
 @Test(arguments: [TimelineQuery.Order.chronological, .reverseChronological])
-func timelineMatchesStableSortReference(order: TimelineQuery.Order) {
-    var generator = SplitMix64(seed: 0x7157_1A1E)
-    var frames = makeTestFrames(count: 300)
-    for index in frames.indices {
-        // Few distinct timestamps, so most frames tie with others.
-        frames[index].timestamp = 1_000_000 + Int64(generator.next() % 40) * 1_000
-        if generator.next() % 7 == 0 { frames[index].status = .deleted }
-        if generator.next() % 9 == 0 { frames[index].supersededBy = UInt64(index + 1) }
-    }
-    let windows: [(after: Int64?, before: Int64?)] = [(nil, nil), (1_005_000, nil), (nil, 1_030_000), (1_010_000, 1_020_000)]
-    for window in windows {
-        for limit in [0, 1, 5, 17, 299, 300, 1_000] {
-            for includeDeleted in [false, true] {
-                for includeSuperseded in [false, true] {
-                    let query = TimelineQuery(
-                        limit: limit,
-                        order: order,
-                        after: window.after,
-                        before: window.before,
-                        includeDeleted: includeDeleted,
-                        includeSuperseded: includeSuperseded
-                    )
-                    let expected = referenceTimeline(frames: frames, query: query).map(\.id)
-                    #expect(TimelineQuery.filter(frames: frames, query: query).map(\.id) == expected)
+func timelineMatchesStableSortReference(order: TimelineQuery.Order) async {
+    // 224 queries over 300 frames is seconds of debug-build CPU without a suspension
+    // point, so the comparison runs off the cooperative pool and returns its mismatches.
+    let mismatches = await BlockingWork.run { () -> [String] in
+        var generator = SplitMix64(seed: 0x7157_1A1E)
+        var frames = makeTestFrames(count: 300)
+        for index in frames.indices {
+            // Few distinct timestamps, so most frames tie with others.
+            frames[index].timestamp = 1_000_000 + Int64(generator.next() % 40) * 1_000
+            if generator.next() % 7 == 0 { frames[index].status = .deleted }
+            if generator.next() % 9 == 0 { frames[index].supersededBy = UInt64(index + 1) }
+        }
+        let windows: [(after: Int64?, before: Int64?)] = [(nil, nil), (1_005_000, nil), (nil, 1_030_000), (1_010_000, 1_020_000)]
+        var mismatches: [String] = []
+        for window in windows {
+            for limit in [0, 1, 5, 17, 299, 300, 1_000] {
+                for includeDeleted in [false, true] {
+                    for includeSuperseded in [false, true] {
+                        let query = TimelineQuery(
+                            limit: limit,
+                            order: order,
+                            after: window.after,
+                            before: window.before,
+                            includeDeleted: includeDeleted,
+                            includeSuperseded: includeSuperseded
+                        )
+                        let expected = referenceTimeline(frames: frames, query: query).map(\.id)
+                        if TimelineQuery.filter(frames: frames, query: query).map(\.id) != expected {
+                            mismatches.append("\(query)")
+                        }
+                    }
                 }
             }
         }
+        return mismatches
     }
+    #expect(mismatches.isEmpty, "queries whose result differs from the stable sort: \(mismatches.prefix(5))")
 }
 
 /// The filter-then-stable-sort implementation the bounded selection replaced.

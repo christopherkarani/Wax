@@ -44,6 +44,7 @@ package struct FastRAGContextBuilder: Sendable {
         // be displaced by a recently/frequently used candidate just outside the
         // normal context window. The bound keeps enabled-mode work predictable.
         let accessEnabled = accessStatsManager != nil
+        let reranking = reranking.flatMap { $0.applies(to: clamped.searchMode) ? $0 : nil }
         let searchTopK = AccessRankingWindow.candidateCount(
             requestedTopK: clamped.searchTopK,
             accessEnabled: accessEnabled,
@@ -400,14 +401,13 @@ package struct FastRAGContextBuilder: Sendable {
 
     static func shouldUseFullFrameForSnippet(preview: String, intent: QueryIntent, analyzer: QueryAnalyzer) -> Bool {
         if preview.isEmpty { return false }
-        let lower = preview.lowercased()
 
         // FTS5 snippet() truncates with '...' and wraps matched tokens in
         // private-use highlight markers (user brackets are preserved).
         // Short durable memories (preferences, tokens, mission codes) often lose their
         // trailing identifiers in secondary hits. Expand to full frame content whenever
         // the preview shows truncation so Memory.search returns complete short texts.
-        if preview.contains("...") {
+        if containsEllipsis(preview) {
             return true
         }
 
@@ -417,10 +417,26 @@ package struct FastRAGContextBuilder: Sendable {
             return true
         }
 
-        if intent.contains(.asksOwnership), RerankingHelpers.words(lower).contains("owns") {
+        if intent.contains(.asksOwnership), RerankingHelpers.words(preview.lowercased()).contains("owns") {
             return true
         }
 
+        return false
+    }
+
+    /// `text.contains("...")`. Foundation's search ran for every snippet preview and was
+    /// about a tenth of context building, so it runs only when the UTF-8 holds three periods
+    /// in a row: nothing else is canonically equivalent to "...", so other text cannot match.
+    static func containsEllipsis(_ text: String) -> Bool {
+        var periods = 0
+        for byte in text.utf8 {
+            guard byte == UInt8(ascii: ".") else {
+                periods = 0
+                continue
+            }
+            periods += 1
+            if periods == 3 { return text.contains("...") }
+        }
         return false
     }
 
@@ -476,7 +492,7 @@ package struct FastRAGContextBuilder: Sendable {
             if let window = dateCenteredWindow(in: frameText, analyzer: analyzer, maxCharacters: maxCharacters) {
                 return window
             }
-            if !preview.contains("...") { return preview }
+            if !containsEllipsis(preview) { return preview }
         }
         return frameText
     }

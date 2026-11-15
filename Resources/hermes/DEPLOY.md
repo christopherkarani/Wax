@@ -130,20 +130,24 @@ dist/darwin-arm64/
 ├── wax-cli.sha256
 ├── wax-mcp              ← MCP server
 ├── wax-mcp.sha256
+├── Wax_WaxVectorSearch.bundle
+├── Wax_WaxVectorSearchE5.bundle
 ├── Wax_WaxVectorSearchMiniLM.bundle
-└── Wax_Wax.bundle
+├── Wax_WaxRerankerMiniLM.bundle
+├── Wax_WaxBertTokenizer.bundle
+├── Wax_Wax.bundle
+└── …                    ← GRDB, MetalANNS, swift-crypto and swift-nio bundles
 ```
 
-> **Vector search:** The release binaries include MiniLM embeddings by default (`--traits MCPServer` enables `MiniLMEmbeddings` by default). Arctic embeddings are NOT included in the default release build.
+> **Vector search:** `Resources/scripts/build-waxmcp-binaries.sh` builds the release binaries with the default traits (`MiniLMEmbeddings`, `E5Embeddings`, `MiniLMReranker`) plus `ArcticEmbeddings`, so they include the MiniLM, e5 and Arctic embedders and the recall reranker.
 
-### Building with Arctic Embedders
+### Building the Binaries Yourself
 
-For a release that includes BOTH MiniLM and Arctic:
+Name every trait: passing `--traits` turns the default traits off unless the list names them, so a list without `E5Embeddings` and `MiniLMReranker` drops e5 and reranking.
 
 ```bash
-# Build with both embedders
-swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings"
-swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
+swift build --product wax-cli --traits "MiniLMEmbeddings,E5Embeddings,MiniLMReranker,ArcticEmbeddings"
+swift build --product wax-mcp --traits "MiniLMEmbeddings,E5Embeddings,MiniLMReranker,ArcticEmbeddings,MCPServer"
 
 # Copy to dist/
 cp .build/debug/wax-cli Resources/npm/waxmcp/dist/darwin-arm64/

@@ -51,6 +51,15 @@ extension MemoryOrchestrator {
         return nil
     }
 
+    /// Text weight for a hybrid search whose caller chose none: the default for the embedder
+    /// serving this store, or, while an `.automatic` built-in is still loading, for that built-in.
+    package var defaultHybridAlpha: Float {
+        if let attached = readyEmbedderSnapshot {
+            return HybridTextWeight.storeDefault(for: attached.identity)
+        }
+        return HybridTextWeight.storeDefault(for: automaticProvider)
+    }
+
     /// Stays open for `config.queryEmbeddingCircuitCooldown` after a query-embedding
     /// timeout, then allows one half-open probe; probe success closes the circuit,
     /// another timeout re-opens it for a fresh cooldown window.

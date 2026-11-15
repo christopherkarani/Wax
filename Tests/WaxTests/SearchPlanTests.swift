@@ -35,6 +35,17 @@ struct SearchPlanTests {
     }
 
     @Test
+    func vectorOnlyPlanSkipsTheTextMatchPlan() {
+        let plan = SearchPlan.make(
+            SearchRequest(query: "hello world", embedding: [1, 0], mode: .vectorOnly, nowMs: 0)
+        )
+        #expect(plan.includeText == false)
+        #expect(plan.includeVector)
+        #expect(plan.matchPlan == nil)
+        #expect(plan.trimmedQuery == "hello world")
+    }
+
+    @Test
     func hybridWithoutEmbeddingOmitsVectorLane() {
         let plan = SearchPlan.make(
             SearchRequest(query: "hello world", mode: .hybrid(), nowMs: 0)

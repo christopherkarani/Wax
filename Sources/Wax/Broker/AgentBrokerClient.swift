@@ -215,6 +215,9 @@ package enum AgentBrokerClient {
         if configuration.requireVector {
             process.arguments?.append("--require-vector")
         }
+        if configuration.noRerank {
+            process.arguments?.append("--no-rerank")
+        }
         process.environment = ProcessInfo.processInfo.environment
 
         // Keep stdin and stdout on separate descriptors. Foundation may close a
