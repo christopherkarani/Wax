@@ -16,7 +16,7 @@ Steps:
   recall    --gold gold.jsonl --ranked ranked.jsonl          (evidence-turn recall@k)
   reader    --data locomo10.json --gold gold.jsonl --context {retrieval,full}
             [--ranked ranked.jsonl --top-k 30 [--hit-text]] --out reader.requests.jsonl
-            (--hit-text: each turn's text as Wax returned it, from `wax-bench --emit-text`)
+            (--hit-text: each turn's text as Wax stored it, from `wax-bench --emit-text`)
   judge     --gold gold.jsonl --hypotheses reader.responses.jsonl --out judge.requests.jsonl
   score     --gold gold.jsonl --hypotheses reader.responses.jsonl --judgements judge.responses.jsonl
 """
@@ -147,11 +147,24 @@ def recall(args: argparse.Namespace) -> None:
             json.dump(report, handle, indent=2)
 
 
+HIGHLIGHT_MARKS = str.maketrans("", "", "\ue000\ue001")
+
+
+def stored_text(raw: str, hit: str = None) -> str:
+    """The text Wax stored for a turn, from its hit text: the raw turn unless Wax changed more
+    than the search highlight marks and the surrounding whitespace it trims."""
+    if hit is None:
+        return raw
+    hit = hit.translate(HIGHLIGHT_MARKS)
+    return raw if hit.strip() == raw.strip() else hit
+
+
 def context_lines(turns: list, hit_text: dict = None) -> str:
-    """One line per turn; with `hit_text`, the turn's text is the "<speaker>: <text>" Wax returned."""
+    """One line per turn; with `hit_text`, the turn's text as Wax stored it (see stored_text)."""
     lines = []
     for turn in turns:
-        text = (hit_text or {}).get(turn["id"]) or f"{turn['speaker']}: {turn['text']}"
+        raw = f"{turn['speaker']}: {turn['text']}"
+        text = stored_text(raw, (hit_text or {}).get(turn["id"]))
         lines.append(f"{turn['date']} | {text}\n")
     return "".join(lines)
 
