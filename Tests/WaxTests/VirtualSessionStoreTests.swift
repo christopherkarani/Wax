@@ -566,7 +566,7 @@ struct VirtualSessionStoreTests {
 
             let endTask = Task { try await store.end(sessionID: sessionID) }
             for _ in 0..<200 {
-                try? store.refreshManifest(sessionID)
+                try? await store.refreshManifest(sessionID)
             }
             let ended = try await endTask.value
             #expect(ended.ended == true)
@@ -575,7 +575,7 @@ struct VirtualSessionStoreTests {
             #expect(manifest.status == .ended)
 
             do {
-                try store.refreshManifest(sessionID)
+                try await store.refreshManifest(sessionID)
                 Issue.record("refresh after end should fail closed")
             } catch {
                 #expect(error.localizedDescription.contains("not active") || error.localizedDescription.contains("resumable=false"))

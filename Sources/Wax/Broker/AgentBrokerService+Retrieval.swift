@@ -54,7 +54,6 @@ extension AgentBrokerService {
     ) async throws -> AgentBrokerValue {
         if let sessionID = command.sessionID {
             let sessionMemory = try await memory(for: sessionID)
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -95,7 +94,6 @@ extension AgentBrokerService {
             )
         )
         if let sessionID = parsedFilters.sessionId {
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -143,7 +141,6 @@ extension AgentBrokerService {
 
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
