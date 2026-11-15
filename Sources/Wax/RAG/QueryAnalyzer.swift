@@ -158,6 +158,9 @@ package struct QueryAnalyzer: Sendable {
     /// - `D Month YYYY` and `D Mon YYYY`
     /// - ISO-like `YYYY-MM-DD`, plus `/` or `.` separators and 1-2 digit month/day
     package func dateLiterals(in text: String) -> [String] {
+        // Every supported format has a four-digit year (`\d{4}`), so text without four
+        // consecutive decimal digits has none; most snippets have none.
+        guard Self.containsFourConsecutiveDecimalDigits(text) else { return [] }
         let full = Self.captureMatches(regex: Self.fullMonthDateRegex, text: text, captureGroup: 0)
         let abbreviated = Self.captureMatches(regex: Self.abbreviatedMonthDateRegex, text: text, captureGroup: 0)
         let dayFirst = Self.captureMatches(regex: Self.dayFirstMonthDateRegex, text: text, captureGroup: 0)
@@ -315,6 +318,20 @@ package struct QueryAnalyzer: Sendable {
         "november": 11, "nov": 11,
         "december": 12, "dec": 12,
     ]
+
+    /// True when `text` has four consecutive decimal digits as ICU's `\d` matches them
+    /// (General_Category Nd).
+    static func containsFourConsecutiveDecimalDigits(_ text: String) -> Bool {
+        var run = 0
+        for scalar in text.unicodeScalars {
+            let isDigit = scalar.isASCII
+                ? (scalar.value >= 0x30 && scalar.value <= 0x39)
+                : scalar.properties.generalCategory == .decimalNumber
+            run = isDigit ? run + 1 : 0
+            if run == 4 { return true }
+        }
+        return false
+    }
 
     private static func containsLetters(_ token: String) -> Bool {
         token.unicodeScalars.contains { CharacterSet.letters.contains($0) }

@@ -304,3 +304,31 @@ import Testing
     #expect(SurrogateTierSelector.extractTier(from: data, tier: .gist) == plainText)
     #expect(SurrogateTierSelector.extractTier(from: data, tier: .micro) == plainText)
 }
+
+// MARK: - Date literal prefilter
+
+@Test func fourDigitPrefilterAgreesWithICUDecimalDigits() throws {
+    // dateLiterals skips its regexes unless this holds; it must hold wherever ICU's \d{4}
+    // matches, including non-ASCII decimal digits.
+    let icuFourDigits = try NSRegularExpression(pattern: #"\d{4}"#)
+    let samples = [
+        "", "no digits here", "123", "12 34", "1234", "x2024y", "May 1, 2024",
+        "２０２４", "٢٠٢٤", "२०२४-01-02", "𝟐𝟎𝟐𝟒", "１２３", "12٣4", "²⁰²⁴", "Ⅻ 2 0 2 4",
+    ]
+    for sample in samples {
+        let range = NSRange(location: 0, length: sample.utf16.count)
+        let expected = icuFourDigits.firstMatch(in: sample, range: range) != nil
+        #expect(QueryAnalyzer.containsFourConsecutiveDecimalDigits(sample) == expected, "\(sample)")
+    }
+}
+
+@Test func dateLiteralsStillFoundAfterPrefilter() {
+    let analyzer = QueryAnalyzer()
+    let twoDates: [String] = analyzer.dateLiterals(in: "Shipped on March 3, 2024 and 2024-05-06.")
+    let expectedTwoDates: [String] = ["March 3, 2024", "2024-05-06"]
+    #expect(twoDates == expectedTwoDates)
+    let dayFirst: [String] = analyzer.dateLiterals(in: "met on 3 Jan 2025")
+    let expectedDayFirst: [String] = ["3 Jan 2025"]
+    #expect(dayFirst == expectedDayFirst)
+    #expect(analyzer.dateLiterals(in: "March 3, 24 and 12/5/24").isEmpty)
+}
