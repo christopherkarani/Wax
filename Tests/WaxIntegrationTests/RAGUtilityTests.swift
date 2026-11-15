@@ -332,3 +332,15 @@ import Testing
     #expect(dayFirst == expectedDayFirst)
     #expect(analyzer.dateLiterals(in: "March 3, 24 and 12/5/24").isEmpty)
 }
+
+@Test func uppercaseLetterCheckMatchesFoundationForEveryScalar() {
+    var mismatches: [String] = []
+    for value in UInt32(0)...0x10FFFF {
+        guard let scalar = Unicode.Scalar(value) else { continue }
+        let expected: Bool = CharacterSet.uppercaseLetters.contains(scalar)
+        if QueryAnalyzer.isUppercaseLetter(scalar) != expected {
+            mismatches.append(String(value, radix: 16))
+        }
+    }
+    #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
+}
