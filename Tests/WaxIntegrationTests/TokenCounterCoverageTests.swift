@@ -183,3 +183,27 @@ import Testing
         #expect(cache.count == reference.count, "step \(step)")
     }
 }
+
+/// "caf\u{E9}" and "cafe\u{301}" are equal Strings (canonically equivalent) but different
+/// UTF-8, and tokens come from the bytes, so the cache must tell them apart.
+@Test func tokenizationCacheKeysTextByItsUTF8Bytes() {
+    let cache = TokenizationCache(capacity: 4)
+    cache.put("caf\u{E9}", [1, 2])
+    #expect(cache.get("cafe\u{301}") == nil)
+    #expect(cache.get("caf\u{E9}") == [1, 2])
+    cache.put("cafe\u{301}", [3, 4, 5])
+    #expect(cache.count == 2)
+    #expect(cache.get("caf\u{E9}") == [1, 2])
+    #expect(cache.get("cafe\u{301}") == [3, 4, 5])
+}
+
+@Test func tokenCounterCountsCanonicallyEquivalentTextsByTheirOwnBytes() async throws {
+    let counter = try await TokenCounter(encoding: .cl100kBase, cacheCapacity: 8)
+    let composed = "caf\u{E9}"
+    let decomposed = "cafe\u{301}"
+    let composedCount: Int = await counter.truncateCounted(composed, maxTokens: 100).tokens
+    let decomposedCount: Int = await counter.truncateCounted(decomposed, maxTokens: 100).tokens
+    #expect(composedCount == counter.encode(composed).count)
+    #expect(decomposedCount == counter.encode(decomposed).count)
+    #expect(composedCount != decomposedCount)
+}

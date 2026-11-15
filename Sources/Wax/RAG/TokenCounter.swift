@@ -328,8 +328,28 @@ package actor TokenCounter {
 /// hundreds of bytes, so each hash is a real cost; linking neighbours by key rehashed up
 /// to eight of them per insert.
 final class TokenizationCache {
+    /// A text compared and hashed by its UTF-8 bytes. Tokens come from the bytes, while
+    /// `String` equality is canonical equivalence: "caf\u{E9}" and "cafe\u{301}" are equal
+    /// strings with 2 and 3 tokens. Hashing bytes also skips `String`'s normalization.
+    private struct UTF8Key: Hashable {
+        let text: String
+
+        static func == (lhs: UTF8Key, rhs: UTF8Key) -> Bool {
+            lhs.text.utf8.count == rhs.text.utf8.count && lhs.text.utf8.elementsEqual(rhs.text.utf8)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            let hashed: Void? = text.utf8.withContiguousStorageIfAvailable {
+                hasher.combine(bytes: UnsafeRawBufferPointer($0))
+            }
+            if hashed == nil {
+                Array(text.utf8).withUnsafeBytes { hasher.combine(bytes: $0) }
+            }
+        }
+    }
+
     private struct Slot {
-        var key: String
+        var key: UTF8Key
         var value: [UInt32]
         var older: Int
         var newer: Int
@@ -338,7 +358,7 @@ final class TokenizationCache {
     private static let none = -1
 
     private let capacity: Int
-    private var slotByKey: [String: Int]
+    private var slotByKey: [UTF8Key: Int]
     private var slots: [Slot] = []
     private var freeSlots: [Int] = []
     /// Most recently used slot.
@@ -355,7 +375,7 @@ final class TokenizationCache {
 
     /// Cached tokens for `text`, marking it most recently used.
     func get(_ text: String) -> [UInt32]? {
-        guard let slot = slotByKey[text] else { return nil }
+        guard let slot = slotByKey[UTF8Key(text: text)] else { return nil }
         moveToNewest(slot)
         return slots[slot].value
     }
@@ -363,12 +383,13 @@ final class TokenizationCache {
     /// Caches `tokens` for `text` as most recently used, evicting the least recently used
     /// entry when over capacity.
     func put(_ text: String, _ tokens: [UInt32]) {
-        if let slot = slotByKey[text] {
+        let key = UTF8Key(text: text)
+        if let slot = slotByKey[key] {
             slots[slot].value = tokens
             moveToNewest(slot)
             return
         }
-        let entry = Slot(key: text, value: tokens, older: newest, newer: Self.none)
+        let entry = Slot(key: key, value: tokens, older: newest, newer: Self.none)
         let slot: Int
         if let reused = freeSlots.popLast() {
             slots[reused] = entry
@@ -380,7 +401,7 @@ final class TokenizationCache {
         if newest != Self.none { slots[newest].newer = slot }
         newest = slot
         if oldest == Self.none { oldest = slot }
-        slotByKey[text] = slot
+        slotByKey[key] = slot
 
         if slotByKey.count > capacity {
             evictOldest()
@@ -410,7 +431,7 @@ final class TokenizationCache {
         guard slot != Self.none else { return }
         unlink(slot)
         slotByKey.removeValue(forKey: slots[slot].key)
-        slots[slot].key = ""
+        slots[slot].key = UTF8Key(text: "")
         slots[slot].value = []
         freeSlots.append(slot)
     }
