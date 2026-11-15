@@ -396,6 +396,21 @@ private func hit(_ text: String, frameID: UInt64, horizon: LayeredRecall.Horizon
         #expect(results.count == 3)
     }
 
+    /// A recall still scoring when the broker closes neither reopens its session store nor
+    /// records anything in the closed stores.
+    @Test func recallDoesNotReopenItsSessionAfterTheBrokerCloses() async throws {
+        var sessions: VirtualSessionStore?
+        let recalled = try await withSessionRecallScoring(closesBroker: true) { broker, _, reranker in
+            sessions = await broker.virtualSessions
+            try await broker.close()
+            #expect(sessions?.live.isEmpty == true)
+            await reranker.release()
+        }
+        #expect(recalled.ok, "recall failed: \(recalled.error ?? "nil")")
+        #expect(sessions?.live.isEmpty == true, "recall reopened a session store after the broker closed")
+        await sessions?.closeAll()
+    }
+
     @Test func noRerankGetsItsOwnBrokerSocket() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-broker-socket-\(UUID().uuidString)", isDirectory: true)

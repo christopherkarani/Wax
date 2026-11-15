@@ -27,6 +27,9 @@ package actor AgentBrokerService {
     let virtualSessions: VirtualSessionStore
     let endedSessions: DiskEndedSessionStore
     private let commandMutex = AsyncMutex()
+    /// Set once `close()` starts. A recall that scored while the broker closed records
+    /// nothing, rather than reopen a session store or write to a closed one.
+    private(set) var isClosed = false
     #if DEBUG
     /// Test-only: awaited inside a command's locks, just before it runs.
     private var commandHold: (@Sendable (String) async -> Void)?
@@ -198,6 +201,7 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
+        isClosed = true
         try await commandMutex.withLock { [self] in
             try await rememberMutex.withLock { [self] in
                 await virtualSessions.closeAll()
