@@ -49,6 +49,9 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")
     var noEmbedder = false
 
+    @Flag(name: .customLong("no-rerank"), help: "Keep recall in the broker's merged order instead of reranking hybrid recall with the built-in cross-encoder")
+    var noRerank = false
+
     @Option(name: .customLong("transport"), help: "Transport to serve: stdio (default) or http.")
     var transport = "stdio"
 
@@ -117,7 +120,8 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedderChoice: embedderChoice,
             noEmbedder: noEmbedder,
             requireVector: false,
-            embedderTuning: embedderTuning
+            embedderTuning: embedderTuning,
+            noRerank: noRerank
         )
         // Owned daemon prewarms the embedder in a background Task unless --no-embedder
         // (AgentBrokerClient no longer passes --skip-prewarm). First recall still waits
@@ -140,7 +144,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
                 "vectorSearch=\(!noEmbedder) " +
-                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased())"
+                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased()) " +
+                "rerank=\(!noRerank)"
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 

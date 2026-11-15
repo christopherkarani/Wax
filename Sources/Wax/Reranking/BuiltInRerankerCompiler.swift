@@ -92,6 +92,15 @@ package actor LazyBuiltInReranker: RerankingProvider {
         try await loaded().scores(query: query, documents: documents)
     }
 
+    /// Loads the model now. A failure is logged, and the next search retries the load.
+    package func prewarm() async {
+        do {
+            _ = try await loaded()
+        } catch {
+            WaxDiagnostics.logSwallowed(error, context: "reranker prewarm", fallback: "load on first search")
+        }
+    }
+
     private func loaded() async throws -> any RerankingProvider {
         if let loading {
             return try await loading.value

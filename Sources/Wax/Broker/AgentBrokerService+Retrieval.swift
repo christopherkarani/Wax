@@ -31,7 +31,8 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { BrokerClock.nowMs() }
+                nowMs: { BrokerClock.nowMs() },
+                reranking: reranking
             )
         )
 
@@ -169,6 +170,12 @@ extension AgentBrokerService {
         )
         guard await longTermMemory.isQueryEmbedderReady() else { return }
         _ = try? await longTermMemory.backfillUnembedded()
+    }
+
+    /// Loads the recall reranker's model now, so the first reranked recall does not wait
+    /// for it.
+    package func prewarmReranker() async {
+        await reranking?.prewarm()
     }
 
     /// Suspends while MiniLM (or the configured provider) is `.loading`, matching remember.

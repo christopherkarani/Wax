@@ -81,6 +81,21 @@ extension LayeredRecall {
             horizons: fetchRequest.fetchHorizons
         )
         let identity = lanes.identity
+        // With a reranker, the merge fills its candidate window, and reranking cuts it to
+        // the limit; without one, the merge cuts to the limit itself.
+        let stage = rerankStage(for: lanes, stores: stores)
+        let mergeLimit = stage.map { max(request.limit, $0.options.candidateCount) } ?? request.limit
+        func finished(window: [Hit], policyTop: () -> [Hit]) async throws -> [Hit] {
+            guard let stage else { return window }
+            return try await rerankMerged(
+                window: window,
+                policyTop: mergeLimit == request.limit ? window : policyTop(),
+                limit: request.limit,
+                query: request.query,
+                stage: stage,
+                text: { await rerankText(for: $0, stores: stores) }
+            )
+        }
         let liveCheckout = MemorySemantics.snapshotGitCheckout(startingAt: request.clientCWD)
         let repoRootPath = request.clientCWD.flatMap {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0).repoRootPath
@@ -90,7 +105,9 @@ extension LayeredRecall {
         let typedDurable = filterHitsByMemoryTypes(lanes.durable, types: request.memoryTypes)
         let merged: [Hit]
         if request.scope == .session {
-            merged = Array(typedWorking.prefix(request.limit))
+            merged = try await finished(window: Array(typedWorking.prefix(mergeLimit))) {
+                Array(typedWorking.prefix(request.limit))
+            }
         } else if request.scope == .project {
             // Filter before merge so foreign ranks cannot consume the result budget.
             let ownWorking = Self.filterForeignTaskState(typedWorking, sessionID: request.sessionID)
@@ -110,15 +127,19 @@ extension LayeredRecall {
                 live: liveCheckout,
                 repoRootPath: repoRootPath
             )
-            merged = mergeHits(
-                sessionHits: scopedSession,
-                durableHits: scopedDurable,
-                limit: request.limit,
-                nowMs: stores.nowMs(),
-                query: request.query,
-                liveCheckout: liveCheckout,
-                relations: relations
-            )
+            let nowMs = stores.nowMs()
+            func merge(limit: Int) -> [Hit] {
+                mergeHits(
+                    sessionHits: scopedSession,
+                    durableHits: scopedDurable,
+                    limit: limit,
+                    nowMs: nowMs,
+                    query: request.query,
+                    liveCheckout: liveCheckout,
+                    relations: relations
+                )
+            }
+            merged = try await finished(window: merge(limit: mergeLimit)) { merge(limit: request.limit) }
         } else {
             // Global changes the project boundary, not query or filter matching.
             // Person-lane still drops other-project prefs when identity is resolved.
@@ -154,15 +175,21 @@ extension LayeredRecall {
                 live: liveCheckout,
                 repoRootPath: repoRootPath
             )
-            let searched = mergeHits(
-                sessionHits: personLaneWorking,
-                durableHits: personLaneDurable,
-                limit: request.limit,
-                nowMs: stores.nowMs(),
-                query: request.query,
-                liveCheckout: liveCheckout,
-                relations: relations
-            )
+            let nowMs = stores.nowMs()
+            let working = personLaneWorking
+            let durable = personLaneDurable
+            func merge(limit: Int) -> [Hit] {
+                mergeHits(
+                    sessionHits: working,
+                    durableHits: durable,
+                    limit: limit,
+                    nowMs: nowMs,
+                    query: request.query,
+                    liveCheckout: liveCheckout,
+                    relations: relations
+                )
+            }
+            let searched = try await finished(window: merge(limit: mergeLimit)) { merge(limit: request.limit) }
             if personLane {
                 let cardHits = await OwnerCard.hits(
                     from: stores.longTermMemory,

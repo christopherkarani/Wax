@@ -21,6 +21,8 @@ package actor AgentBrokerService {
     let embeddingRequest: EmbeddingOpenRequest
     let readiness: EmbeddingReadiness
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
+    /// Reranks recall once hits merge across stores; `nil` keeps the merge's order.
+    let reranking: RerankStage?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
     let endedSessions: DiskEndedSessionStore
@@ -52,7 +54,8 @@ package actor AgentBrokerService {
         factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
         orchestratorConfig: OrchestratorConfig? = nil,
         automaticEmbeddingBackfill: Bool = true,
-        retentionSettings: MemoryRetentionSettings = .fromEnvironment()
+        retentionSettings: MemoryRetentionSettings = .fromEnvironment(),
+        reranking: RerankStage? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
@@ -111,6 +114,7 @@ package actor AgentBrokerService {
         self.embeddingRequest = request
         self.readiness = readiness
         self.factoryOverride = factoryOverride
+        self.reranking = reranking
         self.endedSessions = DiskEndedSessionStore(
             sessionRootURL: sessionRootURL,
             noEmbedder: noEmbedder,
