@@ -168,6 +168,7 @@ point `WAX_MCP_BIN` / `WAX_CLI_BIN` at the binary.
 | Store path | `--store-path <path>` (default `~/.wax/memory.wax`) |
 | Embedder | `--embedder auto` (default in both raw and staged launchers), `minilm`, `e5` or `arctic`. `auto` gives new stores e5, unless a store the broker serves (the store, its session stores or the corpus store) is bound to MiniLM; then new stores follow MiniLM so one recall never mixes embedders. Existing stores keep the embedder that wrote them |
 | Text-only mode | `--no-embedder` |
+| Recall reranking | On by default: hybrid `recall` reranks its top 20 merged hits with the bundled MiniLM cross-encoder. `--no-rerank` keeps the broker's merged order |
 | Binary override | `WAX_MCP_BIN` / `WAX_CLI_BIN` environment variables |
 | Endpoint override | `WAX_MCP_HTTP_PORT` / `WAX_MCP_HTTP_ENDPOINT` (used by `vector-health`) |
 | HTTP auth token | `--http-auth-token <token>` or `WAX_MCP_HTTP_AUTH_TOKEN`. Once set, every HTTP request must send `Authorization: Bearer <token>`, loopback included; required for non-loopback binds. `vector-health` and the Hermes plugin read `WAX_MCP_HTTP_AUTH_TOKEN` |
