@@ -44,6 +44,7 @@ package struct FastRAGContextBuilder: Sendable {
         // be displaced by a recently/frequently used candidate just outside the
         // normal context window. The bound keeps enabled-mode work predictable.
         let accessEnabled = accessStatsManager != nil
+        let reranking = reranking.flatMap { $0.applies(to: clamped.searchMode) ? $0 : nil }
         let searchTopK = AccessRankingWindow.candidateCount(
             requestedTopK: clamped.searchTopK,
             accessEnabled: accessEnabled,

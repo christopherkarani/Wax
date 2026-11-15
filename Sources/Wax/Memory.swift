@@ -18,7 +18,8 @@ public actor Memory {
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
         /// Which reranker, if any, reorders each search's top candidates. Defaults to
-        /// ``RerankingSource/disabled``.
+        /// ``RerankingSource/automatic``: hybrid searches are reranked by the built-in
+        /// cross-encoder when the build includes it.
         public var reranking: RerankingSource
 
         public init(
@@ -31,7 +32,7 @@ public actor Memory {
             ingestBatchSize: Int = 32,
             requireOnDeviceProviders: Bool = true,
             embedding: EmbeddingSource = .automatic,
-            reranking: RerankingSource = .disabled
+            reranking: RerankingSource = .automatic
         ) {
             self.enableTextSearch = enableTextSearch
             self.enableVectorSearch = enableVectorSearch
