@@ -672,6 +672,46 @@ test("install-hermes-plugin refuses a symlinked plugin destination", () => {
   }
 });
 
+test("install accepts an owned sticky world-writable ancestor and refuses a non-sticky one", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-sticky-ancestor-test-"));
+  const shared = path.join(root, "shared");
+  try {
+    const { server, cli } = makeRuntimeSource(
+      path.join(root, "source"),
+      "#!/bin/sh\necho safe-server\n",
+      "#!/bin/sh\necho safe-cli\n"
+    );
+    // Shaped like /tmp/<private dir>/<install root>, with the shared directory
+    // owned by the installing user, as root owns /tmp.
+    fs.mkdirSync(shared, { mode: 0o700 });
+    fs.chmodSync(shared, 0o1777);
+    const privateDir = path.join(shared, "private");
+    fs.mkdirSync(privateDir, { mode: 0o700 });
+    const env = {
+      ...process.env,
+      WAX_MCP_BIN: server,
+      WAX_CLI_BIN: cli,
+      WAX_MCP_INSTALL_ROOT: path.join(privateDir, "sticky-install"),
+    };
+    const sticky = spawnSync(process.execPath, [launcher, "install"], { env, encoding: "utf8" });
+    assert.equal(sticky.status, 0, sticky.stderr);
+    assert.equal(fs.existsSync(path.join(privateDir, "sticky-install", "install.json")), true);
+
+    // Without the sticky bit, others could rename the private directory away.
+    fs.chmodSync(shared, 0o777);
+    const plain = spawnSync(process.execPath, [launcher, "install"], {
+      env: { ...env, WAX_MCP_INSTALL_ROOT: path.join(privateDir, "plain-install") },
+      encoding: "utf8",
+    });
+    assert.notEqual(plain.status, 0);
+    assert.match(plain.stderr, /unsafe install directory permissions/);
+    assert.equal(fs.existsSync(path.join(privateDir, "plain-install")), false);
+  } finally {
+    if (fs.existsSync(shared)) fs.chmodSync(shared, 0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("install refuses a group or world-writable custom install root", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "waxmcp-unsafe-root-test-"));
   const unsafeRoot = path.join(root, "shared");

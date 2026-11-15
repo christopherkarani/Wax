@@ -150,11 +150,17 @@ function assertSafeInstallAncestry(directory) {
     const owned = uid === null || stat.uid === uid;
     const writableByOthers = (stat.mode & 0o022) !== 0;
     const sticky = (stat.mode & 0o1000) !== 0;
-    if (writableByOthers && !(sticky && !owned)) {
+    // Others can rename or unlink entries in a directory they can write,
+    // unless it is sticky: then only an entry's owner, the directory's owner
+    // and root can. So the users who can write a sticky shared directory such
+    // as /tmp cannot swap the install path out of it. That holds when the
+    // installing user owns it too, as root owns /tmp.
+    if (writableByOthers && !sticky) {
       throw new Error(`unsafe install directory permissions: ${current}`);
     }
     // A non-writable system-owned directory, or a sticky system temp directory,
-    // is a trusted boundary above the user-managed path.
+    // is a trusted boundary above the user-managed path. An owned one is not
+    // a boundary, so its own parents are checked too.
     if (!owned) break;
     const parent = path.dirname(current);
     if (parent === current) break;
