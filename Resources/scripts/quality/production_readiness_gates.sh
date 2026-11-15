@@ -278,12 +278,12 @@ assert_mcp_cli_doctor_smokes_ran() {
   echo "MCP_CLI_DOCTOR_SMOKES: executed"
 }
 
+# The default test list (`swift test list`) is captured once by run_full, which
+# shards on it before this check reads it.
 assert_mcp_trait_test_inventory() {
-  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
+  local default_list_log="$1"
   local mcp_list_log="$GATE_LOG_DIR/wax-gate-mcp-test-list.log"
 
-  run_and_capture "$default_list_log" \
-    swift test --disable-automatic-resolution list
   assert_default_mcp_trait_tests_omitted "$default_list_log"
 
   run_and_capture "$mcp_list_log" \
@@ -291,21 +291,65 @@ assert_mcp_trait_test_inventory() {
   assert_mcp_trait_tests_listed "$mcp_list_log"
 }
 
+# Test targets named in a `swift test list` log, in first-listed order. Build and
+# warning lines are ignored; every test target's name ends in "Tests".
+full_gate_test_targets() {
+  local list_log="$1"
+  sed -E $'s/\x1b\\[[0-9;]*m//g; s/\r$//' "$list_log" \
+    | grep -oE '^[A-Za-z_][A-Za-z0-9_]*Tests\.' \
+    | sed 's/\.$//' \
+    | awk '!seen[$0]++'
+}
+
+# One `swift test` run per test target. A single run of every target starts all of
+# the package's ~2,600 tests at once, and on a 3-core runner a test that times itself
+# (a deadline, a readiness wait) then waits behind the whole backlog. Every shard runs
+# even after one fails, so one failure cannot hide another.
+run_full_shards() {
+  local list_log="$1"
+  local skip_regex="$2"
+  local target shard_log targets=() failed=()
+  # An array, not a `while read` loop: run_and_capture's `script` reads stdin and
+  # would take the remaining target names with it.
+  while IFS= read -r target; do
+    targets+=("$target")
+  done < <(full_gate_test_targets "$list_log")
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    echo "FAIL: the default test list names no test target: $list_log" >&2
+    return 1
+  fi
+  for target in "${targets[@]}"; do
+    shard_log="$GATE_LOG_DIR/wax-gate-full-$target.log"
+    echo "FULL_SHARD: $target"
+    if ! run_and_capture "$shard_log" \
+      swift test --parallel --filter "^${target}\." --skip "$skip_regex"; then
+      failed+=("$target")
+      continue
+    fi
+    if ! assert_no_skips "$shard_log" || ! assert_full_pass_rate "$shard_log"; then
+      failed+=("$target")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: full gate shards failed: ${failed[*]}" >&2
+    return 1
+  fi
+}
+
 run_full() {
-  local log_file="$GATE_LOG_DIR/wax-gate-full.log"
+  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
   local mcp_unit_log="$GATE_LOG_DIR/wax-gate-full-mcp-unit.log"
   local mcp_cli_log="$GATE_LOG_DIR/wax-gate-full-mcp-cli.log"
   local mcp_process_log="$GATE_LOG_DIR/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
 
-  run_and_capture "$log_file" \
-    swift test --parallel --skip "$skip_regex"
-  assert_no_skips "$log_file"
-  assert_full_pass_rate "$log_file"
+  run_and_capture "$default_list_log" \
+    swift test --disable-automatic-resolution list
+  run_full_shards "$default_list_log" "$skip_regex"
 
   require_swiftpm_traits
-  assert_mcp_trait_test_inventory
+  assert_mcp_trait_test_inventory "$default_list_log"
 
   # Do not re-run the default suite serially under --traits MCPServer: that
   # hung GitHub macos-15 for 75m with a frozen log after compile. Keep
