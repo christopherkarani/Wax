@@ -61,6 +61,8 @@ for g in session turn; do
     --granularity $g --jobs $RUNS/lme_s_$g.jobs.jsonl --gold $RUNS/lme_s_$g.gold.jsonl
 done
 # Wax: --mode text | vector | hybrid | hybrid:<alpha>, --embedder minilm | arctic | e5
+# No --mode: hybrid with the store's default text weight (0.4 for e5, 0.5 otherwise), as Memory
+# searches by default; --mode hybrid is exactly 0.5.
 $BIN retrieve --input $RUNS/lme_s_session.jobs.jsonl --output $RUNS/wax-vector-minilm-session.ranked.jsonl \
   --mode vector --embedder minilm --top-k 300 --concurrency 4
 python3 -I $S/longmemeval_score_retrieval.py --gold $RUNS/lme_s_session.gold.jsonl \
@@ -128,6 +130,8 @@ $BIN retrieve --input $RUNS/locomo.jobs.jsonl --output $RUNS/locomo-wax-vector.r
 python3 -I $S/locomo.py recall --gold $RUNS/locomo.gold.jsonl --ranked $RUNS/locomo-wax-vector.ranked.jsonl
 python3 -I $S/locomo.py reader --data $DATA/locomo/locomo10.json --gold $RUNS/locomo.gold.jsonl \
   --context retrieval --ranked $RUNS/locomo-wax-vector.ranked.jsonl --top-k 30 --out reader.jsonl   # or --context full
+# Default path (e5, store-default text weight, automatic reranker):
+#   $BIN retrieve --input $RUNS/locomo.jobs.jsonl --output $RUNS/locomo-wax-default.ranked.jsonl --embedder e5 --top-k 150
 # then llm_run.py (haiku), locomo.py judge, llm_run.py (sonnet), locomo.py score
 ```
 
