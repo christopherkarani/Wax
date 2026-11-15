@@ -105,6 +105,30 @@ package enum BrokerRecall {
         _ command: BrokerCommand.Recall,
         in environment: Environment
     ) async throws -> PackedRecall {
+        try await prepare(command, in: environment).finish()
+    }
+
+    /// A recall whose stores have been read; ``finish()`` ranks and packs it without them.
+    package struct PreparedRecall: Sendable {
+        let command: BrokerCommand.Recall
+        let recall: LayeredRecall.PreparedRecall
+        let nowMs: @Sendable () -> Int64
+
+        /// Whether `finish()` scores with a cross-encoder.
+        package var needsScoring: Bool { recall.needsScoring }
+
+        @concurrent
+        package func finish() async throws -> PackedRecall {
+            let result = try await recall.finish()
+            return BrokerRecall.pack(command: command, result: result, nowMs: nowMs())
+        }
+    }
+
+    /// The part of `recall` that reads the stores (snapshot, fetch, merge, frame texts).
+    package static func prepare(
+        _ command: BrokerCommand.Recall,
+        in environment: Environment
+    ) async throws -> PreparedRecall {
         let request = LayeredRecall.RecallRequest(
             query: command.query,
             identity: command.identity,
@@ -130,8 +154,11 @@ package enum BrokerRecall {
             nowMs: environment.nowMs,
             reranking: environment.reranking
         )
-        let result = try await LayeredRecall.recall(request: request, stores: stores)
-        return pack(command: command, result: result, nowMs: environment.nowMs())
+        return PreparedRecall(
+            command: command,
+            recall: try await LayeredRecall.prepareRecall(request: request, stores: stores),
+            nowMs: environment.nowMs
+        )
     }
 
     /// MCP search fetch + merge + pack. Rank law is score desc, working before

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 @testable import Wax
 import WaxTestSupport
 
@@ -23,6 +24,27 @@ private struct FailingReranker: RerankingProvider {
 
     func scores(query: String, documents: [String]) async throws -> [Float] {
         throw Failure()
+    }
+}
+
+/// Holds every scoring call until released, to stand in for a slow cross-encoder.
+private actor BlockingReranker: RerankingProvider {
+    private(set) var started = false
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func scores(query: String, documents: [String]) async throws -> [Float] {
+        started = true
+        if !released {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        return documents.map { _ in 0 }
+    }
+
+    func release() {
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }
 
@@ -229,6 +251,67 @@ private func hit(_ text: String, frameID: UInt64, horizon: LayeredRecall.Horizon
             #expect(await reranker.calls.count == 1)
             try await broker.close()
         } catch {
+            try? await broker.close()
+            throw error
+        }
+    }
+
+    /// A recall's cross-encoder runs outside the broker's command lock: a `remember`, and the
+    /// commands that take that lock (`stats`, a text recall), finish while another recall is
+    /// still scoring.
+    @Test(arguments: ["remember", "stats", "text recall"])
+    func commandsDuringASlowRerankDoNotWaitForIt(command: String) async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-broker-slow-rerank-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reranker = BlockingReranker()
+        let broker = try await AgentBrokerService(
+            storePath: root.appendingPathComponent("memory.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            noEmbedder: false,
+            embedderChoice: "auto",
+            requireVector: false,
+            embedderOverride: ConstantEmbedder(vector: [1, 0], provider: "Wax", model: "E5SmallV2-prefixed"),
+            reranking: automaticStage(reranker)
+        )
+        do {
+            for text in appleMemories {
+                let written = await broker.handle(.init(command: "remember", arguments: ["content": .string(text)]))
+                #expect(written.ok)
+            }
+            let arguments = threeApples
+            let recall = Task { await broker.handle(.init(command: "recall", arguments: arguments)) }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while !(await reranker.started), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await reranker.started)
+
+            let request: AgentBrokerRequest = switch command {
+            case "remember":
+                .init(command: "remember", arguments: ["content": .string("pears ripen on the windowsill")])
+            case "stats":
+                .init(command: "stats")
+            default:
+                .init(command: "recall", arguments: arguments.merging(["mode": .string("text")]) { $1 })
+            }
+            let response: AgentBrokerResponse
+            do {
+                response = try await AsyncTimeout.run(timeout: .seconds(15), operation: "command during a rerank") {
+                    await broker.handle(request)
+                }
+            } catch {
+                await reranker.release()
+                _ = await recall.value
+                throw error
+            }
+            #expect(response.ok)
+            await reranker.release()
+            #expect(await recall.value.ok)
+            try await broker.close()
+        } catch {
+            await reranker.release()
             try? await broker.close()
             throw error
         }

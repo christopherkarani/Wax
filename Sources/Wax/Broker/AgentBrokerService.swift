@@ -242,6 +242,9 @@ package actor AgentBrokerService {
             // Do not wait again inside recall/search — a timeout here must not
             // become a second 30s hold on the serialized path.
             await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
+            if case .recall(let recall) = command {
+                return await recallResponse(recall, request: request)
+            }
             return await commandMutex.withLock { [self] in
                 await dispatch(command, request: request)
             }
@@ -250,9 +253,47 @@ package actor AgentBrokerService {
                 await dispatch(command, request: request)
             }
         case .command:
+            if case .recall(let recall) = command {
+                return await recallResponse(recall, request: request)
+            }
             return await commandMutex.withLock { [self] in
                 await dispatch(command, request: request)
             }
+        }
+    }
+
+    private enum RecallPhase: Sendable {
+        case done(AgentBrokerValue)
+        case scoring(BrokerRecall.PreparedRecall)
+    }
+
+    /// A `recall` command. It reads the stores under `commandMutex`, then, when it reranks,
+    /// releases the lock while the cross-encoder scores (100–450 ms, which every other
+    /// agent's command would otherwise wait for) and takes it again to record the hits.
+    private func recallResponse(
+        _ command: BrokerCommand.Recall,
+        request: AgentBrokerRequest
+    ) async -> AgentBrokerResponse {
+        do {
+            let phase = try await commandMutex.withLock { [self] () async throws -> RecallPhase in
+                await holdForTest(request.command)
+                let prepared = try await prepareRecall(command, reranking: reranking)
+                guard !prepared.needsScoring else { return .scoring(prepared) }
+                return .done(try await recordRecall(command, packed: try await prepared.finish()))
+            }
+            let payload: AgentBrokerValue
+            switch phase {
+            case .done(let value):
+                payload = value
+            case .scoring(let prepared):
+                let packed = try await prepared.finish()
+                payload = try await commandMutex.withLock { [self] in
+                    try await recordRecall(command, packed: packed)
+                }
+            }
+            return AgentBrokerResponse.success(id: request.id, payload: payload, shouldExit: false)
+        } catch {
+            return Self.failure(id: request.id, error: error)
         }
     }
 
@@ -393,21 +434,37 @@ package actor AgentBrokerService {
                 payload: payload,
                 shouldExit: shouldExit
             )
-        } catch let error as BrokerSessionInactiveError {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        } catch {
+            return Self.failure(id: request.id, error: error)
+        }
+    }
+
+    /// Test-only hold (`setCommandHold`) for a command that already owns its locks.
+    private func holdForTest(_ command: String) async {
+        #if DEBUG
+        if let commandHold {
+            await commandHold(command)
+        }
+        #endif
+    }
+
+    private static func failure(id: String?, error: any Error) -> AgentBrokerResponse {
+        switch error {
+        case let error as BrokerSessionInactiveError:
+            AgentBrokerResponse.failure(
+                id: id,
                 payload: error.brokerPayload(),
                 message: error.localizedDescription
             )
-        } catch let error as BrokerValidationError {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        case let error as BrokerValidationError:
+            AgentBrokerResponse.failure(
+                id: id,
                 payload: error.brokerPayload,
                 message: error.localizedDescription
             )
-        } catch {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        default:
+            AgentBrokerResponse.failure(
+                id: id,
                 message: error.localizedDescription
             )
         }
