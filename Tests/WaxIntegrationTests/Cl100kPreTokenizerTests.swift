@@ -120,8 +120,12 @@ import Testing
     }
 
     @Test func longSIsAContractionLetter() {
-        #expect(Self.scannerPieces("x'\u{17F}t") == [0..<1, 1..<4, 4..<5])
-        #expect(Self.scannerPieces("x'\u{17F}t") == Self.regexPieces("x'\u{17F}t"))
+        let text = "x'\u{17F}t"
+        let expected: [Range<Int>] = [0..<1, 1..<4, 4..<5]
+        let pieces: [Range<Int>]? = Self.scannerPieces(text)
+        let regexPieces: [Range<Int>] = Self.regexPieces(text)
+        #expect(pieces == expected)
+        #expect(pieces == regexPieces)
     }
 
     /// Apple's ICU gives U+F882 letter properties, U+1FAE8 is from Unicode 15, U+0378 is

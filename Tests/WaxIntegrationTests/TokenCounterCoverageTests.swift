@@ -217,14 +217,23 @@ import Testing
             return [UInt32(text.utf8.count)]
         }
     }
-    #expect(tokens("ab") == [2])
-    #expect(tokens("ab") == [2])
-    #expect(encoded == ["ab"])
-    #expect(tokens("cde") == [3])
-    #expect(tokens("ab") == [2])  // "ab" is now the most recent, so "cde" is evicted next.
-    #expect(tokens("f") == [1])
+    let first: [UInt32] = tokens("ab")
+    let hit: [UInt32] = tokens("ab")
+    let encodedAfterHit: [String] = encoded
+    let second: [UInt32] = tokens("cde")
+    let refreshed: [UInt32] = tokens("ab")  // "ab" is now the most recent, so "cde" is evicted next.
+    let third: [UInt32] = tokens("f")
+    let evicted: [UInt32]? = cache.get("cde")
+    let kept: [UInt32]? = cache.get("ab")
+    let encodedTexts: [String] = ["ab", "cde", "f"]
+    #expect(first == [UInt32(2)])
+    #expect(hit == first)
+    #expect(encodedAfterHit == ["ab"])
+    #expect(second == [UInt32(3)])
+    #expect(refreshed == first)
+    #expect(third == [UInt32(1)])
     #expect(cache.count == 2)
-    #expect(cache.get("cde") == nil)
-    #expect(cache.get("ab") == [2])
-    #expect(encoded == ["ab", "cde", "f"])
+    #expect(evicted == nil)
+    #expect(kept == first)
+    #expect(encoded == encodedTexts)
 }
