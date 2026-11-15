@@ -74,7 +74,7 @@ package enum SessionBootstrap {
             inferredScope: inferredScope,
             in: environment
         )
-        try stampIdentity(sessionID: sessionID, command: command, in: environment)
+        try await stampIdentity(sessionID: sessionID, command: command, in: environment)
         let (resolvedProject, resolvedRepo) = resolvedScope(
             sessionID: sessionID,
             command: command,
@@ -232,7 +232,7 @@ package enum SessionBootstrap {
                let requestedRunID = facts.requestedRunID,
                conversationMatch.runID != requestedRunID
             {
-                try environment.sessions.updateLive(resumeSessionID) { state in
+                try await environment.sessions.updateLive(resumeSessionID) { state in
                     state.manifest.runID = requestedRunID
                     state.manifest.updatedAtMs = environment.nowMs()
                 }
@@ -249,7 +249,7 @@ package enum SessionBootstrap {
                 inferredScope: inferredScope
             )
             if let conversationID {
-                try environment.sessions.updateLive(lifecycle.state.id) { state in
+                try await environment.sessions.updateLive(lifecycle.state.id) { state in
                     state.manifest.conversationID = conversationID
                 }
             }
@@ -261,7 +261,7 @@ package enum SessionBootstrap {
         sessionID: UUID,
         command: BrokerCommand.SessionOpen,
         in environment: Environment
-    ) throws {
+    ) async throws {
         let conversationID = BrokerCommand.normalizedOrNil(command.conversationID)
         let trimmedProject = command.project?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let trimmedRepo = command.repo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -269,7 +269,7 @@ package enum SessionBootstrap {
         // Leaving a cwd-inferred repo would advertise a split identity and stamp
         // foreign wax.repo on later remembers.
         guard !trimmedProject.isEmpty || conversationID != nil else { return }
-        try environment.sessions.updateLive(sessionID) { state in
+        try await environment.sessions.updateLive(sessionID) { state in
             if !trimmedProject.isEmpty {
                 state.manifest.project = trimmedProject
                 state.manifest.repo = trimmedRepo.isEmpty ? trimmedProject : trimmedRepo

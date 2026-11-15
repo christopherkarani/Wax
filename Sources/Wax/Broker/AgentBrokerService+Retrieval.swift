@@ -60,7 +60,6 @@ extension AgentBrokerService {
         guard !isClosed else { return packed.payload }
         if let sessionID = command.sessionID,
            let sessionMemory = virtualSessions.live[sessionID]?.memory {
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -101,7 +100,6 @@ extension AgentBrokerService {
             )
         )
         if let sessionID = parsedFilters.sessionId {
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -149,7 +147,6 @@ extension AgentBrokerService {
 
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
