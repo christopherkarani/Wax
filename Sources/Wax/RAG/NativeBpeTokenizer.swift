@@ -58,7 +58,7 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         let scannedASCII = text.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
             guard Cl100kASCIIPreTokenizer.isASCII(bytes) else { return false }
             for range in Cl100kASCIIPreTokenizer.pieceRanges(bytes) {
-                appendTokens(forPiece: Array(bytes[range]), to: &tokens)
+                appendTokens(forPiece: UnsafeBufferPointer(rebasing: bytes[range]), to: &tokens)
             }
             return true
         } ?? false
@@ -67,16 +67,17 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in matches {
             guard let range = Range(match.range, in: text) else { continue }
-            appendTokens(forPiece: Array(text[range].utf8), to: &tokens)
+            let piece = Array(text[range].utf8)
+            piece.withUnsafeBufferPointer { appendTokens(forPiece: $0, to: &tokens) }
         }
 
         return tokens
     }
 
-    private func appendTokens(forPiece bytes: [UInt8], to tokens: inout [UInt32]) {
+    private func appendTokens(forPiece bytes: UnsafeBufferPointer<UInt8>, to tokens: inout [UInt32]) {
         if bytes.isEmpty { return }
 
-        let data = Data(bytes)
+        let data = Data(buffer: bytes)
         // Most pieces are one token. The vocabulary is immutable, so looking it up first
         // takes no lock: chunkers encoding in parallel queued on the cache lock for every
         // piece, and ran slower than one chunker alone.
@@ -90,7 +91,7 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
             return
         }
 
-        let encoded = bpeEncode(bytes)
+        let encoded = bpeEncode(Array(bytes))
         bpeCache.set(data, encoded)
         tokens.append(contentsOf: encoded)
     }
