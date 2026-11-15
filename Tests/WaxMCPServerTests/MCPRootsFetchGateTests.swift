@@ -156,11 +156,15 @@ func lateRootsAnswerClearsTheBackoff() async throws {
 
     _ = await gate.fetch { await client.request() }
     client.release()
-    try await Task.sleep(for: .milliseconds(100))
+    await gate.waitForOutstandingRequest()
 
+    // A backed-off fetch issues no request, so a new one shows the late answer
+    // cleared the backoff. Whether its answer beats the 50 ms deadline is a race
+    // with the request task's start; answeredRootsRequestsAreNotBackedOff checks
+    // answers under a deadline that does not race.
     let answered = CountingRootsRequest(answer: ["/tmp/project"])
-    let roots = await gate.fetch { await answered.request() }
+    _ = await gate.fetch { await answered.request() }
+    await gate.waitForOutstandingRequest()
     #expect(answered.callCount == 1)
-    #expect(roots == ["/tmp/project"])
 }
 #endif
