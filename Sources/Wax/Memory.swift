@@ -432,6 +432,19 @@ public actor Memory {
         )
     }
 
+    /// Waits for an automatic embedder load in flight to attach or fail, then returns the
+    /// embedding status. Returns at once when no load is in flight.
+    package func embeddingStatusAfterPendingLoad() async throws -> EmbeddingStatus {
+        do {
+            try await orchestrator.waitUntilReadyForRemember()
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            // A failed or mismatched load is reported by the status, not as an error.
+        }
+        return await orchestrator.runtimeStats().embeddingStatus
+    }
+
     package func setSearchSnapshotHoldForTesting(_ duration: Duration?) async {
         await orchestrator.setSearchSnapshotHoldForTesting(duration)
     }
