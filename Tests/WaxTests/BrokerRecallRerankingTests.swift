@@ -317,6 +317,100 @@ private func hit(_ text: String, frameID: UInt64, horizon: LayeredRecall.Horizon
         }
     }
 
+    /// A broker whose reranker blocks, with one session holding three apple memories and
+    /// three more in the durable store, and a session recall scoring when `body` runs. A body
+    /// that closes the broker passes `closesBroker`.
+    private func withSessionRecallScoring(
+        closesBroker: Bool = false,
+        _ body: (AgentBrokerService, UUID, BlockingReranker) async throws -> Void
+    ) async throws -> AgentBrokerResponse {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-broker-rerank-window-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reranker = BlockingReranker()
+        let broker = try await AgentBrokerService(
+            storePath: root.appendingPathComponent("memory.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            noEmbedder: false,
+            embedderChoice: "auto",
+            requireVector: false,
+            embedderOverride: ConstantEmbedder(vector: [1, 0], provider: "Wax", model: "E5SmallV2-prefixed"),
+            reranking: automaticStage(reranker)
+        )
+        do {
+            let started = await broker.handle(.init(
+                command: "session_start",
+                arguments: ["agent_id": .string("rerank-agent"), "run_id": .string("rerank-run")]
+            ))
+            let sessionText = try #require(started.payload?.objectValue?["session_id"]?.stringValue)
+            let sessionID = try #require(UUID(uuidString: sessionText))
+            for text in ["apple orchard harvest", "apple pie recipe", "apple tree in the garden"] {
+                let written = await broker.handle(.init(
+                    command: "remember",
+                    arguments: ["content": .string(text), "session_id": .string(sessionText)]
+                ))
+                #expect(written.ok)
+            }
+            for text in ["apple cider vinegar", "apple crumble with custard", "apple picking in october"] {
+                let written = await broker.handle(.init(command: "remember", arguments: ["content": .string(text)]))
+                #expect(written.ok)
+            }
+            let recall = Task {
+                await broker.handle(.init(
+                    command: "recall",
+                    arguments: ["query": .string("apple"), "limit": .int(3), "session_id": .string(sessionText)]
+                ))
+            }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while !(await reranker.started), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await reranker.started)
+            try await body(broker, sessionID, reranker)
+            await reranker.release()
+            let recalled = await recall.value
+            if !closesBroker {
+                try await broker.close()
+            }
+            return recalled
+        } catch {
+            await reranker.release()
+            try? await broker.close()
+            throw error
+        }
+    }
+
+    /// The recall's hits are computed before its session ends; it returns them, and records
+    /// nothing in the ended session.
+    @Test func recallReturnsItsHitsWhenItsSessionEndsWhileScoring() async throws {
+        let recalled = try await withSessionRecallScoring { broker, sessionID, _ in
+            let ended = await broker.handle(.init(
+                command: "session_end",
+                arguments: ["session_id": .string(sessionID.uuidString)]
+            ))
+            #expect(ended.ok, "session_end failed: \(ended.error ?? "nil")")
+        }
+        #expect(recalled.ok, "recall failed: \(recalled.error ?? "nil")")
+        let results = recalled.payload?.objectValue?["results"]?.arrayValue ?? []
+        #expect(results.count == 3)
+    }
+
+    /// A recall still scoring when the broker closes neither reopens its session store nor
+    /// records anything in the closed stores.
+    @Test func recallDoesNotReopenItsSessionAfterTheBrokerCloses() async throws {
+        var sessions: VirtualSessionStore?
+        let recalled = try await withSessionRecallScoring(closesBroker: true) { broker, _, reranker in
+            sessions = await broker.virtualSessions
+            try await broker.close()
+            #expect(sessions?.live.isEmpty == true)
+            await reranker.release()
+        }
+        #expect(recalled.ok, "recall failed: \(recalled.error ?? "nil")")
+        #expect(sessions?.live.isEmpty == true, "recall reopened a session store after the broker closed")
+        await sessions?.closeAll()
+    }
+
     @Test func noRerankGetsItsOwnBrokerSocket() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-broker-socket-\(UUID().uuidString)", isDirectory: true)

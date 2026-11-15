@@ -19,8 +19,8 @@ Build Wax MCP with **vector search** support:
 
 ```bash
 cd /path/to/Wax
-swift build --product wax-cli --traits "MiniLMEmbeddings,ArcticEmbeddings"
-swift build --product wax-mcp --traits "MiniLMEmbeddings,ArcticEmbeddings,MCPServer"
+swift build --product wax-cli --traits "MiniLMEmbeddings,E5Embeddings,MiniLMReranker,ArcticEmbeddings"
+swift build --product wax-mcp --traits "MiniLMEmbeddings,E5Embeddings,MiniLMReranker,ArcticEmbeddings,MCPServer"
 ```
 
 > **Note:** Both `wax-cli` (broker) and `wax-mcp` (server) need embedder support. If only one has it, vector search silently falls back to text-only.

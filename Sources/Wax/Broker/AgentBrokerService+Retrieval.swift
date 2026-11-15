@@ -47,13 +47,19 @@ extension AgentBrokerService {
         )
     }
 
-    /// Records the hits `packed` returns (under `commandMutex`).
+    /// Records the hits `packed` returns (under `commandMutex`) and returns its payload.
+    ///
+    /// A reranked recall scores with the lock released, so by now its session may have
+    /// ended or the broker closed. The hits are already computed, so it still returns them;
+    /// it records in the session only while that session is live (looked up without a
+    /// rebind, which would reopen it), and records nothing once the broker has closed.
     func recordRecall(
         _ command: BrokerCommand.Recall,
         packed: BrokerRecall.PackedRecall
     ) async throws -> AgentBrokerValue {
-        if let sessionID = command.sessionID {
-            let sessionMemory = try await memory(for: sessionID)
+        guard !isClosed else { return packed.payload }
+        if let sessionID = command.sessionID,
+           let sessionMemory = virtualSessions.live[sessionID]?.memory {
             try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
