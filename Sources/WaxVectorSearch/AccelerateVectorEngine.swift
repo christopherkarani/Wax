@@ -156,16 +156,6 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 }
             }
         }
-        #else
-        for index in frameIds.indices {
-            let start = index * dimensions
-            var dot: Float = 0
-            for dim in 0..<dimensions {
-                dot += vectors[start + dim] * preparedQuery[dim]
-            }
-            scores[index] = dot
-        }
-        #endif
 
         if metric == .l2 {
             let queryNorm = squaredNorm(of: preparedQuery)
@@ -173,6 +163,31 @@ package actor AccelerateVectorEngine: VectorSearchEngine {
                 scores[index] = -(squaredNorms[index] + queryNorm - (2 * scores[index]))
             }
         }
+        #else
+        // SIMD kernels (CPUVectorScoring) in place of vDSP; for L2 the kernel applies the
+        // same -(norm + queryNorm - 2 dot) step by step.
+        let queryNorm = metric == .l2 ? squaredNorm(of: preparedQuery) : 0
+        let rowCount = frameIds.count
+        let dimensions = dimensions
+        let useNorms = metric == .l2
+        vectors.withUnsafeBufferPointer { (matrixBuffer: UnsafeBufferPointer<Float>) -> Void in
+            preparedQuery.withUnsafeBufferPointer { (queryBuffer: UnsafeBufferPointer<Float>) -> Void in
+                squaredNorms.withUnsafeBufferPointer { (normBuffer: UnsafeBufferPointer<Float>) -> Void in
+                    scores.withUnsafeMutableBufferPointer { (scoreBuffer: inout UnsafeMutableBufferPointer<Float>) -> Void in
+                        CPUVectorScoring.score(
+                            rows: matrixBuffer.baseAddress!,
+                            rowCount: rowCount,
+                            dimensions: dimensions,
+                            query: queryBuffer.baseAddress!,
+                            squaredNorms: useNorms ? normBuffer.baseAddress : nil,
+                            queryNorm: queryNorm,
+                            into: scoreBuffer.baseAddress!
+                        )
+                    }
+                }
+            }
+        }
+        #endif
 
         return VectorTopK.select(frameIds: frameIds, scores: scores, limit: limit)
     }
