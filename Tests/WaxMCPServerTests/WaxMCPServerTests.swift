@@ -4854,8 +4854,8 @@ func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
     let end = try #require(source[start.upperBound...].range(of: "private func abandonUnusedSessionFile("))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)"))
+    let appendEvent = try #require(body.range(of: "try writeEvent("))
+    let saveManifest = try #require(body.range(of: "try writeManifest(manifest, to: manifestURL)"))
     #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
@@ -4874,8 +4874,8 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
     let end = try #require(source[start.upperBound...].range(of: "package func end("))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)"))
+    let appendEvent = try #require(body.range(of: "try writeEvent("))
+    let saveManifest = try #require(body.range(of: "try writeManifest(resumedManifest, to: manifestURL)"))
     #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
@@ -4895,15 +4895,21 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
     let body = source[start.lowerBound..<end.lowerBound]
 
     let flush = try #require(body.range(of: "try await target.state.memory.flush()"))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)"))
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
+    // Writes the ended event, then the ended manifest (checked below).
+    let writeEnded = try #require(body.range(of: "try writeEndedManifest(target.id, harvest: endHarvest)"))
     let close = try #require(body.range(of: "try await target.state.memory.close()"))
     let remove = try #require(body.range(of: "_live.removeValue(forKey: target.id)"))
 
     #expect(flush.lowerBound < remove.lowerBound)
-    #expect(saveManifest.lowerBound < remove.lowerBound)
-    #expect(appendEvent.lowerBound < remove.lowerBound)
+    #expect(writeEnded.lowerBound < remove.lowerBound)
     #expect(close.lowerBound < remove.lowerBound)
+
+    let endedStart = try #require(source.range(of: "private func writeEndedManifest("))
+    let endedEnd = try #require(source[endedStart.upperBound...].range(of: "package func lookup("))
+    let endedBody = source[endedStart.lowerBound..<endedEnd.lowerBound]
+    let appendEvent = try #require(endedBody.range(of: "try writeEvent("))
+    let saveManifest = try #require(endedBody.range(of: "try writeManifest(state.manifest, to: state.manifestURL)"))
+    #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
 @Test
@@ -4921,7 +4927,8 @@ func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
     let end = try #require(source[start.upperBound...].range(of: "func flush() async throws"))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "appendSessionEvent("))
+    // The remembered event is written with the manifest refresh.
+    let appendEvent = try #require(body.range(of: "recording: .remembered"))
     let flush = try #require(body.range(of: "try await memory.flush()"))
     #expect(appendEvent.lowerBound < flush.lowerBound)
 }
