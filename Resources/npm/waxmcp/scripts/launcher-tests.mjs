@@ -20,6 +20,7 @@ const requiredRuntimeBundles = [
   "MetalANNS_MetalANNSCore.bundle",
   "Wax_Wax.bundle",
   "Wax_WaxBertTokenizer.bundle",
+  "Wax_WaxRerankerMiniLM.bundle",
   "Wax_WaxVectorSearch.bundle",
   "Wax_WaxVectorSearchE5.bundle",
   "Wax_WaxVectorSearchMiniLM.bundle",

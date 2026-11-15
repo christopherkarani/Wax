@@ -2,7 +2,18 @@ import Foundation
 import WaxCore
 
 extension AgentBrokerService {
+    /// Recall in one hold of `commandMutex`, as `session_open` runs it. It keeps the merge
+    /// order: a cross-encoder here would score under the lock (see `recallResponse`).
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
+        let packed = try await prepareRecall(command, reranking: nil).finish()
+        return try await recordRecall(command, packed: packed)
+    }
+
+    /// Reads the stores for `command` (under `commandMutex`).
+    func prepareRecall(
+        _ command: BrokerCommand.Recall,
+        reranking: RerankStage?
+    ) async throws -> BrokerRecall.PreparedRecall {
         let mode = command.mode
 
         // Rebind session lane before resolving project from session manifest (C4).
@@ -18,10 +29,9 @@ extension AgentBrokerService {
            await longTermMemory.isQueryEmbedderReady() {
             await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
         }
-        // Fetch + merge + pack live behind the BrokerRecall seam. The module
-        // takes no lock: this runs under commandMutex with the embedder
-        // already awaited above.
-        let packed = try await BrokerRecall.recall(
+        // Fetch + merge live behind the BrokerRecall seam. The module takes no
+        // lock: this runs under commandMutex with the embedder already awaited.
+        return try await BrokerRecall.prepare(
             command,
             in: BrokerRecall.Environment(
                 longTermMemory: longTermMemory,
@@ -31,10 +41,17 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { BrokerClock.nowMs() }
+                nowMs: { BrokerClock.nowMs() },
+                reranking: reranking
             )
         )
+    }
 
+    /// Records the hits `packed` returns (under `commandMutex`).
+    func recordRecall(
+        _ command: BrokerCommand.Recall,
+        packed: BrokerRecall.PackedRecall
+    ) async throws -> AgentBrokerValue {
         if let sessionID = command.sessionID {
             let sessionMemory = try await memory(for: sessionID)
             try await refreshSessionManifest(sessionID)
@@ -169,6 +186,12 @@ extension AgentBrokerService {
         )
         guard await longTermMemory.isQueryEmbedderReady() else { return }
         _ = try? await longTermMemory.backfillUnembedded()
+    }
+
+    /// Loads the recall reranker's model now, so the first reranked recall does not wait
+    /// for it.
+    package func prewarmReranker() async {
+        await reranking?.prewarm()
     }
 
     /// Suspends while MiniLM (or the configured provider) is `.loading`, matching remember.

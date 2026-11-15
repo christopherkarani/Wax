@@ -32,6 +32,7 @@ const requiredRuntimeBundles = [
   "MetalANNS_MetalANNSCore.bundle",
   "Wax_Wax.bundle",
   "Wax_WaxBertTokenizer.bundle",
+  "Wax_WaxRerankerMiniLM.bundle",
   "Wax_WaxVectorSearch.bundle",
   "Wax_WaxVectorSearchE5.bundle",
   "Wax_WaxVectorSearchMiniLM.bundle",
@@ -769,8 +770,8 @@ if (forwardedArgs[0] === "install" || forwardedArgs[0] === "setup") {
   if (buildFromSource) {
     console.log("Building Wax from source (this may take a few minutes)...");
     const traits = installArgs.includes("--arctic")
-      ? "MiniLMEmbeddings,E5Embeddings,ArcticEmbeddings,MCPServer"
-      : "MiniLMEmbeddings,E5Embeddings,MCPServer";
+      ? "MiniLMEmbeddings,E5Embeddings,ArcticEmbeddings,MiniLMReranker,MCPServer"
+      : "MiniLMEmbeddings,E5Embeddings,MiniLMReranker,MCPServer";
 
     for (const product of ["wax-cli", "wax-mcp"]) {
       const result = spawnSync("swift", ["build", "--product", product, "--traits", traits], {
@@ -927,9 +928,9 @@ if (forwardedArgs[0] === "vector-health") {
         console.log("     npx -y waxmcp@latest install");
         console.log(`     ${persistentLauncher}`);
         console.log("   Then rerun: npx -y waxmcp@latest vector-health");
-        console.log("\n   Building from source? Build both binaries with MiniLM and e5:");
-        console.log("     swift build --product wax-mcp --traits 'MiniLMEmbeddings,E5Embeddings,MCPServer'");
-        console.log("     swift build --product wax-cli --traits 'MiniLMEmbeddings,E5Embeddings'");
+        console.log("\n   Building from source? Build both binaries with MiniLM, e5 and the reranker:");
+        console.log("     swift build --product wax-mcp --traits 'MiniLMEmbeddings,E5Embeddings,MiniLMReranker,MCPServer'");
+        console.log("     swift build --product wax-cli --traits 'MiniLMEmbeddings,E5Embeddings,MiniLMReranker'");
       }
     }
   } finally {

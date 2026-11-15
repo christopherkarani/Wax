@@ -469,6 +469,8 @@ package enum LayeredRecall {
         package var canonicalFrameID: @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?
         package var endedSessions: any EndedSessionStore
         package var nowMs: @Sendable () -> Int64
+        /// Reranks recall once its hits merge; `nil` keeps the merge's order.
+        package var reranking: RerankStage?
 
         package init(
             longTermMemory: MemoryOrchestrator,
@@ -477,7 +479,8 @@ package enum LayeredRecall {
             preview: @escaping @Sendable (String?) -> String,
             canonicalFrameID: @escaping @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?,
             endedSessions: any EndedSessionStore,
-            nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() }
+            nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() },
+            reranking: RerankStage? = nil
         ) {
             self.longTermMemory = longTermMemory
             self.workingLane = workingLane
@@ -486,6 +489,7 @@ package enum LayeredRecall {
             self.canonicalFrameID = canonicalFrameID
             self.endedSessions = endedSessions
             self.nowMs = nowMs
+            self.reranking = reranking
         }
     }
 

@@ -31,6 +31,14 @@ package struct RerankStage: Sendable {
         self.keepsRetrievalOrderOnFailure = keepsRetrievalOrderOnFailure
     }
 
+    /// Starts loading a lazily loaded built-in model now, so the first reranked search does
+    /// not wait for it. Other providers have nothing to load.
+    package func prewarm() async {
+        if let lazy = provider as? LazyBuiltInReranker {
+            await lazy.prewarm()
+        }
+    }
+
     /// Whether a search in `mode` is reranked.
     package func applies(to mode: SearchMode) -> Bool {
         switch (scope, mode) {
@@ -52,6 +60,19 @@ package struct RerankStage: Sendable {
         results: [SearchResponse.Result],
         text: (SearchResponse.Result) async -> String
     ) async throws -> [SearchResponse.Result] {
+        try await rerank(query: query, items: results, text: text) { result, explanation in
+            result.explanations.append(explanation)
+        }
+    }
+
+    /// ``rerank(query:results:text:)`` for any ranked candidates: `explain` records the
+    /// `rerank:` explanation on each reranked item.
+    package func rerank<Item>(
+        query: String,
+        items results: [Item],
+        text: (Item) async -> String,
+        explain: (inout Item, String) -> Void
+    ) async throws -> [Item] {
         let window = Array(results.prefix(options.candidateCount))
         guard !window.isEmpty else { return results }
         var documents: [String] = []
@@ -74,7 +95,7 @@ package struct RerankStage: Sendable {
         }
         let reordered = Self.fusedOrder(scores: scores, fusion: options.fusion).map { index in
             var result = window[index]
-            result.explanations.append("rerank: score \(scores[index]), retrieval rank \(index + 1)")
+            explain(&result, "rerank: score \(scores[index]), retrieval rank \(index + 1)")
             return result
         }
         return reordered + results.dropFirst(window.count)

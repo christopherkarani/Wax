@@ -280,6 +280,8 @@ package struct AgentBrokerConfiguration: Sendable, Equatable {
     package let noEmbedder: Bool
     package let requireVector: Bool
     package let embedderTuning: CommandLineEmbedderRuntimeTuning
+    /// The broker keeps the merge's order for recall instead of reranking it.
+    package let noRerank: Bool
 
     package init(
         brokerExecutablePath: String,
@@ -289,7 +291,8 @@ package struct AgentBrokerConfiguration: Sendable, Equatable {
         embedderChoice: String,
         noEmbedder: Bool,
         requireVector: Bool,
-        embedderTuning: CommandLineEmbedderRuntimeTuning
+        embedderTuning: CommandLineEmbedderRuntimeTuning,
+        noRerank: Bool = false
     ) {
         self.brokerExecutablePath = brokerExecutablePath
         self.storePath = storePath
@@ -299,6 +302,7 @@ package struct AgentBrokerConfiguration: Sendable, Equatable {
         self.noEmbedder = noEmbedder
         self.requireVector = requireVector
         self.embedderTuning = embedderTuning
+        self.noRerank = noRerank
     }
 }
 
@@ -402,6 +406,7 @@ package enum AgentBrokerPathing {
         noEmbedder: Bool,
         requireVector: Bool = false,
         embedderTuning: CommandLineEmbedderRuntimeTuning? = nil,
+        noRerank: Bool = false,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentBrokerConfiguration {
         // Default tuning comes from the same (possibly injected) environment as
@@ -414,7 +419,9 @@ package enum AgentBrokerPathing {
             environment: environment
         )
         let binaryIdentity = executableIdentity(path: brokerExecutablePath)
+        // A broker without reranking gets its own socket; the default key is unchanged.
         let key = "\(expandedStore)|\(expandedSessionRoot)|\(embedderChoice)|\(noEmbedder)|\(requireVector)|\(embedderTuning.brokerCacheKey)|\(binaryIdentity)"
+            + (noRerank ? "|no-rerank" : "")
         let socketName = "\(stableHexHash(key)).sock"
         let preferredSocketRoot = socketRootPath.map { URL(fileURLWithPath: expandPath($0), isDirectory: true) } ?? brokerSocketRoot(environment: environment)
         let socketRoot = try usableSocketRoot(preferred: preferredSocketRoot, socketName: socketName)
@@ -428,7 +435,8 @@ package enum AgentBrokerPathing {
             embedderChoice: embedderChoice,
             noEmbedder: noEmbedder,
             requireVector: requireVector,
-            embedderTuning: embedderTuning
+            embedderTuning: embedderTuning,
+            noRerank: noRerank
         )
     }
 
