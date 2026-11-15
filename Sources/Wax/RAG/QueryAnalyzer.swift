@@ -85,7 +85,6 @@ package struct QueryAnalyzer: Sendable {
             .filter { !$0.isEmpty && !Self.stopWords.contains($0) }
     }
 
-    /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
     /// `CharacterSet.uppercaseLetters.contains(scalar)`. Foundation's lookup was most of
     /// entity extraction during reranks, and its ASCII members are exactly A-Z.
     static func isUppercaseLetter(_ scalar: Unicode.Scalar) -> Bool {
@@ -93,6 +92,7 @@ package struct QueryAnalyzer: Sendable {
         return CharacterSet.uppercaseLetters.contains(scalar)
     }
 
+    /// Extract entity-like terms (for example: "person18", "atlas10") for intent-aware reranking.
     package func entityTerms(query: String) -> Set<String> {
         let original = query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
