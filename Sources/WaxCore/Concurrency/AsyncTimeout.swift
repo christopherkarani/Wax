@@ -98,7 +98,7 @@ package enum AsyncTimeout {
 
     /// Converts `duration` to a dispatch deadline without overflowing: negative durations
     /// fire immediately and durations past `Int64` nanoseconds never fire.
-    static func dispatchDeadline(after duration: Duration) -> DispatchTime {
+    package static func dispatchDeadline(after duration: Duration) -> DispatchTime {
         let components = duration.components
         guard components.seconds >= 0 else { return .now() }
         let scaled = components.seconds.multipliedReportingOverflow(by: 1_000_000_000)

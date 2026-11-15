@@ -38,6 +38,13 @@ final class MCPRootsFetchGate: @unchecked Sendable {
         return roots
     }
 
+    /// Waits until the outstanding request, if any, has answered and settled the
+    /// backoff. For tests.
+    func waitForOutstandingRequest() async {
+        let task = lock.withLock { inFlight }
+        _ = await task?.value
+    }
+
     /// The outstanding request to join, a new one, or nil while backing off.
     private func claim(
         _ request: @escaping @Sendable () async -> [String]?
