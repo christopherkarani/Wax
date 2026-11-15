@@ -124,3 +124,62 @@ import Testing
         #expect(t.isEmpty)
     }
 }
+
+// MARK: - TokenizationCache
+
+@Test func tokenizationCacheEvictsLeastRecentlyUsed() {
+    let cache = TokenizationCache(capacity: 3)
+    cache.put("a", [1])
+    cache.put("b", [2])
+    cache.put("c", [3])
+    #expect(cache.get("a") == [1])  // a is now most recent; b is least recent
+    cache.put("d", [4])
+    #expect(cache.get("b") == nil)
+    #expect(cache.get("a") == [1])
+    #expect(cache.get("c") == [3])
+    #expect(cache.get("d") == [4])
+    // Recency is now a, c, d (oldest first); updating a keeps one entry and refreshes it.
+    cache.put("a", [9, 9])
+    cache.put("e", [5])
+    #expect(cache.get("c") == nil)
+    #expect(cache.get("a") == [9, 9])
+    #expect(cache.get("d") == [4])
+    #expect(cache.get("e") == [5])
+    #expect(cache.count == 3)
+    cache.clear()
+    #expect(cache.count == 0)
+    #expect(cache.get("a") == nil)
+    cache.put("f", [6])
+    #expect(cache.get("f") == [6])
+}
+
+@Test func tokenizationCacheMatchesReferenceLRUUnderChurn() {
+    // A reference LRU (array, oldest first) driven by the same random get/put stream.
+    let capacity = 5
+    let cache = TokenizationCache(capacity: capacity)
+    var reference: [(key: String, value: [UInt32])] = []
+    var state: UInt64 = 0x5EED
+    func next(_ bound: Int) -> Int {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Int((state >> 33) % UInt64(bound))
+    }
+    for step in 0..<5_000 {
+        let key = "k\(next(9))"
+        if next(2) == 0 {
+            let expected: [UInt32]? = reference.first(where: { $0.key == key })?.value
+            #expect(cache.get(key) == expected, "step \(step) get \(key)")
+            if let index = reference.firstIndex(where: { $0.key == key }) {
+                reference.append(reference.remove(at: index))
+            }
+        } else {
+            let value: [UInt32] = [UInt32(step)]
+            cache.put(key, value)
+            if let index = reference.firstIndex(where: { $0.key == key }) {
+                reference.remove(at: index)
+            }
+            reference.append((key, value))
+            if reference.count > capacity { reference.removeFirst() }
+        }
+        #expect(cache.count == reference.count, "step \(step)")
+    }
+}
