@@ -19,7 +19,7 @@ func muteWaxCLIBrokerIsReplacedOnLinux() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let configuration = AgentBrokerConfiguration(
-        brokerExecutablePath: try siblingWaxCLIPath(),
+        brokerExecutablePath: try builtProductPath(named: "wax-cli"),
         storePath: root.appendingPathComponent("store.wax").path,
         sessionRootPath: root.appendingPathComponent("sessions").path,
         socketPath: root.appendingPathComponent("broker.sock").path,
@@ -64,17 +64,6 @@ func muteWaxCLIBrokerIsReplacedOnLinux() async throws {
         configuration: configuration
     )
     #expect(stats?.ok == true)
-}
-
-/// `wax-cli` built beside this test binary. `/proc/self/exe` names the test
-/// binary itself, so no `Bundle` lookup is needed.
-private func siblingWaxCLIPath() throws -> String {
-    let testBinary = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()
-    let sibling = testBinary.deletingLastPathComponent().appendingPathComponent("wax-cli").path
-    return try #require(
-        FileManager.default.isExecutableFile(atPath: sibling) ? sibling : nil,
-        "wax-cli is not built beside \(testBinary.path)"
-    )
 }
 
 /// Polls until every thread of `pid` is in the stopped state ('T' in

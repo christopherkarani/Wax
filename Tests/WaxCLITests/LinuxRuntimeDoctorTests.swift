@@ -122,8 +122,7 @@ import WaxCore
             .appendingPathComponent("wax-linux-doctor-cli-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let cli = URL(fileURLWithPath: "/proc/self/exe").resolvingSymlinksInPath()
-            .deletingLastPathComponent().appendingPathComponent("wax-cli")
+        let cli = URL(fileURLWithPath: try builtProductPath(named: "wax-cli"))
 
         let process = ChildProcess()
         process.executableURL = cli

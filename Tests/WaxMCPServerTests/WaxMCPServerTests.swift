@@ -7795,9 +7795,7 @@ private func testProductsDirectory() -> URL {
     #else
     // swift-corelibs-foundation crashes in CFBundleGetAllBundles under
     // Bundle(for:). On Linux the test bundle is the running executable.
-    let executable = (try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/self/exe"))
-        ?? CommandLine.arguments[0]
-    return URL(fileURLWithPath: executable).deletingLastPathComponent()
+    return TestExecutables.builtProductDirectories()[0]
     #endif
 }
 
