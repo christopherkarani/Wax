@@ -207,3 +207,24 @@ import Testing
     #expect(decomposedCount == counter.encode(decomposed).count)
     #expect(composedCount != decomposedCount)
 }
+
+@Test func tokenizationCacheEncodesAMissOnceAndKeepsLRUOrder() {
+    let cache = TokenizationCache(capacity: 2)
+    var encoded: [String] = []
+    func tokens(_ text: String) -> [UInt32] {
+        cache.tokens(for: text) { text in
+            encoded.append(text)
+            return [UInt32(text.utf8.count)]
+        }
+    }
+    #expect(tokens("ab") == [2])
+    #expect(tokens("ab") == [2])
+    #expect(encoded == ["ab"])
+    #expect(tokens("cde") == [3])
+    #expect(tokens("ab") == [2])  // "ab" is now the most recent, so "cde" is evicted next.
+    #expect(tokens("f") == [1])
+    #expect(cache.count == 2)
+    #expect(cache.get("cde") == nil)
+    #expect(cache.get("ab") == [2])
+    #expect(encoded == ["ab", "cde", "f"])
+}

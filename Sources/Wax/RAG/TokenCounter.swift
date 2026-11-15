@@ -97,19 +97,7 @@ package actor TokenCounter {
     package func truncate(_ text: String, maxTokens: Int) async -> String {
         guard maxTokens > 0 else { return "" }
 
-        // Check cache for existing encoding
-        if let cachedTokens = encodingCache.get(text) {
-            if cachedTokens.count <= maxTokens {
-                return text
-            }
-            let sliced = Array(cachedTokens.prefix(maxTokens))
-            return decode(sliced)
-        }
-
-        // Encode and cache
-        let tokens = encode(text)
-        encodingCache.put(text, tokens)
-
+        let tokens = encodingCache.tokens(for: text, orEncode: encode)
         if tokens.count <= maxTokens {
             return text
         }
@@ -121,13 +109,7 @@ package actor TokenCounter {
     /// of twice when it already fits.
     package func truncateCounted(_ text: String, maxTokens: Int) async -> (text: String, tokens: Int) {
         guard maxTokens > 0 else { return ("", count("")) }
-        let tokens: [UInt32]
-        if let cachedTokens = encodingCache.get(text) {
-            tokens = cachedTokens
-        } else {
-            tokens = encode(text)
-            encodingCache.put(text, tokens)
-        }
+        let tokens = encodingCache.tokens(for: text, orEncode: encode)
         // `count(text)` is `encode(text).count`, which is what the cache holds for `text`.
         if tokens.count <= maxTokens {
             return (text, tokens.count)
@@ -330,21 +312,32 @@ package actor TokenCounter {
 final class TokenizationCache {
     /// A text compared and hashed by its UTF-8 bytes. Tokens come from the bytes, while
     /// `String` equality is canonical equivalence: "caf\u{E9}" and "cafe\u{301}" are equal
-    /// strings with 2 and 3 tokens. Hashing bytes also skips `String`'s normalization.
+    /// strings with 2 and 3 tokens. The bytes are hashed once, when the key is made, since
+    /// a miss looks the key up, inserts it and later evicts it.
     private struct UTF8Key: Hashable {
         let text: String
+        let bytesHash: Int
 
-        static func == (lhs: UTF8Key, rhs: UTF8Key) -> Bool {
-            lhs.text.utf8.count == rhs.text.utf8.count && lhs.text.utf8.elementsEqual(rhs.text.utf8)
-        }
-
-        func hash(into hasher: inout Hasher) {
+        init(_ text: String) {
+            self.text = text
+            var hasher = Hasher()
             let hashed: Void? = text.utf8.withContiguousStorageIfAvailable {
                 hasher.combine(bytes: UnsafeRawBufferPointer($0))
             }
             if hashed == nil {
                 Array(text.utf8).withUnsafeBytes { hasher.combine(bytes: $0) }
             }
+            self.bytesHash = hasher.finalize()
+        }
+
+        static func == (lhs: UTF8Key, rhs: UTF8Key) -> Bool {
+            lhs.bytesHash == rhs.bytesHash
+                && lhs.text.utf8.count == rhs.text.utf8.count
+                && lhs.text.utf8.elementsEqual(rhs.text.utf8)
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(bytesHash)
         }
     }
 
@@ -375,20 +368,37 @@ final class TokenizationCache {
 
     /// Cached tokens for `text`, marking it most recently used.
     func get(_ text: String) -> [UInt32]? {
-        guard let slot = slotByKey[UTF8Key(text: text)] else { return nil }
+        guard let slot = slotByKey[UTF8Key(text)] else { return nil }
         moveToNewest(slot)
         return slots[slot].value
+    }
+
+    /// Cached tokens for `text`, or `encode(text)` cached as most recently used.
+    func tokens(for text: String, orEncode encode: (String) -> [UInt32]) -> [UInt32] {
+        let key = UTF8Key(text)
+        if let slot = slotByKey[key] {
+            moveToNewest(slot)
+            return slots[slot].value
+        }
+        let tokens = encode(text)
+        insert(key, tokens)
+        return tokens
     }
 
     /// Caches `tokens` for `text` as most recently used, evicting the least recently used
     /// entry when over capacity.
     func put(_ text: String, _ tokens: [UInt32]) {
-        let key = UTF8Key(text: text)
+        let key = UTF8Key(text)
         if let slot = slotByKey[key] {
             slots[slot].value = tokens
             moveToNewest(slot)
             return
         }
+        insert(key, tokens)
+    }
+
+    /// Adds `key`, which must not be cached, as most recently used.
+    private func insert(_ key: UTF8Key, _ tokens: [UInt32]) {
         let entry = Slot(key: key, value: tokens, older: newest, newer: Self.none)
         let slot: Int
         if let reused = freeSlots.popLast() {
@@ -431,7 +441,7 @@ final class TokenizationCache {
         guard slot != Self.none else { return }
         unlink(slot)
         slotByKey.removeValue(forKey: slots[slot].key)
-        slots[slot].key = UTF8Key(text: "")
+        slots[slot].key = UTF8Key("")
         slots[slot].value = []
         freeSlots.append(slot)
     }
