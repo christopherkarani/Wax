@@ -199,7 +199,8 @@ func reopenCosineStoreWithUndeclaredSimilarityKeepsWorking() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func dotProductStoreReopensWhileProviderLoadsThenAttaches() async throws {
     try await TempFiles.withTempFile { url in
         try await seed(url, with: KeyedEmbedder(similarity: .dotProduct))
@@ -220,7 +221,8 @@ func dotProductStoreReopensWhileProviderLoadsThenAttaches() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func lateAttachWithDifferentSimilarityMarksEmbedderUnavailable() async throws {
     try await TempFiles.withTempFile { url in
         try await seed(url, with: KeyedEmbedder(similarity: .cosine))
@@ -247,7 +249,8 @@ func lateAttachWithDifferentSimilarityMarksEmbedderUnavailable() async throws {
     }
 }
 
-@Test
+// Waits on readiness with no deadline; the limit only turns a hang into a failure.
+@Test(.timeLimit(.minutes(5)))
 func lateAttachOnEmptyStoreUsesProviderSimilarity() async throws {
     try await TempFiles.withTempFile { url in
         let gate = Gate()

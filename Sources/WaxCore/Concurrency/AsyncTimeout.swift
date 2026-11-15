@@ -39,15 +39,16 @@ package enum AsyncTimeout {
         operation name: StaticString,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await run(timeout: timeout, operation: name, beforeOperation: nil, operation)
+        try await run(timeout: timeout, operation: name, startingWith: { body in Task { await body() } }, operation)
     }
 
-    /// `beforeOperation` runs first in the operation's task, before the deadline is
-    /// armed; tests use it to stand in for that task waiting for a thread.
+    /// `launch` starts the operation's task around `body`. Tests pass one that delays the
+    /// start, standing in for that task waiting for a thread; product code always uses
+    /// a plain `Task`.
     static func run<T: Sendable>(
         timeout: Duration,
         operation name: StaticString,
-        beforeOperation: (@Sendable () async -> Void)?,
+        startingWith launch: (@escaping @Sendable () async -> Void) -> Task<Void, Never>,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         let once = OnceThrowingContinuation<T>()
@@ -62,8 +63,9 @@ package enum AsyncTimeout {
             deadline.cancel()
         }
 
-        operationTask.set(Task {
-            await beforeOperation?()
+        operationTask.set(launch {
+            // Armed first, before any await or actor hop: an operation that starts and
+            // then waits on a busy actor or a lost continuation is still bounded.
             // A serial queue of its own, not a global one: GCD always gives a serial
             // queue a thread, while it caps a global queue's threads by the core count,
             // and on a busy host a blocked operation could finish before its timeout fired.
