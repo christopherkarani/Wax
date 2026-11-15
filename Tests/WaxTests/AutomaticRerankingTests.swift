@@ -81,10 +81,10 @@ private func automaticStage(_ provider: any RerankingProvider) async throws -> R
         #expect(stage == nil)
     }
 
-    @Test func automaticReranksTextAndHybridButNotVectorOnly() async throws {
+    @Test func automaticReranksHybridSearchesOnly() async throws {
         let stage = try #require(try await automaticStage(MarkerReranker(marker: "zebra")))
-        #expect(stage.applies(to: .textOnly))
         #expect(stage.applies(to: .hybrid(alpha: 0.4)))
+        #expect(!stage.applies(to: .textOnly))
         #expect(!stage.applies(to: .vectorOnly))
     }
 
@@ -114,14 +114,16 @@ private func automaticStage(_ provider: any RerankingProvider) async throws -> R
         #expect(rerankedPosition < plainPosition)
     }
 
-    @Test func vectorOnlyRecallSkipsTheAutomaticReranker() async throws {
+    /// Text-only searches are exact lookups (IDs, quoted strings) a cross-encoder can demote.
+    @Test(arguments: [SearchMode.vectorOnly, .textOnly])
+    func singleLaneRecallSkipsTheAutomaticReranker(mode: SearchMode) async throws {
         let reranker = MarkerReranker(marker: "zebra")
         let stage = try #require(try await automaticStage(reranker))
         let reranked = try await withOrchestrator(reranking: stage) {
-            try await $0.recall(query: "apple", mode: .vectorOnly)
+            try await $0.recall(query: "apple", mode: SearchModeRequest(mode))
         }
         let plain = try await withOrchestrator(reranking: nil) {
-            try await $0.recall(query: "apple", mode: .vectorOnly)
+            try await $0.recall(query: "apple", mode: SearchModeRequest(mode))
         }
         #expect(await reranker.callCount == 0)
         #expect(docIDs(reranked) == docIDs(plain))
@@ -130,10 +132,10 @@ private func automaticStage(_ provider: any RerankingProvider) async throws -> R
     @Test func automaticRerankingKeepsTheRetrievalOrderWhenTheRerankerFails() async throws {
         let stage = try #require(try await automaticStage(FailingReranker()))
         let reranked = try await withOrchestrator(reranking: stage) {
-            try await $0.recall(query: "apple", mode: .textOnly)
+            try await $0.recall(query: "apple", mode: .hybrid(alpha: 0.4))
         }
         let plain = try await withOrchestrator(reranking: nil) {
-            try await $0.recall(query: "apple", mode: .textOnly)
+            try await $0.recall(query: "apple", mode: .hybrid(alpha: 0.4))
         }
         #expect(!docIDs(plain).isEmpty)
         #expect(docIDs(reranked) == docIDs(plain))

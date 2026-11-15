@@ -18,7 +18,7 @@ public actor Memory {
         /// Which embedding provider backs vector search.
         public var embedding: EmbeddingSource
         /// Which reranker, if any, reorders each search's top candidates. Defaults to
-        /// ``RerankingSource/automatic``: hybrid and text searches are reranked by the built-in
+        /// ``RerankingSource/automatic``: hybrid searches are reranked by the built-in
         /// cross-encoder when the build includes it.
         public var reranking: RerankingSource
 

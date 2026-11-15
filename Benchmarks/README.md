@@ -84,7 +84,7 @@ Contriever was trained for dot product, so pass `--embedder-similarity dot` (def
 the bare baseline does. It applies to `--embedder http://...` only.
 
 Without `--rerank`, `retrieve` uses `Memory`'s default reranking: the built-in cross-encoder
-(`MiniLMReranker` trait) reranks the top 20 candidates of hybrid and text searches, fused by
+(`MiniLMReranker` trait) reranks the top 20 candidates of hybrid searches, fused by
 reciprocal rank (k = 10). `--rerank none` turns it off. `--rerank minilm` reranks every search
 with the settings below. `--rerank-candidates N` (default 20) sets how many candidates it
 scores, `--rerank-fusion rrf:<k> | ce` (default `rrf:10`) how its order is fused with the

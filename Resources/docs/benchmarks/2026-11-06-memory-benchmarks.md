@@ -101,7 +101,7 @@ shipped.
 ### Reranking
 
 Reranking is on by default: `Memory.Config.reranking = .automatic` rescores the top 20
-hybrid and text candidates (vector-only searches are not reranked; `.disabled` turns it off) with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
+hybrid candidates (text-only and vector-only searches are not reranked; `.disabled` turns it off) with cross-encoder/ms-marco-MiniLM-L-6-v2, bundled as a 22 MB Core ML model
 behind the `MiniLMReranker` trait. Each frame is scored as its best 288-token window, and
 the reranker order is fused with the retrieval order by reciprocal rank (k = 10). The
 graph computes in FP16 over INT8 weights; scores match PyTorch to 0.084 logits on the CPU

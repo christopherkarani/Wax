@@ -42,7 +42,7 @@ Source: `Sources/Wax/Memory.swift`
 
 `public enum RerankingSource: Sendable` — selects the reranker, if any, that reorders each search's top candidates before context assembly (`config.reranking`):
 
-- `.automatic` (default) — hybrid and text searches rerank their top 20 candidates with the built-in `BuiltInReranker.msMarcoMiniLM` (`RerankingOptions.default`); vector-only searches are not reranked. The model loads on the first reranked search. Without the `MiniLMReranker` trait (on by default), before iOS 18/macOS 15, or when the reranker throws, results keep their retrieval order.
+- `.automatic` (default) — hybrid searches rerank their top 20 candidates with the built-in `BuiltInReranker.msMarcoMiniLM` (`RerankingOptions.default`); text-only searches (exact lookups such as IDs or quoted strings, which a cross-encoder can demote) and vector-only searches are not reranked. The model loads on the first reranked search. Without the `MiniLMReranker` trait (on by default), before iOS 18/macOS 15, or when the reranker throws, results keep their retrieval order.
 - `.disabled` — results keep their retrieval order.
 - `.builtIn(BuiltInReranker, RerankingOptions = .default)` — a built-in reranker on the CPU; store creation throws `BuiltInRerankerError.unavailable` when its trait is not enabled or the OS is older than iOS 18/macOS 15.
 - `.custom(any RerankingProvider, RerankingOptions = .default)` — your own reranker, or one from `BuiltInRerankers.make(_:computeUnit:timeoutSeconds:)` to run a built-in one on another compute unit.

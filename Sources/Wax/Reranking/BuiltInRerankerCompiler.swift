@@ -48,7 +48,7 @@ package enum BuiltInRerankerCompiler {
             return RerankStage(
                 provider: provider,
                 options: .default,
-                scope: .textAndHybrid,
+                scope: .hybridOnly,
                 keepsRetrievalOrderOnFailure: true
             )
         case .disabled:

@@ -8,8 +8,9 @@ package struct RerankStage: Sendable {
     package enum Scope: Sendable, Equatable {
         /// Every search, whatever its mode: a reranker the caller chose.
         case allModes
-        /// Text and hybrid searches. Vector-only searches keep their retrieval order.
-        case textAndHybrid
+        /// Hybrid searches only. Text-only searches (often exact lookups such as IDs or quoted
+        /// strings) and vector-only searches keep their retrieval order.
+        case hybridOnly
     }
 
     package let provider: any RerankingProvider
@@ -35,10 +36,10 @@ package struct RerankStage: Sendable {
         switch (scope, mode) {
         case (.allModes, _):
             true
-        case (.textAndHybrid, .vectorOnly):
-            false
-        case (.textAndHybrid, .textOnly), (.textAndHybrid, .hybrid):
+        case (.hybridOnly, .hybrid):
             true
+        case (.hybridOnly, .textOnly), (.hybridOnly, .vectorOnly):
+            false
         }
     }
 

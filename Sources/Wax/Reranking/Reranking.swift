@@ -95,10 +95,11 @@ public enum BuiltInRerankers {
 extension Memory {
     /// Selects the reranker, if any, that reorders a search's top candidates.
     public enum RerankingSource: Sendable {
-        /// The default: hybrid and text searches rerank their top 20 candidates with the
-        /// built-in ms-marco-MiniLM-L-6-v2 cross-encoder (``RerankingOptions/default``), the
-        /// configuration behind Wax's published LongMemEval and LoCoMo results. Vector-only
-        /// searches are not reranked. The model loads on the first reranked search. Without
+        /// The default: hybrid searches rerank their top 20 candidates with the built-in
+        /// ms-marco-MiniLM-L-6-v2 cross-encoder (``RerankingOptions/default``), the
+        /// configuration behind Wax's published LongMemEval and LoCoMo results. Text-only
+        /// searches (often exact lookups such as IDs or quoted strings, which a cross-encoder
+        /// can demote) and vector-only searches are not reranked. The model loads on the first reranked search. Without
         /// the `MiniLMReranker` trait (on by default), before iOS 18 / macOS 15, or if the
         /// model fails to load, results keep their retrieval order.
         case automatic
