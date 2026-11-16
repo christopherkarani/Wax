@@ -144,6 +144,15 @@ func leavesMovedAnchorsAlone(input: String, expected: String) {
     ("Last Monday she told me she had arrived yesterday.", "Last Monday (21 Aug 2023) she told me she had arrived yesterday."),
     ("She promised she'd call this coming Friday.", "She promised she'd call this coming Friday."),
     ("He wrote that he was going to move next month.", "He wrote that he was going to move next month."),
+    // Abbreviation periods do not end the sentence.
+    ("She told me Dr. Lee would call tomorrow.", "She told me Dr. Lee would call tomorrow."),
+    ("He said Mr. Jones would come next week.", "He said Mr. Jones would come next week."),
+    ("He said he would come, e.g. tomorrow.", "He said he would come, e.g. tomorrow."),
+    ("She said J. Smith would visit tomorrow.", "She said J. Smith would visit tomorrow."),
+    // Pluperfect reports carry the backshift before the verb.
+    ("He'd said tomorrow was fine.", "He'd said tomorrow was fine."),
+    ("She had promised tomorrow would work.", "She had promised tomorrow would work."),
+    ("He’d told me last week was fine.", "He’d told me last week was fine."),
 ])
 func leavesBackshiftedReportedTimesAlone(input: String, expected: String) {
     #expect(annotated(input) == expected)
@@ -156,6 +165,8 @@ func leavesBackshiftedReportedTimesAlone(input: String, expected: String) {
     ("I told my boss I am out tomorrow.", "I told my boss I am out tomorrow (23 Aug 2023)."),
     ("She told me she was busy tonight.", "She told me she was busy tonight (22 Aug 2023)."),
     ("He said so. He would come tomorrow.", "He said so. He would come tomorrow (23 Aug 2023)."),
+    ("He said so! Would you come tomorrow?", "He said so! Would you come tomorrow (23 Aug 2023)?"),
+    ("He said tomorrow was fine.", "He said tomorrow (23 Aug 2023) was fine."),
 ])
 func annotatesTimesWithoutABackshift(input: String, expected: String) {
     #expect(annotated(input) == expected)
@@ -231,22 +242,24 @@ func dateTimesUseTheDateAsWrittenAndTheHelperUsesTheLocalDay() throws {
 
 // MARK: - Cost
 
-/// Median wall time of three annotations of `phrase` repeated `count` times.
-private func medianSeconds(_ phrase: String, count: Int) -> Double {
-    let text = String(repeating: phrase, count: count)
-    let clock = ContinuousClock()
-    let times = (0..<3).map { _ in
-        clock.measure { _ = RelativeDateAnnotator(observedDay: tuesday).annotate(text) }
-    }
-    let seconds = times.map { Double($0.components.seconds) + Double($0.components.attoseconds) / 1e18 }
-    return seconds.sorted()[1]
+private func seconds(_ duration: Duration) -> Double {
+    Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
 }
 
-/// Linear cost grows about 4× from 8,000 to 32,000 phrases; the old per-phrase scan to the
-/// sentence boundary grew about 16×.
-@Test(arguments: ["and yesterday ", "the yesterday "])
+/// Linear cost grows about 4× from 2,000 to 8,000 phrases; a per-phrase scan to the sentence
+/// boundary grows about 16×. Small and large runs alternate so both see the same load from
+/// parallel tests, and each keeps its fastest run, since contention only adds time.
+@Test(arguments: ["and yesterday ", "the yesterday ", "he said tomorrow ", "said would tomorrow "])
 func annotationTimeGrowsLinearly(phrase: String) {
-    let small = medianSeconds(phrase, count: 8_000)
-    let large = medianSeconds(phrase, count: 32_000)
-    #expect(large / small < 8, "8k \(small) s, 32k \(large) s")
+    let annotator = RelativeDateAnnotator(observedDay: tuesday)
+    let smallText = String(repeating: phrase, count: 2_000)
+    let largeText = String(repeating: phrase, count: 8_000)
+    let clock = ContinuousClock()
+    var small = Double.infinity
+    var large = Double.infinity
+    for _ in 0..<5 {
+        small = min(small, seconds(clock.measure { _ = annotator.annotate(smallText) }))
+        large = min(large, seconds(clock.measure { _ = annotator.annotate(largeText) }))
+    }
+    #expect(large / small < 8, "2k \(small) s, 8k \(large) s")
 }

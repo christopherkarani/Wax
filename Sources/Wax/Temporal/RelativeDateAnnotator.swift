@@ -41,13 +41,13 @@ package struct RelativeDateAnnotator: Sendable {
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
         guard !matches.isEmpty else { return unchanged }
 
-        let quoted = Self.quotedLocations(in: source)
+        let scan = TextScan(quoted: Self.quotedLocations(in: source), reports: Self.reportLocations(in: text, source))
         var output = ""
         var outputUTF8 = 0
         var cursor = 0
         var insertions: [Insertion] = []
         for match in matches {
-            guard let label = label(for: match, in: source, quoted: quoted) else { continue }
+            guard let label = label(for: match, in: source, scan: scan) else { continue }
             let end = match.range.location + match.range.length
             let kept = source.substring(with: NSRange(location: cursor, length: end - cursor))
             output += kept
@@ -65,8 +65,16 @@ package struct RelativeDateAnnotator: Sendable {
 
     // MARK: - Resolution
 
-    private func label(for match: NSTextCheckingResult, in source: NSString, quoted: IndexSet) -> String? {
-        guard !quoted.contains(match.range.location) else { return nil }
+    /// Whole-text facts the per-phrase guards look up, computed once per text.
+    private struct TextScan {
+        /// UTF-16 locations inside quotes.
+        let quoted: IndexSet
+        /// Sorted start locations of reporting verbs, each with any "had" or "'d" before it.
+        let reports: [Int]
+    }
+
+    private func label(for match: NSTextCheckingResult, in source: NSString, scan: TextScan) -> String? {
+        guard !scan.quoted.contains(match.range.location) else { return nil }
         let context = Self.context(of: match.range, in: source)
         let previous = Self.previousWords(in: context.before)
         guard Self.isAnnotatable(match.range, in: source, context: context, previous: previous) else { return nil }
@@ -80,7 +88,7 @@ package struct RelativeDateAnnotator: Sendable {
         // "a week from today", "the week before last week", "since yesterday": not the date.
         if let word = previous.first, Self.anchorMovingWords.contains(word) { return nil }
         // "He said last month that he would come next week": next week from when he said it.
-        guard !Self.isBackshiftedReport(in: source, before: match.range.location) else { return nil }
+        guard !Self.isBackshiftedReport(in: source, before: match.range.location, reports: scan.reports) else { return nil }
         guard let label = resolve(group, previous: previous) else { return nil }
         // Already followed by its own label: annotated before, in any year.
         guard !context.after.hasPrefix(" (\(label))") else { return nil }
@@ -274,14 +282,72 @@ package struct RelativeDateAnnotator: Sendable {
         return clauseWords.contains(rest.prefix(while: { $0.isLetter }).lowercased())
     }
 
-    /// The sentence so far has a reporting verb and then a backshift ("said … would",
-    /// "told me she had"), so its times are relative to the report, not the observation.
-    private static func isBackshiftedReport(in source: NSString, before location: Int) -> Bool {
-        guard let backshiftRegex else { return false }
-        let start = max(0, location - reportWindow)
-        let sentence = sentencePrefix(source.substring(with: NSRange(location: start, length: location - start)))
-        let range = NSRange(location: 0, length: (sentence as NSString).length)
-        return backshiftRegex.firstMatch(in: sentence, range: range) != nil
+    /// Start locations of reporting verbs, with any "had" or "'d" before them, in text order.
+    private static func reportLocations(in text: String, _ source: NSString) -> [Int] {
+        guard let reportingVerbRegex else { return [] }
+        return reportingVerbRegex.matches(in: text, range: NSRange(location: 0, length: source.length)).map(\.range.location)
+    }
+
+    /// The sentence before `location` has a reporting verb and then a backshift ("said …
+    /// would", "told me she had"), or a pluperfect report ("he'd said"), so its times are
+    /// relative to the report, not the observation.
+    private static func isBackshiftedReport(in source: NSString, before location: Int, reports: [Int]) -> Bool {
+        guard let backshiftRegex, !reports.isEmpty else { return false }
+        let start = sentenceStart(in: source, before: location)
+        // The first reporting verb at or after the sentence start.
+        var low = 0
+        var high = reports.count
+        while low < high {
+            let middle = (low + high) / 2
+            if reports[middle] < start { low = middle + 1 } else { high = middle }
+        }
+        guard low < reports.count, reports[low] < location else { return false }
+        let slice = source.substring(with: NSRange(location: reports[low], length: location - reports[low]))
+        return backshiftRegex.firstMatch(in: slice, range: NSRange(location: 0, length: (slice as NSString).length)) != nil
+    }
+
+    /// Where the sentence holding `location` starts, at most ``reportWindow`` units back. A
+    /// period ends a sentence only before whitespace and an uppercase letter, and not after
+    /// an abbreviation or a single letter ("Dr. Lee", "e.g. tomorrow", "J. Smith").
+    private static func sentenceStart(in source: NSString, before location: Int) -> Int {
+        let floor = max(0, location - reportWindow)
+        var index = location - 1
+        while index >= floor {
+            switch source.character(at: index) {
+            case 0x0A, 0x21, 0x3F: // newline ! ?
+                return index + 1
+            case 0x2E where endsSentence(periodAt: index, in: source):
+                return index + 1
+            default:
+                index -= 1
+            }
+        }
+        return floor
+    }
+
+    private static func endsSentence(periodAt index: Int, in source: NSString) -> Bool {
+        var next = index + 1
+        guard next < source.length, isSpace(source.character(at: next)) else { return false }
+        while next < source.length, isSpace(source.character(at: next)) { next += 1 }
+        guard next < source.length, isUppercase(source.character(at: next)) else { return false }
+        var wordStart = index
+        while wordStart > 0, isLetter(source.character(at: wordStart - 1)) { wordStart -= 1 }
+        let word = source.substring(with: NSRange(location: wordStart, length: index - wordStart)).lowercased()
+        return word.count > 1 && !abbreviations.contains(word)
+    }
+
+    private static let abbreviations: Set<String> = ["mr", "mrs", "ms", "dr", "st", "jr", "sr", "prof", "etc", "vs"]
+
+    private static func isSpace(_ unit: unichar) -> Bool {
+        unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0xA0
+    }
+
+    private static func isLetter(_ unit: unichar) -> Bool {
+        Unicode.Scalar(unit).map { $0.properties.isAlphabetic } ?? false
+    }
+
+    private static func isUppercase(_ unit: unichar) -> Bool {
+        Unicode.Scalar(unit).map { $0.properties.isUppercase } ?? false
     }
 
     private static func sentencePrefix(_ before: String) -> String {
@@ -415,14 +481,21 @@ package struct RelativeDateAnnotator: Sendable {
         options: [.caseInsensitive]
     )
 
-    private static let backshiftRegex: NSRegularExpression? = {
+    /// A reporting verb, with "had" or "'d" before it when there is one, so a match starts
+    /// at the pluperfect's backshift.
+    private static let reportingVerbRegex: NSRegularExpression? = {
         let verbs = "said|told|wrote|texted|messaged|emailed|promised|mentioned|asked|replied|explained|claimed"
-        let backshift = "\\bwould\\b|['’]d\\b|\\b(?:was|were)\\s+going\\s+to\\b|\\bhad\\b"
         return try? NSRegularExpression(
-            pattern: "\\b(?:\(verbs))\\b.*(?:\(backshift))",
+            pattern: "(?:(?:\\bhad|['’]d)\\s+)?\\b(?:\(verbs))\\b",
             options: [.caseInsensitive]
         )
     }()
+
+    /// A backshift marker: would, 'd, was/were going to, had.
+    private static let backshiftRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "\\bwould\\b|['’]d\\b|\\b(?:was|were)\\s+going\\s+to\\b|\\bhad\\b",
+        options: [.caseInsensitive]
+    )
 
     private static let absoluteDateRegex: NSRegularExpression? = {
         let month = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?"
