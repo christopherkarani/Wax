@@ -35,20 +35,32 @@ package struct RelativeDateAnnotator: Sendable {
     }
 
     package func annotate(_ text: String) -> Result {
+        var work = 0
+        return annotate(text, work: &work)
+    }
+
+    /// Annotates `text` and adds to `work` the UTF-16 units read: one text length for each
+    /// whole-text pass, plus every unit a per-phrase guard reads. Tests use it to check that
+    /// the cost stays linear in the text without timing anything.
+    package func annotate(_ text: String, work: inout Int) -> Result {
         let unchanged = Result(text: text, insertions: [])
         guard let regex = Self.phraseRegex else { return unchanged }
         let source = text as NSString
+        work += source.length
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
         guard !matches.isEmpty else { return unchanged }
 
+        // The quote scan and the reporting-verb pass.
+        work += 2 * source.length
         let scan = TextScan(quoted: Self.quotedLocations(in: source), reports: Self.reportLocations(in: text, source))
         var output = ""
         var outputUTF8 = 0
         var cursor = 0
         var insertions: [Insertion] = []
         for match in matches {
-            guard let label = label(for: match, in: source, scan: scan) else { continue }
+            guard let label = label(for: match, in: source, scan: scan, work: &work) else { continue }
             let end = match.range.location + match.range.length
+            work += end - cursor
             let kept = source.substring(with: NSRange(location: cursor, length: end - cursor))
             output += kept
             outputUTF8 += kept.utf8.count
@@ -59,6 +71,7 @@ package struct RelativeDateAnnotator: Sendable {
             cursor = end
         }
         guard !insertions.isEmpty else { return unchanged }
+        work += source.length - cursor
         output += source.substring(from: cursor)
         return Result(text: output, insertions: insertions)
     }
@@ -73,24 +86,35 @@ package struct RelativeDateAnnotator: Sendable {
         let reports: [Int]
     }
 
-    private func label(for match: NSTextCheckingResult, in source: NSString, scan: TextScan) -> String? {
+    private func label(
+        for match: NSTextCheckingResult,
+        in source: NSString,
+        scan: TextScan,
+        work: inout Int
+    ) -> String? {
         guard !scan.quoted.contains(match.range.location) else { return nil }
         let context = Self.context(of: match.range, in: source)
-        let previous = Self.previousWords(in: context.before)
-        guard Self.isAnnotatable(match.range, in: source, context: context, previous: previous) else { return nil }
+        work += context.before.utf16.count + context.after.utf16.count
+        let previous = Self.previousWords(in: context.before, work: &work)
+        guard Self.isAnnotatable(match.range, in: source, context: context, previous: previous, work: &work) else {
+            return nil
+        }
         func group(_ name: String) -> String? {
             let range = match.range(withName: name)
             guard range.location != NSNotFound else { return nil }
             return source.substring(with: range).lowercased()
         }
         let phrase = source.substring(with: match.range).lowercased()
-        guard !Self.isFinalOrPossessive(phrase, previous: previous, after: context.after) else { return nil }
+        guard !Self.isFinalOrPossessive(phrase, previous: previous, after: context.after, work: &work) else { return nil }
         // "a week from today", "the week before last week", "since yesterday": not the date.
         if let word = previous.first, Self.anchorMovingWords.contains(word) { return nil }
         // "He said last month that he would come next week": next week from when he said it.
-        guard !Self.isBackshiftedReport(in: source, before: match.range.location, reports: scan.reports) else { return nil }
+        guard !Self.isBackshiftedReport(in: source, before: match.range.location, reports: scan.reports, work: &work) else {
+            return nil
+        }
         guard let label = resolve(group, previous: previous) else { return nil }
         // Already followed by its own label: annotated before, in any year.
+        work += label.utf16.count
         guard !context.after.hasPrefix(" (\(label))") else { return nil }
         return label
     }
@@ -221,30 +245,34 @@ package struct RelativeDateAnnotator: Sendable {
         _ range: NSRange,
         in source: NSString,
         context: (before: String, after: String),
-        previous: [String]
+        previous: [String],
+        work: inout Int
     ) -> Bool {
         let (before, following) = context
         // Possessive, hyphenated, or followed by "of" ("last week of August").
         if following.hasPrefix("'s") || following.hasPrefix("’s") || following.hasPrefix("-") { return false }
+        work += 4
         if let ofRegex, ofRegex.firstMatch(in: following, range: NSRange(location: 0, length: min(4, (following as NSString).length))) != nil {
             return false
         }
         if let word = previous.first, blockingPreviousWords.contains(word) { return false }
-        if isCapitalizedMidSentence(range, in: source, before: before) { return false }
-        return !hasAbsoluteDateNearby(before: before, after: following)
+        if isCapitalizedMidSentence(range, in: source, before: before, work: &work) { return false }
+        return !hasAbsoluteDateNearby(before: before, after: following, work: &work)
     }
 
     /// Up to the two words before the phrase, nearest first, lowercased.
-    private static func previousWords(in before: String) -> [String] {
+    private static func previousWords(in before: String, work: inout Int) -> [String] {
         var words: [String] = []
         var end = before.endIndex
         while words.count < 2 {
             while end > before.startIndex, " \t".contains(before[before.index(before: end)]) {
                 end = before.index(before: end)
+                work += 1
             }
             var start = end
             while start > before.startIndex, before[before.index(before: start)].isLetter {
                 start = before.index(before: start)
+                work += 1
             }
             guard start < end else { break }
             words.append(before[start..<end].lowercased())
@@ -266,12 +294,13 @@ package struct RelativeDateAnnotator: Sendable {
     /// "my last week at Acme", "our next year", "her last week": a period someone has, not a
     /// date. "her", "that", "this", "these" and "those" before "last" count only when they are
     /// not the object of a past verb that ends the clause ("I saw her last Friday.").
-    private static func isFinalOrPossessive(_ phrase: String, previous: [String], after: String) -> Bool {
+    private static func isFinalOrPossessive(_ phrase: String, previous: [String], after: String, work: inout Int) -> Bool {
         guard let word = previous.first else { return false }
         if phrase.hasPrefix("next") { return nextPossessives.contains(word) }
         guard phrase.hasPrefix("last") else { return false }
         if finalDeterminers.contains(word) { return true }
         guard objectDeterminers.contains(word) else { return false }
+        work += after.utf16.count
         return !(previous.count == 2 && pastVerbs.contains(previous[1]) && endsClause(after))
     }
 
@@ -291,17 +320,24 @@ package struct RelativeDateAnnotator: Sendable {
     /// The sentence before `location` has a reporting verb and then a backshift ("said …
     /// would", "told me she had"), or a pluperfect report ("he'd said"), so its times are
     /// relative to the report, not the observation.
-    private static func isBackshiftedReport(in source: NSString, before location: Int, reports: [Int]) -> Bool {
+    private static func isBackshiftedReport(
+        in source: NSString,
+        before location: Int,
+        reports: [Int],
+        work: inout Int
+    ) -> Bool {
         guard let backshiftRegex, !reports.isEmpty else { return false }
-        let start = sentenceStart(in: source, before: location)
+        let start = sentenceStart(in: source, before: location, work: &work)
         // The first reporting verb at or after the sentence start.
         var low = 0
         var high = reports.count
         while low < high {
+            work += 1
             let middle = (low + high) / 2
             if reports[middle] < start { low = middle + 1 } else { high = middle }
         }
         guard low < reports.count, reports[low] < location else { return false }
+        work += location - reports[low]
         let slice = source.substring(with: NSRange(location: reports[low], length: location - reports[low]))
         return backshiftRegex.firstMatch(in: slice, range: NSRange(location: 0, length: (slice as NSString).length)) != nil
     }
@@ -309,14 +345,15 @@ package struct RelativeDateAnnotator: Sendable {
     /// Where the sentence holding `location` starts, at most ``reportWindow`` units back. A
     /// period ends a sentence only before whitespace and an uppercase letter, and not after
     /// an abbreviation or a single letter ("Dr. Lee", "e.g. tomorrow", "J. Smith").
-    private static func sentenceStart(in source: NSString, before location: Int) -> Int {
+    private static func sentenceStart(in source: NSString, before location: Int, work: inout Int) -> Int {
         let floor = max(0, location - reportWindow)
         var index = location - 1
         while index >= floor {
+            work += 1
             switch source.character(at: index) {
             case 0x0A, 0x21, 0x3F: // newline ! ?
                 return index + 1
-            case 0x2E where endsSentence(periodAt: index, in: source):
+            case 0x2E where endsSentence(periodAt: index, in: source, work: &work):
                 return index + 1
             default:
                 index -= 1
@@ -325,18 +362,31 @@ package struct RelativeDateAnnotator: Sendable {
         return floor
     }
 
-    private static func endsSentence(periodAt index: Int, in source: NSString) -> Bool {
+    private static func endsSentence(periodAt index: Int, in source: NSString, work: inout Int) -> Bool {
         var next = index + 1
         guard next < source.length, isSpace(source.character(at: next)) else { return false }
-        while next < source.length, isSpace(source.character(at: next)) { next += 1 }
+        while next < source.length, isSpace(source.character(at: next)) {
+            next += 1
+            work += 1
+        }
         guard next < source.length, isUppercase(source.character(at: next)) else { return false }
         var wordStart = index
-        while wordStart > 0, isLetter(source.character(at: wordStart - 1)) { wordStart -= 1 }
+        while wordStart > 0, isLetter(source.character(at: wordStart - 1)) {
+            wordStart -= 1
+            work += 1
+        }
         let word = source.substring(with: NSRange(location: wordStart, length: index - wordStart)).lowercased()
         return word.count > 1 && !abbreviations.contains(word)
     }
 
-    private static let abbreviations: Set<String> = ["mr", "mrs", "ms", "dr", "st", "jr", "sr", "prof", "etc", "vs"]
+    /// Words whose period does not end a sentence: titles, company and measure abbreviations,
+    /// and abbreviated months.
+    private static let abbreviations: Set<String> = [
+        "mr", "mrs", "ms", "dr", "st", "jr", "sr", "prof", "etc", "vs",
+        "gov", "sen", "rep", "gen", "col", "capt", "lt", "sgt", "rev", "hon", "mt", "ft",
+        "inc", "co", "ltd", "corp", "dept", "no", "approx",
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    ]
 
     private static func isSpace(_ unit: unichar) -> Bool {
         unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0xA0
@@ -356,22 +406,31 @@ package struct RelativeDateAnnotator: Sendable {
     }
 
     /// "Today" or "Last Week" capitalized in the middle of a sentence is a name or title.
-    private static func isCapitalizedMidSentence(_ range: NSRange, in source: NSString, before: String) -> Bool {
+    private static func isCapitalizedMidSentence(
+        _ range: NSRange,
+        in source: NSString,
+        before: String,
+        work: inout Int
+    ) -> Bool {
         let first = source.substring(with: NSRange(location: range.location, length: 1))
         guard first != first.lowercased() else { return false }
+        work += before.utf16.count
         guard let previous = before.reversed().first(where: { !$0.isWhitespace }) else { return false }
         return !".!?:;\"“”(\n".contains(previous) && !before.hasSuffix("\n")
     }
 
     /// An absolute date in the same sentence, close to the phrase, already says when.
-    private static func hasAbsoluteDateNearby(before: String, after: String) -> Bool {
+    private static func hasAbsoluteDateNearby(before: String, after: String, work: inout Int) -> Bool {
         guard let absoluteDateRegex else { return false }
+        // The sentence-end scan of `after` and the sentence-start scan of `before`.
+        work += after.utf16.count + before.utf16.count
         let sentenceEnd = after.firstIndex(where: { ".!?\n".contains($0) }) ?? after.endIndex
         let afterWindow = String(after[..<sentenceEnd].prefix(40))
         let beforeWindow = String(sentencePrefix(before).suffix(25))
         // Every absolute date pattern has a digit.
         for window in [afterWindow, beforeWindow] where window.utf8.contains(where: { $0 >= 0x30 && $0 <= 0x39 }) {
             let range = NSRange(location: 0, length: (window as NSString).length)
+            work += range.length
             if absoluteDateRegex.firstMatch(in: window, range: range) != nil { return true }
         }
         return false

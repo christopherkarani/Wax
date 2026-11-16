@@ -149,6 +149,8 @@ func leavesMovedAnchorsAlone(input: String, expected: String) {
     ("He said Mr. Jones would come next week.", "He said Mr. Jones would come next week."),
     ("He said he would come, e.g. tomorrow.", "He said he would come, e.g. tomorrow."),
     ("She said J. Smith would visit tomorrow.", "She said J. Smith would visit tomorrow."),
+    ("He told Gov. Smith he would come tomorrow.", "He told Gov. Smith he would come tomorrow."),
+    ("She told Capt. Lee she'd call tomorrow.", "She told Capt. Lee she'd call tomorrow."),
     // Pluperfect reports carry the backshift before the verb.
     ("He'd said tomorrow was fine.", "He'd said tomorrow was fine."),
     ("She had promised tomorrow would work.", "She had promised tomorrow would work."),
@@ -167,6 +169,7 @@ func leavesBackshiftedReportedTimesAlone(input: String, expected: String) {
     ("He said so. He would come tomorrow.", "He said so. He would come tomorrow (23 Aug 2023)."),
     ("He said so! Would you come tomorrow?", "He said so! Would you come tomorrow (23 Aug 2023)?"),
     ("He said tomorrow was fine.", "He said tomorrow (23 Aug 2023) was fine."),
+    ("I got an A. Tomorrow I rest.", "I got an A. Tomorrow (23 Aug 2023) I rest."),
 ])
 func annotatesTimesWithoutABackshift(input: String, expected: String) {
     #expect(annotated(input) == expected)
@@ -242,24 +245,36 @@ func dateTimesUseTheDateAsWrittenAndTheHelperUsesTheLocalDay() throws {
 
 // MARK: - Cost
 
-private func seconds(_ duration: Duration) -> Double {
-    Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+/// Inputs that stress each per-phrase guard: plain phrases, blocked phrases, reported speech,
+/// many reporting verbs, and long unpunctuated text where no sentence boundary bounds a scan.
+private let costInputs = [
+    "and yesterday ",
+    "the yesterday ",
+    "he said tomorrow ",
+    "said said said said said said tomorrow ",
+    "he told me he would call tomorrow and she said yesterday was fine and ",
+]
+
+/// Most UTF-16 units the annotator reads per unit of text. Measured at most 43.3 on
+/// ``costInputs`` ("he said tomorrow ", whose sentence scan reaches the 200-unit cap), so 50
+/// leaves headroom without hiding a second scan.
+private let workPerUnit = 50
+
+private func annotationWork(_ phrase: String, count: Int) -> (work: Int, units: Int) {
+    let text = String(repeating: phrase, count: count)
+    var work = 0
+    _ = RelativeDateAnnotator(observedDay: tuesday).annotate(text, work: &work)
+    return (work, text.utf16.count)
 }
 
-/// Linear cost grows about 4× from 2,000 to 8,000 phrases; a per-phrase scan to the sentence
-/// boundary grows about 16×. Small and large runs alternate so both see the same load from
-/// parallel tests, and each keeps its fastest run, since contention only adds time.
-@Test(arguments: ["and yesterday ", "the yesterday ", "he said tomorrow ", "said would tomorrow "])
-func annotationTimeGrowsLinearly(phrase: String) {
-    let annotator = RelativeDateAnnotator(observedDay: tuesday)
-    let smallText = String(repeating: phrase, count: 2_000)
-    let largeText = String(repeating: phrase, count: 8_000)
-    let clock = ContinuousClock()
-    var small = Double.infinity
-    var large = Double.infinity
-    for _ in 0..<5 {
-        small = min(small, seconds(clock.measure { _ = annotator.annotate(smallText) }))
-        large = min(large, seconds(clock.measure { _ = annotator.annotate(largeText) }))
-    }
-    #expect(large / small < 8, "2k \(small) s, 8k \(large) s")
+/// Work is linear in the text: 4× the phrases reads about 4× the units, where a per-phrase
+/// scan back to the sentence start reads about 16×. Counted, not timed, so it holds on a
+/// loaded machine.
+@Test(arguments: costInputs)
+func annotationWorkIsLinear(phrase: String) {
+    let small = annotationWork(phrase, count: 2_000)
+    let large = annotationWork(phrase, count: 8_000)
+    let ratio = Double(large.work) / Double(small.work)
+    #expect((3.6...4.4).contains(ratio), "2k \(small.work), 8k \(large.work)")
+    #expect(large.work <= workPerUnit * large.units, "\(large.work) units read for \(large.units)")
 }
