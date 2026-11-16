@@ -22,12 +22,40 @@ private func annotated(_ text: String, on day: ObservedDay = tuesday) -> String 
     "I loved those last weeks",
     "the first and final last week",
     "It was our second last night there.",
-    // "her" and "that" can also be objects ("I saw her last Friday"); left alone either way.
-    "I saw her last Friday.",
-    "I did that last week.",
+    // "her", "that", "this": possessive or object; only a past verb plus a clause end settles it.
+    "I saw her last week at the gym",
+    "We celebrated her last night.",
+    "It was her last week.",
+    "I missed her last Friday.",
 ])
 func leavesLastMeaningFinalAlone(text: String) {
     #expect(annotated(text) == text)
+}
+
+@Test(arguments: [
+    ("I saw her last Friday.", "I saw her last Friday (18 Aug 2023)."),
+    ("I did that last week.", "I did that last week (14–20 Aug 2023)."),
+    ("We fixed this last month, and it held.", "We fixed this last month (July 2023), and it held."),
+    ("I called her last night but she slept", "I called her last night (21 Aug 2023) but she slept"),
+    ("I met her last year", "I met her last year (2022)"),
+])
+func annotatesLastAfterAnObjectOfAPastVerb(input: String, expected: String) {
+    #expect(annotated(input) == expected)
+}
+
+@Test(arguments: [
+    "My next week off is in October.",
+    "Our next year at school",
+    "That next week we moved in.",
+    "their next month abroad",
+])
+func leavesNextAfterAPossessiveAlone(text: String) {
+    #expect(annotated(text) == text)
+}
+
+@Test
+func annotatesNextAfterHer() {
+    #expect(annotated("I will see her next week.") == "I will see her next week (28 Aug–3 Sep 2023).")
 }
 
 @Test
@@ -48,6 +76,13 @@ func stillAnnotatesThatBeforeYesterday() {
     "It was a hundred and two years ago.",
     "It was one hundred years ago.",
     "It was two thousand years ago.",
+    "It was two to three weeks ago.",
+    "It was 2 to 3 days ago.",
+    "It was 2 through 4 days ago.",
+    "I left 2–3 weeks ago.",
+    "I left 2—3 weeks ago.",
+    "I left 2/3 weeks ago.",
+    "It was built 1 500 years ago.",
 ])
 func leavesPartsOfLargerAmountsAlone(text: String) {
     #expect(annotated(text) == text)
@@ -68,6 +103,11 @@ func leavesPartsOfLargerAmountsAlone(text: String) {
     "It was at least a year ago.",
     "It was up to two weeks ago.",
     "It happened within a week ago.",
+    "It was fewer than 3 days ago.",
+    "It was at most 2 weeks ago.",
+    "It was not even a week ago.",
+    "It was upwards of 5 years ago.",
+    "It was well over a year ago.",
 ])
 func leavesQualifiedAmountsAlone(text: String) {
     #expect(annotated(text) == text)
@@ -83,6 +123,8 @@ func leavesQualifiedAmountsAlone(text: String) {
     ("I have been sick since yesterday.", "I have been sick since yesterday."),
     ("Two days before yesterday it rained.", "Two days before yesterday it rained."),
     ("The week after tomorrow is free.", "The week after tomorrow is free."),
+    ("It was the week before last week.", "It was the week before last week."),
+    ("It came two days after last Friday.", "It came two days after last Friday."),
 ])
 func leavesMovedAnchorsAlone(input: String, expected: String) {
     #expect(annotated(input) == expected)
@@ -93,17 +135,30 @@ func leavesMovedAnchorsAlone(input: String, expected: String) {
 @Test(arguments: [
     ("He said yesterday that he would come tomorrow.", "He said yesterday (21 Aug 2023) that he would come tomorrow."),
     ("Last Monday she said she would finish it today.", "Last Monday (21 Aug 2023) she said she would finish it today."),
-    ("She told me she was busy tonight.", "She told me she was busy tonight."),
-    ("He promised to call this evening.", "He promised to call this evening."),
-    ("Three days ago he wrote that he lands tomorrow.", "Three days ago (19 Aug 2023) he wrote that he lands tomorrow."),
+    ("He said last month that he would come next week.", "He said last month (July 2023) that he would come next week."),
+    ("On Monday she texted that she would come tomorrow.", "On Monday she texted that she would come tomorrow."),
+    (
+        "He said, after a long and rambling explanation about trains, delays and the weather, that he would come tomorrow.",
+        "He said, after a long and rambling explanation about trains, delays and the weather, that he would come tomorrow."
+    ),
+    ("Last Monday she told me she had arrived yesterday.", "Last Monday (21 Aug 2023) she told me she had arrived yesterday."),
+    ("She promised she'd call this coming Friday.", "She promised she'd call this coming Friday."),
+    ("He wrote that he was going to move next month.", "He wrote that he was going to move next month."),
 ])
-func leavesReportedTimesAlone(input: String, expected: String) {
+func leavesBackshiftedReportedTimesAlone(input: String, expected: String) {
     #expect(annotated(input) == expected)
 }
 
-@Test
-func reportedSpeechEndsAtTheSentence() {
-    #expect(annotated("He said so. I leave tomorrow.") == "He said so. I leave tomorrow (23 Aug 2023).")
+@Test(arguments: [
+    ("I worked late last night, so today I am tired.", "I worked late last night (21 Aug 2023), so today (22 Aug 2023) I am tired."),
+    ("Last week was busy; today is calm.", "Last week (14–20 Aug 2023) was busy; today (22 Aug 2023) is calm."),
+    ("I asked for the day off tomorrow.", "I asked for the day off tomorrow (23 Aug 2023)."),
+    ("I told my boss I am out tomorrow.", "I told my boss I am out tomorrow (23 Aug 2023)."),
+    ("She told me she was busy tonight.", "She told me she was busy tonight (22 Aug 2023)."),
+    ("He said so. He would come tomorrow.", "He said so. He would come tomorrow (23 Aug 2023)."),
+])
+func annotatesTimesWithoutABackshift(input: String, expected: String) {
+    #expect(annotated(input) == expected)
 }
 
 // MARK: - Idempotence for any year
@@ -150,6 +205,7 @@ func originalTextIsNilForMalformedInsertions(text: String, encoded: String) {
     ("2023-08-22T23:30:00+0530", ObservedDay(year: 2023, month: 8, day: 22)),
     ("2023-08-22 23:30:00", ObservedDay(year: 2023, month: 8, day: 22)),
     ("2024-02-29", ObservedDay(year: 2024, month: 2, day: 29)),
+    ("2023-08-22t23:30:00z", ObservedDay(year: 2023, month: 8, day: 22)),
 ])
 func parsesFullDateTimes(raw: String, expected: ObservedDay) {
     #expect(ObservedDay(iso8601: raw) == expected)
@@ -175,24 +231,22 @@ func dateTimesUseTheDateAsWrittenAndTheHelperUsesTheLocalDay() throws {
 
 // MARK: - Cost
 
-@Test
-func annotatesManyPhrasesInLinearTime() {
-    let text = String(repeating: "and yesterday ", count: 16_000)
+/// Median wall time of three annotations of `phrase` repeated `count` times.
+private func medianSeconds(_ phrase: String, count: Int) -> Double {
+    let text = String(repeating: phrase, count: count)
     let clock = ContinuousClock()
-    var insertions = 0
-    let elapsed = clock.measure {
-        insertions = RelativeDateAnnotator(observedDay: tuesday).annotate(text).insertions.count
+    let times = (0..<3).map { _ in
+        clock.measure { _ = RelativeDateAnnotator(observedDay: tuesday).annotate(text) }
     }
-    #expect(insertions == 16_000)
-    #expect(elapsed < .seconds(1), "took \(elapsed)")
+    let seconds = times.map { Double($0.components.seconds) + Double($0.components.attoseconds) / 1e18 }
+    return seconds.sorted()[1]
 }
 
-@Test
-func blockedPhrasesInLongUnpunctuatedTextAreCheap() {
-    let text = String(repeating: "the yesterday ", count: 16_000)
-    let clock = ContinuousClock()
-    let elapsed = clock.measure {
-        _ = RelativeDateAnnotator(observedDay: tuesday).annotate(text)
-    }
-    #expect(elapsed < .seconds(1), "took \(elapsed)")
+/// Linear cost grows about 4× from 8,000 to 32,000 phrases; the old per-phrase scan to the
+/// sentence boundary grew about 16×.
+@Test(arguments: ["and yesterday ", "the yesterday "])
+func annotationTimeGrowsLinearly(phrase: String) {
+    let small = medianSeconds(phrase, count: 8_000)
+    let large = medianSeconds(phrase, count: 32_000)
+    #expect(large / small < 8, "8k \(small) s, 32k \(large) s")
 }

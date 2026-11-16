@@ -19,7 +19,8 @@ extension Memory {
     /// possessives ("last week's report"), quoted speech, phrases next to an absolute date,
     /// "the last week", "last" meaning final ("my last week at Acme"), "next Friday" and
     /// "this Friday", "in two days", vague or partial amounts ("over a year ago",
-    /// "twenty-two years ago"), "a week from today", and today or tomorrow in reported speech.
+    /// "twenty-two years ago"), "a week from today", and times in backshifted reported speech
+    /// ("he said he would come tomorrow").
     public enum RelativeDates {
         /// Metadata key for the day a text was observed: exactly `yyyy-MM-dd`, or a complete
         /// ISO 8601 date-time such as `2023-08-22T17:00:00-07:00`. A save with any other value

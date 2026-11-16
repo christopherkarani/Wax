@@ -12,8 +12,8 @@ package struct ObservedDay: Sendable, Hashable {
         self.day = day
     }
 
-    /// Parses exactly `yyyy-MM-dd`, or that date followed by an ISO 8601 time: `T` (or a
-    /// space), `HH:mm`, optional `:ss` and fraction, and an optional `Z` or `±HH:mm` offset.
+    /// Parses exactly `yyyy-MM-dd`, or that date followed by an ISO 8601 time: `T` (or `t` or
+    /// a space), `HH:mm`, optional `:ss` and fraction, and an optional `Z` or `±HH:mm` offset.
     /// The day is the date as written, whatever offset follows it:
     /// "2023-08-22T23:30:00-07:00" and "2023-08-22T00:00:00Z" are both the 22nd. Returns `nil`
     /// for anything else, an impossible date, or trailing text.
@@ -127,9 +127,10 @@ private struct DigitScanner {
         return value
     }
 
-    /// `T` or a space, `HH:mm`, optional `:ss[.fraction]`, optional `Z` or `±HH[:]mm`, then the end.
+    /// `T` (or `t` or a space), `HH:mm`, optional `:ss[.fraction]`, optional `Z` (or `z`) or
+    /// `±HH[:]mm`, then the end.
     mutating func takeTime() -> Bool {
-        guard take("T") || take(" "), number(digits: 2, max: 23) != nil, take(":"),
+        guard take("T") || take("t") || take(" "), number(digits: 2, max: 23) != nil, take(":"),
               number(digits: 2, max: 59) != nil else { return false }
         if take(":") {
             guard number(digits: 2, max: 60) != nil else { return false }
@@ -139,7 +140,7 @@ private struct DigitScanner {
             }
         }
         if isAtEnd { return true }
-        if take("Z") { return isAtEnd }
+        if take("Z") || take("z") { return isAtEnd }
         guard take("+") || take("-"), number(digits: 2, max: 14) != nil else { return false }
         _ = take(":")
         return number(digits: 2, max: 59) != nil && isAtEnd

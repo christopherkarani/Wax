@@ -7,12 +7,12 @@ import Foundation
 /// Conservative by design: a phrase is left alone when its meaning depends on context the
 /// text does not settle. That covers possessives ("last week's report"), quoted speech,
 /// phrases with an absolute date already next to them, "the last week" (the past seven
-/// days), "last" meaning final ("my last week at Acme"), "next Friday" and "this Friday"
-/// (readers split on which Friday), "in two days" (a date or a duration), vague or partial
-/// amounts ("a few days ago", "over a year ago", "twenty-two years ago", "3.5 years ago"),
-/// phrases that move the anchor ("a week from today", "since yesterday"), today and
-/// tomorrow in reported speech ("he said he would come tomorrow"), and capitalized names
-/// ("the Today show").
+/// days), "last" meaning final ("my last week at Acme") and possessive periods ("my next
+/// week off"), "next Friday" and "this Friday" (readers split on which Friday), "in two
+/// days" (a date or a duration), vague or partial amounts ("a few days ago", "over a year
+/// ago", "twenty-two years ago", "2–3 weeks ago"), phrases that move the anchor ("a week
+/// from today", "the week before last week"), backshifted reported speech ("he said he
+/// would come tomorrow"), and capitalized names ("the Today show").
 ///
 /// Each phrase reads a bounded window of text around it, so annotating is linear in the
 /// length of the text.
@@ -76,28 +76,25 @@ package struct RelativeDateAnnotator: Sendable {
             return source.substring(with: range).lowercased()
         }
         let phrase = source.substring(with: match.range).lowercased()
-        // "my last week at Acme", "our last night in Rome": "last" means final.
-        if phrase.hasPrefix("last"), let word = previous.first, Self.finalDeterminers.contains(word) { return nil }
-        guard let label = resolve(group, previous: previous, before: context.before) else { return nil }
+        guard !Self.isFinalOrPossessive(phrase, previous: previous, after: context.after) else { return nil }
+        // "a week from today", "the week before last week", "since yesterday": not the date.
+        if let word = previous.first, Self.anchorMovingWords.contains(word) { return nil }
+        // "He said last month that he would come next week": next week from when he said it.
+        guard !Self.isBackshiftedReport(in: source, before: match.range.location) else { return nil }
+        guard let label = resolve(group, previous: previous) else { return nil }
         // Already followed by its own label: annotated before, in any year.
         guard !context.after.hasPrefix(" (\(label))") else { return nil }
         return label
     }
 
-    private func resolve(_ group: (String) -> String?, previous: [String], before: String) -> String? {
+    private func resolve(_ group: (String) -> String?, previous: [String]) -> String? {
         let day = observedDay
         if group("before") != nil { return Self.format(day.adding(days: -2)) }
         if group("after") != nil { return Self.format(day.adding(days: 2)) }
         if group("lastnight") != nil { return Self.format(day.adding(days: -1)) }
-        let yesterday = group("yesterday") != nil
-        if yesterday || group("today") != nil || group("tomorrow") != nil {
-            // "a week from today", "a year ago today", "since yesterday": the phrase is not the date.
-            if let word = previous.first, Self.anchorMovingWords.contains(word) { return nil }
-            // "He said yesterday that he would come tomorrow": tomorrow from when he said it.
-            if !yesterday, Self.isReported(before: before) { return nil }
-            let offset = yesterday ? -1 : (group("today") != nil ? 0 : 1)
-            return Self.format(day.adding(days: offset))
-        }
+        if group("yesterday") != nil { return Self.format(day.adding(days: -1)) }
+        if group("today") != nil { return Self.format(day) }
+        if group("tomorrow") != nil { return Self.format(day.adding(days: 1)) }
         if let amount = group("agoN").flatMap(Self.amount), let unit = group("agoUnit") {
             guard !Self.isPartOfLargerAmount(previous), !Self.isQualifiedAmount(previous) else { return nil }
             return agoLabel(amount: amount, unit: unit)
@@ -169,21 +166,39 @@ package struct RelativeDateAnnotator: Sendable {
     private static let blockingPreviousWords: Set<String> = ["the", "every", "each", "per", "a", "an"]
     /// Before "last", these make it "final": "my last week at Acme", "the second last night".
     private static let finalDeterminers: Set<String> = [
-        "my", "your", "his", "her", "its", "our", "their", "whose", "this", "that", "these", "those",
+        "my", "your", "his", "its", "our", "their", "whose",
         "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "final",
     ]
-    /// Before yesterday, today or tomorrow, these move the date elsewhere.
+    /// Before "last", possessive ("her last week") or an object ("I saw her last week").
+    private static let objectDeterminers: Set<String> = ["her", "that", "this", "these", "those"]
+    /// Past verbs whose object can be one of ``objectDeterminers``: "I saw her last Friday."
+    private static let pastVerbs: Set<String> = [
+        "saw", "met", "called", "texted", "emailed", "messaged", "visited", "told", "asked", "heard",
+        "did", "fixed", "bought", "finished", "watched", "sent", "got",
+    ]
+    /// Words that start a new clause after a phrase: "I saw her last Friday but …".
+    private static let clauseWords: Set<String> = ["and", "but", "so", "because", "when"]
+    /// Before "next", these make it a possessive period: "my next week off".
+    private static let nextPossessives: Set<String> = [
+        "my", "your", "his", "its", "our", "their", "whose", "that", "this",
+    ]
+    /// Before a phrase, these move the date elsewhere: "a week from today", "after last Friday".
     private static let anchorMovingWords: Set<String> = ["before", "after", "from", "ago", "since"]
     /// Before "N days ago", these make N part of a larger amount: "twenty five", "2 or 3".
     private static let largerAmountWords: Set<String> = [
         "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
-        "hundred", "thousand", "and", "or",
+        "hundred", "thousand", "and", "or", "to", "through", "ish",
     ]
     /// Before "N days ago", these make the amount vague.
     private static let qualifierWords: Set<String> = [
         "over", "under", "almost", "nearly", "about", "around", "roughly", "within",
     ]
-    private static let qualifierPairs: Set<String> = ["more than", "less than", "at least", "up to"]
+    private static let qualifierPairs: Set<String> = [
+        "more than", "less than", "fewer than", "at least", "at most", "up to", "not even", "upwards of",
+        "well over",
+    ]
+    /// UTF-16 units read back toward the sentence start for a reporting verb.
+    private static let reportWindow = 200
 
     /// The text just before and just after `range`, at most a window each.
     private static func context(of range: NSRange, in source: NSString) -> (before: String, after: String) {
@@ -240,12 +255,33 @@ package struct RelativeDateAnnotator: Sendable {
         return previous.count == 2 && qualifierPairs.contains("\(previous[1]) \(nearest)")
     }
 
-    /// The sentence so far reports speech, or is already anchored in the past.
-    private static func isReported(before: String) -> Bool {
-        guard let reportedRegex else { return false }
-        let sentence = sentencePrefix(before)
+    /// "my last week at Acme", "our next year", "her last week": a period someone has, not a
+    /// date. "her", "that", "this", "these" and "those" before "last" count only when they are
+    /// not the object of a past verb that ends the clause ("I saw her last Friday.").
+    private static func isFinalOrPossessive(_ phrase: String, previous: [String], after: String) -> Bool {
+        guard let word = previous.first else { return false }
+        if phrase.hasPrefix("next") { return nextPossessives.contains(word) }
+        guard phrase.hasPrefix("last") else { return false }
+        if finalDeterminers.contains(word) { return true }
+        guard objectDeterminers.contains(word) else { return false }
+        return !(previous.count == 2 && pastVerbs.contains(previous[1]) && endsClause(after))
+    }
+
+    private static func endsClause(_ after: String) -> Bool {
+        let rest = after.drop(while: { $0 == " " || $0 == "\t" })
+        guard let first = rest.first else { return true }
+        if ".,!?;:\n".contains(first) { return true }
+        return clauseWords.contains(rest.prefix(while: { $0.isLetter }).lowercased())
+    }
+
+    /// The sentence so far has a reporting verb and then a backshift ("said … would",
+    /// "told me she had"), so its times are relative to the report, not the observation.
+    private static func isBackshiftedReport(in source: NSString, before location: Int) -> Bool {
+        guard let backshiftRegex else { return false }
+        let start = max(0, location - reportWindow)
+        let sentence = sentencePrefix(source.substring(with: NSRange(location: start, length: location - start)))
         let range = NSRange(location: 0, length: (sentence as NSString).length)
-        return reportedRegex.firstMatch(in: sentence, range: range) != nil
+        return backshiftRegex.firstMatch(in: sentence, range: range) != nil
     }
 
     private static func sentencePrefix(_ before: String) -> String {
@@ -362,8 +398,8 @@ package struct RelativeDateAnnotator: Sendable {
             "(?<lastnight>last\\s+night)",
             "(?<today>today|tonight|this\\s+(?:morning|afternoon|evening))",
             "(?<tomorrow>tomorrow)",
-            // Not the tail of "3.5", "2,500" or "twenty-two".
-            "(?<![\\d.,\\-])(?<agoN>\(number))\\s+(?<agoUnit>day|week|month|year)s?\\s+ago",
+            // Not the tail of "3.5", "2,500", "1 500", "2–3" or "twenty-two".
+            "(?<![\\d.,\\-–—‑−/])(?<!\\d\\s)(?<agoN>\(number))\\s+(?<agoUnit>day|week|month|year)s?\\s+ago",
             "this\\s+coming\\s+(?<coming>\(weekday))",
             "last\\s+(?<lastwd>\(weekday))",
             "(?<rel>last|this|next)\\s+(?<relUnit>weekend|week|month|year)",
@@ -379,10 +415,14 @@ package struct RelativeDateAnnotator: Sendable {
         options: [.caseInsensitive]
     )
 
-    private static let reportedRegex: NSRegularExpression? = try? NSRegularExpression(
-        pattern: "\\b(?:said|told|wrote|promised|mentioned|asked|yesterday|ago|last)\\b",
-        options: [.caseInsensitive]
-    )
+    private static let backshiftRegex: NSRegularExpression? = {
+        let verbs = "said|told|wrote|texted|messaged|emailed|promised|mentioned|asked|replied|explained|claimed"
+        let backshift = "\\bwould\\b|['’]d\\b|\\b(?:was|were)\\s+going\\s+to\\b|\\bhad\\b"
+        return try? NSRegularExpression(
+            pattern: "\\b(?:\(verbs))\\b.*(?:\(backshift))",
+            options: [.caseInsensitive]
+        )
+    }()
 
     private static let absoluteDateRegex: NSRegularExpression? = {
         let month = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?"
