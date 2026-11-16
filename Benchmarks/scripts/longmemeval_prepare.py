@@ -10,12 +10,21 @@ Corpus construction follows the official retriever
 - turn granularity: one doc per user turn, id `<session_id>_<turn_number>`.
   Turns in evidence sessions without `has_answer` are renamed `noans_*`.
 
+With --observed-at, each doc carries its session date (haystack_dates) as
+`observed_at`, which wax-bench saves as the `wax.observed_at` observation date.
+
 A doc is correct when its id contains "answer". Abstention questions (`_abs`)
 and questions with no labelled user evidence turn are marked `skip` and left
 out of retrieval metrics, as in the official script.
 """
 import argparse
 import json
+from datetime import datetime
+
+
+def observed_date(haystack_date):
+    """'2023/05/20 (Sat) 02:21' -> '2023-05-20'."""
+    return datetime.strptime(haystack_date, "%Y/%m/%d (%a) %H:%M").strftime("%Y-%m-%d")
 
 
 def session_docs(session, session_id):
@@ -46,6 +55,8 @@ def main():
     parser.add_argument("--jobs", required=True, help="output jobs JSONL for wax-bench")
     parser.add_argument("--gold", required=True, help="output gold JSONL for the scorer")
     parser.add_argument("--limit", type=int, default=0, help="first N questions only (0 = all)")
+    parser.add_argument("--observed-at", action="store_true",
+                        help="give each doc its session date as observed_at")
     args = parser.parse_args()
 
     with open(args.input) as handle:
@@ -57,8 +68,13 @@ def main():
     with open(args.jobs, "w") as jobs_out, open(args.gold, "w") as gold_out:
         for question in questions:
             docs = []
-            for session, session_id in zip(question["haystack_sessions"], question["haystack_session_ids"]):
-                docs.extend(build(session, session_id))
+            sessions = zip(question["haystack_sessions"], question["haystack_session_ids"], question["haystack_dates"])
+            for session, session_id, date in sessions:
+                built = build(session, session_id)
+                if args.observed_at:
+                    observed = observed_date(date)
+                    built = [{**doc, "observed_at": observed} for doc in built]
+                docs.extend(built)
             has_target = any(
                 turn.get("has_answer")
                 for session in question["haystack_sessions"]
