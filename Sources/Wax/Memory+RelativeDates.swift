@@ -13,15 +13,22 @@ extension Memory {
     ///
     /// A text saved without an observation day is stored exactly as given: Wax cannot tell
     /// text said just now from an old transcript or document, so it never guesses. For text
-    /// observed as it is saved, pass ``observedAt(_:timeZone:)`` of the current date. The
-    /// value is `yyyy-MM-dd`, optionally with an ISO 8601 time; the date as written is the
-    /// day used. A text without a resolvable phrase is stored exactly as given, whatever its
-    /// metadata. Phrases whose date depends on context are left alone:
+    /// observed as it is saved, pass ``observedAt(_:timeZone:)`` of the current date. A text
+    /// without a resolvable phrase is stored exactly as given, whatever its metadata. Phrases
+    /// whose date depends on context are left alone:
     /// possessives ("last week's report"), quoted speech, phrases next to an absolute date,
-    /// "the last week", "next Friday" and "this Friday", "in two days", and vague amounts.
+    /// "the last week", "last" meaning final ("my last week at Acme"), "next Friday" and
+    /// "this Friday", "in two days", vague or partial amounts ("over a year ago",
+    /// "twenty-two years ago"), "a week from today", and today or tomorrow in reported speech.
     public enum RelativeDates {
-        /// Metadata key for the day a text was observed, as `yyyy-MM-dd` or an ISO 8601
-        /// date-time. A save with any other value throws.
+        /// Metadata key for the day a text was observed: exactly `yyyy-MM-dd`, or a complete
+        /// ISO 8601 date-time such as `2023-08-22T17:00:00-07:00`. A save with any other value
+        /// throws, and a batch or import with one rejects the whole call before writing.
+        ///
+        /// For a date-time, the calendar date as written is the day used, whatever its offset:
+        /// `2023-08-22T00:00:00Z` is the 22nd even for a writer in California, where it was
+        /// still the evening of the 21st. To record the day an instant fell on for the person
+        /// who said it, pass ``observedAt(_:timeZone:)`` with their time zone instead.
         public static let observedAtKey = "wax.observed_at"
 
         /// The ``observedAtKey`` value for a text observed at `date`: its calendar day in
@@ -31,9 +38,11 @@ extension Memory {
         }
 
         /// The text as it was before annotation, given a stored document's full text and
-        /// metadata. Text that was not annotated comes back unchanged. Returns `nil` when
-        /// `text` is not the whole annotated document the metadata describes, such as one
-        /// chunk of a longer document.
+        /// metadata. Text that was not annotated comes back unchanged.
+        ///
+        /// It applies only to a whole document as saved. Chunk frames of a long document carry
+        /// the whole document's insertions, so their text returns `nil`, as does text edited
+        /// after saving or malformed metadata.
         public static func originalText(_ text: String, metadata: [String: String]) -> String? {
             RelativeDateMetadata.originalText(text, metadata: metadata)
         }

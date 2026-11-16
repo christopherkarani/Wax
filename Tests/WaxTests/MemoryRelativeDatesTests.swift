@@ -144,3 +144,18 @@ func malformedObservationDatesAreRejected() async throws {
         }
     }
 }
+
+@Test
+func aMalformedObservationDateRejectsTheWholeBatchBeforeWriting() async throws {
+    try await withStore { memory in
+        let documents: [(text: String, metadata: [String: String])] = [
+            (text: "The quail flew yesterday.", metadata: [Memory.RelativeDates.observedAtKey: "2023-08-22"]),
+            (text: "The heron flew.", metadata: [Memory.RelativeDates.observedAtKey: "22 Aug"]),
+        ]
+        await #expect(throws: WaxError.self) { try await memory.save(contentsOf: documents) }
+        await #expect(throws: WaxError.self) { try await memory.importDocuments(documents) }
+        try await memory.flush()
+        let found = try await memory.search("quail", options: textOnly).items
+        #expect(found.isEmpty)
+    }
+}

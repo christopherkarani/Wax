@@ -12,28 +12,18 @@ package struct ObservedDay: Sendable, Hashable {
         self.day = day
     }
 
-    /// Parses `yyyy-MM-dd`, optionally followed by an ISO 8601 time (`T…` or a space). The
-    /// day is the one written, whatever offset follows it: "2023-08-22T23:30:00-07:00" is the
-    /// 22nd, as the writer saw it. Returns `nil` for anything else or an impossible date.
+    /// Parses exactly `yyyy-MM-dd`, or that date followed by an ISO 8601 time: `T` (or a
+    /// space), `HH:mm`, optional `:ss` and fraction, and an optional `Z` or `±HH:mm` offset.
+    /// The day is the date as written, whatever offset follows it:
+    /// "2023-08-22T23:30:00-07:00" and "2023-08-22T00:00:00Z" are both the 22nd. Returns `nil`
+    /// for anything else, an impossible date, or trailing text.
     package init?(iso8601 raw: String) {
-        let bytes = Array(raw.utf8)
-        guard bytes.count >= 10, bytes[4] == UInt8(ascii: "-"), bytes[7] == UInt8(ascii: "-") else {
-            return nil
-        }
-        if bytes.count > 10, bytes[10] != UInt8(ascii: "T"), bytes[10] != UInt8(ascii: " ") {
-            return nil
-        }
-        func number(_ range: Range<Int>) -> Int? {
-            var value = 0
-            for index in range {
-                let byte = bytes[index]
-                guard byte >= UInt8(ascii: "0"), byte <= UInt8(ascii: "9") else { return nil }
-                value = value * 10 + Int(byte - UInt8(ascii: "0"))
-            }
-            return value
-        }
-        guard let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
-              (1...12).contains(month), day >= 1, day <= Self.daysIn(year: year, month: month) else {
+        var scanner = DigitScanner(bytes: Array(raw.utf8))
+        guard let year = scanner.number(digits: 4, max: 9999), scanner.take("-"),
+              let month = scanner.number(digits: 2, max: 12), scanner.take("-"),
+              let day = scanner.number(digits: 2, max: 31),
+              month >= 1, day >= 1, day <= Self.daysIn(year: year, month: month),
+              scanner.isAtEnd || scanner.takeTime() else {
             return nil
         }
         self.init(year: year, month: month, day: day)
@@ -109,5 +99,49 @@ package struct ObservedDay: Sendable, Hashable {
         default:
             return 31
         }
+    }
+}
+
+/// Reads fixed-width ASCII digits and separators from the front of a byte string.
+private struct DigitScanner {
+    let bytes: [UInt8]
+    var index = 0
+
+    var isAtEnd: Bool { index == bytes.count }
+
+    mutating func take(_ character: Character) -> Bool {
+        guard index < bytes.count, let ascii = character.asciiValue, bytes[index] == ascii else { return false }
+        index += 1
+        return true
+    }
+
+    mutating func number(digits: Int, max: Int) -> Int? {
+        guard index + digits <= bytes.count else { return nil }
+        var value = 0
+        for byte in bytes[index..<index + digits] {
+            guard byte >= UInt8(ascii: "0"), byte <= UInt8(ascii: "9") else { return nil }
+            value = value * 10 + Int(byte - UInt8(ascii: "0"))
+        }
+        guard value <= max else { return nil }
+        index += digits
+        return value
+    }
+
+    /// `T` or a space, `HH:mm`, optional `:ss[.fraction]`, optional `Z` or `±HH[:]mm`, then the end.
+    mutating func takeTime() -> Bool {
+        guard take("T") || take(" "), number(digits: 2, max: 23) != nil, take(":"),
+              number(digits: 2, max: 59) != nil else { return false }
+        if take(":") {
+            guard number(digits: 2, max: 60) != nil else { return false }
+            if take(".") {
+                guard number(digits: 1, max: 9) != nil else { return false }
+                while number(digits: 1, max: 9) != nil {}
+            }
+        }
+        if isAtEnd { return true }
+        if take("Z") { return isAtEnd }
+        guard take("+") || take("-"), number(digits: 2, max: 14) != nil else { return false }
+        _ = take(":")
+        return number(digits: 2, max: 59) != nil && isAtEnd
     }
 }

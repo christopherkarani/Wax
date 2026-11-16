@@ -229,7 +229,8 @@ public actor Memory {
     ///   ``save(_:metadata:)`` for each text in turn would return, including the
     ///   existing ID for a text already stored, or repeated earlier in `texts`.
     ///
-    /// Not atomic: if a save throws, texts before it may already be saved.
+    /// Not atomic: if a save throws, texts before it may already be saved. An invalid
+    /// `wax.observed_at` in `metadata` throws before anything is written.
     @discardableResult
     public func save(
         contentsOf texts: some Sequence<String>,
@@ -245,7 +246,8 @@ public actor Memory {
     ///   ``save(_:metadata:)`` for each document in turn would return, including the
     ///   existing ID for a document already stored, or repeated earlier in `documents`.
     ///
-    /// Not atomic: if a save throws, documents before it may already be saved.
+    /// Not atomic: if a save throws, documents before it may already be saved. An invalid
+    /// `wax.observed_at` in any document's metadata throws before anything is written.
     @discardableResult
     public func save(
         contentsOf documents: some Sequence<(text: String, metadata: [String: String])>
@@ -268,7 +270,8 @@ public actor Memory {
     ///
     /// Atomic: nothing of the import is visible to searches or durable until it returns. If
     /// it throws, or the process stops before it returns, the store holds exactly what it held
-    /// before the call, and the space the import wrote is reused by later writes.
+    /// before the call, and the space the import wrote is reused by later writes. An invalid
+    /// `wax.observed_at` in any document's metadata throws before anything is written.
     ///
     /// It first commits pending saves, as ``flush()`` would. While it runs, other saves,
     /// deletes and flushes on this store wait and then run after it. Searches see the store as

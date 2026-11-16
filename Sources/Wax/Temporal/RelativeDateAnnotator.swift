@@ -7,9 +7,15 @@ import Foundation
 /// Conservative by design: a phrase is left alone when its meaning depends on context the
 /// text does not settle. That covers possessives ("last week's report"), quoted speech,
 /// phrases with an absolute date already next to them, "the last week" (the past seven
-/// days), "next Friday" and "this Friday" (readers split on which Friday), "in two days"
-/// (a date or a duration), vague amounts ("a few days ago"), and capitalized names
+/// days), "last" meaning final ("my last week at Acme"), "next Friday" and "this Friday"
+/// (readers split on which Friday), "in two days" (a date or a duration), vague or partial
+/// amounts ("a few days ago", "over a year ago", "twenty-two years ago", "3.5 years ago"),
+/// phrases that move the anchor ("a week from today", "since yesterday"), today and
+/// tomorrow in reported speech ("he said he would come tomorrow"), and capitalized names
 /// ("the Today show").
+///
+/// Each phrase reads a bounded window of text around it, so annotating is linear in the
+/// length of the text.
 package struct RelativeDateAnnotator: Sendable {
     /// Bytes added to the annotated text, at a UTF-8 offset into that text.
     package struct Insertion: Sendable, Equatable {
@@ -35,7 +41,7 @@ package struct RelativeDateAnnotator: Sendable {
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
         guard !matches.isEmpty else { return unchanged }
 
-        let quoted = Self.quotedRanges(in: source)
+        let quoted = Self.quotedLocations(in: source)
         var output = ""
         var outputUTF8 = 0
         var cursor = 0
@@ -59,20 +65,41 @@ package struct RelativeDateAnnotator: Sendable {
 
     // MARK: - Resolution
 
-    private func label(for match: NSTextCheckingResult, in source: NSString, quoted: [NSRange]) -> String? {
-        guard Self.isAnnotatable(match.range, in: source, quoted: quoted) else { return nil }
+    private func label(for match: NSTextCheckingResult, in source: NSString, quoted: IndexSet) -> String? {
+        guard !quoted.contains(match.range.location) else { return nil }
+        let context = Self.context(of: match.range, in: source)
+        let previous = Self.previousWords(in: context.before)
+        guard Self.isAnnotatable(match.range, in: source, context: context, previous: previous) else { return nil }
         func group(_ name: String) -> String? {
             let range = match.range(withName: name)
             guard range.location != NSNotFound else { return nil }
             return source.substring(with: range).lowercased()
         }
+        let phrase = source.substring(with: match.range).lowercased()
+        // "my last week at Acme", "our last night in Rome": "last" means final.
+        if phrase.hasPrefix("last"), let word = previous.first, Self.finalDeterminers.contains(word) { return nil }
+        guard let label = resolve(group, previous: previous, before: context.before) else { return nil }
+        // Already followed by its own label: annotated before, in any year.
+        guard !context.after.hasPrefix(" (\(label))") else { return nil }
+        return label
+    }
+
+    private func resolve(_ group: (String) -> String?, previous: [String], before: String) -> String? {
         let day = observedDay
         if group("before") != nil { return Self.format(day.adding(days: -2)) }
         if group("after") != nil { return Self.format(day.adding(days: 2)) }
-        if group("yesterday") != nil || group("lastnight") != nil { return Self.format(day.adding(days: -1)) }
-        if group("today") != nil { return Self.format(day) }
-        if group("tomorrow") != nil { return Self.format(day.adding(days: 1)) }
+        if group("lastnight") != nil { return Self.format(day.adding(days: -1)) }
+        let yesterday = group("yesterday") != nil
+        if yesterday || group("today") != nil || group("tomorrow") != nil {
+            // "a week from today", "a year ago today", "since yesterday": the phrase is not the date.
+            if let word = previous.first, Self.anchorMovingWords.contains(word) { return nil }
+            // "He said yesterday that he would come tomorrow": tomorrow from when he said it.
+            if !yesterday, Self.isReported(before: before) { return nil }
+            let offset = yesterday ? -1 : (group("today") != nil ? 0 : 1)
+            return Self.format(day.adding(days: offset))
+        }
         if let amount = group("agoN").flatMap(Self.amount), let unit = group("agoUnit") {
+            guard !Self.isPartOfLargerAmount(previous), !Self.isQualifiedAmount(previous) else { return nil }
             return agoLabel(amount: amount, unit: unit)
         }
         if let weekday = group("coming").flatMap(Self.isoWeekday) {
@@ -132,31 +159,98 @@ package struct RelativeDateAnnotator: Sendable {
 
     // MARK: - Guards
 
+    /// UTF-16 units of text the guards read before and after a phrase, so each phrase costs
+    /// the same however long the text is.
+    private static let beforeWindow = 60
+    private static let afterWindow = 60
+
     /// Words that, before the phrase, change its meaning: "the last week" is the past seven
     /// days, "every last Friday" is not a date.
     private static let blockingPreviousWords: Set<String> = ["the", "every", "each", "per", "a", "an"]
+    /// Before "last", these make it "final": "my last week at Acme", "the second last night".
+    private static let finalDeterminers: Set<String> = [
+        "my", "your", "his", "her", "its", "our", "their", "whose", "this", "that", "these", "those",
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "final",
+    ]
+    /// Before yesterday, today or tomorrow, these move the date elsewhere.
+    private static let anchorMovingWords: Set<String> = ["before", "after", "from", "ago", "since"]
+    /// Before "N days ago", these make N part of a larger amount: "twenty five", "2 or 3".
+    private static let largerAmountWords: Set<String> = [
+        "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "and", "or",
+    ]
+    /// Before "N days ago", these make the amount vague.
+    private static let qualifierWords: Set<String> = [
+        "over", "under", "almost", "nearly", "about", "around", "roughly", "within",
+    ]
+    private static let qualifierPairs: Set<String> = ["more than", "less than", "at least", "up to"]
 
-    private static func isAnnotatable(_ range: NSRange, in source: NSString, quoted: [NSRange]) -> Bool {
+    /// The text just before and just after `range`, at most a window each.
+    private static func context(of range: NSRange, in source: NSString) -> (before: String, after: String) {
+        let start = max(0, range.location - beforeWindow)
         let end = range.location + range.length
-        if quoted.contains(where: { NSLocationInRange(range.location, $0) }) { return false }
+        let before = source.substring(with: NSRange(location: start, length: range.location - start))
+        let after = source.substring(with: NSRange(location: end, length: min(afterWindow, source.length - end)))
+        return (before, after)
+    }
+
+    private static func isAnnotatable(
+        _ range: NSRange,
+        in source: NSString,
+        context: (before: String, after: String),
+        previous: [String]
+    ) -> Bool {
+        let (before, following) = context
         // Possessive, hyphenated, or followed by "of" ("last week of August").
-        let following = source.substring(from: end)
         if following.hasPrefix("'s") || following.hasPrefix("’s") || following.hasPrefix("-") { return false }
         if let ofRegex, ofRegex.firstMatch(in: following, range: NSRange(location: 0, length: min(4, (following as NSString).length))) != nil {
             return false
         }
-        let before = source.substring(to: range.location)
-        if let previous = previousWord(in: before), blockingPreviousWords.contains(previous.lowercased()) {
-            return false
-        }
+        if let word = previous.first, blockingPreviousWords.contains(word) { return false }
         if isCapitalizedMidSentence(range, in: source, before: before) { return false }
         return !hasAbsoluteDateNearby(before: before, after: following)
     }
 
-    private static func previousWord(in before: String) -> String? {
-        let trimmed = before.reversed().drop(while: { $0 == " " || $0 == "\t" })
-        let word = trimmed.prefix(while: { $0.isLetter })
-        return word.isEmpty ? nil : String(word.reversed())
+    /// Up to the two words before the phrase, nearest first, lowercased.
+    private static func previousWords(in before: String) -> [String] {
+        var words: [String] = []
+        var end = before.endIndex
+        while words.count < 2 {
+            while end > before.startIndex, " \t".contains(before[before.index(before: end)]) {
+                end = before.index(before: end)
+            }
+            var start = end
+            while start > before.startIndex, before[before.index(before: start)].isLetter {
+                start = before.index(before: start)
+            }
+            guard start < end else { break }
+            words.append(before[start..<end].lowercased())
+            end = start
+        }
+        return words
+    }
+
+    private static func isPartOfLargerAmount(_ previous: [String]) -> Bool {
+        previous.first.map(largerAmountWords.contains) ?? false
+    }
+
+    private static func isQualifiedAmount(_ previous: [String]) -> Bool {
+        guard let nearest = previous.first else { return false }
+        if qualifierWords.contains(nearest) { return true }
+        return previous.count == 2 && qualifierPairs.contains("\(previous[1]) \(nearest)")
+    }
+
+    /// The sentence so far reports speech, or is already anchored in the past.
+    private static func isReported(before: String) -> Bool {
+        guard let reportedRegex else { return false }
+        let sentence = sentencePrefix(before)
+        let range = NSRange(location: 0, length: (sentence as NSString).length)
+        return reportedRegex.firstMatch(in: sentence, range: range) != nil
+    }
+
+    private static func sentencePrefix(_ before: String) -> String {
+        let start = before.lastIndex(where: { ".!?\n".contains($0) }).map { before.index(after: $0) } ?? before.startIndex
+        return String(before[start...])
     }
 
     /// "Today" or "Last Week" capitalized in the middle of a sentence is a name or title.
@@ -172,25 +266,25 @@ package struct RelativeDateAnnotator: Sendable {
         guard let absoluteDateRegex else { return false }
         let sentenceEnd = after.firstIndex(where: { ".!?\n".contains($0) }) ?? after.endIndex
         let afterWindow = String(after[..<sentenceEnd].prefix(40))
-        let sentenceStart = before.lastIndex(where: { ".!?\n".contains($0) }).map { before.index(after: $0) } ?? before.startIndex
-        let beforeWindow = String(before[sentenceStart...].suffix(25))
-        for window in [afterWindow, beforeWindow] where !window.isEmpty {
+        let beforeWindow = String(sentencePrefix(before).suffix(25))
+        // Every absolute date pattern has a digit.
+        for window in [afterWindow, beforeWindow] where window.utf8.contains(where: { $0 >= 0x30 && $0 <= 0x39 }) {
             let range = NSRange(location: 0, length: (window as NSString).length)
             if absoluteDateRegex.firstMatch(in: window, range: range) != nil { return true }
         }
         return false
     }
 
-    /// Ranges between straight double quotes, or between “ and ”.
-    private static func quotedRanges(in source: NSString) -> [NSRange] {
-        var ranges: [NSRange] = []
+    /// Locations between straight double quotes, or between “ and ”.
+    private static func quotedLocations(in source: NSString) -> IndexSet {
+        var locations = IndexSet()
         var straightStart: Int?
         var curlyStart: Int?
         for index in 0..<source.length {
             switch source.character(at: index) {
             case 0x22:
                 if let start = straightStart {
-                    ranges.append(NSRange(location: start, length: index - start))
+                    locations.insert(integersIn: start..<index)
                     straightStart = nil
                 } else {
                     straightStart = index
@@ -199,14 +293,14 @@ package struct RelativeDateAnnotator: Sendable {
                 curlyStart = index
             case 0x201D:
                 if let start = curlyStart {
-                    ranges.append(NSRange(location: start, length: index - start))
+                    locations.insert(integersIn: start..<index)
                     curlyStart = nil
                 }
             default:
                 break
             }
         }
-        return ranges
+        return locations
     }
 
     // MARK: - Formatting
@@ -262,13 +356,14 @@ package struct RelativeDateAnnotator: Sendable {
         let number = "\\d{1,3}|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
         let weekday = weekdays.joined(separator: "|")
         let alternatives = [
-            "(?<before>the\\s+day\\s+before\\s+yesterday)",
-            "(?<after>the\\s+day\\s+after\\s+tomorrow)",
+            "(?<before>(?:the\\s+)?day\\s+before\\s+yesterday)",
+            "(?<after>(?:the\\s+)?day\\s+after\\s+tomorrow)",
             "(?<yesterday>yesterday)",
             "(?<lastnight>last\\s+night)",
             "(?<today>today|tonight|this\\s+(?:morning|afternoon|evening))",
             "(?<tomorrow>tomorrow)",
-            "(?<agoN>\(number))\\s+(?<agoUnit>day|week|month|year)s?\\s+ago",
+            // Not the tail of "3.5", "2,500" or "twenty-two".
+            "(?<![\\d.,\\-])(?<agoN>\(number))\\s+(?<agoUnit>day|week|month|year)s?\\s+ago",
             "this\\s+coming\\s+(?<coming>\(weekday))",
             "last\\s+(?<lastwd>\(weekday))",
             "(?<rel>last|this|next)\\s+(?<relUnit>weekend|week|month|year)",
@@ -281,6 +376,11 @@ package struct RelativeDateAnnotator: Sendable {
 
     private static let ofRegex: NSRegularExpression? = try? NSRegularExpression(
         pattern: "^\\s+of\\b",
+        options: [.caseInsensitive]
+    )
+
+    private static let reportedRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "\\b(?:said|told|wrote|promised|mentioned|asked|yesterday|ago|last)\\b",
         options: [.caseInsensitive]
     )
 
@@ -322,24 +422,25 @@ package enum RelativeDateMetadata {
     }
 
     /// The text before annotation; `nil` when `text` is not the whole annotated text these
-    /// insertions describe (a chunk of it, or text edited after saving).
+    /// insertions describe (a chunk of it, or text edited after saving), or when the metadata
+    /// is malformed.
     package static func originalText(_ text: String, metadata: [String: String]) -> String? {
         guard let encoded = metadata[insertionsKey] else { return text }
-        let parts = encoded.split(separator: ":", maxSplits: 1)
-        guard parts.count == 2, let originalLength = Int(parts[0]) else { return nil }
-        var spans: [(offset: Int, length: Int)] = []
-        for item in parts[1].split(separator: ",") {
-            let pair = item.split(separator: "+")
-            guard pair.count == 2, let offset = Int(pair[0]), let length = Int(pair[1]), length > 0 else { return nil }
-            spans.append((offset, length))
-        }
+        guard let (originalLength, spans) = decodeInsertions(encoded) else { return nil }
         let bytes = Array(text.utf8)
-        guard bytes.count == originalLength + spans.reduce(0, { $0 + $1.length }) else { return nil }
+        var expectedLength = originalLength
+        for span in spans {
+            let (sum, overflow) = expectedLength.addingReportingOverflow(span.length)
+            guard !overflow else { return nil }
+            expectedLength = sum
+        }
+        guard bytes.count == expectedLength else { return nil }
         var kept: [UInt8] = []
         kept.reserveCapacity(originalLength)
         var cursor = 0
         for span in spans {
-            guard span.offset >= cursor, span.offset + span.length <= bytes.count,
+            // Each span is " (…)", at least 3 bytes, inside the text and after the previous one.
+            guard span.offset >= cursor, span.offset <= bytes.count - span.length,
                   bytes[span.offset] == UInt8(ascii: " "),
                   bytes[span.offset + 1] == UInt8(ascii: "("),
                   bytes[span.offset + span.length - 1] == UInt8(ascii: ")") else {
@@ -350,6 +451,19 @@ package enum RelativeDateMetadata {
         }
         kept += bytes[cursor...]
         return String(bytes: kept, encoding: .utf8)
+    }
+
+    private static func decodeInsertions(_ encoded: String) -> (Int, [(offset: Int, length: Int)])? {
+        let parts = encoded.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2, let originalLength = Int(parts[0]), originalLength >= 0 else { return nil }
+        var spans: [(offset: Int, length: Int)] = []
+        for item in parts[1].split(separator: ",") {
+            let pair = item.split(separator: "+")
+            guard pair.count == 2, let offset = Int(pair[0]), let length = Int(pair[1]),
+                  offset >= 0, length >= 3 else { return nil }
+            spans.append((offset, length))
+        }
+        return (originalLength, spans)
     }
 
     /// The text and metadata to store: annotated when relative phrases resolve against the

@@ -39,10 +39,10 @@ func annotatesDaysAgo(input: String, expected: String) {
 // MARK: - Weekdays
 
 @Test(arguments: [
-    ("I saw her last Friday", "I saw her last Friday (18 Aug 2023)"),
+    ("I saw him last Friday", "I saw him last Friday (18 Aug 2023)"),
     // Said on a Tuesday, "last Tuesday" is a week back, never today.
-    ("I saw her last Tuesday", "I saw her last Tuesday (15 Aug 2023)"),
-    ("I saw her last Monday", "I saw her last Monday (21 Aug 2023)"),
+    ("I saw him last Tuesday", "I saw him last Tuesday (15 Aug 2023)"),
+    ("I saw him last Monday", "I saw him last Monday (21 Aug 2023)"),
     ("The party is this coming Friday", "The party is this coming Friday (25 Aug 2023)"),
 ])
 func annotatesWeekdays(input: String, expected: String) {
