@@ -50,7 +50,7 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import locomo  # noqa: E402  (READER_SYSTEM, READER_PROMPT, load_jsonl)
+import locomo  # noqa: E402  (READER_SYSTEM, READER_PROMPT, load_jsonl, observed_date)
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBED_DIMS = 384
@@ -319,7 +319,7 @@ def ingest_stream(args, sample: dict, index: int, which: str, llm_class, log: Ca
     started = time.time()
     for key in session_keys(conversation):
         timestamp = conversation[f"{key}_date_time"]
-        _observation.date = parse_locomo_date(timestamp).date().isoformat()
+        _observation.date = locomo.observed_date(timestamp)  # same dates as the Wax rows; raises on a bad one
         messages = []
         for chat in conversation[key]:
             own = chat["speaker"] == (speaker_a if which == "a" else speaker_b)
