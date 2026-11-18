@@ -10,9 +10,19 @@ package enum MCPPrimeAssembly {
     package static let maxProjectItems = 5
     package static let maxItemTokens = 160
     package static let maxItemBytes = 2_048
-    /// Taskless handoffs shorter than this are teardown residue
-    /// (e.g. "transport idleExpiry"), not human-authored context.
-    package static let minHandoffContentChars = 32
+    /// Content older builds recorded as a handoff with no human input: the
+    /// checkpoint hook's default and transport-teardown residue
+    /// ("transport idleExpiry"). Matched exactly so short authored handoffs survive.
+    package static let legacyStubHandoffContents: Set<String> = [
+        "checkpoint",
+        "transport httpDelete",
+        "transport idleExpiry",
+        "transport shutdown",
+        "transport recoveryReplacement",
+        "transport stdioEOF",
+        "transport capacityEviction",
+        "transport peerClosed",
+    ]
     package static let ownership = "injection"
     package static let ownershipLevel = "B"
 
@@ -552,7 +562,7 @@ package enum MCPPrimeAssembly {
             || tasks.count != handoff.pendingTasks.count
             || zip(handoff.pendingTasks.prefix(tasks.count), tasks).contains { $0 != $1 }
         guard !compact.isEmpty || !tasks.isEmpty else { return nil }
-        if tasks.isEmpty, compact.count < minHandoffContentChars { return nil }
+        if tasks.isEmpty, legacyStubHandoffContents.contains(compact) { return nil }
         handoff.content = compact
         handoff.pendingTasks = Array(tasks)
         handoff.truncated = handoff.truncated || truncated
