@@ -292,7 +292,12 @@ package actor MemoryOrchestrator {
             vectorDimensions: embedder?.dimensions,
             catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
-        self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        do {
+            self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        } catch {
+            try? await wax.close()
+            throw error
+        }
         // A superseded-vectors reason outranks the coverage one, so skip the scan then. The
         // session's engine already holds every embedded frame ID, so the scan reuses them
         // instead of reading and decoding the vector segment again.
@@ -307,7 +312,16 @@ package actor MemoryOrchestrator {
         // Before the pipeline starts: its handler retains the session, so a throw
         // after that would leave the store's file lock held.
         if resolvedConfig.enableAccessStatsScoring {
-            try await loadPersistedAccessStatsIfNeeded()
+            do {
+                try await loadPersistedAccessStatsIfNeeded()
+            } catch {
+                // No caller can close an orchestrator whose init threw. Without this the lock
+                // lasts until the last reference to the store drops, and the session's deinit
+                // hands one to an unstructured Task that a loaded machine runs late.
+                await session.close()
+                try? await wax.close()
+                throw error
+            }
         }
         if let enrichmentPipeline {
             let session = self.session
