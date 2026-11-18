@@ -330,7 +330,7 @@ final class WALCompactionBenchmarks: XCTestCase {
         defer { try? file.close() }
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             XCTFail("expected valid header pages")
             return
         }

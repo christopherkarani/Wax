@@ -19,7 +19,7 @@ extension Wax {
             let pageB = try await io.run {
                 try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
             }
-            guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+            guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
                 throw WaxError.invalidHeader(reason: "no valid header pages")
             }
             let header = selected.page

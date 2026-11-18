@@ -363,7 +363,18 @@ package struct WaxHeaderPage: Equatable, Sendable {
     ///
     /// Selection:
     /// - If both are valid, choose the one with higher `header_page_generation` (tie-breaker: page A).
-    package static func selectValidPage(pageA: Data, pageB: Data) -> (page: WaxHeaderPage, pageIndex: Int)? {
+    ///
+    /// A torn or checksum-failing page falls back to the other page. A page whose checksum
+    /// verifies but whose `format_version` is unsupported was written by a different Wax
+    /// version, so selection throws instead of silently opening the older page.
+    package static func selectValidPage(pageA: Data, pageB: Data) throws -> (page: WaxHeaderPage, pageIndex: Int)? {
+        for page in [pageA, pageB] {
+            if let version = intactUnsupportedFormatVersion(in: page) {
+                throw WaxError.invalidHeader(
+                    reason: "unsupported format_version 0x\(String(format: "%04X", version)); this Wax supports up to 0x\(String(format: "%04X", Constants.specVersion))"
+                )
+            }
+        }
         let a = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageA)
         let b = try? WaxHeaderPage.decodeWithChecksumValidation(from: pageB)
 
@@ -380,6 +391,17 @@ package struct WaxHeaderPage: Equatable, Sendable {
             }
             return (bPage, 1)
         }
+    }
+
+    /// The page's `format_version` when the page is intact (right size, magic, checksum) but the
+    /// version is not one this build opens; nil for a supported or torn page.
+    private static func intactUnsupportedFormatVersion(in data: Data) -> UInt16? {
+        guard data.count == Self.size,
+              data.prefix(Self.magic.count) == Self.magic else { return nil }
+        let stored = data.subdata(in: Self.headerChecksumOffset..<(Self.headerChecksumOffset + Self.headerChecksumCount))
+        guard stored == computeHeaderChecksum(over: data) else { return nil }
+        let version = UInt16(data[data.startIndex + 4]) | (UInt16(data[data.startIndex + 5]) << 8)
+        return Constants.supportedSpecVersions.contains(version) ? nil : version
     }
 
     private static func computeHeaderChecksum(over data: Data) -> Data {

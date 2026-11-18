@@ -186,7 +186,7 @@ private let testFooterOffset: UInt64 = Constants.walOffset + Constants.defaultWa
     let pageA = try a.encodeWithChecksum()
     let pageB = try b.encodeWithChecksum()
 
-    let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)
+    let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)
     #expect(selected != nil)
     #expect(selected?.pageIndex == 1)
     #expect(selected?.page.footerOffset == testFooterOffset + 10_000)

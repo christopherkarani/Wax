@@ -234,7 +234,7 @@ private func committedTocAndFooter(_ wax: Wax) async throws -> (toc: Data, foote
     try await wax.stageLexIndexForNextCommit(bytes: lex2, docCount: 40)
     try await wax.commit()
     let pagesAtG2 = try headerPages(url)
-    let g2Page = try #require(WaxHeaderPage.selectValidPage(
+    let g2Page = try #require(try WaxHeaderPage.selectValidPage(
         pageA: Data(pagesAtG2.prefix(Int(Constants.headerPageSize))),
         pageB: Data(pagesAtG2.suffix(Int(Constants.headerPageSize)))
     ))

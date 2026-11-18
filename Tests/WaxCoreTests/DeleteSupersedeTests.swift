@@ -360,7 +360,7 @@ import Testing
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+        let selected = try #require(try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
 
         let writer = WALRingWriter(
             file: file,

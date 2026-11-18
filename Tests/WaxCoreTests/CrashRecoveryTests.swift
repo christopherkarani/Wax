@@ -318,7 +318,7 @@ func openScansAndTruncatesTailPastReplaySnapshotFooter(_ tail: TailPastSnapshotF
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -357,7 +357,7 @@ func openScansAndTruncatesTailPastReplaySnapshotFooter(_ tail: TailPastSnapshotF
         defer { try? file.close() }
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             throw WaxError.invalidHeader(reason: "no valid header pages")
         }
         return selected.page
@@ -452,7 +452,7 @@ func openScansAndTruncatesTailPastReplaySnapshotFooter(_ tail: TailPastSnapshotF
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
