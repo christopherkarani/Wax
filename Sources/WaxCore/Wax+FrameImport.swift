@@ -59,6 +59,7 @@ extension Wax {
         guard !contents.isEmpty else { return [] }
         return try await withWriteLock {
             guard var current = frameImport else { throw Self.noFrameImport }
+            try ensureWritableLocked()
             try reserveCommitCapacityLocked(for: options, in: &current)
             let timestampMs = Int64(Date().timeIntervalSince1970 * 1000)
             let totalBytes = contents.reduce(UInt64(0)) { $0 + UInt64($1.count) }

@@ -355,7 +355,8 @@ package actor Wax {
         walAutoCommitCount &+= 1
     }
 
-    private func ensureWritableLocked() throws {
+    /// Internal only because of the file split; call only while holding `opLock` for writing.
+    func ensureWritableLocked() throws {
         guard !writesRefused else {
             throw WaxError.io("a commit failed after writing its footer; reopen the store before writing again")
         }

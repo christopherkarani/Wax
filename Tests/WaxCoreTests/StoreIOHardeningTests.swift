@@ -278,3 +278,29 @@ func writesAfterALateCommitFailureSurviveACrash(fault: LateCommitFault) async th
         try await recovered.close()
     }
 }
+
+/// An import whose commit failed at or past its footer write stays open for a retry, but the
+/// handle refuses writes: importing more frames must throw before writing any payload bytes.
+@Test(arguments: LateCommitFault.allCases)
+func importFramesAfterALateImportCommitFailureWritesNothing(fault: LateCommitFault) async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("first".utf8))
+    try await wax.commit()
+
+    #expect(try await wax.beginFrameImport())
+    _ = try await wax.importFrames([Data("imported".utf8)], options: [FrameMetaSubset()])
+    await wax.installFileFaultPlanForTesting(fault.plan)
+    await #expect(throws: WaxError.self) { try await wax.commitFrameImport() }
+    await wax.installFileFaultPlanForTesting(nil)
+
+    let sizeBefore = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64
+    await #expect(throws: WaxError.self) {
+        _ = try await wax.importFrames([Data(repeating: 0x41, count: 64 * 1024)], options: [FrameMetaSubset()])
+    }
+    let sizeAfter = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64
+    #expect(sizeAfter == sizeBefore, "\(fault): a refused import must not write payload bytes")
+    await wax.abandonFrameImport()
+    _ = try? await wax.close()
+}
