@@ -9,6 +9,41 @@ cd "$ROOT_DIR"
 GATE_LOG_DIR="${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wax-gate.XXXXXX")}"
 mkdir -p "$GATE_LOG_DIR"
 
+# Tests that started and never finished, in start order. A timed-out run otherwise shows
+# only its log tail, where a test that hung long before the timeout does not appear.
+# Handles swift-testing ("Test x() started." / "passed|failed after" / "skipped:") and
+# XCTest ("Test Case '-[S t]' started." / "passed|failed (").
+unfinished_tests() {
+  local log_file="$1"
+  sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g; s/\r$//' "$log_file" 2>/dev/null \
+    | sed -nE \
+      -e "/Test Case '/{
+            s/.*Test Case '(-\[[^]]+\])' started.*/START \1/p
+            s/.*Test Case '(-\[[^]]+\])' (passed|failed) .*/END \1/p
+            d
+          }" \
+      -e '/recorded an issue/d' \
+      -e '/Test run (started|with)/d' \
+      -e '/Test case passing /d' \
+      -e 's/ with [0-9]+ test cases? (passed|failed) after / \1 after /' \
+      -e 's/.*Test (.+) started\.$/START \1/p' \
+      -e 's/.*Test (.+) (passed|failed) after .*/END \1/p' \
+      -e 's/.*Test (.+) skipped(:.*)?$/END \1/p' \
+    | awk '
+        $1 == "START" { name = substr($0, 7); if (!(name in open)) order[++n] = name; open[name] = 1 }
+        $1 == "END" { delete open[substr($0, 5)] }
+        END { for (i = 1; i <= n; i++) if (order[i] in open) print order[i] }
+      '
+}
+
+descendant_pids() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    echo "$child"
+    descendant_pids "$child"
+  done
+}
+
 run_and_capture() {
   local log_file="$1"
   shift
@@ -51,6 +86,19 @@ run_and_capture() {
       echo "GATE_TIMEOUT ${timeout_secs}s: $*"
       last_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
       echo "GATE_TIMEOUT_LAST ${last_line}"
+      unfinished_tests "$log_file" | head -n 40 | sed 's/^/GATE_UNFINISHED_TEST /'
+      # Test-spawned processes still alive (daemons, CLI children) often explain a hang.
+      ps -axo pid,ppid,etime,command 2>/dev/null \
+        | grep -E "wax|xctest|swiftpm-testing-helper" | grep -v grep | head -n 40 \
+        | sed 's/^/GATE_LIVE_PROCESS /' || true
+      # Every thread's stack in a hung test process says where it is stuck (macOS only).
+      if command -v sample >/dev/null 2>&1; then
+        local test_pid
+        for test_pid in $(descendant_pids "$cmd_pid"); do
+          ps -o command= -p "$test_pid" 2>/dev/null | grep -qE "swiftpm-testing-helper|xctest" || continue
+          sample "$test_pid" 3 2>/dev/null | head -n 600 | sed "s/^/GATE_STACK ${test_pid} /" || true
+        done
+      fi
       kill "$cmd_pid" 2>/dev/null || true
       sleep 2
       kill -9 "$cmd_pid" 2>/dev/null || true
@@ -88,7 +136,7 @@ run_and_capture() {
 # explicit env var or package trait is set. These are not silent product gaps.
 expected_optional_skip_pattern() {
   printf '%s' \
-    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_|Requires macOS 26.0"
+    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_E5=1|Set WAX_TEST_RERANKER=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_|Requires macOS 26.0"
 }
 
 assert_no_skips() {
@@ -236,12 +284,12 @@ assert_mcp_cli_doctor_smokes_ran() {
   echo "MCP_CLI_DOCTOR_SMOKES: executed"
 }
 
+# The default test list (`swift test list`) is captured once by run_full, which
+# shards on it before this check reads it.
 assert_mcp_trait_test_inventory() {
-  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
+  local default_list_log="$1"
   local mcp_list_log="$GATE_LOG_DIR/wax-gate-mcp-test-list.log"
 
-  run_and_capture "$default_list_log" \
-    swift test --disable-automatic-resolution list
   assert_default_mcp_trait_tests_omitted "$default_list_log"
 
   run_and_capture "$mcp_list_log" \
@@ -249,21 +297,67 @@ assert_mcp_trait_test_inventory() {
   assert_mcp_trait_tests_listed "$mcp_list_log"
 }
 
+# Test targets named in a `swift test list` log, in first-listed order. Build and
+# warning lines are ignored; every test target's name ends in "Tests".
+full_gate_test_targets() {
+  local list_log="$1"
+  sed -E $'s/\x1b\\[[0-9;]*m//g; s/\r$//' "$list_log" \
+    | grep -oE '^[A-Za-z_][A-Za-z0-9_]*Tests\.' \
+    | sed 's/\.$//' \
+    | awk '!seen[$0]++'
+}
+
+# One `swift test` run per test target. A single run of every target starts all of
+# the package's ~2,600 tests at once, and on a 3-core runner a test that times itself
+# (a deadline, a readiness wait) then waits behind the whole backlog. Every shard runs
+# even after one fails, so one failure cannot hide another. Shards reuse the build
+# that `swift test list` made (--skip-build): on the macos-15 runner each shard
+# otherwise recompiled every Wax module, about 3.5 minutes apiece.
+run_full_shards() {
+  local list_log="$1"
+  local skip_regex="$2"
+  local target shard_log targets=() failed=()
+  # An array, not a `while read` loop: run_and_capture's `script` reads stdin and
+  # would take the remaining target names with it.
+  while IFS= read -r target; do
+    targets+=("$target")
+  done < <(full_gate_test_targets "$list_log")
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    echo "FAIL: the default test list names no test target: $list_log" >&2
+    return 1
+  fi
+  for target in "${targets[@]}"; do
+    shard_log="$GATE_LOG_DIR/wax-gate-full-$target.log"
+    echo "FULL_SHARD: $target"
+    if ! run_and_capture "$shard_log" \
+      swift test --parallel --skip-build --filter "^${target}\." --skip "$skip_regex"; then
+      failed+=("$target")
+      continue
+    fi
+    if ! assert_no_skips "$shard_log" || ! assert_full_pass_rate "$shard_log"; then
+      failed+=("$target")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: full gate shards failed: ${failed[*]}" >&2
+    return 1
+  fi
+}
+
 run_full() {
-  local log_file="$GATE_LOG_DIR/wax-gate-full.log"
+  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
   local mcp_unit_log="$GATE_LOG_DIR/wax-gate-full-mcp-unit.log"
   local mcp_cli_log="$GATE_LOG_DIR/wax-gate-full-mcp-cli.log"
   local mcp_process_log="$GATE_LOG_DIR/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
 
-  run_and_capture "$log_file" \
-    swift test --parallel --skip "$skip_regex"
-  assert_no_skips "$log_file"
-  assert_full_pass_rate "$log_file"
+  run_and_capture "$default_list_log" \
+    swift test --disable-automatic-resolution list
+  run_full_shards "$default_list_log" "$skip_regex"
 
   require_swiftpm_traits
-  assert_mcp_trait_test_inventory
+  assert_mcp_trait_test_inventory "$default_list_log"
 
   # Do not re-run the default suite serially under --traits MCPServer: that
   # hung GitHub macos-15 for 75m with a frozen log after compile. Keep

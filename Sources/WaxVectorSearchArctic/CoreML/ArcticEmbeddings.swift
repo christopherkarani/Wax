@@ -14,6 +14,7 @@ package final class ArcticEmbeddings {
         case missingModelResource
         case modelLoadFailed(String)
         case tokenizerLoadFailed(String)
+        case unsupportedComputeUnits(String)
 
         package var errorDescription: String? {
             switch self {
@@ -23,6 +24,8 @@ package final class ArcticEmbeddings {
                 return "Failed to load the Arctic Core ML model: \(details)"
             case .tokenizerLoadFailed(let details):
                 return "Failed to initialize tokenizer: \(details)"
+            case .unsupportedComputeUnits(let details):
+                return "The Arctic Core ML model cannot load with \(details) compute units: its range input shapes keep MPSGraph shape solving running for minutes. Use cpuOnly (the default), cpuAndNeuralEngine or all."
             }
         }
     }
@@ -86,9 +89,15 @@ package final class ArcticEmbeddings {
     /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
     /// (non-cooperative) queue prevents starvation of the Swift concurrency cooperative thread pool,
     /// which the MCP server's transport readLoop and send operations depend on for progress.
+    ///
+    /// `.workItem` drains the autorelease pool after every prediction. CoreML autoreleases
+    /// IOSurface-backed outputs, and a GCD thread otherwise drains only when it goes idle, so
+    /// back-to-back predictions from concurrent callers grow memory until IOSurface allocation
+    /// fails with an uncaught NSException ("Failed to allocate E5 buffer object").
     private static let predictionQueue = DispatchQueue(
         label: "wax.arctic.coreml-prediction",
-        qos: .userInitiated
+        qos: .userInitiated,
+        autoreleaseFrequency: .workItem
     )
 
     package var computeUnits: MLComputeUnits {
@@ -104,12 +113,16 @@ package final class ArcticEmbeddings {
         overrides: Overrides = .default,
         timeout: Duration
     ) async throws -> ArcticEmbeddings {
-        try await AsyncTimeout.run(timeout: timeout, operation: "Arctic model load") {
-            try ArcticEmbeddings(configuration: configuration, overrides: overrides)
+        // Before the timeout: a refusal must not wait on a busy cooperative pool.
+        try refuseUnsupportedComputeUnits(configuration, overrides: overrides)
+        return try await AsyncTimeout.run(timeout: timeout, operation: "Arctic model load") {
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run { try ArcticEmbeddings(configuration: configuration, overrides: overrides) }
         }
     }
 
     init(configuration: MLModelConfiguration? = nil, overrides: Overrides) throws {
+        try Self.refuseUnsupportedComputeUnits(configuration, overrides: overrides)
         let config = configuration ?? {
             let defaultConfig = MLModelConfiguration()
             // CPU by default: the Neural Engine path intermittently returns non-finite
@@ -307,6 +320,22 @@ private extension ArcticEmbeddings {
         }
     }
 
+    /// The bundled graph has range input shapes (batch 1-64, sequence 32-512). With cpuAndGPU,
+    /// MPSGraph shape solving outlasts any load timeout (still running after 120 s; over 10
+    /// minutes reported), so it is refused instead of stalling. `.all` and `.cpuAndNeuralEngine`
+    /// load in seconds. Only the bundled model is refused; a model from `modelURLProvider` may
+    /// have fixed shapes. This runs before any load work, so a slow load cannot delay it.
+    static func refuseUnsupportedComputeUnits(
+        _ configuration: MLModelConfiguration?,
+        overrides: Overrides
+    ) throws {
+        guard overrides.modelURLProvider == nil,
+              overrides.usesBundleFallback,
+              configuration?.computeUnits == .cpuAndGPU
+        else { return }
+        throw InitError.unsupportedComputeUnits("cpuAndGPU")
+    }
+
     static func applyBlockingLoadDelay(_ overrides: Overrides) {
         guard let delay = overrides.blockingModelLoadDelay else { return }
         let components = delay.components
@@ -315,42 +344,6 @@ private extension ArcticEmbeddings {
         let interval = max(0, seconds + attoseconds)
         guard interval > 0 else { return }
         Thread.sleep(forTimeInterval: interval)
-    }
-
-    struct ModelCacheKey: Hashable {
-        let computeUnits: MLComputeUnits
-        let allowLowPrecisionAccumulationOnGPU: Bool
-    }
-
-    final class ModelCache: @unchecked Sendable {
-        static let shared = ModelCache()
-        private var models: [ModelCacheKey: snowflake_arctic_embed_s] = [:]
-        private let lock = NSLock()
-
-        func model(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
-            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
-            if configuration.preferredMetalDevice != nil || hasParameters {
-                return try ArcticEmbeddings.loadModelFromBundle(configuration: configuration)
-            }
-            let key = ModelCacheKey(
-                computeUnits: configuration.computeUnits,
-                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
-            )
-            lock.lock()
-            if let cached = models[key] {
-                lock.unlock()
-                return cached
-            }
-            defer { lock.unlock() }
-
-            let model = try ArcticEmbeddings.loadModelFromBundle(configuration: configuration)
-            models[key] = model
-            return model
-        }
-    }
-
-    static func cachedModel(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
-        try ModelCache.shared.model(configuration: configuration)
     }
 
     /// Decodes the model's `embeddings` output into one vector per input row.
@@ -426,6 +419,47 @@ private extension ArcticEmbeddings {
             }
             guard rows > 0, dimension > 0 else { return nil }
         }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension ArcticEmbeddings {
+    struct ModelCacheKey: Hashable {
+        let computeUnits: MLComputeUnits
+        let allowLowPrecisionAccumulationOnGPU: Bool
+    }
+
+    /// Process-wide cache of loaded models, one per compute-unit configuration.
+    ///
+    /// Callers asking for the same configuration share one load, so one configuration is never
+    /// compiled twice at once. A load for one configuration never waits for a load of another: a
+    /// GPU load of a model with range input shapes can spend many minutes in MPSGraph shape
+    /// solving, and it must not stall the CPU load.
+    final class ModelCache: Sendable {
+        static let shared = ModelCache { try ArcticEmbeddings.loadModelFromBundle(configuration: $0) }
+
+        private let models = KeyedLoadCache<ModelCacheKey, snowflake_arctic_embed_s>()
+        private let loader: @Sendable (MLModelConfiguration) throws -> snowflake_arctic_embed_s
+
+        init(loader: @escaping @Sendable (MLModelConfiguration) throws -> snowflake_arctic_embed_s) {
+            self.loader = loader
+        }
+
+        func model(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
+            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
+            if configuration.preferredMetalDevice != nil || hasParameters {
+                return try loader(configuration)
+            }
+            let key = ModelCacheKey(
+                computeUnits: configuration.computeUnits,
+                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
+            )
+            return try models.value(for: key) { try loader(configuration) }
+        }
+    }
+
+    static func cachedModel(configuration: MLModelConfiguration) throws -> snowflake_arctic_embed_s {
+        try ModelCache.shared.model(configuration: configuration)
     }
 }
 

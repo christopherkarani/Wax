@@ -45,6 +45,11 @@ package enum TextChunker {
     ) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
+        // Every cl100k token covers at least one UTF-8 byte, so text with no more bytes
+        // than the target fits without being encoded.
+        if text.utf8.count <= cappedTarget {
+            return [text]
+        }
 
         let counter: TokenCounter
         do {
@@ -61,7 +66,7 @@ package enum TextChunker {
         let segments = tokenizerSegments(of: text, maxBytes: maxSegmentBytes)
         for segment in segments {
             let segmentText = String(segment)
-            let tokens = await counter.encode(segmentText)
+            let tokens = counter.encode(segmentText)
             if tokens.count <= cappedTarget {
                 if segments.count == 1 || !segmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     chunks.append(segmentText)
@@ -69,7 +74,7 @@ package enum TextChunker {
                 continue
             }
 
-            let ranges = await scalarAligned(
+            let ranges = scalarAligned(
                 tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
                 in: tokens,
                 counter: counter
@@ -77,7 +82,7 @@ package enum TextChunker {
             chunks.reserveCapacity(chunks.count + ranges.count)
             for range in ranges {
                 let slice = Array(tokens[range])
-                let chunk = await counter.decode(slice)
+                let chunk = counter.decode(slice)
                 if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     chunks.append(chunk)
                 }
@@ -116,7 +121,7 @@ package enum TextChunker {
                 let segments = tokenizerSegments(of: text, maxBytes: maxSegmentBytes)
                 for segment in segments {
                     let segmentText = String(segment)
-                    let tokens = await counter.encode(segmentText)
+                    let tokens = counter.encode(segmentText)
                     if tokens.count <= cappedTarget {
                         if segments.count == 1 || !segmentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             continuation.yield(segmentText)
@@ -124,7 +129,7 @@ package enum TextChunker {
                         continue
                     }
 
-                    let ranges = await scalarAligned(
+                    let ranges = scalarAligned(
                         tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: cappedTarget, overlapTokens: cappedOverlap),
                         in: tokens,
                         counter: counter
@@ -132,7 +137,7 @@ package enum TextChunker {
 
                     for range in ranges {
                         let slice = Array(tokens[range])
-                        let chunk = await counter.decode(slice)
+                        let chunk = counter.decode(slice)
                         if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             continuation.yield(chunk)
                         }
@@ -158,14 +163,14 @@ package enum TextChunker {
         var pending = Array(chunks.reversed())
         while let chunk = pending.popLast() {
             let count = inputTokenCount(chunk)
-            let tokens = count > limit ? await counter.encode(chunk) : []
+            let tokens = count > limit ? counter.encode(chunk) : []
             guard tokens.count > 1 else {
                 fitted.append(chunk)
                 continue
             }
             // Size pieces by the observed token ratio; every piece is strictly shorter, so this ends.
             let target = max(1, min(tokens.count - 1, tokens.count * limit / count))
-            let ranges = await scalarAligned(
+            let ranges = scalarAligned(
                 tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: target, overlapTokens: 0),
                 in: tokens,
                 counter: counter
@@ -177,7 +182,7 @@ package enum TextChunker {
             }
             var pieces: [String] = []
             for range in ranges {
-                pieces.append(await counter.decode(Array(tokens[range])))
+                pieces.append(counter.decode(Array(tokens[range])))
             }
             pending.append(contentsOf: pieces.reversed())
         }
@@ -222,12 +227,12 @@ package enum TextChunker {
         _ ranges: [Range<Int>],
         in tokens: [UInt32],
         counter: TokenCounter
-    ) async -> [Range<Int>] {
+    ) -> [Range<Int>] {
         var aligned: [Range<Int>] = []
         aligned.reserveCapacity(ranges.count)
         for range in ranges {
-            let start = await counter.scalarBoundary(atOrAfter: range.lowerBound, in: tokens)
-            let end = await counter.scalarBoundary(atOrAfter: range.upperBound, in: tokens)
+            let start = counter.scalarBoundary(atOrAfter: range.lowerBound, in: tokens)
+            let end = counter.scalarBoundary(atOrAfter: range.upperBound, in: tokens)
             if start < end, aligned.last != start..<end {
                 aligned.append(start..<end)
             }

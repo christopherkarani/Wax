@@ -78,10 +78,12 @@ func hybridRecallWaitsForLoadingEmbedderThenUsesHybrid() async throws {
     #expect((payload["effective_mode"] as? String)?.hasPrefix("hybrid") == true)
 }
 
-@Test
+// A hang fails the time limit; there is no wall-clock bound, which also timed the
+// first recall's wait for the shared tokenizer load (seconds in the parallel suite's
+// opening burst).
+@Test(.timeLimit(.minutes(5)))
 func noEmbedderHybridRecallDoesNotHangAndWarns() async throws {
     try await withDXBroker(noEmbedder: true) { service, _ in
-        let started = ContinuousClock.now
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "recall",
@@ -93,8 +95,7 @@ func noEmbedderHybridRecallDoesNotHangAndWarns() async throws {
             ),
             broker: service
         )
-        let elapsed = ContinuousClock.now - started
-        #expect(elapsed < .seconds(5))
+        #expect(await service.longTermMemory.readinessWaitCount == 0)
         #expect(result.isError != true)
         let payload = try parseDXJSON(in: result)
         #expect((payload["effective_mode"] as? String) == "text")
@@ -164,7 +165,12 @@ func retrievalDowngradeWarningMapsEmbeddingStates() {
     )
 }
 
-@Test
+// Waiting is asserted from behaviour: the open never suspends on embedder readiness,
+// in the long-term store or the session's own store, and returns while the provider
+// factory is still held. A wall-clock bound also timed the person recall's wait for
+// the shared tokenizer load (seconds in the parallel suite's opening burst), and a
+// readiness wait would return at its 30 s timeout.
+@Test(.timeLimit(.minutes(5)))
 func sessionOpenWithoutRecallQueryDoesNotWaitForLoadingEmbedder() async throws {
     let rootURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("wax-dx-open-nowait-\(UUID().uuidString)", isDirectory: true)
@@ -189,7 +195,6 @@ func sessionOpenWithoutRecallQueryDoesNotWaitForLoadingEmbedder() async throws {
         factoryOverride: factory
     )
     do {
-        let started = ContinuousClock.now
         let result = await WaxMCPTools.handleCall(
             params: .init(
                 name: "session_open",
@@ -201,11 +206,11 @@ func sessionOpenWithoutRecallQueryDoesNotWaitForLoadingEmbedder() async throws {
             ),
             broker: service
         )
-        let elapsed = ContinuousClock.now - started
-        #expect(elapsed < .seconds(5))
         #expect(result.isError != true)
         let payload = try parseDXJSON(in: result)
-        #expect((payload["session_id"] as? String)?.isEmpty == false)
+        let sessionID = try #require((payload["session_id"] as? String).flatMap(UUID.init(uuidString:)))
+        #expect(await service.longTermMemory.readinessWaitCount == 0)
+        #expect(try await service.memory(for: sessionID).readinessWaitCount == 0)
         #expect(payload["recall"] == nil)
         #expect(await gate.isClosed)
         await gate.open()

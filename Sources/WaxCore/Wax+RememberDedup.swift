@@ -59,6 +59,11 @@ package struct RememberDedupProbe: Equatable, Sendable {
 }
 
 extension Wax {
+    /// Frames the remember dedup probe has examined since this handle opened.
+    package func rememberDedupFramesExaminedForTesting() async -> UInt64 {
+        await withReadLock { rememberDedupFramesExamined }
+    }
+
     package func rememberDedupProbe(
         contentHash: String,
         metadata: [String: String],
@@ -106,94 +111,46 @@ extension Wax {
                 }
             }
 
-            var chunkCoverageByDocument: [UInt64: ChunkCoverage] = [:]
-
-            let orderedPending = orderedPendingMutationsLocked()
-            let cappedPendingPuts = min(
-                pendingMutationSummary.putFrameCount,
-                UInt64(pendingMutations.count)
-            )
-            let pendingPutCapacity = Int(cappedPendingPuts)
-            var pendingPutMetas: [UInt64: FrameMeta] = [:]
-            pendingPutMetas.reserveCapacity(pendingPutCapacity)
-            var pendingPutIds: [UInt64] = []
-            pendingPutIds.reserveCapacity(pendingPutCapacity)
-            var pendingDeleted = Set<UInt64>()
-            var pendingSupersededBy: [UInt64: UInt64] = [:]
-            var pendingSupersedes: [UInt64: UInt64] = [:]
-
-            for mutation in orderedPending {
-                switch mutation.entry {
-                case .putFrame(let put):
-                    guard let meta = try? FrameMeta.fromPut(put) else { continue }
-                    pendingPutMetas[meta.id] = meta
-                    pendingPutIds.append(meta.id)
-                case .deleteFrame(let delete):
-                    pendingDeleted.insert(delete.frameId)
-                case .supersedeFrame(let supersede):
-                    pendingSupersededBy[supersede.supersededId] = supersede.supersedingId
-                    pendingSupersedes[supersede.supersedingId] = supersede.supersededId
-                case .putEmbedding:
-                    continue
-                }
-            }
-
-            func pendingVisibleMeta(_ meta: FrameMeta) -> FrameMeta {
-                var visible = meta
-                if pendingDeleted.contains(meta.id) {
-                    visible.status = .deleted
-                }
-                if let supersededBy = pendingSupersededBy[meta.id] {
-                    visible.supersededBy = supersededBy
-                }
-                if let supersedes = pendingSupersedes[meta.id] {
-                    visible.supersedes = supersedes
-                }
-                return visible
-            }
-
-            func visit(_ meta: FrameMeta) -> RememberDedupProbe? {
-                guard meta.status == .active, meta.supersededBy == nil else { return nil }
-
-                if meta.role == .chunk, let parentId = meta.parentId {
-                    var coverage = chunkCoverageByDocument[parentId] ?? ChunkCoverage()
-                    coverage.record(meta, embeddingIdentity: embeddingIdentity)
-                    chunkCoverageByDocument[parentId] = coverage
-                    return nil
-                }
-
-                guard meta.role == .document else { return nil }
-                guard let entries = meta.metadata?.entries else { return nil }
-                guard entries["wax.content.hash"] == contentHash else { return nil }
-                var storedIdentity = entries
-                var requestedIdentity = metadata
-                storedIdentity.removeValue(forKey: "wax.created_at_ms")
-                requestedIdentity.removeValue(forKey: "wax.created_at_ms")
-                guard storedIdentity == requestedIdentity else { return nil }
-
-                let coverage = chunkCoverageByDocument[meta.id] ?? ChunkCoverage()
-                // Only single-chunk remembers put searchText on the document itself.
-                let ownText = meta.searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return RememberDedupProbe(
-                    documentId: meta.id,
-                    isComplete: coverage.isComplete(expectedChunkCount: expectedChunkCount),
-                    singleChunkText: coverage.count == 0 && !ownText.isEmpty ? meta.searchText : nil
+            if rememberDedupIndex == nil {
+                rememberDedupIndex = RememberDedupIndex(
+                    committedFrames: toc.frames,
+                    orderedPendingMutations: orderedPendingMutationsLocked()
                 )
             }
+            guard let index = rememberDedupIndex else { return nil }
+            let committedFrames = toc.frames
+            var examined: UInt64 = 0
+            defer { rememberDedupFramesExamined &+= examined }
 
-            for frameId in pendingPutIds.reversed() {
-                guard let meta = pendingPutMetas[frameId] else { continue }
-                if let probe = visit(pendingVisibleMeta(meta)) {
-                    return probe
+            var requestedIdentity = metadata
+            requestedIdentity.removeValue(forKey: "wax.created_at_ms")
+
+            // Newest first, like a scan from the end of the frame list: the newest live
+            // document with this content and metadata wins.
+            for documentId in index.documentIds(contentHash: contentHash) {
+                examined += 1
+                guard let document = index.liveFrame(documentId, committedFrames: committedFrames),
+                      let entries = document.metadata?.entries,
+                      entries[RememberDedupIndex.contentHashKey] == contentHash else { continue }
+                var storedIdentity = entries
+                storedIdentity.removeValue(forKey: "wax.created_at_ms")
+                guard storedIdentity == requestedIdentity else { continue }
+
+                // Chunks are written after their document, so only newer frames count.
+                var coverage = ChunkCoverage()
+                for chunkId in index.chunkIds(parentId: documentId) where chunkId > documentId {
+                    examined += 1
+                    guard let chunk = index.liveFrame(chunkId, committedFrames: committedFrames) else { continue }
+                    coverage.record(chunk, embeddingIdentity: embeddingIdentity)
                 }
+                // Only single-chunk remembers put searchText on the document itself.
+                let ownText = document.searchText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return RememberDedupProbe(
+                    documentId: documentId,
+                    isComplete: coverage.isComplete(expectedChunkCount: expectedChunkCount),
+                    singleChunkText: coverage.count == 0 && !ownText.isEmpty ? document.searchText : nil
+                )
             }
-
-            for meta in toc.frames.reversed() {
-                if let probe = visit(pendingVisibleMeta(meta)) {
-                    return probe
-                }
-            }
-
             return nil
         }
     }

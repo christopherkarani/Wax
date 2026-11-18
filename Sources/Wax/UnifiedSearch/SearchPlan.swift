@@ -42,8 +42,9 @@ package extension SearchPlan {
             includeText && (trimmedQuery.map(RuleBasedQueryClassifier.isExactIntentQuery) ?? false)
         ) ? min(max(boundedMultiply(requestedTopK, by: 3), 12), 48) : nil
 
+        // Only the text lane reads the MATCH plan.
         let matchPlan: MatchPlan?
-        if let trimmedQuery, !trimmedQuery.isEmpty {
+        if includeText, let trimmedQuery, !trimmedQuery.isEmpty {
             matchPlan = MatchPlan.plan(query: trimmedQuery)
         } else {
             matchPlan = nil

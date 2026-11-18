@@ -341,6 +341,23 @@ private enum SQLiteBlobInspector {
     #expect(count == 0)
 }
 
+@Test func reindexingAnIndexedFrameReplacesItsTextAndKeepsTheCount() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    try await engine.indexBatch(frameIds: [7, 8], texts: ["original walrus text", "unrelated otter text"])
+    #expect(try await engine.search(matchQuery: "\"walrus\"", topK: 10).map(\.frameId) == [7])
+
+    // One flush that replaces an indexed frame, adds a new one and removes another.
+    try await engine.index(frameId: 7, text: "replacement heron text")
+    try await engine.index(frameId: 9, text: "new heron arrival")
+    try await engine.remove(frameId: 8)
+    try await engine.remove(frameId: 42)
+
+    #expect(try await engine.search(matchQuery: "\"walrus\"", topK: 10).isEmpty)
+    #expect(try await engine.search(matchQuery: "\"otter\"", topK: 10).isEmpty)
+    #expect(Set(try await engine.search(matchQuery: "\"heron\"", topK: 10).map(\.frameId)) == [7, 9])
+    #expect(try await engine.count() == 2)
+}
+
 @Test func searchScoresAreOrderedAndNonConstant() async throws {
     let engine = try FTS5SearchEngine.inMemory()
     try await engine.index(frameId: 0, text: "Swift")
@@ -483,11 +500,15 @@ private enum SQLiteBlobInspector {
 }
 #endif // canImport(SQLite3)
 
-/// Names of the `wax-fts5-*` backing directories in the temp directory right now. Tests running
-/// in parallel create these too, so compare sets taken before and after rather than counts.
+/// Where deserialized engines put their backing copies: `<temp>/wax-fts5/<pid>-<uuid>/`.
+private let waxFTS5BackingParent = FileManager.default.temporaryDirectory
+    .appendingPathComponent("wax-fts5", isDirectory: true)
+
+/// Names of the backing directories right now. Tests running in parallel create these too, so
+/// compare sets taken before and after rather than counts.
 private func waxFTS5BackingDirectoryNames() throws -> Set<String> {
-    let names = try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
-    return Set(names.filter { $0.hasPrefix("wax-fts5-") })
+    guard FileManager.default.fileExists(atPath: waxFTS5BackingParent.path) else { return [] }
+    return Set(try FileManager.default.contentsOfDirectory(atPath: waxFTS5BackingParent.path))
 }
 
 private func posixPermissions(atPath path: String) -> Int? {
@@ -506,7 +527,7 @@ private func posixPermissions(atPath path: String) -> Int? {
     let engine = try FTS5SearchEngine.deserialize(from: blob)
     let created = try waxFTS5BackingDirectoryNames().subtracting(before)
 
-    let tempDir = FileManager.default.temporaryDirectory
+    let tempDir = waxFTS5BackingParent
     let markerBytes = Data(marker.utf8)
     let ours = created.filter { name in
         let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
@@ -536,7 +557,7 @@ private func posixPermissions(atPath path: String) -> Int? {
     let created = try waxFTS5BackingDirectoryNames().subtracting(before)
 
     // Only a directory holding this test's bytes is a leak from this load.
-    let tempDir = FileManager.default.temporaryDirectory
+    let tempDir = waxFTS5BackingParent
     let leaked = created.filter { name in
         let databasePath = tempDir.appendingPathComponent(name).appendingPathComponent("fts.sqlite").path
         return FileManager.default.contents(atPath: databasePath) == corrupt

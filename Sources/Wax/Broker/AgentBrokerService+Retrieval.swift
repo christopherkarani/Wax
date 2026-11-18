@@ -2,7 +2,18 @@ import Foundation
 import WaxCore
 
 extension AgentBrokerService {
+    /// Recall in one hold of `commandMutex`, as `session_open` runs it. It keeps the merge
+    /// order: a cross-encoder here would score under the lock (see `recallResponse`).
     func recall(_ command: BrokerCommand.Recall) async throws -> AgentBrokerValue {
+        let packed = try await prepareRecall(command, reranking: nil).finish()
+        return try await recordRecall(command, packed: packed)
+    }
+
+    /// Reads the stores for `command` (under `commandMutex`).
+    func prepareRecall(
+        _ command: BrokerCommand.Recall,
+        reranking: RerankStage?
+    ) async throws -> BrokerRecall.PreparedRecall {
         let mode = command.mode
 
         // Rebind session lane before resolving project from session manifest (C4).
@@ -18,10 +29,9 @@ extension AgentBrokerService {
            await longTermMemory.isQueryEmbedderReady() {
             await awaitQueryEmbedderIfNeeded(memory: try await memory(for: sessionID))
         }
-        // Fetch + merge + pack live behind the BrokerRecall seam. The module
-        // takes no lock: this runs under commandMutex with the embedder
-        // already awaited above.
-        let packed = try await BrokerRecall.recall(
+        // Fetch + merge live behind the BrokerRecall seam. The module takes no
+        // lock: this runs under commandMutex with the embedder already awaited.
+        return try await BrokerRecall.prepare(
             command,
             in: BrokerRecall.Environment(
                 longTermMemory: longTermMemory,
@@ -31,13 +41,25 @@ extension AgentBrokerService {
                 canonicalFrameID: { frameID, memory in
                     await self.bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory)
                 },
-                nowMs: { BrokerClock.nowMs() }
+                nowMs: { BrokerClock.nowMs() },
+                reranking: reranking
             )
         )
+    }
 
-        if let sessionID = command.sessionID {
-            let sessionMemory = try await memory(for: sessionID)
-            try await refreshSessionManifest(sessionID)
+    /// Records the hits `packed` returns (under `commandMutex`) and returns its payload.
+    ///
+    /// A reranked recall scores with the lock released, so by now its session may have
+    /// ended or the broker closed. The hits are already computed, so it still returns them;
+    /// it records in the session only while that session is live (looked up without a
+    /// rebind, which would reopen it), and records nothing once the broker has closed.
+    func recordRecall(
+        _ command: BrokerCommand.Recall,
+        packed: BrokerRecall.PackedRecall
+    ) async throws -> AgentBrokerValue {
+        guard !isClosed else { return packed.payload }
+        if let sessionID = command.sessionID,
+           let sessionMemory = virtualSessions.live[sessionID]?.memory {
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -78,7 +100,6 @@ extension AgentBrokerService {
             )
         )
         if let sessionID = parsedFilters.sessionId {
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -126,7 +147,6 @@ extension AgentBrokerService {
 
         if let sessionID {
             let sessionMemory = try await memory(for: sessionID)
-            try await refreshSessionManifest(sessionID)
             try await recordRetrievalHits(
                 sessionID: sessionID,
                 query: command.query,
@@ -169,6 +189,12 @@ extension AgentBrokerService {
         )
         guard await longTermMemory.isQueryEmbedderReady() else { return }
         _ = try? await longTermMemory.backfillUnembedded()
+    }
+
+    /// Loads the recall reranker's model now, so the first reranked recall does not wait
+    /// for it.
+    package func prewarmReranker() async {
+        await reranking?.prewarm()
     }
 
     /// Suspends while MiniLM (or the configured provider) is `.loading`, matching remember.

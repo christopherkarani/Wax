@@ -80,10 +80,9 @@ extension AgentBrokerService {
     ) async throws -> AgentBrokerValue {
         let rememberResult = try await memory.remember(content, metadata: metadata)
         if let sessionID {
-            try await refreshSessionManifest(sessionID)
-            try await appendSessionEvent(
-                sessionID: sessionID,
-                kind: .remembered,
+            try await refreshSessionManifest(
+                sessionID,
+                recording: .remembered,
                 payload: [
                     "content_hash": Self.stableHash(content),
                     "memory_type": metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue,

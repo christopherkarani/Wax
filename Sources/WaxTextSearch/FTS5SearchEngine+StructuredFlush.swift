@@ -8,11 +8,8 @@ extension FTS5SearchEngine {
     /// The flush that applies `op` may be another caller's, so a rejection is held for this
     /// caller under the op's id instead of being thrown by whichever flush hit it.
     func enqueueAndFlushStructuredOp(_ op: StructuredOp) async throws {
-        let id = nextStructuredOpId
-        nextStructuredOpId &+= 1
-        pendingStructuredOps.append(QueuedStructuredOp(id: id, op: op))
+        let id = enqueueStructuredOp(op)
         awaitedStructuredOpIds.insert(id)
-        markDirty()
         defer {
             awaitedStructuredOpIds.remove(id)
             structuredOpRejections.removeValue(forKey: id)
@@ -24,6 +21,19 @@ extension FTS5SearchEngine {
         }
     }
 
+    /// Queues `op` without flushing. A flush that rejects it drops it; only a caller that
+    /// awaits it (``enqueueAndFlushStructuredOp(_:)``) is told.
+    @discardableResult
+    func enqueueStructuredOp(_ op: StructuredOp) -> UInt64 {
+        let id = nextStructuredOpId
+        nextStructuredOpId &+= 1
+        pendingStructuredOps.append(QueuedStructuredOp(id: id, op: op))
+        structuredWriteGeneration &+= 1
+        entityAliasPresence = nil
+        dirty = true
+        return id
+    }
+
     func flushPendingStructuredOpsIfThresholdExceeded() async throws {
         guard pendingStructuredOps.count >= Self.structuredFlushThreshold else { return }
         try await flushPendingStructuredOpsIfNeeded()
@@ -31,12 +41,11 @@ extension FTS5SearchEngine {
 
     func flushPendingStructuredOpsIfNeeded() async throws {
         guard !pendingStructuredOps.isEmpty else { return }
-        await acquireFlushGate()
-        defer { releaseFlushGate() }
-        // The flush this one waited for may have applied everything.
+        await beginWrite()
+        defer { endWrite() }
+        // Another flush may have written these ops while this one waited for the gate.
         guard !pendingStructuredOps.isEmpty else { return }
 
-        // Ops are only appended while the write is in flight, so the snapshot stays the prefix.
         let ops = pendingStructuredOps
         let dbQueue = self.dbQueue
 
@@ -363,7 +372,12 @@ extension FTS5SearchEngine {
                 return rejected
             }
         }
+        if let afterFlushWriteForTesting {
+            try await afterFlushWriteForTesting()
+        }
 
+        // Other calls can append ops while the write is awaited, and only a flush (which
+        // holds the write gate) removes them, so the written ops are still the first ones.
         pendingStructuredOps.removeFirst(ops.count)
         for (id, error) in rejected where awaitedStructuredOpIds.contains(id) {
             structuredOpRejections[id] = error

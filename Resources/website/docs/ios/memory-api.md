@@ -75,6 +75,22 @@ func saveExamples(memory: Memory) async throws {
 
 Behind the scenes Wax chunks text, embeds when a provider is present, indexes BM25, and appends frames through the WAL.
 
+To import many texts, `save(contentsOf:)` embeds and writes them in batches. It returns one frame ID per text, in order, the same IDs a loop of `save(_:metadata:)` would return (including duplicates). It is not atomic: if it throws, earlier texts may already be saved.
+
+```swift
+import Foundation
+import Wax
+
+func importNotes(memory: Memory, notes: [String]) async throws -> [UInt64] {
+    let ids = try await memory.save(contentsOf: notes, metadata: ["source": "import"])
+    let tagged = try await memory.save(contentsOf: [
+        (text: "Sprint review notes", metadata: ["day": "2026-08-15"]),
+        (text: "Retro action items", metadata: ["day": "2026-08-16"]),
+    ])
+    return ids + tagged
+}
+```
+
 ## Search
 
 ```swift

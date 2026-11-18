@@ -359,12 +359,22 @@ package actor MetalVectorEngine {
     /// Load engine from Wax persistence layer.
     package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> MetalVectorEngine {
         let engine = try MetalVectorEngine(metric: metric, dimensions: dimensions)
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
-            try await engine.deserialize(bytes)
+        if let committed = try await wax.readCommittedVectors() {
+            try VectorPreparation.validateCommitted(committed, dimensions: dimensions, metric: metric)
+            let rows = stride(from: 0, to: committed.vectors.count, by: dimensions).map {
+                Array(committed.vectors[$0..<($0 + dimensions)])
+            }
+            try await engine.addBatch(frameIds: committed.frameIds, vectors: rows)
         }
-        let pending = await wax.pendingEmbeddingMutations()
-        for embedding in pending {
-            try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
+        let pending = await wax.pendingEmbeddingMutations(since: nil)
+        if !pending.embeddings.isEmpty {
+            try await engine.addBatch(
+                frameIds: pending.embeddings.map(\.frameId),
+                vectors: pending.embeddings.map(\.vector)
+            )
+        }
+        for frameId in pending.removedFrameIds {
+            try await engine.remove(frameId: frameId)
         }
         return engine
     }
@@ -655,17 +665,10 @@ package actor MetalVectorEngine {
         }
     }
 
-    /// Stage current state for commit to Wax.
+    /// Records the index's dimension and similarity for the commit; the commit writes the
+    /// pending embeddings and removals themselves from the WAL.
     package func stageForCommit(into wax: Wax) async throws {
-        if !dirty { return }
-        let blob = try await serialize()
-        try await wax.stageVecIndexForNextCommit(
-            bytes: blob,
-            vectorCount: vectorCount,
-            dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity(),
-            coverage: .latestPending
-        )
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
         dirty = false
     }
 

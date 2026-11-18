@@ -61,10 +61,9 @@ extension AgentBrokerService {
         try await longTermMemory.flush()
 
         if let sessionID = command.sessionID {
-            try await refreshSessionManifest(sessionID)
-            try await appendSessionEvent(
-                sessionID: sessionID,
-                kind: .remembered,
+            try await refreshSessionManifest(
+                sessionID,
+                recording: .remembered,
                 payload: [
                     "content_hash": Self.stableHash(command.content),
                     "memory_type": metadata[MemoryMetadataKeys.type] ?? MemoryType.note.rawValue,

@@ -56,7 +56,8 @@ enum MCPMemoryFactory {
         let request = try HostEmbeddingReadiness.request(
             noEmbedder: noEmbedder,
             requireVector: false,
-            embedderChoice: embedderChoice
+            embedderChoice: embedderChoice,
+            servedStores: [url]
         )
         do {
             return try await EmbeddingReadinessBinding.openOrchestrator(

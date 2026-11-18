@@ -95,9 +95,14 @@ extension MemoryOrchestrator {
         return reason
     }
 
-    /// Store-open variant (no actor state yet).
+    /// Store-open variant (no actor state yet). `loadedFrameIds` are the frame IDs of the
+    /// vector engine the session just loaded (committed segment plus pending embeddings,
+    /// the set the store holds right after open); `nil` reads them from the store.
     /// Internal only because of the file split.
-    static func vectorCoverageDegradedReason(in wax: Wax) async -> String? {
+    static func vectorCoverageDegradedReason(in wax: Wax, loadedFrameIds: Set<UInt64>?) async -> String? {
+        if let loadedFrameIds {
+            return await wax.activeSurrogateSourcesAreCovered(by: loadedFrameIds) ? nil : missingVectorsReason
+        }
         do {
             return try await unembeddedLiveSources(in: wax, cached: nil).sources.isEmpty
                 ? nil
@@ -170,28 +175,22 @@ extension MemoryOrchestrator {
         in wax: Wax,
         cached: CommittedVectorCoverage?
     ) async throws -> (ids: Set<UInt64>, committed: CommittedVectorCoverage?) {
-        var ids = Set<UInt64>()
-        for pending in await wax.pendingEmbeddingMutations() {
-            ids.insert(pending.frameId)
-        }
-        if let staged = await wax.readStagedVecIndexBytes() {
-            ids.formUnion(try vecSegmentFrameIds(bytes: staged.bytes))
+        let pending = await wax.pendingEmbeddingMutations(since: nil)
+        func withPending(_ committedIds: Set<UInt64>) -> Set<UInt64> {
+            committedIds
+                .subtracting(pending.removedFrameIds)
+                .union(pending.embeddings.map(\.frameId))
         }
         guard let manifest = await wax.committedVecIndexManifest() else {
-            return (ids, nil)
+            return (withPending([]), nil)
         }
         if let cached, cached.manifest == manifest {
-            ids.formUnion(cached.frameIds)
-            return (ids, cached)
+            return (withPending(cached.frameIds), cached)
         }
-        guard let bytes = try await wax.readCommittedVecIndexBytes() else {
-            return (ids, nil)
-        }
-        let committedIds = try vecSegmentFrameIds(bytes: bytes)
-        ids.formUnion(committedIds)
+        let committedIds = try await wax.committedVectorFrameIds()
         // Cache only if no commit replaced the index while we were reading it.
         let unchanged = await wax.committedVecIndexManifest() == manifest
-        return (ids, unchanged ? CommittedVectorCoverage(manifest: manifest, frameIds: committedIds) : nil)
+        return (withPending(committedIds), unchanged ? CommittedVectorCoverage(manifest: manifest, frameIds: committedIds) : nil)
     }
 
     /// Internal only because of the file split; the backfill paths call it while holding `embeddingBackfillStoreMutex`.

@@ -21,10 +21,15 @@ package actor AgentBrokerService {
     let embeddingRequest: EmbeddingOpenRequest
     let readiness: EmbeddingReadiness
     let factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)?
+    /// Reranks recall once hits merge across stores; `nil` keeps the merge's order.
+    let reranking: RerankStage?
     let brokerInstanceID = UUID().uuidString
     let virtualSessions: VirtualSessionStore
     let endedSessions: DiskEndedSessionStore
     private let commandMutex = AsyncMutex()
+    /// Set once `close()` starts. A recall that scored while the broker closed records
+    /// nothing, rather than reopen a session store or write to a closed one.
+    private(set) var isClosed = false
     #if DEBUG
     /// Test-only: awaited inside a command's locks, just before it runs.
     private var commandHold: (@Sendable (String) async -> Void)?
@@ -52,13 +57,13 @@ package actor AgentBrokerService {
         factoryOverride: (@Sendable () async throws -> any EmbeddingProvider)? = nil,
         orchestratorConfig: OrchestratorConfig? = nil,
         automaticEmbeddingBackfill: Bool = true,
-        retentionSettings: MemoryRetentionSettings = .fromEnvironment()
+        retentionSettings: MemoryRetentionSettings = .fromEnvironment(),
+        reranking: RerankStage? = nil
     ) async throws {
         self.longTermStoreURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(storePath)).standardizedFileURL
         self.sessionRootURL = URL(fileURLWithPath: AgentBrokerPathing.expandPath(sessionRootPath)).standardizedFileURL
         self.noEmbedder = noEmbedder
         self.requireVector = requireVector
-        self.embedderChoice = embedderChoice
         self.embedderTuning = embedderTuning
         self.enableAccessStatsScoring = enableAccessStatsScoring
         self.scopeContext = MemorySemantics.inferScopeContext()
@@ -77,6 +82,20 @@ package actor AgentBrokerService {
         if requireVector, noEmbedder {
             throw BrokerStartupError("Vector search required but --no-embedder was set.")
         }
+        // Resolved once, so every store this broker creates (durable, session, corpus,
+        // migration copies) shares the embedder its recalls merge across.
+        let resolvedChoice = if noEmbedder || embedderOverride != nil || !HostNewStoreEmbedder.isAutomatic(embedderChoice) {
+            embedderChoice
+        } else {
+            HostNewStoreEmbedder.provider(
+                servedStores: Self.servedStoreURLs(
+                    longTermStoreURL: longTermStoreURL,
+                    corpusStoreURL: corpusStoreURL,
+                    sessionRootURL: sessionRootURL
+                )
+            ).commandLineChoice
+        }
+        self.embedderChoice = resolvedChoice
         let request: EmbeddingOpenRequest
         if let embedderOverride {
             request = .custom(embedderOverride)
@@ -85,7 +104,7 @@ package actor AgentBrokerService {
                 request = try HostEmbeddingReadiness.request(
                     noEmbedder: noEmbedder,
                     requireVector: requireVector,
-                    embedderChoice: embedderChoice,
+                    embedderChoice: resolvedChoice,
                     options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
                 )
             } catch {
@@ -98,10 +117,11 @@ package actor AgentBrokerService {
         self.embeddingRequest = request
         self.readiness = readiness
         self.factoryOverride = factoryOverride
+        self.reranking = reranking
         self.endedSessions = DiskEndedSessionStore(
             sessionRootURL: sessionRootURL,
             noEmbedder: noEmbedder,
-            embedderChoice: embedderChoice,
+            embedderChoice: resolvedChoice,
             enableAccessStatsScoring: enableAccessStatsScoring,
             scopeContext: scopeContext,
             embedderTuning: embedderTuning,
@@ -181,6 +201,7 @@ package actor AgentBrokerService {
     }
 
     package func close() async throws {
+        isClosed = true
         try await commandMutex.withLock { [self] in
             try await rememberMutex.withLock { [self] in
                 await virtualSessions.closeAll()
@@ -225,6 +246,9 @@ package actor AgentBrokerService {
             // Do not wait again inside recall/search — a timeout here must not
             // become a second 30s hold on the serialized path.
             await awaitQueryEmbedderIfNeeded(memory: longTermMemory)
+            if case .recall(let recall) = command {
+                return await recallResponse(recall, request: request)
+            }
             return await commandMutex.withLock { [self] in
                 await dispatch(command, request: request)
             }
@@ -233,11 +257,49 @@ package actor AgentBrokerService {
                 await dispatch(command, request: request)
             }
         case .command:
+            if case .recall(let recall) = command {
+                return await recallResponse(recall, request: request)
+            }
             return await commandMutex.withLock { [self] in
                 await dispatch(command, request: request)
             }
         case .unlocked:
             return await dispatch(command, request: request)
+        }
+    }
+
+    private enum RecallPhase: Sendable {
+        case done(AgentBrokerValue)
+        case scoring(BrokerRecall.PreparedRecall)
+    }
+
+    /// A `recall` command. It reads the stores under `commandMutex`, then, when it reranks,
+    /// releases the lock while the cross-encoder scores (100–450 ms, which every other
+    /// agent's command would otherwise wait for) and takes it again to record the hits.
+    private func recallResponse(
+        _ command: BrokerCommand.Recall,
+        request: AgentBrokerRequest
+    ) async -> AgentBrokerResponse {
+        do {
+            let phase = try await commandMutex.withLock { [self] () async throws -> RecallPhase in
+                await holdForTest(request.command)
+                let prepared = try await prepareRecall(command, reranking: reranking)
+                guard !prepared.needsScoring else { return .scoring(prepared) }
+                return .done(try await recordRecall(command, packed: try await prepared.finish()))
+            }
+            let payload: AgentBrokerValue
+            switch phase {
+            case .done(let value):
+                payload = value
+            case .scoring(let prepared):
+                let packed = try await prepared.finish()
+                payload = try await commandMutex.withLock { [self] in
+                    try await recordRecall(command, packed: packed)
+                }
+            }
+            return AgentBrokerResponse.success(id: request.id, payload: payload, shouldExit: false)
+        } catch {
+            return Self.failure(id: request.id, error: error)
         }
     }
 
@@ -381,21 +443,37 @@ package actor AgentBrokerService {
                 payload: payload,
                 shouldExit: shouldExit
             )
-        } catch let error as BrokerSessionInactiveError {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        } catch {
+            return Self.failure(id: request.id, error: error)
+        }
+    }
+
+    /// Test-only hold (`setCommandHold`) for a command that already owns its locks.
+    private func holdForTest(_ command: String) async {
+        #if DEBUG
+        if let commandHold {
+            await commandHold(command)
+        }
+        #endif
+    }
+
+    private static func failure(id: String?, error: any Error) -> AgentBrokerResponse {
+        switch error {
+        case let error as BrokerSessionInactiveError:
+            AgentBrokerResponse.failure(
+                id: id,
                 payload: error.brokerPayload(),
                 message: error.localizedDescription
             )
-        } catch let error as BrokerValidationError {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        case let error as BrokerValidationError:
+            AgentBrokerResponse.failure(
+                id: id,
                 payload: error.brokerPayload,
                 message: error.localizedDescription
             )
-        } catch {
-            return AgentBrokerResponse.failure(
-                id: request.id,
+        default:
+            AgentBrokerResponse.failure(
+                id: id,
                 message: error.localizedDescription
             )
         }

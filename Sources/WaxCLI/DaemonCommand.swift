@@ -21,9 +21,15 @@ struct DaemonCommand: AsyncParsableCommand {
 
     @Flag(
         name: .customLong("skip-prewarm"),
-        help: "Skip background embedder prewarm. Cold first writes may then wait on MiniLM."
+        help: "Skip background embedder prewarm. Cold first writes may then wait on the embedder."
     )
     var skipPrewarm = false
+
+    @Flag(
+        name: .customLong("no-rerank"),
+        help: "Keep recall in the broker's merged order instead of reranking hybrid recall with the built-in cross-encoder."
+    )
+    var noRerank = false
 
     @Option(name: .customLong("socket-path"), help: "Listen on a Unix domain socket instead of stdio")
     var socketPath: String?
@@ -54,6 +60,7 @@ struct DaemonCommand: AsyncParsableCommand {
         let signalSources = installShutdownSignalHandlers(shutdown)
         defer { signalSources.forEach { $0.cancel() } }
 
+        let reranking = try await BuiltInRerankerCompiler.stage(for: noRerank ? .disabled : .automatic)
         let service = try await AgentBrokerService(
             storePath: store.storePath,
             sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(
@@ -67,12 +74,16 @@ struct DaemonCommand: AsyncParsableCommand {
                 "WAX_MCP_FEATURE_ACCESS_STATS",
                 default: true
             ),
-            embedderTuning: store.embedderTuning
+            embedderTuning: store.embedderTuning,
+            reranking: reranking
         )
 
+        // Without an embedder, recall is text-only and never reranked, so the reranker is
+        // not loaded either. It loads after the embedder, which writes need first.
         if !store.noEmbedder, !skipPrewarm {
             Task {
                 await service.prewarmEmbedder()
+                await service.prewarmReranker()
             }
         }
         #if DEBUG

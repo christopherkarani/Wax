@@ -31,6 +31,20 @@ enum FTS5Serializer {
         return Data(bytes: raw, count: Int(size))
     }
 
+    /// The database image, without a copy when SQLite keeps it in one buffer (a database
+    /// deserialized into memory), else a copy. A borrowed image stays valid only until the
+    /// next write on `connection`.
+    static func image(connection: OpaquePointer) throws -> (bytes: Data, borrowed: Bool) {
+        var size: Int64 = 0
+        guard let raw = sqlite3_serialize(connection, "main", &size, UInt32(SQLITE_SERIALIZE_NOCOPY)) else {
+            return (try serialize(connection: connection), false)
+        }
+        guard size >= 0, size <= Int64(Constants.maxBlobBytes) else {
+            throw WaxError.capacityExceeded(limit: UInt64(Constants.maxBlobBytes), requested: UInt64(max(0, size)))
+        }
+        return (Data(bytesNoCopy: raw, count: Int(size), deallocator: .none), true)
+    }
+
     static func deserialize(_ data: Data, into connection: OpaquePointer) throws {
         guard !data.isEmpty else {
             throw WaxError.io("sqlite3_deserialize requires non-empty data")
@@ -77,6 +91,10 @@ enum FTS5Serializer {
 // cannot snapshot the FTS5 database; callers get an explicit I/O error.
 enum FTS5Serializer {
     static func serialize(connection: OpaquePointer) throws -> Data {
+        throw WaxError.io("FTS5 in-memory serialization is not supported on this platform")
+    }
+
+    static func image(connection: OpaquePointer) throws -> (bytes: Data, borrowed: Bool) {
         throw WaxError.io("FTS5 in-memory serialization is not supported on this platform")
     }
 

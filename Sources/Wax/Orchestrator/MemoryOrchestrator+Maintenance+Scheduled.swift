@@ -223,7 +223,7 @@ package extension MemoryOrchestrator {
             )
         }
 
-        try Self.pruneScheduledRewriteCandidates(
+        try await Self.pruneScheduledRewriteCandidates(
             in: destinationDirectory,
             baseName: baseName,
             keepLatest: schedule.keepLatestCandidates
@@ -243,32 +243,41 @@ package extension MemoryOrchestrator {
         )
     }
 
-    private static func pruneScheduledRewriteCandidates(
+    /// Deletes all but the newest `keepLatest` rewrite candidates of `baseName` in `directory`.
+    ///
+    /// The directory is the store's own by default, which can hold tens of thousands of
+    /// unrelated files (TMPDIR, Documents). So the scan reads names only and stats just the
+    /// candidates, and it runs on a GCD thread: fetching a modification date for every entry
+    /// of a 59k-entry TMPDIR took about 4 s of a cooperative thread on each store close.
+    package static func pruneScheduledRewriteCandidates(
+        in directory: URL,
+        baseName: String,
+        keepLatest: Int
+    ) async throws {
+        try await BlockingWork.run {
+            try pruneScheduledRewriteCandidatesBlocking(in: directory, baseName: baseName, keepLatest: keepLatest)
+        }
+    }
+
+    private static func pruneScheduledRewriteCandidatesBlocking(
         in directory: URL,
         baseName: String,
         keepLatest: Int
     ) throws {
         let keepCount = max(0, keepLatest)
         let fileManager = FileManager.default
-        let contents = try fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        )
         let prefix = "\(baseName)-liveset-"
-        let candidates = contents.filter { url in
-            let name = url.lastPathComponent
-            return name.hasPrefix(prefix) && name.hasSuffix(".wax")
-        }
+        let candidates = try fileManager.contentsOfDirectory(atPath: directory.path)
+            .filter { name in !name.hasPrefix(".") && name.hasPrefix(prefix) && name.hasSuffix(".wax") }
+            .map { directory.appendingPathComponent($0) }
         guard candidates.count > keepCount else { return }
 
-        let sorted = candidates.sorted { lhs, rhs in
-            let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return leftDate > rightDate
+        let dated = candidates.map { url in
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            return (url: url, date: date ?? .distantPast)
         }
-        for stale in sorted.dropFirst(keepCount) {
-            try? fileManager.removeItem(at: stale)
+        for stale in dated.sorted(by: { $0.date > $1.date }).dropFirst(keepCount) {
+            try? fileManager.removeItem(at: stale.url)
         }
     }
 }

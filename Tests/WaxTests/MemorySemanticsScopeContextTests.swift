@@ -1,11 +1,12 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 struct MemorySemanticsScopeContextTests {
     @Test(arguments: ["", ".", "./"])
-    func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) throws {
-        let result = try completingWithin(
+    func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) async throws {
+        let result = try await completingWithin(
             milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext(currentDirectoryPath: \(path.debugDescription), processDirectoryPath: \"\")"
         ) {
@@ -32,14 +33,14 @@ struct MemorySemanticsScopeContextTests {
     }
 
     @Test
-    func inferScopeContextReturnsQuicklyForDeletedDirectoryPath() throws {
+    func inferScopeContextReturnsQuicklyForDeletedDirectoryPath() async throws {
         let doomed = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-deleted-infer-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: doomed, withIntermediateDirectories: true)
         let doomedPath = doomed.path
         try FileManager.default.removeItem(at: doomed)
 
-        let result = try completingWithin(
+        let result = try await completingWithin(
             milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on deleted directory"
         ) {
@@ -51,7 +52,7 @@ struct MemorySemanticsScopeContextTests {
     }
 
     @Test
-    func inferScopeContextUsesGitRepoLastPathComponent() throws {
+    func inferScopeContextUsesGitRepoLastPathComponent() async throws {
         let repoName = "wax-scope-repo-\(UUID().uuidString.prefix(8))"
         let repoURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(repoName, isDirectory: true)
@@ -63,7 +64,7 @@ struct MemorySemanticsScopeContextTests {
             withIntermediateDirectories: true
         )
 
-        let result = try completingWithin(
+        let result = try await completingWithin(
             milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on nested git workdir"
         ) {
@@ -75,7 +76,7 @@ struct MemorySemanticsScopeContextTests {
     }
 
     @Test
-    func inferScopeContextUsesMainRepoNameForLinkedWorktree() throws {
+    func inferScopeContextUsesMainRepoNameForLinkedWorktree() async throws {
         let repoName = "wax-main-repo-\(UUID().uuidString.prefix(8))"
         let worktreeFolder = "worktree-rapid-river-\(UUID().uuidString.prefix(6))"
         let root = FileManager.default.temporaryDirectory
@@ -91,7 +92,7 @@ struct MemorySemanticsScopeContextTests {
         let gitFile = worktreeURL.appendingPathComponent(".git")
         try "gitdir: \(worktreeGitDir.path)\n".write(to: gitFile, atomically: true, encoding: .utf8)
 
-        let result = try completingWithin(
+        let result = try await completingWithin(
             milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on linked worktree cwd"
         ) {
@@ -113,18 +114,21 @@ private final class ResultBox<T>: @unchecked Sendable {
     var value: T?
 }
 
+/// The wait runs on BlockingWork: a semaphore wait on the test's own thread held a
+/// cooperative thread for as long as the work took.
 private func completingWithin<T>(
     milliseconds: Int,
     description: String,
     work: @escaping @Sendable () -> T
-) throws -> T {
+) async throws -> T {
     let box = ResultBox<T>()
     let done = DispatchSemaphore(value: 0)
+    let deadline = DispatchTime.now() + .milliseconds(milliseconds)
     DispatchQueue.global(qos: .userInitiated).async {
         box.value = work()
         done.signal()
     }
-    let wait = done.wait(timeout: .now() + .milliseconds(milliseconds))
+    let wait = await BlockingWork.run { done.wait(timeout: deadline) }
     #expect(wait == .success, "\(description) did not return within \(milliseconds)ms")
     return try #require(box.value, "\(description) produced no value")
 }

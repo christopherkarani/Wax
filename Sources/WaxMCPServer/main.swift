@@ -63,11 +63,14 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
 
-    @Option(name: .customLong("embedder"), help: "Embedding provider: minilm (default) or arctic")
-    var embedderChoice: String = "minilm"
+    @Option(name: .customLong("embedder"), help: "Embedder for new stores: auto (default), minilm, arctic, or e5. auto picks e5 unless a store the broker serves is bound to MiniLM; existing stores keep the embedder that wrote them")
+    var embedderChoice: String = "auto"
 
     @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")
     var noEmbedder = false
+
+    @Flag(name: .customLong("no-rerank"), help: "Keep recall in the broker's merged order instead of reranking hybrid recall with the built-in cross-encoder")
+    var noRerank = false
 
     @Option(name: .customLong("transport"), help: "Transport to serve: stdio (default) or http.")
     var transport = "stdio"
@@ -137,7 +140,8 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedderChoice: embedderChoice,
             noEmbedder: noEmbedder,
             requireVector: false,
-            embedderTuning: embedderTuning
+            embedderTuning: embedderTuning,
+            noRerank: noRerank
         )
         // Owned daemon prewarms the embedder in a background Task unless --no-embedder
         // (AgentBrokerClient no longer passes --skip-prewarm). First recall still waits
@@ -160,7 +164,8 @@ struct WaxMCPServerCommand: ParsableCommand {
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
                 "vectorSearch=\(!noEmbedder) " +
-                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased())"
+                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased()) " +
+                "rerank=\(!noRerank)"
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 

@@ -10,7 +10,7 @@ private struct UnsyncedCommitFixture {
     var crashed: Data
     /// Payload range of each frame the second commit added, by frame id.
     var payloadRanges: [UInt64: Range<Int>]
-    /// The lex index segment the second commit wrote, when it staged one.
+    /// The lex index run the second commit wrote, when it staged one.
     var lexRange: Range<Int>?
 }
 
@@ -32,8 +32,9 @@ private func makeUnsyncedCommitFixture(at url: URL, stagesLexIndex: Bool = false
         try await wax.stageLexIndexForNextCommit(bytes: Data(repeating: 0x4C, count: 4096), docCount: 3)
     }
     try await wax.commit()
-    let lexRange = await wax.committedLexIndexManifest().map { manifest in
-        Int(manifest.bytesOffset)..<Int(manifest.bytesOffset + manifest.bytesLength)
+    // The run the second commit wrote: the newest one.
+    let lexRange = await wax.committedLexIndexManifest()?.runs.last.map { run in
+        Int(run.bytesOffset)..<Int(run.bytesOffset + run.bytesLength)
     }
     try await wax.close()
 
@@ -104,9 +105,9 @@ private func withCrashCopy(_ bytes: Data, _ body: (URL) async throws -> Void) as
     }
 }
 
-/// An index segment the newer footer adds is checked too: with its pages lost, open keeps the
+/// An index run the newer footer adds is checked too: with its pages lost, open keeps the
 /// header's footer, and every frame (all intact) comes back as pending.
-@Test func openRejectsANewerFooterWhoseIndexSegmentNeverReachedDisk() async throws {
+@Test func openRejectsANewerFooterWhoseIndexRunNeverReachedDisk() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
     var fixture = try await makeUnsyncedCommitFixture(at: url, stagesLexIndex: true)

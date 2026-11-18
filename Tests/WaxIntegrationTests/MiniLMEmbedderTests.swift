@@ -150,6 +150,50 @@ func miniLMEmbedderPrewarmDoesNotThrow() async throws {
     try await embedder.prewarm()
 }
 
+/// Concurrent batch embedding keeps the prediction queue busy back to back. Before the
+/// queue drained its autorelease pool per work item, CoreML outputs piled up (~17 MB per
+/// 1,000 embeds) until IOSurface allocation failed and CoreML raised an uncaught NSException.
+@available(macOS 15.0, iOS 18.0, *)
+@Test(.disabled(
+    if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+    "Set WAX_TEST_MINILM=1 to run MiniLM embedder inference tests"
+))
+func miniLMEmbedderMemoryStaysFlatUnderConcurrentBatches() async throws {
+    let embedder = try MiniLMEmbedder()
+    let text = String(repeating: "the user moved to a new apartment near the river and adopted a cat. ", count: 20)
+    func embedRounds(_ rounds: Int) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for worker in 0..<4 {
+                group.addTask {
+                    for round in 0..<rounds {
+                        let batch = (0..<32).map { "\(worker)-\(round)-\($0) \(text)" }
+                        _ = try await embedder.embed(batch: batch)
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
+    try await embedRounds(4) // warm up: 512 embeds
+    let before = physicalFootprintMB()
+    try await embedRounds(12) // 1,536 embeds; the leak added ~26 MB here
+    let growth = physicalFootprintMB() - before
+    #expect(growth < 10, "footprint grew \(growth) MB over 1,536 concurrent batch embeds")
+}
+
+private func physicalFootprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    precondition(result == KERN_SUCCESS, "task_info failed: \(result)")
+    return Double(info.phys_footprint) / 1_048_576
+}
+
 private func assertVectorsClose(_ lhs: [Float], _ rhs: [Float], tolerance: Float) {
     #expect(lhs.count == rhs.count)
     for (l, r) in zip(lhs, rhs) {

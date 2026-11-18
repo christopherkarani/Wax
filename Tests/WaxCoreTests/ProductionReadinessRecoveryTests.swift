@@ -316,7 +316,7 @@ func migrationFixturesNMinus1AndNMinus2Load() async throws {
 }
 
 /// Expands the fixture with gzip on a GCD thread, off the cooperative pool.
-private func copyMigrationFixture(named name: String) async throws -> URL {
+func copyMigrationFixture(named name: String) async throws -> URL {
     try await BlockingWork.run { try copyMigrationFixtureBlocking(named: name) }
 }
 

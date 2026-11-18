@@ -223,7 +223,7 @@ def _print_status(args: Any) -> int:
         print(provider.diagnose_vector_search())
     else:
         print("broker: not running")
-        print("hint: npx waxmcp --embedder minilm --transport http")
+        print("hint: npx waxmcp --transport http")
     conflicts = _hermes_config_conflicts(hermes_home)
     for conflict in conflicts:
         print(f"configuration_error: {conflict}", file=sys.stderr)

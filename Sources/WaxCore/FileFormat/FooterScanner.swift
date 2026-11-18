@@ -1,5 +1,6 @@
 import Foundation
 
+/// A footer and its TOC bytes, which the scanner checked against the footer's `tocHash`.
 package struct FooterSlice: Equatable, Sendable {
     package let footerOffset: UInt64
     package let tocOffset: UInt64
@@ -26,8 +27,7 @@ package enum FooterScanner {
 
         var best: FooterSlice?
 
-        for pos in stride(from: bytes.count - footerSize, through: scanStart, by: -1) {
-            guard bytes[pos] == Constants.footerMagic[0] else { continue }
+        for pos in magicCandidates(in: bytes, from: bytes.count - footerSize, downTo: scanStart) {
             let magicEnd = pos + Constants.footerMagic.count
             guard magicEnd <= bytes.count else { continue }
             guard bytes[pos..<magicEnd] == Constants.footerMagic else { continue }
@@ -68,8 +68,13 @@ package enum FooterScanner {
         return best
     }
 
-    /// Bounded scan over a file. Only the final `limits.maxFooterScanBytes` are searched.
-    package static func findLastValidFooter(in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+    /// Bounded scan over a file. Only the final `limits.maxFooterScanBytes` are searched, and
+    /// only footers `accepts(footerOffset, generation)` allows are candidates.
+    package static func findLastValidFooter(
+        in fileURL: URL,
+        limits: Limits = .init(),
+        accepts: (_ footerOffset: UInt64, _ generation: UInt64) -> Bool = { _, _ in true }
+    ) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 
@@ -81,7 +86,8 @@ package enum FooterScanner {
             in: file,
             fileSize: fileSize,
             scanStart: scanStart,
-            limits: limits
+            limits: limits,
+            accepts: accepts
         ) else {
             return nil
         }
@@ -99,6 +105,29 @@ package enum FooterScanner {
     }
 
     package static func findFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits = .init()) throws -> FooterSlice? {
+        guard let slice = try readFooter(at: footerOffset, in: fileURL, limits: limits) else { return nil }
+        return slice.footer.hashMatches(tocBytes: slice.tocBytes) ? slice : nil
+    }
+
+    /// ``findFooter(at:in:limits:)``, decoding the TOC while its hash is checked: at 100k
+    /// frames each takes tens of milliseconds of an open. The decode is bounds-checked, so it
+    /// is safe on bytes the hash may yet reject. `toc` is `nil` when the decode threw;
+    /// decoding the slice again throws the same error.
+    package static func findFooterDecodingToc(
+        at footerOffset: UInt64,
+        in fileURL: URL,
+        limits: Limits = .init()
+    ) throws -> (slice: FooterSlice, toc: WaxTOC?)? {
+        guard let slice = try readFooter(at: footerOffset, in: fileURL, limits: limits) else { return nil }
+        let work = HashAndDecode(slice)
+        // The calling thread runs an iteration too, so both finish even with no worker free.
+        DispatchQueue.concurrentPerform(iterations: 2) { work.run(iteration: $0) }
+        guard work.hashMatches else { return nil }
+        return (slice, work.decodedToc)
+    }
+
+    /// The footer at `footerOffset` and the TOC bytes before it, not yet checked against its hash.
+    private static func readFooter(at footerOffset: UInt64, in fileURL: URL, limits: Limits) throws -> FooterSlice? {
         let file = try FDFile.openReadOnly(at: fileURL)
         defer { try? file.close() }
 
@@ -114,13 +143,7 @@ package enum FooterScanner {
         guard footer.tocLen <= UInt64(Int.max) else { return nil }
 
         let tocOffset = footerOffset - footer.tocLen
-        guard try tocHashMatches(
-            file: file,
-            tocOffset: tocOffset,
-            tocLen: footer.tocLen,
-            expectedHash: footer.tocHash
-        ) else { return nil }
-
+        // Read the TOC once and check it in memory; the caller decodes these same bytes.
         let tocBytes = try file.readExactly(length: Int(footer.tocLen), at: tocOffset)
         return FooterSlice(
             footerOffset: footerOffset,
@@ -134,7 +157,8 @@ package enum FooterScanner {
         in file: FDFile,
         fileSize: UInt64,
         scanStart: UInt64,
-        limits: Limits
+        limits: Limits,
+        accepts: (UInt64, UInt64) -> Bool
     ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
         let footerSize = UInt64(WaxFooter.size)
         let overlap = UInt64(WaxFooter.size - 1)
@@ -156,7 +180,8 @@ package enum FooterScanner {
                 windowBaseOffset: start,
                 file: file,
                 fileSize: fileSize,
-                limits: limits
+                limits: limits,
+                accepts: accepts
             ) {
                 if let current = best {
                     if candidate.footer.generation > current.footer.generation {
@@ -181,15 +206,15 @@ package enum FooterScanner {
         windowBaseOffset: UInt64,
         file: FDFile,
         fileSize: UInt64,
-        limits: Limits
+        limits: Limits,
+        accepts: (UInt64, UInt64) -> Bool
     ) throws -> (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)? {
         let footerSize = WaxFooter.size
         guard window.count >= footerSize else { return nil }
 
         var best: (footerOffset: UInt64, tocOffset: UInt64, footer: WaxFooter)?
 
-        for localPos in stride(from: window.count - footerSize, through: 0, by: -1) {
-            guard window[localPos] == Constants.footerMagic[0] else { continue }
+        for localPos in magicCandidates(in: window, from: window.count - footerSize, downTo: 0) {
             let magicEnd = localPos + Constants.footerMagic.count
             guard magicEnd <= window.count else { continue }
             guard window[localPos..<magicEnd] == Constants.footerMagic else { continue }
@@ -208,6 +233,7 @@ package enum FooterScanner {
             let footerSize64 = UInt64(footerSize)
             guard footerOffset <= fileSize, footerSize64 <= fileSize - footerOffset else { continue }
             guard footerOffset >= footer.tocLen else { continue }
+            guard accepts(footerOffset, footer.generation) else { continue }
             let tocOffset = footerOffset - footer.tocLen
 
             guard try tocHashMatches(
@@ -230,6 +256,27 @@ package enum FooterScanner {
         }
 
         return best
+    }
+
+    /// Offsets in `bytes` that hold the footer magic's first byte, from `upper` down to
+    /// `lower` (both inclusive). A raw pointer loop: in debug builds a `stride` loop that
+    /// subscripts `Data` looks up generic metadata on every byte, and footer-scanning tests
+    /// ran 4-6x slower with it.
+    private static func magicCandidates(in bytes: Data, from upper: Int, downTo lower: Int) -> [Int] {
+        guard upper >= lower else { return [] }
+        let first = Constants.footerMagic[Constants.footerMagic.startIndex]
+        let base = bytes.startIndex
+        return bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> [Int] in
+            var positions: [Int] = []
+            var pos = upper
+            while pos >= lower {
+                if raw[pos - base] == first {
+                    positions.append(pos)
+                }
+                pos -= 1
+            }
+            return positions
+        }
     }
 
     private static func tocHashMatches(
@@ -264,5 +311,27 @@ package enum FooterScanner {
         let computed = hasher.finalize()
 
         return computed == storedChecksum && computed == expectedHash
+    }
+}
+
+/// A footer's hash check and TOC decode, run as two `concurrentPerform` iterations.
+///
+/// `@unchecked Sendable`: iteration 0 writes only `hashMatches` and iteration 1 only `decodedToc`,
+/// and both are read after `concurrentPerform` returns.
+private final class HashAndDecode: @unchecked Sendable {
+    let slice: FooterSlice
+    var hashMatches = false
+    var decodedToc: WaxTOC?
+
+    init(_ slice: FooterSlice) {
+        self.slice = slice
+    }
+
+    func run(iteration: Int) {
+        if iteration == 0 {
+            hashMatches = slice.footer.hashMatches(tocBytes: slice.tocBytes)
+        } else {
+            decodedToc = try? WaxTOC.decode(from: slice)
+        }
     }
 }

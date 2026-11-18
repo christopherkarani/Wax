@@ -8,27 +8,19 @@ actor UnifiedSearchEngineCache {
 
     enum TextSourceKey: Hashable, Sendable {
         case empty
-        case committed(checksum: Data)
+        /// The checksums of the committed lex runs, which together name one image.
+        case committed(runChecksums: [Data])
         case staged(stamp: UInt64)
     }
 
-    /// The index a cached vector engine was loaded from. Pending embeddings are
-    /// not part of the key: they are applied to the cached engine incrementally
+    /// The index a cached vector engine was loaded from. Pending vector changes
+    /// are not part of the key: they are applied to the cached engine incrementally
     /// (see `CachedVector.syncedThrough`), so a write does not force a reload.
-    /// The commit generation is: a commit that leaves the vec index bytes (and so
-    /// the checksum) unchanged still starts a new pending window.
+    /// The commit generation is: every commit starts a new pending window.
     enum VectorSourceKey: Hashable, Sendable {
         case pendingOnly(generation: UInt64, dimensions: Int, engine: LoadedVectorSearchEngine.Kind)
-        case committed(
+        case indexed(
             generation: UInt64,
-            checksum: Data,
-            similarity: VecSimilarity,
-            dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind
-        )
-        case staged(
-            generation: UInt64,
-            stamp: UInt64,
             similarity: VecSimilarity,
             dimensions: Int,
             engine: LoadedVectorSearchEngine.Kind
@@ -38,6 +30,24 @@ actor UnifiedSearchEngineCache {
     struct Stats: Sendable, Equatable {
         var textDeserializations: Int = 0
         var vectorDeserializations: Int = 0
+    }
+
+    /// Points in a vector engine refresh that a test can observe or pause at.
+    enum VectorRefreshEvent: Sendable {
+        /// About to take the store's refresh lock, waiting while another refresh holds it.
+        case waitingForRefresh
+        /// A reloaded engine is about to be cached.
+        case loaded
+        /// Pending changes were applied to the cached engine; its watermark is about to move.
+        case synced
+    }
+
+    typealias VectorRefreshHook = @Sendable (VectorRefreshEvent) async -> Void
+
+    private let vectorRefreshHook: VectorRefreshHook?
+
+    init(vectorRefreshHook: VectorRefreshHook? = nil) {
+        self.vectorRefreshHook = vectorRefreshHook
     }
 
     /// Entries are found by `ObjectIdentifier(wax)` but only belong to the store
@@ -62,8 +72,14 @@ actor UnifiedSearchEngineCache {
         var stats: Stats
     }
 
+    private struct VectorRefreshLock {
+        weak var owner: Wax?
+        let mutex: AsyncMutex
+    }
+
     private var textByWax: [ObjectIdentifier: CachedText] = [:]
     private var vectorByWax: [ObjectIdentifier: CachedVector] = [:]
+    private var vectorRefreshLocks: [ObjectIdentifier: VectorRefreshLock] = [:]
     private var stats = Stats()
     private var statsByWax: [ObjectIdentifier: OwnedStats] = [:]
 
@@ -84,11 +100,11 @@ actor UnifiedSearchEngineCache {
 
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
         if let stamp = await wax.stagedLexIndexStamp() {
-            let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
             if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }
+            let stagedBytes = try await wax.readStagedLexIndexBytes()
             guard let bytes = stagedBytes else {
                 let engine = try FTS5SearchEngine.inMemory()
                 storeText(CachedText(owner: wax, key: .empty, engine: engine), for: wax)
@@ -101,7 +117,7 @@ actor UnifiedSearchEngineCache {
         }
 
         if let manifest = await wax.committedLexIndexManifest() {
-            let key: TextSourceKey = .committed(checksum: manifest.checksum)
+            let key: TextSourceKey = .committed(runChecksums: manifest.runs.map(\.checksum))
             if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }
@@ -136,6 +152,47 @@ actor UnifiedSearchEngineCache {
         ) else {
             return nil
         }
+        if let cached = cachedVector(for: wax),
+           cached.key == descriptor.key,
+           cached.syncedThrough == pendingSnapshot.latestSequence {
+            return cached.engine
+        }
+
+        // A refresh spans awaits. Two at once could record one engine's watermark on an
+        // engine the other cached meanwhile, or apply an older delta over a newer one,
+        // leaving writes missing for good; so one store's refreshes run one at a time.
+        let lock = vectorRefreshLock(for: wax)
+        await vectorRefreshHook?(.waitingForRefresh)
+        await lock.lock()
+        do {
+            let engine = try await refreshVectorEngine(
+                for: wax,
+                queryEmbeddingDimensions: queryEmbeddingDimensions,
+                preference: preference
+            )
+            await lock.unlock()
+            return engine
+        } catch {
+            await lock.unlock()
+            throw error
+        }
+    }
+
+    /// Rechecks the cached engine and brings it up to date. Callers hold the store's refresh lock.
+    private func refreshVectorEngine(
+        for wax: Wax,
+        queryEmbeddingDimensions: Int,
+        preference: VectorEnginePreference
+    ) async throws -> LoadedVectorSearchEngine? {
+        let pendingSnapshot = await wax.pendingEmbeddingMutations(since: nil)
+        guard let descriptor = try await vectorLoadDescriptor(
+            for: wax,
+            queryEmbeddingDimensions: queryEmbeddingDimensions,
+            preference: preference,
+            pendingSnapshot: pendingSnapshot
+        ) else {
+            return nil
+        }
 
         let latestPending = pendingSnapshot.latestSequence
         if let cached = cachedVector(for: wax), cached.key == descriptor.key {
@@ -155,6 +212,10 @@ actor UnifiedSearchEngineCache {
                         vectors: delta.embeddings.map(\.vector)
                     )
                 }
+                for frameId in delta.removedFrameIds {
+                    try await cached.engine.remove(frameId: frameId)
+                }
+                await vectorRefreshHook?(.synced)
                 recordVectorSync(for: wax, key: descriptor.key, through: delta.latestSequence)
                 return cached.engine
             }
@@ -169,6 +230,7 @@ actor UnifiedSearchEngineCache {
             preference: preference
         )
         incrementVectorDeserializations(for: wax)
+        await vectorRefreshHook?(.loaded)
         // `load` applies every pending embedding present when it read them, which
         // is at least `latestPending`; a later write is re-applied idempotently.
         storeVector(
@@ -178,8 +240,7 @@ actor UnifiedSearchEngineCache {
         return loaded
     }
 
-    /// Searches can interleave across the `addBatch` await. Adds are idempotent
-    /// overwrites, so only move the watermark forward and only for the same index.
+    /// Only moves the watermark forward, and only for the same index.
     private func recordVectorSync(for wax: Wax, key: VectorSourceKey, through sequence: UInt64?) {
         guard var cached = cachedVector(for: wax), cached.key == key, let sequence else { return }
         if let synced = cached.syncedThrough, synced >= sequence { return }
@@ -197,6 +258,16 @@ actor UnifiedSearchEngineCache {
         return cached
     }
 
+    private func vectorRefreshLock(for wax: Wax) -> AsyncMutex {
+        if let lock = vectorRefreshLocks[ObjectIdentifier(wax)], lock.owner === wax {
+            return lock.mutex
+        }
+        pruneReleasedStores()
+        let mutex = AsyncMutex()
+        vectorRefreshLocks[ObjectIdentifier(wax)] = VectorRefreshLock(owner: wax, mutex: mutex)
+        return mutex
+    }
+
     private func storeText(_ entry: CachedText, for wax: Wax) {
         pruneReleasedStores()
         textByWax[ObjectIdentifier(wax)] = entry
@@ -208,10 +279,12 @@ actor UnifiedSearchEngineCache {
     }
 
     /// Drops entries whose store was freed, so engines do not outlive their store.
-    /// Runs only when an engine is (re)built, which already costs O(index size).
+    /// Runs only when an engine is (re)built, which already costs O(index size),
+    /// or when a store first needs a refresh lock.
     private func pruneReleasedStores() {
         textByWax = textByWax.filter { $0.value.owner != nil }
         vectorByWax = vectorByWax.filter { $0.value.owner != nil }
+        vectorRefreshLocks = vectorRefreshLocks.filter { $0.value.owner != nil }
         statsByWax = statsByWax.filter { $0.value.owner != nil }
     }
 
@@ -247,34 +320,17 @@ actor UnifiedSearchEngineCache {
             return nil
         }
 
-        if let stamp = await wax.stagedVecIndexStamp(),
-           let staged = await wax.readStagedVecIndexBytes(),
-           let metric = VectorMetric(vecSimilarity: staged.similarity) {
+        if let configuration = await wax.vectorIndexConfiguration(),
+           let metric = VectorMetric(vecSimilarity: configuration.similarity) {
             return (
-                .staged(
+                .indexed(
                     generation: generation,
-                    stamp: stamp,
-                    similarity: staged.similarity,
-                    dimensions: Int(staged.dimension),
+                    similarity: configuration.similarity,
+                    dimensions: Int(configuration.dimension),
                     engine: kind
                 ),
                 metric,
-                Int(staged.dimension)
-            )
-        }
-
-        if let manifest = await wax.committedVecIndexManifest(),
-           let metric = VectorMetric(vecSimilarity: manifest.similarity) {
-            return (
-                .committed(
-                    generation: generation,
-                    checksum: manifest.checksum,
-                    similarity: manifest.similarity,
-                    dimensions: Int(manifest.dimension),
-                    engine: kind
-                ),
-                metric,
-                Int(manifest.dimension)
+                Int(configuration.dimension)
             )
         }
 

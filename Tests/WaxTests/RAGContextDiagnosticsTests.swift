@@ -135,13 +135,13 @@ struct RAGContextDiagnosticsTests {
         config.enableStructuredMemory = false
         let memory = try await MemoryOrchestrator(at: url, config: config, embedder: ConstantEmbedder(vector: [1, 0], provider: "EmptyQueryTests", model: "deterministic"))
         do {
-            let recall = try await memory.recallExecution(query: "   ", mode: mode, topK: 5)
+            let recall = try await memory.recallExecution(query: "   ", mode: SearchModeRequest(mode), topK: 5)
             #expect(recall.requestedMode == mode)
             #expect(recall.effectiveMode == .textOnly)
             #expect(recall.queryEmbeddingState == .notRequested)
             #expect(recall.context.diagnostics?.effectiveMode == .textOnly)
 
-            let search = try await memory.searchExecution(query: "", mode: mode, topK: 5)
+            let search = try await memory.searchExecution(query: "", mode: SearchModeRequest(mode), topK: 5)
             #expect(search.requestedMode == mode)
             #expect(search.effectiveMode == .textOnly)
             #expect(search.queryEmbeddingState == .notRequested)

@@ -420,7 +420,7 @@ class _WaxMCPManager:
             "--http-host", host,
             "--http-port", port,
             "--http-endpoint", endpoint_path,
-            "--embedder", "minilm",
+            "--embedder", "auto",
         ]
         logger.info("Auto-starting Wax MCP: %s", " ".join(cmd))
         try:
@@ -526,7 +526,7 @@ class _WaxMCPManager:
         return (
             f"Vector search is unavailable (embeddingStatus={status}, reason={reason}, "
             f"framesWithoutVectors={missing}) — text search still works. "
-            "Restart with: npx waxmcp --embedder minilm --transport http"
+            "Restart with: npx waxmcp --transport http"
         )
 
 

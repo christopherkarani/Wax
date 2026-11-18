@@ -51,7 +51,7 @@ extension BrokerCommand {
         return verbosity
     }
 
-    package static func parseRecallMode(_ args: BrokerArguments) throws -> SearchMode? {
+    package static func parseRecallMode(_ args: BrokerArguments) throws -> SearchModeRequest? {
         let modeRaw = try args.optionalString("mode")?.lowercased()
         let alpha = try args.optionalDouble("alpha")
 
@@ -71,7 +71,7 @@ extension BrokerCommand {
         case "vector":
             return .vectorOnly
         case "hybrid":
-            guard let alpha else { return .hybrid() }
+            guard let alpha else { return .hybrid(alpha: nil) }
             return .hybrid(alpha: try validatedHybridAlpha(alpha))
         default:
             throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")
@@ -81,7 +81,7 @@ extension BrokerCommand {
     package static func parseSearchMode(
         modeRaw: String?,
         alpha: Double?
-    ) throws -> SearchMode {
+    ) throws -> SearchModeRequest {
         let resolvedMode = modeRaw ?? "text"
         if alpha != nil, resolvedMode != "hybrid" {
             throw BrokerValidationError.invalid("alpha is only valid when mode=hybrid")
@@ -92,7 +92,7 @@ extension BrokerCommand {
         case "vector":
             return .vectorOnly
         case "hybrid":
-            guard let alpha else { return .hybrid() }
+            guard let alpha else { return .hybrid(alpha: nil) }
             return .hybrid(alpha: try validatedHybridAlpha(alpha))
         default:
             throw BrokerValidationError.invalid("mode must be one of: text, vector, hybrid")

@@ -87,9 +87,15 @@ package final class MiniLMEmbeddings {
     /// and can block for seconds during sequence-length recompilation. Running it on a dedicated
     /// (non-cooperative) queue prevents starvation of the Swift concurrency cooperative thread pool,
     /// which the MCP server's transport readLoop and send operations depend on for progress.
+    ///
+    /// `.workItem` drains the autorelease pool after every prediction. CoreML autoreleases
+    /// IOSurface-backed outputs, and a GCD thread otherwise drains only when it goes idle, so
+    /// back-to-back predictions from concurrent callers grew memory until IOSurface allocation
+    /// failed with an uncaught NSException ("Failed to allocate E5 buffer object").
     private static let predictionQueue = DispatchQueue(
         label: "wax.minilm.coreml-prediction",
-        qos: .userInitiated
+        qos: .userInitiated,
+        autoreleaseFrequency: .workItem
     )
 
     package var computeUnits: MLComputeUnits {
@@ -106,7 +112,8 @@ package final class MiniLMEmbeddings {
         timeout: Duration
     ) async throws -> MiniLMEmbeddings {
         try await AsyncTimeout.run(timeout: timeout, operation: "MiniLM model load") {
-            try MiniLMEmbeddings(configuration: configuration, overrides: overrides)
+            // The Core ML load blocks its thread, and keeps running after a timeout.
+            try await BlockingWork.run { try MiniLMEmbeddings(configuration: configuration, overrides: overrides) }
         }
     }
 
@@ -322,45 +329,6 @@ private extension MiniLMEmbeddings {
         Thread.sleep(forTimeInterval: interval)
     }
 
-    struct ModelCacheKey: Hashable {
-        let computeUnits: MLComputeUnits
-        let allowLowPrecisionAccumulationOnGPU: Bool
-    }
-
-    final class ModelCache: @unchecked Sendable {
-        static let shared = ModelCache()
-        private var models: [ModelCacheKey: all_MiniLM_L6_v2] = [:]
-        private let lock = NSLock()
-
-        func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
-            if configuration.preferredMetalDevice != nil || hasParameters {
-                return try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            }
-            let key = ModelCacheKey(
-                computeUnits: configuration.computeUnits,
-                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
-            )
-            lock.lock()
-            if let cached = models[key] {
-                lock.unlock()
-                return cached
-            }
-            defer { lock.unlock() }
-
-            // NOTE: CoreML / Espresso compilation has been observed to deadlock when multiple threads
-            // load the same model concurrently. Serializing model loads avoids that class of issues
-            // and preserves determinism for callers initializing `MiniLMEmbeddings` in parallel.
-            let model = try MiniLMEmbeddings.loadModelFromBundle(configuration: configuration)
-            models[key] = model
-            return model
-        }
-    }
-
-    static func cachedModel(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
-        try ModelCache.shared.model(configuration: configuration)
-    }
-
     /// Decodes the model's `embeddings` output into one vector per input row.
     ///
     /// Only unambiguous sentence-embedding layouts are accepted: `[batch, dim]`, `[dim]` for a
@@ -427,6 +395,50 @@ private extension MiniLMEmbeddings {
             }
             guard rows > 0, dimension > 0 else { return nil }
         }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, *)
+extension MiniLMEmbeddings {
+    struct ModelCacheKey: Hashable {
+        let computeUnits: MLComputeUnits
+        let allowLowPrecisionAccumulationOnGPU: Bool
+    }
+
+    /// Process-wide cache of loaded models, one per compute-unit configuration.
+    ///
+    /// Callers asking for the same configuration share one load, so one configuration is never
+    /// compiled twice at once. A load for one configuration never waits for a load of another: a
+    /// GPU load of a model with range input shapes can spend many minutes in MPSGraph shape
+    /// solving, and it must not stall the CPU load.
+    ///
+    /// CoreML / Espresso compilation has been observed to deadlock when several threads load the
+    /// same model concurrently, which is why one configuration only ever has one load in flight.
+    final class ModelCache: Sendable {
+        static let shared = ModelCache { try MiniLMEmbeddings.loadModelFromBundle(configuration: $0) }
+
+        private let models = KeyedLoadCache<ModelCacheKey, all_MiniLM_L6_v2>()
+        private let loader: @Sendable (MLModelConfiguration) throws -> all_MiniLM_L6_v2
+
+        init(loader: @escaping @Sendable (MLModelConfiguration) throws -> all_MiniLM_L6_v2) {
+            self.loader = loader
+        }
+
+        func model(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+            let hasParameters = !(configuration.parameters?.isEmpty ?? true)
+            if configuration.preferredMetalDevice != nil || hasParameters {
+                return try loader(configuration)
+            }
+            let key = ModelCacheKey(
+                computeUnits: configuration.computeUnits,
+                allowLowPrecisionAccumulationOnGPU: configuration.allowLowPrecisionAccumulationOnGPU
+            )
+            return try models.value(for: key) { try loader(configuration) }
+        }
+    }
+
+    static func cachedModel(configuration: MLModelConfiguration) throws -> all_MiniLM_L6_v2 {
+        try ModelCache.shared.model(configuration: configuration)
     }
 }
 

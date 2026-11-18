@@ -7,6 +7,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: url) }
 
     let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("frame".utf8))
     try await wax.putEmbedding(frameId: 0, vector: [0.1, 0.2])
 
     do {
@@ -18,61 +19,28 @@ import Testing
             return
         }
         let reason = error.errorDescription ?? ""
-        #expect(reason.contains("vector index must be staged before committing embeddings"))
+        #expect(reason.contains("vector index dimension and similarity must be set before committing the first embeddings"))
     }
 }
 
-@Test func closePropagatesStaleVecIndexAutoCommitError() async throws {
+/// An embedding written after the vector configuration is set still commits: the commit
+/// writes every pending embedding from the WAL, so there is no index to fall behind.
+@Test func closeCommitsAnEmbeddingWrittenAfterTheVectorConfiguration() async throws {
     let url = TempFiles.uniqueURL()
     defer { try? FileManager.default.removeItem(at: url) }
 
     let wax = try await Wax.create(at: url)
+    _ = try await wax.put(Data("frame".utf8))
     try await wax.putEmbedding(frameId: 0, vector: [0.1, 0.2])
-    try await wax.stageVecIndexForNextCommit(
-        bytes: validFlatVecIndexSegment(vectors: [0.1, 0.2], frameIds: [0], dimension: 2, similarity: .cosine),
-        vectorCount: 1,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    try await wax.setVectorIndexConfiguration(dimension: 2, similarity: .cosine)
     try await wax.putEmbedding(frameId: 0, vector: [0.3, 0.4])
+    try await wax.close()
 
-    do {
-        try await wax.close()
-        #expect(Bool(false))
-    } catch let error as WaxError {
-        guard case .vectorIndexStale = error else {
-            #expect(Bool(false))
-            return
-        }
-        let reason = error.errorDescription ?? ""
-        #expect(reason.contains("vector index is stale relative to pending embeddings"))
-    }
-}
-
-private func validFlatVecIndexSegment(
-    vectors: [Float],
-    frameIds: [UInt64],
-    dimension: UInt32,
-    similarity: VecSimilarity
-) -> Data {
-    var data = Data([0x4D, 0x56, 0x32, 0x56])
-    var version = UInt16(1).littleEndian
-    withUnsafeBytes(of: &version) { data.append(contentsOf: $0) }
-    data.append(3)
-    data.append(similarity.rawValue)
-    var dimensionLE = dimension.littleEndian
-    withUnsafeBytes(of: &dimensionLE) { data.append(contentsOf: $0) }
-    var vectorCountLE = UInt64(frameIds.count).littleEndian
-    withUnsafeBytes(of: &vectorCountLE) { data.append(contentsOf: $0) }
-    var payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride).littleEndian
-    withUnsafeBytes(of: &payloadLength) { data.append(contentsOf: $0) }
-    data.append(Data(repeating: 0, count: 8))
-    vectors.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
-    var frameIdLength = UInt64(frameIds.count * MemoryLayout<UInt64>.stride).littleEndian
-    withUnsafeBytes(of: &frameIdLength) { data.append(contentsOf: $0) }
-    frameIds.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
-    return data
+    let reopened = try await Wax.open(at: url)
+    let committed = try #require(try await reopened.readCommittedVectors())
+    #expect(committed.frameIds == [0])
+    #expect(committed.vectors == [0.3, 0.4])
+    try await reopened.close()
 }
 
 @Test func frameContentRejectsCorruptedPayloadChecksum() async throws {
@@ -123,13 +91,13 @@ private func validFlatVecIndexSegment(
         contentsOfFile: "Sources/WaxCore/Wax.swift",
         encoding: .utf8
     )
-    let start = try #require(source.range(of: "    private func commitLocked() async throws {"))
+    let start = try #require(source.range(of: "    func commitLocked(frameImport importing: FrameImport? = nil) async throws {"))
     let remainder = source[start.lowerBound...]
     let end = try #require(remainder.range(of: "    private struct CommitRollbackState {"))
     let body = String(remainder[..<end.lowerBound])
 
     let rollbackCapture = try #require(body.range(of: "let rollbackState = CommitRollbackState.capture(from: self)"))
-    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC()"))
+    let applyPending = try #require(body.range(of: "let applied = try applyPendingMutationsIntoTOC(frameImport: importing)"))
     let restoreDefer = try #require(body.range(of: "defer {\n            if !commitSucceeded {\n                rollbackState.restore(into: self)"))
     let successMark = try #require(body.range(of: "commitSucceeded = true"))
 
