@@ -310,6 +310,61 @@ func primeAssemblyAttachesProvenanceAndOmitsLifecyclePlaybookFields() throws {
 }
 
 @Test(arguments: [
+    "transport idleExpiry",
+    "transport stdioEOF",
+    "  transport httpDelete\n",
+    "checkpoint",
+])
+func primeAssemblyDropsStubContentOnlyHandoff(stub: String) {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(content: stub, project: "Wax")
+    )
+    #expect(envelope.handoff == nil)
+    #expect(envelope.hostContext.contains("[handoff]") == false)
+}
+
+@Test(arguments: [
+    "Blocked on CI.",
+    "Next: rerun burn-smoke",
+    "checkpoint the WAL first",
+    "transport layer is next",
+])
+func primeAssemblyKeepsShortAuthoredTasklessHandoff(content: String) {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(content: content, project: "Wax")
+    )
+    #expect(envelope.handoff?.content == content)
+    #expect(envelope.hostContext.contains("[handoff]"))
+}
+
+@Test
+func primeAssemblyKeepsStubHandoffWithPendingTasks() {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(
+            content: "transport idleExpiry", project: "Wax", pendingTasks: ["land tests"]
+        )
+    )
+    #expect(envelope.handoff?.found == true)
+    #expect(envelope.hostContext.contains("[handoff]"))
+}
+
+@Test
+func primeAssemblyKeepsSubstantiveTasklessHandoff() {
+    let envelope = assemble(
+        project: [candidate("Keep hooks read-only.", type: "lesson")],
+        handoff: MCPPrimeAssembly.Handoff(
+            content: "Shipped stale-demotion; remaining work is the handoff write-path fix.",
+            project: "Wax"
+        )
+    )
+    #expect(envelope.handoff?.found == true)
+    #expect(envelope.hostContext.contains("[handoff]"))
+}
+
+@Test(arguments: [
     MCPPrimeAssembly.Format.claude,
     .codex,
     .grok,

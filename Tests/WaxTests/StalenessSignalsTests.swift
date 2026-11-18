@@ -269,6 +269,63 @@ func primeStaleHintLeavesUnknownTimestampUnflagged() throws {
     #expect(!unknown.staleHint)
 }
 
+private func primeStalenessCandidate(
+    _ text: String,
+    type: String,
+    score: Double,
+    createdAtMs: Int64
+) -> MCPPrimeAssembly.Candidate {
+    MCPPrimeAssembly.Candidate(
+        text: text, memoryType: type,
+        project: "Wax", repo: "Wax", score: score, createdAtMs: createdAtMs
+    )
+}
+
+private func primeStalenessOrder(_ candidates: [MCPPrimeAssembly.Candidate]) -> [String] {
+    MCPPrimeAssembly.assemble(
+        MCPPrimeAssembly.Input(
+            host: "claude",
+            includePerson: false,
+            projectMiss: false,
+            project: "Wax",
+            repo: "Wax",
+            personCandidates: [],
+            projectCandidates: candidates,
+            handoff: nil
+        ),
+        tokenizer: .character,
+        nowMs: 10_000
+    ).projectItems.map(\.text)
+}
+
+@Test
+func primeStaleHintDemotesOlderSameTopicTwin() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate(staleOldDecision, type: "decision", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(staleNewDecision, type: "decision", score: 0.8, createdAtMs: 9_000),
+    ])
+    #expect(order == [staleNewDecision, staleOldDecision])
+}
+
+@Test
+func primeStaleHintKeepsScoreOrderForUnrelatedSameTypeItems() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate(staleOldDecision, type: "decision", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(unrelatedDecision, type: "decision", score: 0.8, createdAtMs: 9_000),
+    ])
+    #expect(order == [staleOldDecision, unrelatedDecision])
+}
+
+@Test
+func primeStaleHintKeepsTypeRankAboveFreshness() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate(staleOldDecision, type: "constraint", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(staleNewDecision, type: "constraint", score: 0.8, createdAtMs: 2_000),
+        primeStalenessCandidate("fresh fact", type: "fact", score: 1.0, createdAtMs: 3_000),
+    ])
+    #expect(order == [staleNewDecision, staleOldDecision, "fresh fact"])
+}
+
 @Test
 func reviewQueueFrameMatchesUnreviewedDecisionsAndConstraints() {
     #expect(AgentBrokerService.isReviewQueueFrame([MemoryMetadataKeys.type: "decision"]) == true)
