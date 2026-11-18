@@ -129,13 +129,20 @@ private func ensureGitignore(repoRoot: String) {
     let gitignorePath = URL(fileURLWithPath: repoRoot).appendingPathComponent(".gitignore")
     let entry = ".wax-repo/"
 
+    // Best effort: indexing goes on without it, but an existing file is never replaced unless it was read.
     guard FileManager.default.fileExists(atPath: gitignorePath.path) else {
-        // Create new .gitignore
-        try? (entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
+        do {
+            try (entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
+        } catch {
+            writeStderr("warning: could not create .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
+        }
         return
     }
-    guard let bytes = try? Data(contentsOf: gitignorePath) else {
-        writeStderr("warning: could not read \(gitignorePath.path); add \(entry) to it manually.")
+    let bytes: Data
+    do {
+        bytes = try Data(contentsOf: gitignorePath)
+    } catch {
+        writeStderr("warning: could not read .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
         return
     }
     // Decode only to look for the entry. The file may not be UTF-8, so the
@@ -148,7 +155,7 @@ private func ensureGitignore(repoRoot: String) {
     do {
         try (bytes + Data((separator + entry + "\n").utf8)).write(to: gitignorePath, options: .atomic)
     } catch {
-        writeStderr("warning: could not update \(gitignorePath.path): \(error.localizedDescription)")
+        writeStderr("warning: could not update .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
     }
 }
 

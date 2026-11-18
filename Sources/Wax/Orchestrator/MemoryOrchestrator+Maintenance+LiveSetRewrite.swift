@@ -190,7 +190,7 @@ package extension MemoryOrchestrator {
             }
         } catch {
             if let promotion {
-                try? Self.rollbackRewritePromotion(promotion)
+                Self.rollbackRewritePromotionLoggingFailure(promotion)
             }
             throw error
         }
@@ -487,6 +487,20 @@ package extension MemoryOrchestrator {
         }
     }
 
+    /// The caller rethrows its own error; a failed rollback leaves the destination
+    /// for operator recovery, so it is logged rather than hidden.
+    private static func rollbackRewritePromotionLoggingFailure(_ promotion: RewritePromotion) {
+        do {
+            try rollbackRewritePromotion(promotion)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "live-set rewrite promotion rollback",
+                fallback: "rethrowing the original error; recover the destination from its backup"
+            )
+        }
+    }
+
     private static func finalizeRewritePromotion(_ promotion: RewritePromotion) throws {
         guard let backupURL = promotion.backupURL else { return }
         let fileManager = FileManager.default
@@ -646,7 +660,7 @@ package extension MemoryOrchestrator {
         do {
             try Self.finalizeRewritePromotion(promotion)
         } catch {
-            try? Self.rollbackRewritePromotion(promotion)
+            Self.rollbackRewritePromotionLoggingFailure(promotion)
             throw error
         }
 
