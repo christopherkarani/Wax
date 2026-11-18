@@ -331,7 +331,16 @@ package enum BrokerCorpusStoreBuilder {
                 for: standardizedTarget
             )
         } else {
-            try? CorpusBuildManifestStore.delete(for: standardizedTarget)
+            do {
+                try CorpusBuildManifestStore.delete(for: standardizedTarget)
+            } catch {
+                // A stale manifest makes this partial build look up to date to the next build.
+                WaxDiagnostics.logSwallowed(
+                    error,
+                    context: "corpus build manifest delete after skipped stores",
+                    fallback: "keeping the new corpus store; delete the .manifest.json beside it to force a rebuild"
+                )
+            }
         }
 
         return BrokerCorpusBuildSummary(
