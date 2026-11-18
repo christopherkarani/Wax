@@ -256,16 +256,12 @@ func writesAfterALateCommitFailureSurviveACrash(fault: LateCommitFault) async th
     await #expect(throws: WaxError.self) { try await wax.commit() }
     await wax.installFileFaultPlanForTesting(nil)
 
-    var expected: [UInt64: Data] = [0: Data("first".utf8), 1: Data("second".utf8)]
-    let thirdId = try? await wax.put(Data("third".utf8))
-    if let thirdId {
-        expected[thirdId] = Data("third".utf8)
-    }
-    // The handle takes no writes after a commit failed at or past its footer write.
-    #expect(thirdId == nil, "\(fault)")
-    await #expect(throws: WaxError.self) { try await wax.commit() }
+    // The handle keeps taking writes: the failed commit's bytes stay reserved, so a later
+    // write cannot land on them, and a footer scan can still recover that commit.
+    let thirdId = try await wax.put(Data("third".utf8))
+    let expected: [UInt64: Data] = [0: Data("first".utf8), 1: Data("second".utf8), thirdId: Data("third".utf8)]
     try FileManager.default.copyItem(at: url, to: crashURL)
-    _ = try? await wax.close()
+    try await wax.close()
 
     for reopenURL in [crashURL, url] {
         let context = "\(fault), \(reopenURL == url ? "after close" : "crash copy")"

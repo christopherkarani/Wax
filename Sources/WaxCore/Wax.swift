@@ -116,10 +116,6 @@ package actor Wax {
     private let walProactiveCommitMaxWalSizeBytes: UInt64?
     private let walProactiveCommitMinPendingBytes: UInt64
     private let walReplayStateSnapshotEnabled: Bool
-    /// Set when a commit fails at or after its footer write. Its bytes, and possibly a header
-    /// page naming them, can already be in the file while the rollback reuses their offsets
-    /// and WAL range, so this handle takes no more writes; reopening recovers the store.
-    private var writesRefused = false
 
     /// Internal only because of the file split; use only from the writer-lease methods (Wax+Lifecycle.swift).
     var writerWaiters: [WriterWaiter] = []
@@ -355,15 +351,8 @@ package actor Wax {
         walAutoCommitCount &+= 1
     }
 
-    private func ensureWritableLocked() throws {
-        guard !writesRefused else {
-            throw WaxError.io("a commit failed after writing its footer; reopen the store before writing again")
-        }
-    }
-
     /// Internal only because of the file split; call only while holding `opLock` for writing.
     func ensureWalCapacityLocked(payloadSize: Int) async throws {
-        try ensureWritableLocked()
         if walProactiveCommitThresholdBytes != nil,
            let estimated = estimatedWalBytesForAppend(payloadSize: payloadSize) {
             try await maybeProactiveAutoCommitLocked(estimatedIncomingWalBytes: estimated)
@@ -385,7 +374,6 @@ package actor Wax {
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
     func ensureWalCapacityLocked(payloadSizes: [Int]) async throws {
-        try ensureWritableLocked()
         guard !payloadSizes.isEmpty else { return }
         if walProactiveCommitThresholdBytes != nil,
            let estimated = estimatedWalBytesForAppendBatch(payloadSizes: payloadSizes) {
@@ -425,7 +413,6 @@ package actor Wax {
             throw WaxError.io("a frame import is open; only its own commit may run")
         }
         guard dirty || stagedLexIndex != nil || importing != nil else { return }
-        try ensureWritableLocked()
         // A frame whose last change is a removal needs no vector index.
         if pendingEmbeddingsLackVectorIndexLocked() {
             throw WaxError.vectorIndexNotStaged
@@ -434,13 +421,9 @@ package actor Wax {
         try await ensureRecoveryFenceLocked()
         let rollbackState = CommitRollbackState.capture(from: self)
         var commitSucceeded = false
-        var footerWriteStarted = false
         defer {
             if !commitSucceeded {
                 rollbackState.restore(into: self)
-                if footerWriteStarted {
-                    writesRefused = true
-                }
             }
         }
 
@@ -507,7 +490,6 @@ package actor Wax {
         Self.maybeCrashAfterCheckpoint(.afterTocWriteBeforeFooter)
         #endif
 
-        footerWriteStarted = true
         // From the footer on, a footer scan can recover this commit even if it fails.
         frameImport?.payloadsMayBeCommitted = true
         try await io.run {
