@@ -72,6 +72,43 @@ private final class SlowTeardownProbe: @unchecked Sendable {
     }
 }
 
+/// Teardown that blocks until `release()`, recording which sessions it has finished.
+private final class HeldTeardownProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var finishedKeys: Set<String> = []
+
+    func hold(_ key: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                guard !released else { return true }
+                waiting.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        markFinished(key)
+    }
+
+    private func markFinished(_ key: String) {
+        lock.withLock { _ = finishedKeys.insert(key) }
+    }
+
+    func release() {
+        let held: [CheckedContinuation<Void, Never>] = lock.withLock {
+            released = true
+            defer { waiting.removeAll() }
+            return waiting
+        }
+        for continuation in held { continuation.resume() }
+    }
+
+    func finished(_ key: String) -> Bool {
+        lock.withLock { finishedKeys.contains(key) }
+    }
+}
+
 @Test
 func loopbackServerWithConfiguredTokenRequiresIt() async throws {
     let app = MCPHTTPApplication(
@@ -99,13 +136,17 @@ func loopbackServerWithoutTokenStaysOpenToLocalClients() async throws {
     await app.stop()
 }
 
-@Test
+/// The victim's teardown is held until the test releases it, so a new session that
+/// returns at all has not waited on it. If eviction regresses to awaiting teardown, the
+/// time limit cancels the test and the cancellation handler releases the teardown, so
+/// the run ends with a failure instead of hanging.
+@Test(.timeLimit(.minutes(1)))
 func sessionCapDoesNotWaitForTheEvictedSessionsTeardown() async throws {
-    let probe = SlowTeardownProbe(delay: .seconds(3))
+    let probe = HeldTeardownProbe()
     let app = MCPHTTPApplication(
         configuration: .init(maxSessions: 1, shutdownDeadline: .milliseconds(100)),
         onTransportTeardown: { key, _ in
-            await probe.record(key)
+            await probe.hold(key)
             return .skipped("test")
         },
         serverFactory: { _, _ in makeTestServer() }
@@ -113,12 +154,17 @@ func sessionCapDoesNotWaitForTheEvictedSessionsTeardown() async throws {
     let first = await app.handleHTTPRequest(try initializeRequest())
     let firstID = try #require(first.headers[HTTPHeaderName.sessionID])
 
-    let clock = ContinuousClock()
-    let started = clock.now
-    let second = await app.handleHTTPRequest(try initializeRequest())
+    let secondRequest = try initializeRequest()
+    let second = await withTaskCancellationHandler {
+        await app.handleHTTPRequest(secondRequest)
+    } onCancel: {
+        probe.release()
+    }
     #expect(second.statusCode == 200)
-    #expect(clock.now - started < .seconds(1), "a new session must not wait on the victim's teardown")
+    #expect(!probe.finished(firstID), "a new session must not wait on the victim's teardown")
     #expect(!(await app.liveSessionIDs().contains(firstID)))
+
+    probe.release()
     await app.stop()
 }
 
