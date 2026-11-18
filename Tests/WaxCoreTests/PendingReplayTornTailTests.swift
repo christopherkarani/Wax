@@ -41,7 +41,7 @@ private func makePut(frameId: UInt64, payload: Data, payloadOffset: UInt64, uri:
 private func readHeaderPage(_ file: FDFile) throws -> WaxHeaderPage {
     let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
     let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-    return try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)).page
+    return try #require(try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB)).page
 }
 
 private func openRingWriter(_ file: FDFile) throws -> WALRingWriter {

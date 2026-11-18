@@ -23,7 +23,7 @@ func abruptTerminationMidWriteRecoversPendingPutFrame() async throws {
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -102,7 +102,7 @@ func walReplayAppliesDeleteAndPutInSequence() async throws {
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }
@@ -212,7 +212,7 @@ func abruptTerminationMidCompactionRecoversFromPreviousValidFooter() async throw
 
         let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
         let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-        guard let selected = WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
+        guard let selected = try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB) else {
             Issue.record("Expected valid header pages")
             return
         }

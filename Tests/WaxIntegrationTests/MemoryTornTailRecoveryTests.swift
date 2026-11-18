@@ -9,7 +9,7 @@ private func appendTornPendingPut(to url: URL) throws {
     defer { try? file.close() }
     let pageA = try file.readExactly(length: Int(Constants.headerPageSize), at: 0)
     let pageB = try file.readExactly(length: Int(Constants.headerPageSize), at: Constants.headerPageSize)
-    let selected = try #require(WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
+    let selected = try #require(try WaxHeaderPage.selectValidPage(pageA: pageA, pageB: pageB))
     let writer = WALRingWriter(
         file: file,
         walOffset: selected.page.walOffset,
