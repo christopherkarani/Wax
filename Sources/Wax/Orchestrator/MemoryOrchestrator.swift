@@ -877,7 +877,7 @@ package actor MemoryOrchestrator {
         // New writes are refused from here on; the flush must include the admitted ones.
         await waitForInFlightWrites()
         // A failed flush must not keep the store open: the file lock is only released by
-        // `wax.close()`, and a handle that refuses writes fails this flush on every retry.
+        // `wax.close()`, and a flush that keeps failing (an I/O error) would hold it for good.
         var flushError: (any Error)?
         do {
             try await flush()
