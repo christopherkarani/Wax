@@ -64,4 +64,32 @@ func stdioTransportStaysOpenAtEOFUntilEveryRequestIsAnswered() async throws {
     #expect(received.count == 2)
     await transport.disconnect()
 }
+
+/// stdin arrives 4 KiB at a time. Each byte is searched for a newline once, so a 1 MiB message
+/// costs linear work; searching the whole buffer after every read was quadratic (seconds per
+/// message in a debug build).
+@Test func stdioLineBufferSearchesEachByteOnce() {
+    var buffer = StdioLineBuffer()
+    let message = Array(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"x":""#.utf8)
+        + [UInt8](repeating: UInt8(ascii: "a"), count: 1 << 20)
+        + Array(#""}}"#.utf8)
+    let input = message + [UInt8(ascii: "\n")] + Array(#"{"id":12}"#.utf8) + [UInt8(ascii: "\n"), UInt8(ascii: "{")]
+    var lines: [Data] = []
+    var offset = 0
+    while offset < input.count {
+        let end = min(offset + 4096, input.count)
+        lines += buffer.append(input[offset..<end])
+        offset = end
+    }
+    #expect(lines == [Data(message), Data(#"{"id":12}"#.utf8)])
+    #expect(buffer.remainder == Data("{".utf8))
+    #expect(buffer.bytesSearched <= input.count, "searched \(buffer.bytesSearched) bytes for \(input.count)")
+}
+
+/// Blank lines are skipped, as before.
+@Test func stdioLineBufferSkipsEmptyLines() {
+    var buffer = StdioLineBuffer()
+    #expect(buffer.append(Array("\n\n{}\n\n".utf8)[...]) == [Data("{}".utf8)])
+    #expect(buffer.remainder.isEmpty)
+}
 #endif

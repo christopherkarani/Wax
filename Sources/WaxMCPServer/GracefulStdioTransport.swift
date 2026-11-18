@@ -134,7 +134,7 @@ actor GracefulStdioTransport: Transport {
     private func readLoop() async {
         let bufferSize = 4096
         var buffer = [UInt8](repeating: 0, count: bufferSize)
-        var pendingData = Data()
+        var lines = StdioLineBuffer()
 
         while isConnected && !Task.isCancelled {
             do {
@@ -144,20 +144,19 @@ actor GracefulStdioTransport: Transport {
 
                 if bytesRead == 0 {
                     logger.notice("EOF received; waiting briefly before closing stdio transport")
-                    if !pendingData.isEmpty {
-                        yieldCompleteLines(from: &pendingData)
-                    }
                     // A final message without a trailing newline is still a message.
-                    if pendingData.contains(where: { !Self.isWhitespace($0) }) {
-                        deliver(Data(pendingData))
+                    let remainder = lines.remainder
+                    if remainder.contains(where: { !Self.isWhitespace($0) }) {
+                        deliver(remainder)
                     }
                     await waitForUnansweredRequests()
                     try? await Task.sleep(for: eofGracePeriod)
                     break
                 }
 
-                pendingData.append(Data(buffer[..<bytesRead]))
-                yieldCompleteLines(from: &pendingData)
+                for line in lines.append(buffer[..<bytesRead]) {
+                    deliver(line)
+                }
             } catch let error where MCPError.isResourceTemporarilyUnavailable(error) {
                 try? await Task.sleep(for: .milliseconds(10))
                 continue
@@ -170,15 +169,6 @@ actor GracefulStdioTransport: Transport {
         }
 
         messageContinuation.finish()
-    }
-
-    private func yieldCompleteLines(from pendingData: inout Data) {
-        while let newlineIndex = pendingData.firstIndex(of: UInt8(ascii: "\n")) {
-            let messageData = pendingData[..<newlineIndex]
-            pendingData = pendingData[(newlineIndex + 1)...]
-            guard !messageData.isEmpty else { continue }
-            deliver(Data(messageData))
-        }
     }
 
     private func deliver(_ message: Data) {
@@ -234,6 +224,52 @@ actor GracefulStdioTransport: Transport {
     private static func isWhitespace(_ byte: UInt8) -> Bool {
         byte == UInt8(ascii: " ") || byte == UInt8(ascii: "\t")
             || byte == UInt8(ascii: "\r") || byte == UInt8(ascii: "\n")
+    }
+}
+/// Splits stdin bytes into newline-terminated messages. Each byte is searched for a newline
+/// once: stdin arrives 4 KiB at a time, and searching the whole buffer after every read made a
+/// 1 MiB message quadratic.
+struct StdioLineBuffer {
+    /// Bytes after the last complete line.
+    private(set) var remainder = Data()
+    /// Bytes at the start of `remainder` already searched.
+    private var searched = 0
+    /// Bytes searched in total, for tests.
+    private(set) var bytesSearched = 0
+
+    /// Appends `bytes` and returns the non-empty lines they complete, without newlines.
+    mutating func append(_ bytes: ArraySlice<UInt8>) -> [Data] {
+        remainder.append(contentsOf: bytes)
+        var lines: [Data] = []
+        while let newline = nextNewlineOffset() {
+            let start = remainder.startIndex
+            if newline > 0 {
+                lines.append(Data(remainder[start..<(start + newline)]))
+            }
+            remainder = Data(remainder[(start + newline + 1)...])
+            searched = 0
+        }
+        return lines
+    }
+
+    /// Offset of the first newline in `remainder`, searching only bytes not searched before.
+    private mutating func nextNewlineOffset() -> Int? {
+        let from = searched
+        let count = remainder.count - from
+        guard count > 0 else { return nil }
+        let found: Int? = remainder.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int? in
+            guard let base = raw.baseAddress,
+                  let hit = memchr(base + from, Int32(UInt8(ascii: "\n")), count)
+            else { return nil }
+            return base.distance(to: UnsafeRawPointer(hit))
+        }
+        if let found {
+            bytesSearched += found - from + 1
+        } else {
+            bytesSearched += count
+            searched = remainder.count
+        }
+        return found
     }
 }
 #endif
