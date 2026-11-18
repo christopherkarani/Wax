@@ -10,6 +10,19 @@ package enum MCPPrimeAssembly {
     package static let maxProjectItems = 5
     package static let maxItemTokens = 160
     package static let maxItemBytes = 2_048
+    /// Content older builds recorded as a handoff with no human input: the
+    /// checkpoint hook's default and transport-teardown residue
+    /// ("transport idleExpiry"). Matched exactly so short authored handoffs survive.
+    package static let legacyStubHandoffContents: Set<String> = [
+        "checkpoint",
+        "transport httpDelete",
+        "transport idleExpiry",
+        "transport shutdown",
+        "transport recoveryReplacement",
+        "transport stdioEOF",
+        "transport capacityEviction",
+        "transport peerClosed",
+    ]
     package static let ownership = "injection"
     package static let ownershipLevel = "B"
 
@@ -511,6 +524,9 @@ package enum MCPPrimeAssembly {
         let leftRank = projectTypeRank[lhs.memoryType] ?? 99
         let rightRank = projectTypeRank[rhs.memoryType] ?? 99
         if leftRank != rightRank { return leftRank < rightRank }
+        // A stale hint means a newer same-type item is in this lane: rank the
+        // fresher item first, but keep stale items as backfill, never drop them.
+        if lhs.staleHint != rhs.staleHint { return !lhs.staleHint }
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs > rhs.createdAtMs }
         return lhs.text < rhs.text
@@ -546,6 +562,7 @@ package enum MCPPrimeAssembly {
             || tasks.count != handoff.pendingTasks.count
             || zip(handoff.pendingTasks.prefix(tasks.count), tasks).contains { $0 != $1 }
         guard !compact.isEmpty || !tasks.isEmpty else { return nil }
+        if tasks.isEmpty, legacyStubHandoffContents.contains(compact) { return nil }
         handoff.content = compact
         handoff.pendingTasks = Array(tasks)
         handoff.truncated = handoff.truncated || truncated
