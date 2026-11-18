@@ -20,6 +20,12 @@ extension MemoryOrchestrator {
     package func remember(_ content: String, metadata: [String: String] = [:]) async throws -> RememberResult {
         try beginWrite()
         defer { endWrite() }
+        return try await rememberAdmitted(content, metadata: metadata)
+    }
+
+    /// ``remember(_:metadata:)`` for a caller that already holds a write admission
+    /// (``beginWrite()``), which `close()` waits for. Internal only because of the file split.
+    func rememberAdmitted(_ content: String, metadata: [String: String]) async throws -> RememberResult {
         lastWriteActivityAt = .now
         let contentData = Data(content.utf8)
         let contentHash = ContentHasher.hash(contentData).hexString
