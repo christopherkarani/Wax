@@ -299,22 +299,31 @@ private func primeStalenessOrder(_ candidates: [MCPPrimeAssembly.Candidate]) -> 
 }
 
 @Test
-func primeStaleHintDemotesOlderSameTypeItem() {
+func primeStaleHintDemotesOlderSameTopicTwin() {
     let order = primeStalenessOrder([
-        primeStalenessCandidate("old decision", type: "decision", score: 0.9, createdAtMs: 1_000),
-        primeStalenessCandidate("new decision", type: "decision", score: 0.8, createdAtMs: 9_000),
+        primeStalenessCandidate(staleOldDecision, type: "decision", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(staleNewDecision, type: "decision", score: 0.8, createdAtMs: 9_000),
     ])
-    #expect(order == ["new decision", "old decision"])
+    #expect(order == [staleNewDecision, staleOldDecision])
+}
+
+@Test
+func primeStaleHintKeepsScoreOrderForUnrelatedSameTypeItems() {
+    let order = primeStalenessOrder([
+        primeStalenessCandidate(staleOldDecision, type: "decision", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(unrelatedDecision, type: "decision", score: 0.8, createdAtMs: 9_000),
+    ])
+    #expect(order == [staleOldDecision, unrelatedDecision])
 }
 
 @Test
 func primeStaleHintKeepsTypeRankAboveFreshness() {
     let order = primeStalenessOrder([
-        primeStalenessCandidate("old constraint", type: "constraint", score: 0.9, createdAtMs: 1_000),
-        primeStalenessCandidate("new constraint", type: "constraint", score: 0.8, createdAtMs: 2_000),
+        primeStalenessCandidate(staleOldDecision, type: "constraint", score: 0.9, createdAtMs: 1_000),
+        primeStalenessCandidate(staleNewDecision, type: "constraint", score: 0.8, createdAtMs: 2_000),
         primeStalenessCandidate("fresh fact", type: "fact", score: 1.0, createdAtMs: 3_000),
     ])
-    #expect(order == ["new constraint", "old constraint", "fresh fact"])
+    #expect(order == [staleNewDecision, staleOldDecision, "fresh fact"])
 }
 
 @Test
