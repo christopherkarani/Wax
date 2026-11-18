@@ -526,6 +526,11 @@ package extension AgentBrokerService {
             manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
         } catch BrokerSessionPersistenceError.manifestNotFound {
             return false
+        } catch let error as BrokerSessionPersistenceError {
+            throw error
+        } catch {
+            // A decode error does not say which manifest; the operator needs the session to fix it.
+            throw BrokerSessionPersistenceError.manifestUnreadable(sessionID: sessionID)
         }
         guard manifest.sessionID == sessionID,
               manifest.status == .active || manifest.status == .ended else {

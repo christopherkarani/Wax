@@ -189,3 +189,38 @@ func taskStateMigrationFailsWhenProvenanceManifestIsUnreadable() async throws {
         #expect(!FileManager.default.fileExists(atPath: destination.path))
     }
 }
+
+@Test
+func taskStateMigrationNamesTheSessionWhoseManifestIsCorrupt() async throws {
+    let roots = try AuditRoots()
+    defer { try? FileManager.default.removeItem(at: roots.root) }
+
+    try await withService(roots) { service in
+        let sessionID = try await startSession(service, runID: "corrupt-provenance")
+        try await service.longTermMemory.remember(
+            "task state whose session manifest is corrupt",
+            metadata: [
+                MemoryMetadataKeys.type: MemoryType.taskState.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.durable.rawValue,
+                "session_id": sessionID.uuidString,
+            ]
+        )
+        try await service.longTermMemory.flush()
+
+        let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: roots.sessions, sessionID: sessionID)
+        try Data("{".utf8).write(to: manifestURL)
+
+        let destination = roots.root.appendingPathComponent("repaired-corrupt.wax")
+        let migrated = await service.handle(.init(
+            command: "task_state_migrate",
+            arguments: [
+                "destination_path": .string(destination.path),
+                "orphan_policy": .string("drop"),
+            ]
+        ))
+        // The operator has to find the manifest to fix it, so the error names the session.
+        #expect(migrated.ok == false)
+        #expect(migrated.error?.contains(sessionID.uuidString) == true, "error: \(migrated.error ?? "nil")")
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+}
