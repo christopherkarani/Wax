@@ -66,11 +66,41 @@ private func makeTempDirectory() throws -> URL {
     return url
 }
 
+/// Puts frames `0...max(frameIds)` into a new store, so every id in `frameIds` names a frame.
+private func putFrames(_ wax: Wax, covering frameIds: [UInt64]) async throws {
+    let count = Int((frameIds.max() ?? 0) + 1)
+    _ = try await wax.putBatch(
+        Array(repeating: Data("v".utf8), count: count),
+        options: Array(repeating: FrameMetaSubset(), count: count)
+    )
+}
+
+/// Writes `vectors` for `frameIds` to a new store's WAL and commits them as its vector index.
+private func commitVectors(
+    _ wax: Wax,
+    frameIds: [UInt64],
+    vectors: [[Float]],
+    metric: VectorMetric,
+    dimensions: Int
+) async throws {
+    try await putFrames(wax, covering: frameIds)
+    try await wax.putEmbeddingBatch(frameIds: frameIds, vectors: vectors)
+    try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
+    try await wax.commit()
+}
+
 // MARK: - MetalANNS returns similarity, best-first (finding 1)
 
 #if canImport(Metal) && canImport(MetalANNS)
 private func metalANNSAvailable() -> Bool {
     MetalANNSVectorEngine.isAvailable
+}
+
+/// In `.exact` mode MetalANNS scans flat up to `exactSearchMaxVectorCount` vectors, and the
+/// engine then builds no graph. A cap of 0 sends every search to the graph, so tests of the
+/// graph lifecycle (build, install, mutate, rebuild) still run it at small sizes.
+private func makeGraphBackedMetalANNS(metric: VectorMetric, dimensions: Int) throws -> MetalANNSVectorEngine {
+    try MetalANNSVectorEngine(metric: metric, dimensions: dimensions, searchMode: .exact, exactSearchMaxVectorCount: 0)
 }
 
 @Test(
@@ -83,7 +113,7 @@ func metalANNSMatchesAccelerateOrderingAndScores(metric: VectorMetric, count: In
     let dimensions = 16
     let dataset = makeDataset(count: count, dimensions: dimensions, seed: 0xC0FFEE)
     let accelerate = try AccelerateVectorEngine(metric: metric, dimensions: dimensions)
-    let metalANNS = try MetalANNSVectorEngine(metric: metric, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: metric, dimensions: dimensions)
     try await accelerate.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
     try await metalANNS.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
 
@@ -131,9 +161,13 @@ func loadedVectorSearchEngineGpuOnlyRanksNearestFirst(count: Int) async throws {
     let dimensions = 8
     let dataset = makeDataset(count: count, dimensions: dimensions, seed: 42)
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("gpu-only.wax"))
-    let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
-    try await seed.addBatch(frameIds: dataset.frameIds, vectors: dataset.vectors)
-    try await seed.stageForCommit(into: wax)
+    try await commitVectors(
+        wax,
+        frameIds: dataset.frameIds,
+        vectors: dataset.vectors,
+        metric: .cosine,
+        dimensions: dimensions
+    )
 
     let gpu = try await LoadedVectorSearchEngine.load(
         from: wax,
@@ -196,7 +230,7 @@ func metalANNSHandlesMutationsAfterGraphBuild() async throws {
     // 40 > MetalANNS graph degree (32), so the graph exists before the mutations.
     let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
     let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
-    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     func apply(_ body: (any VectorSearchEngine) async throws -> Void) async throws {
         try await body(metalANNS)
@@ -225,6 +259,34 @@ func metalANNSHandlesMutationsAfterGraphBuild() async throws {
 }
 
 @Test(
+    "MetalANNS engine re-adds a removed id without dropping the graph",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSReAddsRemovedIdInPlace() async throws {
+    let dimensions = 8
+    let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0xFEED)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
+    let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    _ = try await metalANNS.search(vector: base.vectors[0], topK: 5)
+    await metalANNS.waitForPendingGraphBuild()
+    #expect(await metalANNS.isGraphReady)
+
+    let reused = base.frameIds[6]
+    for engine in [metalANNS, accelerate] as [any VectorSearchEngine] {
+        try await engine.remove(frameId: reused)
+        try await engine.add(frameId: reused, vector: extra.vectors[0])
+    }
+    // MetalANNS 0.4.0 re-inserts a soft-deleted id into its slot, so no rebuild is needed.
+    #expect(await metalANNS.isGraphReady)
+    let hits = try await metalANNS.search(vector: extra.vectors[0], topK: 1)
+    #expect(hits.first?.frameId == reused)
+    try await expectMetalANNSParity(metalANNS, accelerate, query: extra.vectors[0], count: 40)
+}
+
+@Test(
     "MetalANNS engine grows past the capacity its graph was built with",
     .enabled(if: metalANNSAvailable())
 )
@@ -232,7 +294,7 @@ func metalANNSGrowsPastBuiltCapacity() async throws {
     let dimensions = 8
     let base = makeDataset(count: 40, dimensions: dimensions, seed: 0xBEEF)
     let extra = makeDataset(count: 60, dimensions: dimensions, seed: 0xFEED)
-    let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+    let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
     try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
     try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
@@ -259,7 +321,7 @@ func metalANNSMutationsRacingGraphRebuildAreNotLost() async throws {
     let removedId = base.frameIds[7]
 
     for _ in 0..<5 {
-        let metalANNS = try MetalANNSVectorEngine(metric: .cosine, dimensions: dimensions)
+        let metalANNS = try makeGraphBackedMetalANNS(metric: .cosine, dimensions: dimensions)
         let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
         try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
         try await accelerate.addBatch(frameIds: base.frameIds, vectors: base.vectors)
@@ -323,6 +385,7 @@ func metalANNSSearchDuringPendingGraphBuildIsExact() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -383,6 +446,7 @@ func metalANNSAppendsDuringGraphBuildAreCaughtUp() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -424,6 +488,7 @@ func metalANNSAppendOnlyIngestAfterDiscardedBuildInstallsGraph() async throws {
         metric: .cosine,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: { await gate.enter() }
     )
     let accelerate = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
@@ -461,27 +526,23 @@ func metalANNSCancelledLoadDoesNotBlockGraphBuild() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
     let wax = try await Wax.create(at: tempDir.appendingPathComponent("cancelled-load.wax"))
-    // Segments store cosine vectors already normalized, as the engines write them.
-    let normalized = base.vectors.map { row in
-        let norm = sqrt(row.reduce(Float.zero) { $0 + $1 * $1 })
-        return row.map { $0 / norm }
-    }
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try VectorSerializer.serializeFlatVectors(
-            normalized.flatMap { $0 },
-            frameIds: base.frameIds,
-            metric: .cosine,
-            dimensions: dimensions
-        ),
-        vectorCount: UInt64(base.frameIds.count),
-        dimension: UInt32(dimensions),
-        similarity: .cosine,
-        coverage: .latestPending
+    // Committed vectors are stored as written; the engine normalizes cosine rows on load.
+    try await commitVectors(
+        wax,
+        frameIds: base.frameIds,
+        vectors: base.vectors,
+        metric: .cosine,
+        dimensions: dimensions
     )
 
     let engine = try await Task {
         withUnsafeCurrentTask { $0?.cancel() }
-        return try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
+        return try await MetalANNSVectorEngine.load(
+            from: wax,
+            metric: .cosine,
+            dimensions: dimensions,
+            exactSearchMaxVectorCount: 0
+        )
     }.value
     // Cancellation is not a build failure: no count, and the next search may build.
     #expect(await engine.graphBuildFailureCount == 0)
@@ -507,6 +568,7 @@ func metalANNSFailedGraphBuildFallsBackToExactSearch() async throws {
         metric: .l2,
         dimensions: dimensions,
         searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
         graphBuildHook: {
             await gate.enter()
             throw InjectedGraphBuildFailure()
@@ -538,6 +600,51 @@ func metalANNSFailedGraphBuildFallsBackToExactSearch() async throws {
     await metalANNS.waitForPendingGraphBuild()
     #expect(await gate.started == 2)
     #expect(await metalANNS.graphBuildFailureCount == 2)
+}
+
+@Test(
+    "MetalANNS exact mode at or below the exact-scan cap never builds the graph",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSExactModeOpenSkipsGraphBuild() async throws {
+    // The auto-selection threshold: stores this large open on the MetalANNS engine.
+    let count = MetalANNSVectorEngine.autoThreshold
+    let dimensions = 8
+    let base = makeDataset(count: count, dimensions: dimensions, seed: 0x0FE7)
+    let tempDir = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+    let wax = try await Wax.create(at: tempDir.appendingPathComponent("exact-open.wax"))
+    // Dense ids: every committed vector needs a frame, and the ids do not matter here.
+    let frameIds = (0..<count).map { UInt64($0) }
+    try await commitVectors(
+        wax,
+        frameIds: frameIds,
+        vectors: base.vectors,
+        metric: .cosine,
+        dimensions: dimensions
+    )
+    let seed = try AccelerateVectorEngine(metric: .cosine, dimensions: dimensions)
+    try await seed.addBatch(frameIds: frameIds, vectors: base.vectors)
+
+    let engine = try await MetalANNSVectorEngine.load(from: wax, metric: .cosine, dimensions: dimensions)
+    // MetalANNS answers exact searches at this size with a flat scan, so open builds no graph.
+    #expect(!(await engine.isGraphReady))
+
+    let extra = makeDataset(count: 1, dimensions: dimensions, seed: 0x0FE8)
+    try await engine.add(frameId: 5_000_000, vector: extra.vectors[0])
+    try await seed.add(frameId: 5_000_000, vector: extra.vectors[0])
+    for query in [base.vectors[17], base.vectors[count - 1], extra.vectors[0]] {
+        let actual = try await engine.search(vector: query, topK: 10)
+        let expected = try await seed.search(vector: query, topK: 10)
+        #expect(actual.map(\.frameId) == expected.map(\.frameId))
+        for (lhs, rhs) in zip(actual, expected) {
+            #expect(abs(lhs.score - rhs.score) <= 1e-4)
+        }
+        // Searches do not schedule a background build either.
+        await engine.waitForPendingGraphBuild()
+        #expect(!(await engine.isGraphReady))
+    }
+    try await wax.close()
 }
 
 /// Exact-path parity: the store has no current graph, so results must equal Accelerate's.
@@ -648,6 +755,49 @@ private func segmentWithNaNRow() throws -> Data {
     )
 }
 
+/// Commits, as a store's vector index, rows whose second (frameId 2) contains NaN, as stores
+/// written before inserts validated finiteness can hold. Inserts reject NaN, so the rows go
+/// in as a vector import.
+private func commitVectorsWithNaNRow(_ wax: Wax) async throws {
+    try await putFrames(wax, covering: [1, 2, 3])
+    try await wax.stageVectorImportForNextCommit(CommittedVectors(
+        dimension: 2,
+        similarity: .cosine,
+        frameIds: [1, 2, 3],
+        vectors: [1.0, 0.0, .nan, 1.0, 0.0, 1.0]
+    ))
+    try await wax.commit()
+}
+
+/// Expects `wax`'s committed vectors to leave out the NaN row of ``commitVectorsWithNaNRow(_:)``.
+private func expectNaNRowDropped(_ wax: Wax, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    let committed = try #require(try await wax.readCommittedVectors(), sourceLocation: sourceLocation)
+    #expect(committed.droppedNonFiniteRowCount == 1, sourceLocation: sourceLocation)
+    #expect(Set(committed.frameIds) == [1, 3], sourceLocation: sourceLocation)
+    #expect(committed.vectors.allSatisfy { $0.isFinite }, sourceLocation: sourceLocation)
+}
+
+@Test func allFiniteAgreesWithIsFiniteAtEveryPosition() {
+    let edges: [Float] = [
+        .nan, -.nan, .signalingNaN, .infinity, -.infinity,
+        .greatestFiniteMagnitude, -.greatestFiniteMagnitude,
+        .leastNonzeroMagnitude, .leastNormalMagnitude, 0, -0, 1,
+    ]
+    #expect(CommittedVectors.allFinite([]))
+    for count in [1, 15, 16, 17, 100] {
+        for position in Set([0, count / 2, count - 1]) {
+            for edge in edges {
+                var values = [Float](repeating: 0.25, count: count)
+                values[position] = edge
+                #expect(
+                    CommittedVectors.allFinite(values) == edge.isFinite,
+                    "count \(count), position \(position), value \(edge)"
+                )
+            }
+        }
+    }
+}
+
 @Test func vectorSerializerDropsNonFiniteRowsAndReportsCount() throws {
     let decoded = try VectorSerializer.decodeVecSegment(from: try segmentWithNaNRow())
     guard case .metal(let info, let vectors, let frameIds) = decoded else {
@@ -660,19 +810,17 @@ private func segmentWithNaNRow() throws -> Data {
     #expect(vectors == [1.0, 0.0, 0.0, 1.0])
 }
 
-@Test func accelerateEngineLoadsSegmentWithNonFiniteRowAndRewritesIt() async throws {
+@Test func accelerateEngineLoadsCommittedVectorsWithNonFiniteRowAndKeepsItOut() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row.wax"))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try segmentWithNaNRow(),
-        vectorCount: 3,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    let url = tempDir.appendingPathComponent("nan-row.wax")
+    let wax = try await Wax.create(at: url)
+    try await commitVectorsWithNaNRow(wax)
+    try await expectNaNRowDropped(wax)
 
-    #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 2)
+    // The manifest counts the rows as written; the engine loads only the finite ones.
+    #expect(await wax.committedVecIndexManifest()?.vectorCount == 3)
+    #expect(try await LoadedVectorSearchEngine.projectedVectorCount(for: wax, fallbackDimensions: 2) == 3)
     let engine = try await AccelerateVectorEngine.load(from: wax, metric: .cosine, dimensions: 2)
     #expect(await engine.droppedNonFiniteRowCount == 1)
 
@@ -680,17 +828,19 @@ private func segmentWithNaNRow() throws -> Data {
     #expect(hits.map(\.frameId) == [3, 1])
     #expect(hits.allSatisfy { $0.score.isFinite })
 
-    // The dropped row marks the engine dirty, so the next stage writes a clean segment.
+    // Staging and committing again never brings the NaN row back, before or after reopen.
     try await engine.stageForCommit(into: wax)
-    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
-    guard case .metal(let info, _, let frameIds) = try VectorSerializer.decodeVecSegment(from: restaged) else {
-        Issue.record("unexpected payload")
-        return
-    }
-    #expect(info.droppedNonFiniteRowCount == 0)
-    #expect(frameIds == [1, 3])
-
+    try await wax.commit()
+    try await expectNaNRowDropped(wax)
     try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    try await expectNaNRowDropped(reopened)
+    let reloaded = try await AccelerateVectorEngine.load(from: reopened, metric: .cosine, dimensions: 2)
+    let reloadedHits = try await reloaded.search(vector: [0.0, 1.0], topK: 10)
+    #expect(reloadedHits.map(\.frameId) == [3, 1])
+    #expect(reloadedHits.allSatisfy { $0.score.isFinite })
+    try await reopened.close()
 }
 
 #if canImport(Metal) && canImport(MetalANNS)
@@ -701,14 +851,9 @@ private func segmentWithNaNRow() throws -> Data {
 func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let tempDir = try makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: tempDir) }
-    let wax = try await Wax.create(at: tempDir.appendingPathComponent("nan-row-ann.wax"))
-    try await wax.stageVecIndexForNextCommit(
-        bytes: try segmentWithNaNRow(),
-        vectorCount: 3,
-        dimension: 2,
-        similarity: .cosine,
-        coverage: .latestPending
-    )
+    let url = tempDir.appendingPathComponent("nan-row-ann.wax")
+    let wax = try await Wax.create(at: url)
+    try await commitVectorsWithNaNRow(wax)
 
     let engine = try await LoadedVectorSearchEngine.load(
         from: wax,
@@ -724,16 +869,15 @@ func metalANNSEngineLoadsSegmentWithNonFiniteRow() async throws {
     let hits = try await engine.search(vector: [0.0, 1.0], topK: 10)
     #expect(hits.map(\.frameId) == [3, 1])
 
+    // Staging and committing again never brings the NaN row back, before or after reopen.
     try await metalANNS.stageForCommit(into: wax)
-    let restaged = try #require(await wax.readStagedVecIndexBytes()?.bytes)
-    guard case .metal(let info, _, _) = try VectorSerializer.decodeVecSegment(from: restaged) else {
-        Issue.record("unexpected payload")
-        return
-    }
-    #expect(info.droppedNonFiniteRowCount == 0)
-    #expect(info.vectorCount == 2)
-
+    try await wax.commit()
+    try await expectNaNRowDropped(wax)
     try await wax.close()
+
+    let reopened = try await Wax.open(at: url)
+    try await expectNaNRowDropped(reopened)
+    try await reopened.close()
 }
 #endif
 
@@ -780,3 +924,37 @@ func nonFiniteDistanceScoresBelowEveryFiniteScore(metric: VectorMetric) {
         #expect(hits.map(\.score) == expected.map(\.score), "topK \(topK)")
     }
 }
+
+#if canImport(Metal) && canImport(MetalANNS)
+private actor QueueLabelRecorder {
+    private(set) var labels: [String] = []
+    func record(_ label: String) { labels.append(label) }
+}
+
+/// NNDescent's CPU build is one loop that never suspends. On the cooperative pool it held a
+/// thread for seconds, which on a 3-core CI runner starved every other task in the process.
+@Test(
+    "MetalANNS graph builds run on their own dispatch queue, not the cooperative pool",
+    .enabled(if: metalANNSAvailable())
+)
+func metalANNSGraphBuildRunsOffTheCooperativePool() async throws {
+    guard #available(macOS 15.0, iOS 18.0, *) else { return }
+    let dimensions = 16
+    let base = makeDataset(count: 64, dimensions: dimensions, seed: 0x600D)
+    let recorder = QueueLabelRecorder()
+    let metalANNS = try MetalANNSVectorEngine(
+        metric: .cosine,
+        dimensions: dimensions,
+        searchMode: .exact,
+        exactSearchMaxVectorCount: 0,
+        graphBuildHook: {
+            await recorder.record(String(cString: __dispatch_queue_get_label(nil)))
+        }
+    )
+    try await metalANNS.addBatch(frameIds: base.frameIds, vectors: base.vectors)
+    _ = try await metalANNS.search(vector: base.vectors[0], topK: 5)
+    await metalANNS.waitForPendingGraphBuild()
+    let labels = await recorder.labels
+    #expect(labels == [MetalANNSVectorEngine.graphBuildQueueLabel], "\(labels)")
+}
+#endif

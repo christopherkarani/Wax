@@ -54,9 +54,9 @@ func factsQueryWithoutFiltersSucceedsViaCLI() async throws {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
-        process.waitUntilExit()
+        let status = process.waitForExit(timeout: 120) ?? -1
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        return (status, String(data: data, encoding: .utf8) ?? "")
     }
 
     let storePath = store.path

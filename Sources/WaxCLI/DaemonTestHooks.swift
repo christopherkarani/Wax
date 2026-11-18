@@ -7,8 +7,10 @@ import Foundation
 /// `WAX_BROKER_TEST_HOOKS_DIR` turns the hooks on. The daemon writes markers there:
 /// - `listening`: the socket accepts connections (its file appears earlier, at bind)
 /// - `held`: the held command is waiting
+/// - `signalled`: the first shutdown signal was handled
 /// - `draining`: shutdown has started its drain
 /// - `closing`: the drain is over and the store is about to close
+/// - `closed`: the store has closed
 /// - `responded`: the held command's response was written, or its client was gone
 ///
 /// `WAX_BROKER_TEST_HOLD_COMMAND` names a socket command to hold until a
@@ -16,6 +18,9 @@ import Foundation
 /// admitted, before it reaches the service. With
 /// `WAX_BROKER_TEST_HOLD_POINT=service` it is held inside the service, while it
 /// owns the store's locks.
+///
+/// `WAX_BROKER_TEST_READ_DEADLINE_SECS` replaces the 5s request read deadline,
+/// so a test's own scheduling delays cannot run a client out of time.
 struct DaemonTestHooks: Sendable {
     #if DEBUG
     static let current = DaemonTestHooks(environment: ProcessInfo.processInfo.environment)
@@ -26,6 +31,7 @@ struct DaemonTestHooks: Sendable {
     let directory: URL
     let holdCommand: String?
     let holdsInService: Bool
+    let requestReadSeconds: TimeInterval?
 
     init?(environment: [String: String]) {
         guard let path = environment["WAX_BROKER_TEST_HOOKS_DIR"], !path.isEmpty else {
@@ -34,6 +40,9 @@ struct DaemonTestHooks: Sendable {
         directory = URL(fileURLWithPath: path, isDirectory: true)
         holdCommand = environment["WAX_BROKER_TEST_HOLD_COMMAND"].flatMap { $0.isEmpty ? nil : $0 }
         holdsInService = environment["WAX_BROKER_TEST_HOLD_POINT"] == "service"
+        requestReadSeconds = environment["WAX_BROKER_TEST_READ_DEADLINE_SECS"]
+            .flatMap(TimeInterval.init)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
     }
 
     func holdIfMatching(_ command: String) async {
@@ -54,6 +63,10 @@ struct DaemonTestHooks: Sendable {
         mark("listening")
     }
 
+    func markSignalled() {
+        mark("signalled")
+    }
+
     func markDraining() {
         mark("draining")
     }
@@ -62,7 +75,14 @@ struct DaemonTestHooks: Sendable {
         mark("closing")
     }
 
+    func markClosed() {
+        mark("closed")
+    }
+
+    /// Each marker holds the Unix time it was written, so a test can show
+    /// where shutdown spent its time.
     private func mark(_ name: String) {
-        FileManager.default.createFile(atPath: directory.appendingPathComponent(name).path, contents: nil)
+        let time = Data(String(Date().timeIntervalSince1970).utf8)
+        FileManager.default.createFile(atPath: directory.appendingPathComponent(name).path, contents: time)
     }
 }

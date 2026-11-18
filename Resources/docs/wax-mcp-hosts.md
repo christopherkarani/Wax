@@ -22,7 +22,7 @@ All hosts on a machine must share `~/.wax/memory.wax`.
 npx -y waxmcp@latest install
 ```
 
-`waxmcp install` stages the MiniLM runtime, the operator skill, a copy of
+`waxmcp install` stages the embedder runtime (e5 and MiniLM), the operator skill, a copy of
 the Hermes provider, a checksum manifest, and
 `~/.local/share/waxmcp/bin/start-wax-mcp-http.sh`. It does **not** write a
 LaunchAgent. Custom `--store-path` isolates session files next to the store
@@ -65,7 +65,7 @@ npx -y waxmcp@latest doctor
 ```
 
 `vector-health` is green only when both `vectorSearchEnabled` and
-`queryEmbeddingAvailable` are true (MiniLM identified). The check opens a
+`queryEmbeddingAvailable` are true (embedder identified). The check opens a
 temporary MCP session, calls `stats`, and DELETE-closes it. Degraded output
 prints the same install + launcher recovery path. `doctor` smoke-checks
 the daily tool surface (it is host-name agnostic).
@@ -357,7 +357,7 @@ Automatic setup for OpenCode: `wax-cli mcp install --hosts opencode` merges a lo
 
    ```text
    command: /Users/<you>/.local/share/waxmcp/runtime/darwin-arm64/wax-mcp
-   args:    --store-path /Users/<you>/.wax/memory.wax --embedder minilm
+   args:    --store-path /Users/<you>/.wax/memory.wax
    ```
 
 3. Paste the AGENTS.md fence from `Resources/skills/public/wax-mcp/references/project-rules.md` into the project `AGENTS.md` or `CLAUDE.md`. OpenClaw: paste the SOUL.md fence into `SOUL.md` (append if missing; replace an existing `## Memory (Wax)` section). Native Hermes does not use that MCP paste.

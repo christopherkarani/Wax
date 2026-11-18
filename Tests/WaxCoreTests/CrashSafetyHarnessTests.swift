@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 import XCTest
 
 final class CrashSafetyHarnessTests: XCTestCase {
@@ -19,7 +20,7 @@ final class CrashSafetyHarnessTests: XCTestCase {
             throw XCTSkip("Set WAX_RUN_CRASH_HARNESS=1 to run crash-safety harness scenarios.")
         }
 
-        for scenario in ["toc", "footer", "header"] {
+        for scenario in ["segment", "toc", "footer", "header", "import-toc", "import-footer"] {
             let result = try runHarnessScenario(scenario)
             XCTAssertEqual(
                 result.status,
@@ -41,11 +42,12 @@ final class CrashSafetyHarnessTests: XCTestCase {
         process.standardError = stderrPipe
 
         try process.run()
-        process.waitUntilExit()
+        // Killed past the bound, so a hung harness fails the test instead of hanging it.
+        let status = process.waitForExit(timeout: 300) ?? -1
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (status: process.terminationStatus, stdout: stdout, stderr: stderr)
+        return (status: status, stdout: stdout, stderr: stderr)
     }
 
     private func harnessBinaryURL() throws -> URL {

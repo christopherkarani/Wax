@@ -73,8 +73,10 @@ struct IntentSignalTests {
 
     @Test
     func locationQueryDoesNotTreatCalendarMoveAsRelocation() {
-        let calendar = result(1, 0.60, "Avery's weekly sync moved to Friday.")
-        let relocation = result(2, 0.50, "Avery moved to Seattle last spring.")
+        // Fused scores of adjacent ranks (RRF, k = 10): intent signals break near-ties, so
+        // the calendar note ranks first unless the relocation statement is recognised.
+        let calendar = result(1, 1.0 / 11, "Avery's weekly sync moved to Friday.")
+        let relocation = result(2, 1.0 / 12, "Avery moved to Seattle last spring.")
         let ranked = UnifiedRanking.intentAwareRerank(
             results: [calendar, relocation],
             query: "Where does Avery live now that Avery moved?",

@@ -522,6 +522,12 @@ struct WaxCLIMemoryTests {
         #expect(!AgentDaemonPolicy.shouldUseDaemonForRemember(store: textStore))
     }
 
+    @Test func vectorStoreOptionsDefaultToTheAutomaticEmbedder() throws {
+        // `auto` lets the broker give new stores e5 unless a store it serves is bound to MiniLM.
+        #expect(try VectorStoreOptions.parse([]).embedder == .auto)
+        #expect(try VectorStoreOptions.parse(["--embedder", "minilm"]).embedder == .minilm)
+    }
+
     @Test func agentDaemonConfigurationUsesStableSocketPaths() throws {
         let daemonRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("wxdc-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -722,6 +728,54 @@ struct WaxCLIMemoryTests {
             .appendingPathComponent("wxds-\(UUID().uuidString.prefix(8))", isDirectory: true)
         let storeURL = tempRoot.appendingPathComponent("daemon.wax")
         let socketURL = tempRoot.appendingPathComponent("daemon.sock")
+        let hooksURL = tempRoot.appendingPathComponent("hooks", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: hooksURL, withIntermediateDirectories: true)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = [
+            "daemon",
+            "--store-path", storeURL.path,
+            "--no-embedder",
+            "--socket-path", socketURL.path,
+            "--idle-timeout-secs", "10",
+        ]
+        process.environment = testEnvironment(["WAX_BROKER_TEST_HOOKS_DIR": hooksURL.path])
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitForExit(timeout: 10)
+            }
+        }
+
+        try await waitForListening(hooksDirectory: hooksURL, daemon: process, timeout: 5)
+
+        let stalledClient = try connectUnixSocket(path: socketURL.path)
+        defer { close(stalledClient) }
+        _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
+
+        let responseLine = try await sendBrokerSocketRequest(
+            AgentBrokerRequest(command: "stats"),
+            socketPath: socketURL.path,
+            timeoutSeconds: 3
+        )
+        let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
+        #expect(response.ok)
+    }
+
+    /// The idle timeout counts from when the last client left. A connection held
+    /// longer than the timeout must not make the daemon exit the moment it closes.
+    @Test func daemonIdleTimeoutCountsFromLastClientLeaving() async throws {
+        let tempRoot = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("wxdi-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("daemon.wax")
+        let socketURL = tempRoot.appendingPathComponent("daemon.sock")
         defer { try? FileManager.default.removeItem(at: tempRoot) }
 
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
@@ -734,31 +788,69 @@ struct WaxCLIMemoryTests {
             "--store-path", storeURL.path,
             "--no-embedder",
             "--socket-path", socketURL.path,
-            "--idle-timeout-secs", "10",
+            "--idle-timeout-secs", "5",
         ]
+        // A long request-read deadline keeps the stalled client connected well
+        // past the idle timeout, so the margins below stay wide on a loaded host.
+        let hooksDir = tempRoot.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: hooksDir, withIntermediateDirectories: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["WAX_BROKER_TEST_HOOKS_DIR"] = hooksDir.path
+        environment["WAX_BROKER_TEST_READ_DEADLINE_SECS"] = "8"
+        process.environment = environment
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         try process.run()
         defer {
             if process.isRunning {
                 process.terminate()
-                process.waitUntilExit()
+                process.waitForExit(timeout: 10)
             }
         }
 
-        try await waitForSocket(atPath: socketURL.path, timeout: 5)
+        try await waitForListening(hooksDirectory: hooksDir, daemon: process, timeout: 5)
 
+        // A stalled client stays connected until the daemon's 8s request-read
+        // deadline drops it, which is longer than the 5s idle timeout.
         let stalledClient = try connectUnixSocket(path: socketURL.path)
         defer { close(stalledClient) }
         _ = "{".withCString { pointer in write(stalledClient, pointer, 1) }
+        try await waitForPeerClose(fd: stalledClient, timeoutSeconds: 30)
 
-        let responseLine = try sendBrokerSocketRequest(
+        // Well inside the idle timeout measured from that close; the old
+        // last-accept baseline exited within one 200ms poll slice.
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(process.isRunning, "daemon exited as soon as its long-lived client left")
+
+        let responseLine = try await sendBrokerSocketRequest(
             AgentBrokerRequest(command: "stats"),
             socketPath: socketURL.path,
             timeoutSeconds: 3
         )
         let response = try JSONDecoder().decode(AgentBrokerResponse.self, from: Data(responseLine.utf8))
         #expect(response.ok)
+    }
+
+    /// Reads and discards until the peer closes `fd`. The bound only catches a hang. The wait
+    /// runs on a GCD thread: it outlasts the daemon's read deadline, and on the cooperative
+    /// pool it held one of a CI runner's three threads that long.
+    private func waitForPeerClose(fd: Int32, timeoutSeconds: Int32) async throws {
+        try await BlockingWork.run { try waitForPeerCloseBlocking(fd: fd, timeoutSeconds: timeoutSeconds) }
+    }
+
+    private func waitForPeerCloseBlocking(fd: Int32, timeoutSeconds: Int32) throws {
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, timeoutSeconds * 1000)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0 else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "daemon never closed the stalled client"])
+            }
+            let count = read(fd, &chunk, chunk.count)
+            if count < 0, errno == EINTR { continue }
+            if count <= 0 { return }
+        }
     }
 
     @Test func mcpInstallStagesBundledRuntimeIntoStableDirectory() async throws {
@@ -1709,6 +1801,133 @@ struct WaxCLIMemoryTests {
         expectHostAgnosticDoctorOutput(output.stdout)
     }
 
+    @Test func mcpDoctorExitGraceIsNeverBelowTheSmokeTimeout() {
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 1) == 5)
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 5) == 5)
+        #expect(ProcessRunner.mcpSmokeCheckExitGraceSeconds(timeoutSeconds: 120) == 120)
+    }
+
+    /// A server that takes longer than the 5s floor to exit after stdin closes,
+    /// but less than the smoke timeout, passes instead of being killed and
+    /// reported as "exit code 9".
+    @Test func mcpDoctorWaitsUpToTheSmokeTimeoutForTheServerToExit() async throws {
+        let output = try await runDoctorAgainstServer(
+            exitingAfterStdinClosesIn: 7,
+            smokeTimeoutSeconds: 15
+        )
+        #expect(output.stdout.contains("Doctor passed."), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("exit code") == false)
+    }
+
+    /// A server that never exits after stdin closes is killed, and reported as
+    /// such, without a made-up exit code.
+    @Test func mcpDoctorReportsAServerThatDoesNotExitAfterStdinCloses() async throws {
+        let output = try await runDoctorAgainstServer(
+            exitingAfterStdinClosesIn: 3600,
+            smokeTimeoutSeconds: 10
+        )
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("did not exit after stdin closed"), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("exit code") == false)
+        #expect(output.stdout.contains("Doctor passed.") == false)
+    }
+
+    /// When doctor cannot tell whether the store is held, it must not smoke-check
+    /// it as though it were free: it reports why and skips the check.
+    @Test func mcpDoctorSkipsTheSmokeCheckWhenTheStoreLockCannotBeProbed() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-probe-\(UUID().uuidString)", isDirectory: true)
+        // A directory where the store should be: the probe cannot open it.
+        let storeURL = tempRoot.appendingPathComponent("store.wax", isDirectory: true)
+        let fakeServer = tempRoot.appendingPathComponent("fake-mcp")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: storeURL, withIntermediateDirectories: true)
+        try makeExecutableStub(at: fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        let output = try await runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", fakeServer.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: doctorEnvironment,
+            timeout: hangTimeoutSeconds
+        )
+
+        #expect(output.status != EXIT_SUCCESS)
+        #expect(output.stdout.contains("Could not check whether the store"), "doctor output: \(output.stdout)")
+        #expect(output.stdout.contains("server smoke check skipped"))
+        #expect(output.stdout.contains("Smoke check") == false, "doctor ran the smoke check: \(output.stdout)")
+    }
+
+    /// Runs `mcp doctor` against a stub server that answers the smoke check
+    /// with the full daily tool surface, then lingers for `exitDelay` seconds
+    /// after its stdin reaches EOF.
+    private func runDoctorAgainstServer(
+        exitingAfterStdinClosesIn exitDelay: Int,
+        smokeTimeoutSeconds: Int
+    ) async throws -> ProcessOutput {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        try #require(FileManager.default.isExecutableFile(atPath: python.path))
+
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-cli-doctor-exit-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = tempRoot.appendingPathComponent("doctor.wax")
+        let fakeServer = tempRoot.appendingPathComponent("fake-mcp")
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let tools = MCPDoctorSurface.dailyToolNames.map { #"{"name": "\#($0)"}"# }.joined(separator: ", ")
+        try #"""
+        #!/usr/bin/python3
+        import json
+        import sys
+        import time
+
+        tools = [\#(tools)]
+        for raw in sys.stdin:
+            line = raw.strip()
+            if not line:
+                continue
+            message = json.loads(line)
+            method = message.get("method")
+            request_id = message.get("id")
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "fake-mcp", "version": "0"},
+                }
+            elif method == "tools/list":
+                result = {"tools": tools}
+            else:
+                continue
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}) + "\n")
+            sys.stdout.flush()
+        time.sleep(\#(exitDelay))
+        """#.write(to: fakeServer, atomically: true, encoding: .utf8)
+        try setExecutable(fakeServer)
+
+        let cli = try builtProductPath(named: "wax-cli")
+        return try await runProcess(
+            executableURL: URL(fileURLWithPath: cli),
+            arguments: [
+                "mcp", "doctor",
+                "--server-path", fakeServer.path,
+                "--store-path", storeURL.path,
+                "--no-embedder",
+            ],
+            environment: [
+                "PATH": "/usr/bin:/bin",
+                ProcessRunner.mcpSmokeCheckTimeoutEnvKey: String(smokeTimeoutSeconds),
+            ],
+            timeout: hangTimeoutSeconds
+        )
+    }
+
     @Test(.disabled(if: !mcpServerTraitEnabled,
                     "Build with --traits default,MCPServer to run wax-mcp smoke tests"))
     func pathLaunchedWaxMCPResolvesSiblingWaxCLIFromPath() async throws {
@@ -1889,26 +2108,34 @@ struct WaxCLIMemoryTests {
 
         if terminated.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             throw CLIError("Process timed out: \(executableURL.path) \(arguments.joined(separator: " "))")
         }
-
-        process.waitUntilExit()
+        process.waitForExit(timeout: 10)
 
         let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return ProcessOutput(status: process.terminationStatus, stdout: stdout, stderr: stderr)
     }
 
-    private func waitForSocket(atPath path: String, timeout: TimeInterval) async throws {
+    /// The socket file appears at `bind`, before `listen`, so a connect that only waits for the
+    /// file can be refused. The daemon's `listening` test marker is written once it accepts.
+    private func waitForListening(
+        hooksDirectory: URL,
+        daemon: Process,
+        timeout: TimeInterval
+    ) async throws {
+        let marker = hooksDirectory.appendingPathComponent("listening").path
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if FileManager.default.fileExists(atPath: path) {
-                return
+        while !FileManager.default.fileExists(atPath: marker) {
+            guard daemon.isRunning else {
+                throw CLIError("daemon exited (\(daemon.terminationStatus)) before listening")
             }
-            try await Task.sleep(for: .milliseconds(50))
+            guard Date() < deadline else {
+                throw CLIError("Timed out waiting for the daemon to listen")
+            }
+            try await Task.sleep(for: .milliseconds(20))
         }
-        throw CLIError("Timed out waiting for socket at \(path)")
     }
 
     private func connectUnixSocket(path: String) throws -> Int32 {
@@ -1953,7 +2180,19 @@ struct WaxCLIMemoryTests {
         return fd
     }
 
+    /// The round trip polls for the reply for up to `timeoutSeconds`, so it runs on a GCD
+    /// thread rather than holding a cooperative one.
     private func sendBrokerSocketRequest(
+        _ request: AgentBrokerRequest,
+        socketPath: String,
+        timeoutSeconds: Double
+    ) async throws -> String {
+        try await BlockingWork.run {
+            try sendBrokerSocketRequestBlocking(request, socketPath: socketPath, timeoutSeconds: timeoutSeconds)
+        }
+    }
+
+    private func sendBrokerSocketRequestBlocking(
         _ request: AgentBrokerRequest,
         socketPath: String,
         timeoutSeconds: Double
@@ -2137,7 +2376,7 @@ struct WaxCLIMemoryTests {
 
         if state.semaphore.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit(timeout: 10)
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw CLIError("Timed out waiting for MCP tools/list response")
@@ -2146,7 +2385,9 @@ struct WaxCLIMemoryTests {
         try? stdinPipe.fileHandleForWriting.close()
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        process.waitUntilExit()
+        guard process.waitForExit(timeout: 60) != nil else {
+            throw CLIError("wax-mcp did not exit after its stdin closed")
+        }
 
         if let data = try? stdoutPipe.fileHandleForReading.readToEnd() {
             state.appendStdout(data, expectedToolName: expectedToolName)

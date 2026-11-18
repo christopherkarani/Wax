@@ -28,7 +28,7 @@ extension AgentBrokerService {
             inferredScope: inferredScope
         )
         if let conversationID = BrokerCommand.normalizedOrNil(command.conversationID) {
-            try virtualSessions.updateLive(result.state.id) { state in
+            try await virtualSessions.updateLive(result.state.id) { state in
                 state.manifest.conversationID = conversationID
             }
         }
@@ -501,7 +501,7 @@ extension AgentBrokerService {
             await hook(sessionID)
         }
         if rememberDrained {
-            persistHarvestUnlessRebound(sessionID: sessionID, report: report)
+            await persistHarvestUnlessRebound(sessionID: sessionID, report: report)
         } else {
             // Lock order commandMutex -> rememberMutex, the same as `.rememberDrain`.
             await rememberMutex.withLock { [self] in
@@ -515,10 +515,10 @@ extension AgentBrokerService {
     /// (rememberMutex only) can rebind an expired-lease session while the harvest
     /// awaits; that session is back in use, so its manifest is left alone and its
     /// own end will harvest it. Run with rememberMutex held so no rebind is in flight.
-    private func persistHarvestUnlessRebound(sessionID: UUID, report: SessionHarvest.Report) {
+    private func persistHarvestUnlessRebound(sessionID: UUID, report: SessionHarvest.Report) async {
         guard activeSessions[sessionID] == nil else { return }
         do {
-            _ = try virtualSessions.persistHarvestToDisk(
+            _ = try await virtualSessions.persistHarvestToDisk(
                 sessionID: sessionID,
                 report: report,
                 markEnded: true

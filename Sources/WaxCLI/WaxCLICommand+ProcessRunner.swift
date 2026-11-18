@@ -39,7 +39,9 @@ enum ProcessRunner {
         }
 
         try process.run()
-        process.waitUntilExit()
+        // An interactive command or a build runs as long as it needs. No
+        // deadline, but no run loop either: see `Process.waitForExit(timeout:)`.
+        process.waitForExit(timeout: .infinity)
 
         let status = process.terminationStatus
         if !allowNonZeroExit, status != EXIT_SUCCESS {
@@ -104,7 +106,7 @@ enum ProcessRunner {
             let remaining = max(0, deadline.timeIntervalSinceNow) + pipeDrainGraceSeconds
             captured = drain.wait(until: .now() + remaining)
         } else {
-            process.waitUntilExit()
+            process.waitForExit(timeout: .infinity)
             captured = drain.wait()
         }
 
@@ -119,17 +121,10 @@ enum ProcessRunner {
     private static let pipeDrainGraceSeconds: TimeInterval = 1
 
     /// SIGTERM, a grace period, then SIGKILL, so a child that ignores
-    /// SIGTERM cannot outlive the timeout. Reaps the child before returning.
+    /// SIGTERM cannot outlive the timeout. Waits a bounded time for the reap.
     private static func stop(_ process: Process) {
         process.terminate()
-        let grace = Date().addingTimeInterval(terminateGraceSeconds)
-        while process.isRunning, Date() < grace {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-        process.waitUntilExit()
+        process.waitForExit(timeout: terminateGraceSeconds)
     }
 
     private static func decodeCaptured(_ data: Data, truncated: Bool) -> String {

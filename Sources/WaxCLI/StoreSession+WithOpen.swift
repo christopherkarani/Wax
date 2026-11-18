@@ -16,7 +16,7 @@ extension StoreSession {
         at url: URL,
         noEmbedder: Bool = false,
         skipPrewarm: Bool = false,
-        embedderChoice: EmbedderChoice = .minilm,
+        embedderChoice: EmbedderChoice = .auto,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         requireVector: Bool = false,
         body: (MemoryOrchestrator) async throws -> T

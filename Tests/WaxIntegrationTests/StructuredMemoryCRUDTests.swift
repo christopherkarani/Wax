@@ -5,6 +5,36 @@ import WaxCore
 import WaxTextSearch
 import WaxVectorSearch
 
+@Test func hasEntityAliasesSeesAnAliasWrittenAfterAnEmptyCheck() async throws {
+    let engine = try FTS5SearchEngine.inMemory()
+    let before: Bool = try await engine.hasEntityAliases()
+    #expect(before == false)
+
+    _ = try await engine.upsertEntity(
+        key: EntityKey("person:alice"),
+        kind: "person",
+        aliases: ["Alice"],
+        nowMs: 1
+    )
+
+    let after: Bool = try await engine.hasEntityAliases()
+    #expect(after)
+}
+
+@Test func hasEntityAliasesIsTrueForADeserializedEngineWithAliases() async throws {
+    let source = try FTS5SearchEngine.inMemory()
+    _ = try await source.upsertEntity(
+        key: EntityKey("person:alice"),
+        kind: "person",
+        aliases: ["Alice"],
+        nowMs: 1
+    )
+    let engine = try FTS5SearchEngine.deserialize(from: try await source.serialize())
+
+    let hasAliases: Bool = try await engine.hasEntityAliases()
+    #expect(hasAliases)
+}
+
 @Test func upsertEntityNormalizesAliasesAndResolves() async throws {
     let engine = try FTS5SearchEngine.inMemory()
 

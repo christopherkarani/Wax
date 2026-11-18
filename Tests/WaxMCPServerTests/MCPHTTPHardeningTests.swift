@@ -222,6 +222,25 @@ private final class TeardownProbe: @unchecked Sendable {
     }
 }
 
+/// Holds every caller until `release()`. Cancellation does not end the hold.
+private actor TeardownWedge {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func hold() async {
+        if released { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        for waiter in waiters {
+            waiter.resume()
+        }
+        waiters.removeAll()
+    }
+}
+
 @Test
 func httpSessionCapEvictsLeastRecentlyUsedSession() async throws {
     let probe = TeardownProbe()
@@ -317,17 +336,21 @@ func httpShutdownClosesSessionsConcurrently() async throws {
     #expect(snapshot.maxInFlight > 1)
 }
 
-@Test
+// The wedged teardown holds until the test releases it, after stop() returns, so the
+// test needs no wall clock. A stop() that waited for it runs into the time limit,
+// whose cancellation releases the wedge so the test fails instead of hanging. (A 3 s
+// wedge raced the deadline, whose timer task can start seconds late in the parallel
+// suite's opening burst.)
+@Test(.timeLimit(.minutes(5)))
 func httpShutdownStopsWaitingAtDeadline() async throws {
     let probe = TeardownProbe()
+    let wedge = TeardownWedge()
     let app = MCPHTTPApplication(
         configuration: .init(shutdownDeadline: .milliseconds(100)),
         onTransportTeardown: { key, reason in
             probe.begin(key, reason)
             // A wedged teardown that ignores cancellation.
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().asyncAfter(deadline: .now() + 3) { continuation.resume() }
-            }
+            await wedge.hold()
             probe.end()
             return .skipped("test")
         },
@@ -336,11 +359,16 @@ func httpShutdownStopsWaitingAtDeadline() async throws {
     let response = await app.handleHTTPRequest(try initializeRequest())
     #expect(response.statusCode == 200)
 
-    await app.stop()
+    await withTaskCancellationHandler {
+        await app.stop()
+    } onCancel: {
+        Task { await wedge.release() }
+    }
 
     let snapshot = probe.snapshot()
     #expect(snapshot.reasons.count == 1)
     #expect(snapshot.finished == 0)
+    await wedge.release()
 }
 
 @Test

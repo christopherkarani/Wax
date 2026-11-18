@@ -6,6 +6,27 @@ package enum VectorMetric: Sendable, Equatable {
     case dot
     case l2
 
+    package init(_ similarity: VectorSimilarity) {
+        switch similarity {
+        case .cosine:
+            self = .cosine
+        case .dotProduct:
+            self = .dot
+        }
+    }
+
+    /// The public ``VectorSimilarity`` spelling (`l2` has none), for error messages.
+    package var similarityName: String {
+        switch self {
+        case .cosine:
+            return VectorSimilarity.cosine.rawValue
+        case .dot:
+            return VectorSimilarity.dotProduct.rawValue
+        case .l2:
+            return "l2"
+        }
+    }
+
     package init?(vecSimilarity: VecSimilarity) {
         switch vecSimilarity {
         case .cosine:

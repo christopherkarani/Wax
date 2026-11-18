@@ -22,6 +22,11 @@ package enum AsyncTimeout {
 
     /// Execute `operation` and throw `TimeoutError` if it does not finish within `timeout`.
     ///
+    /// The timeout counts from when `operation` starts running. Time its task spends
+    /// waiting for a thread in a busy process is not the operation's: the caller could
+    /// not resume any sooner, and a deadline armed at the call fails an instant
+    /// operation that merely queued behind other work.
+    ///
     /// Cancelling the calling task cancels `operation` and throws `CancellationError`
     /// right away, without waiting for `operation` to observe the cancellation.
     ///
@@ -34,35 +39,57 @@ package enum AsyncTimeout {
         operation name: StaticString,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
+        try await run(timeout: timeout, operation: name, startingWith: { body in Task { await body() } }, operation)
+    }
+
+    /// `launch` starts the operation's task around `body`. Tests pass one that delays the
+    /// start, standing in for that task waiting for a thread; product code always uses
+    /// a plain `Task`.
+    static func run<T: Sendable>(
+        timeout: Duration,
+        operation name: StaticString,
+        startingWith launch: (@escaping @Sendable () async -> Void) -> Task<Void, Never>,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
         let once = OnceThrowingContinuation<T>()
-        let cancels = CancelBox()
+        let operationTask = CancelBox()
         let deadline = DeadlineBox()
-        let operationTask = Task { try await operation() }
         // Resume BEFORE cancelling: cancelling first lets a cooperatively cancellable
-        // operation complete with CancellationError, and the watcher task (running on
-        // another executor thread) can then win the once-only resume race —
+        // operation complete with CancellationError and win the once-only resume race,
         // misclassifying a timeout as a cancellation.
         let finish: @Sendable (Result<T, any Error>) -> Void = { result in
             guard once.resume(with: result) else { return }
             operationTask.cancel()
-            cancels.cancelWatcher()
             deadline.cancel()
         }
+
+        operationTask.set(launch {
+            // Armed first, before any await or actor hop: an operation that starts and
+            // then waits on a busy actor or a lost continuation is still bounded.
+            // A serial queue of its own, not a global one: GCD always gives a serial
+            // queue a thread, while it caps a global queue's threads by the core count,
+            // and on a busy host a blocked operation could finish before its timeout fired.
+            let timer = DispatchSource.makeTimerSource(
+                queue: DispatchQueue(label: "com.wax.async-timeout", qos: .userInitiated)
+            )
+            timer.schedule(deadline: dispatchDeadline(after: timeout))
+            timer.setEventHandler {
+                finish(.failure(TimeoutError(operation: String(describing: name), timeout: timeout)))
+            }
+            deadline.install(timer)
+            timer.resume()
+            // The result is delivered from this task: a separate watcher task would wait
+            // for a thread of its own before the caller could resume.
+            do {
+                finish(.success(try await operation()))
+            } catch {
+                finish(.failure(error))
+            }
+        })
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 once.install(continuation)
-                let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
-                timer.schedule(deadline: dispatchDeadline(after: timeout))
-                timer.setEventHandler {
-                    finish(.failure(TimeoutError(operation: String(describing: name), timeout: timeout)))
-                }
-                deadline.install(timer)
-                timer.resume()
-
-                cancels.setWatcher(Task {
-                    finish(await operationTask.result)
-                })
             }
         } onCancel: {
             finish(.failure(CancellationError()))
@@ -71,7 +98,7 @@ package enum AsyncTimeout {
 
     /// Converts `duration` to a dispatch deadline without overflowing: negative durations
     /// fire immediately and durations past `Int64` nanoseconds never fire.
-    static func dispatchDeadline(after duration: Duration) -> DispatchTime {
+    package static func dispatchDeadline(after duration: Duration) -> DispatchTime {
         let components = duration.components
         guard components.seconds >= 0 else { return .now() }
         let scaled = components.seconds.multipliedReportingOverflow(by: 1_000_000_000)
@@ -89,43 +116,54 @@ private final class DeadlineBox: @unchecked Sendable {
 
     /// Holds `source` for a later `cancel()`; cancels it at once if that already ran.
     func install(_ source: DispatchSourceTimer) {
-        lock.lock()
-        guard !isCancelled else {
-            lock.unlock()
-            source.cancel()
-            return
+        let alreadyCancelled = lock.withLock {
+            if isCancelled { return true }
+            timer = source
+            return false
         }
-        timer = source
-        lock.unlock()
+        if alreadyCancelled {
+            source.cancel()
+        }
     }
 
     func cancel() {
-        lock.lock()
-        isCancelled = true
-        let source = timer
-        timer = nil
-        lock.unlock()
+        let source: DispatchSourceTimer? = lock.withLock {
+            isCancelled = true
+            let installed = timer
+            timer = nil
+            return installed
+        }
         source?.cancel()
     }
 }
 
 // MARK: - OnceThrowingContinuation
 
+/// Holds the operation's task for a later `cancel()`; cancels it at once if that already ran.
 private final class CancelBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var watcher: Task<Void, Never>?
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
 
-    func setWatcher(_ task: Task<Void, Never>) {
-        lock.lock()
-        defer { lock.unlock() }
-        watcher = task
+    func set(_ newTask: Task<Void, Never>) {
+        let alreadyCancelled = lock.withLock {
+            if isCancelled { return true }
+            task = newTask
+            return false
+        }
+        if alreadyCancelled {
+            newTask.cancel()
+        }
     }
 
-    func cancelWatcher() {
-        lock.lock()
-        let task = watcher
-        lock.unlock()
-        task?.cancel()
+    func cancel() {
+        let installed: Task<Void, Never>? = lock.withLock {
+            isCancelled = true
+            let installed = task
+            task = nil
+            return installed
+        }
+        installed?.cancel()
     }
 }
 
@@ -138,35 +176,47 @@ private final class OnceThrowingContinuation<T: Sendable>: @unchecked Sendable {
     private var pendingResult: Result<T, any Error>?
     private var isResolved = false
 
+    private enum ResumeAction {
+        case alreadyResolved
+        case held
+        case resume(CheckedContinuation<T, Error>)
+    }
+
     func install(_ continuation: CheckedContinuation<T, Error>) {
-        lock.lock()
-        if let pendingResult {
-            self.pendingResult = nil
-            lock.unlock()
-            continuation.resume(with: pendingResult)
-            return
+        let pending: Result<T, any Error>? = lock.withLock {
+            if let pendingResult {
+                self.pendingResult = nil
+                return pendingResult
+            }
+            self.continuation = continuation
+            return nil
         }
-        self.continuation = continuation
-        lock.unlock()
+        if let pending {
+            continuation.resume(with: pending)
+        }
     }
 
     /// Returns `false` when a result was already delivered.
     @discardableResult
     func resume(with result: Result<T, any Error>) -> Bool {
-        lock.lock()
-        guard !isResolved else {
-            lock.unlock()
-            return false
+        let action: ResumeAction = lock.withLock {
+            guard !isResolved else { return .alreadyResolved }
+            isResolved = true
+            guard let continuation else {
+                pendingResult = result
+                return .held
+            }
+            self.continuation = nil
+            return .resume(continuation)
         }
-        isResolved = true
-        guard let continuation else {
-            pendingResult = result
-            lock.unlock()
+        switch action {
+        case .alreadyResolved:
+            return false
+        case .held:
+            return true
+        case .resume(let continuation):
+            continuation.resume(with: result)
             return true
         }
-        self.continuation = nil
-        lock.unlock()
-        continuation.resume(with: result)
-        return true
     }
 }

@@ -9,6 +9,8 @@ package struct OrchestratorConfig: Sendable {
     package var enableAsyncEnrichment: Bool = false
 
     package var rag: FastRAGConfig = .init()
+    /// Reorders recall candidates before context assembly. `nil` (the default) keeps retrieval order.
+    package var reranking: RerankStage? = nil
     package static let defaultChunking = ChunkingStrategy.tokenCount(targetTokens: 400, overlapTokens: 40)
     package var chunking: ChunkingStrategy = defaultChunking
     /// Re-split chunks that overflow the MiniLM input window. Set by ``sizingChunks(forEmbedderModel:)``.

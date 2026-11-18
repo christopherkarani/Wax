@@ -25,9 +25,10 @@ struct UnifiedSearchEngineCacheDifferentialTests {
     /// when the store has nothing to search.
     private static func cachedAndFreshScores(
         _ wax: Wax,
-        query: [Float]
+        query: [Float],
+        cache: UnifiedSearchEngineCache = .shared
     ) async throws -> (cached: [UInt64: Float], fresh: [UInt64: Float])? {
-        guard let cached = try await UnifiedSearchEngineCache.shared.vectorEngine(
+        guard let cached = try await cache.vectorEngine(
             for: wax, queryEmbeddingDimensions: dims, preference: .cpuOnly
         ) else { return nil }
         let fresh = try await LoadedVectorSearchEngine.load(
@@ -180,6 +181,100 @@ struct UnifiedSearchEngineCacheDifferentialTests {
             )
             #expect(Self.sameScores(scores.cached, scores.fresh))
             #expect(scores.cached.count == 201)
+            try await session.stageForCommit()
+            try await wax.commit()
+            try await wax.close()
+        }
+    }
+
+    @TaskLocal private static var refreshLabel = ""
+
+    /// Records which labelled task reached which refresh event, and parks chosen
+    /// tasks at an event until the test releases them.
+    private actor RefreshScript {
+        enum Mark: Hashable, Sendable {
+            case event(UnifiedSearchEngineCache.VectorRefreshEvent)
+            case returned
+        }
+
+        private var parkRules: [String: UnifiedSearchEngineCache.VectorRefreshEvent]
+        private var reached: [String: [Mark]] = [:]
+        private var parked: [String: CheckedContinuation<Void, Never>] = [:]
+        private var released: Set<String> = []
+        private var observers: [(label: String, marks: Set<Mark>, continuation: CheckedContinuation<Void, Never>)] = []
+
+        init(parkRules: [String: UnifiedSearchEngineCache.VectorRefreshEvent]) {
+            self.parkRules = parkRules
+        }
+
+        func reach(_ mark: Mark, label: String) async {
+            reached[label, default: []].append(mark)
+            let satisfied = observers.filter { $0.label == label && $0.marks.contains(mark) }
+            observers.removeAll { $0.label == label && $0.marks.contains(mark) }
+            for observer in satisfied { observer.continuation.resume() }
+            guard case .event(let event) = mark, parkRules[label] == event else { return }
+            parkRules[label] = nil
+            if released.contains(label) { return }
+            await withCheckedContinuation { parked[label] = $0 }
+        }
+
+        /// Returns once `label` has reached any of `marks`.
+        func waitFor(_ label: String, anyOf marks: Set<Mark>) async {
+            if reached[label, default: []].contains(where: marks.contains) { return }
+            await withCheckedContinuation { observers.append((label, marks, $0)) }
+        }
+
+        /// Resumes `label` if it is parked, or lets it pass its park point later.
+        func release(_ label: String) {
+            released.insert(label)
+            parked.removeValue(forKey: label)?.resume()
+        }
+    }
+
+    /// A reload that finishes after another search already advanced the cache must
+    /// not inherit that search's watermark: the reloaded engine never saw those writes.
+    /// A reloads and pauses before caching; B caches a newer engine; C applies a
+    /// newer write to B's engine and pauses before recording it; then A, then C finish.
+    @Test func overlappingRefreshesDoNotMarkUnappliedWritesAsSynced() async throws {
+        try await TempFiles.withTempFile { url in
+            let wax = try await Wax.create(at: url)
+            let session = try await wax.enableVectorSearch(dimensions: Self.dims, preference: .cpuOnly)
+            _ = try await session.putWithEmbedding(Data("seed".utf8), embedding: VectorMath.normalizeL2([1, 0, 0, 0]))
+            try await session.stageForCommit()
+            try await wax.commit()
+            _ = try await session.putWithEmbedding(Data("p1".utf8), embedding: VectorMath.normalizeL2([0, 1, 0, 0]))
+
+            let script = RefreshScript(parkRules: ["A": .loaded, "C": .synced])
+            let cache = UnifiedSearchEngineCache { event in
+                await script.reach(.event(event), label: Self.refreshLabel)
+            }
+            @Sendable func refresh(_ label: String) async throws {
+                try await Self.$refreshLabel.withValue(label) {
+                    _ = try await cache.vectorEngine(for: wax, queryEmbeddingDimensions: Self.dims, preference: .cpuOnly)
+                    await script.reach(.returned, label: label)
+                }
+            }
+
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await refresh("A") }
+                await script.waitFor("A", anyOf: [.event(.loaded)])
+                _ = try await session.putWithEmbedding(Data("p2".utf8), embedding: VectorMath.normalizeL2([0, 0, 1, 0]))
+                group.addTask { try await refresh("B") }
+                await script.waitFor("B", anyOf: [.returned, .event(.waitingForRefresh)])
+                _ = try await session.putWithEmbedding(Data("p3".utf8), embedding: VectorMath.normalizeL2([0, 0, 0, 1]))
+                group.addTask { try await refresh("C") }
+                await script.waitFor("C", anyOf: [.event(.synced), .event(.waitingForRefresh)])
+                await script.release("A")
+                await script.waitFor("A", anyOf: [.returned])
+                await script.release("C")
+                try await group.waitForAll()
+            }
+
+            let scores = try #require(
+                try await Self.cachedAndFreshScores(wax, query: VectorMath.normalizeL2([0.3, 0.2, -0.1, 0.5]), cache: cache)
+            )
+            #expect(Self.sameScores(scores.cached, scores.fresh), "cached \(scores.cached.keys.sorted()) fresh \(scores.fresh.keys.sorted())")
+            #expect(scores.cached.count == 4)
             try await session.stageForCommit()
             try await wax.commit()
             try await wax.close()

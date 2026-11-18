@@ -35,16 +35,21 @@ extension LayeredRecall {
     }
 
     /// Git ancestry for the hits about to be merged. Call once per recall, before `mergeHits`.
+    /// Each unequal SHA can run `git merge-base` and wait up to 200 ms for it, so the
+    /// lookups run on a private queue rather than holding a cooperative thread.
     private static func resolvedCheckoutRelations(
         for hits: [Hit],
         live: GitCheckoutSnapshot,
         repoRootPath: String?
-    ) -> [String: OnThisTree] {
-        MemorySemantics.checkoutRelations(
-            storedSHAs: distinctStoredGitSHAs(in: hits),
-            live: live,
-            repoRootPath: repoRootPath
-        )
+    ) async -> [String: OnThisTree] {
+        let storedSHAs = distinctStoredGitSHAs(in: hits)
+        return await BlockingWork.run {
+            MemorySemantics.checkoutRelations(
+                storedSHAs: storedSHAs,
+                live: live,
+                repoRootPath: repoRootPath
+            )
+        }
     }
 
     private static func distinctStoredGitSHAs(in hits: [Hit]) -> [String] {
@@ -65,6 +70,16 @@ extension LayeredRecall {
         request: RecallRequest,
         stores: Stores
     ) async throws -> RecallResult {
+        try await prepareRecall(request: request, stores: stores).finish()
+    }
+
+    /// The part of `recall` that reads the stores. The ``PreparedRecall/finish()`` that
+    /// completes it reads none, so a broker can score with the cross-encoder after it
+    /// releases the lock it reads the stores under.
+    package static func prepareRecall(
+        request: RecallRequest,
+        stores: Stores
+    ) async throws -> PreparedRecall {
         var fetchRequest = request
         let personLane = request.scope == .global && request.memoryTypes == [.userPreference]
         fetchRequest.searchTopK = personLane
@@ -76,6 +91,10 @@ extension LayeredRecall {
             horizons: fetchRequest.fetchHorizons
         )
         let identity = lanes.identity
+        // With a reranker, the merge fills its candidate window, and reranking cuts it to
+        // the limit; without one, the merge cuts to the limit itself.
+        let stage = rerankStage(for: lanes, stores: stores)
+        let mergeLimit = stage.map { max(request.limit, $0.options.candidateCount) } ?? request.limit
         let liveCheckout = MemorySemantics.snapshotGitCheckout(startingAt: request.clientCWD)
         let repoRootPath = request.clientCWD.flatMap {
             MemorySemantics.inferScopeContext(currentDirectoryPath: $0).repoRootPath
@@ -83,9 +102,13 @@ extension LayeredRecall {
 
         let typedWorking = filterHitsByMemoryTypes(lanes.working, types: request.memoryTypes)
         let typedDurable = filterHitsByMemoryTypes(lanes.durable, types: request.memoryTypes)
-        let merged: [Hit]
+        // `window` is the merge at `mergeLimit`; `policyTop` is the merge at the limit.
+        let window: [Hit]
+        let policyTop: [Hit]
+        var ownerCard: Hit?
         if request.scope == .session {
-            merged = Array(typedWorking.prefix(request.limit))
+            window = Array(typedWorking.prefix(mergeLimit))
+            policyTop = Array(typedWorking.prefix(request.limit))
         } else if request.scope == .project {
             // Filter before merge so foreign ranks cannot consume the result budget.
             let ownWorking = Self.filterForeignTaskState(typedWorking, sessionID: request.sessionID)
@@ -100,19 +123,25 @@ extension LayeredRecall {
                 project: identity.project,
                 repo: identity.repo
             )
-            merged = mergeHits(
-                sessionHits: scopedSession,
-                durableHits: scopedDurable,
-                limit: request.limit,
-                nowMs: stores.nowMs(),
-                query: request.query,
-                liveCheckout: liveCheckout,
-                relations: resolvedCheckoutRelations(
-                    for: scopedSession + scopedDurable,
-                    live: liveCheckout,
-                    repoRootPath: repoRootPath
-                )
+            let relations = await resolvedCheckoutRelations(
+                for: scopedSession + scopedDurable,
+                live: liveCheckout,
+                repoRootPath: repoRootPath
             )
+            let nowMs = stores.nowMs()
+            func merge(limit: Int) -> [Hit] {
+                mergeHits(
+                    sessionHits: scopedSession,
+                    durableHits: scopedDurable,
+                    limit: limit,
+                    nowMs: nowMs,
+                    query: request.query,
+                    liveCheckout: liveCheckout,
+                    relations: relations
+                )
+            }
+            window = merge(limit: mergeLimit)
+            policyTop = mergeLimit == request.limit ? window : merge(limit: request.limit)
         } else {
             // Global changes the project boundary, not query or filter matching.
             // Person-lane still drops other-project prefs when identity is resolved.
@@ -143,71 +172,67 @@ extension LayeredRecall {
                     types: request.memoryTypes
                 ))
             }
-            let searched = mergeHits(
-                sessionHits: personLaneWorking,
-                durableHits: personLaneDurable,
-                limit: request.limit,
-                nowMs: stores.nowMs(),
-                query: request.query,
-                liveCheckout: liveCheckout,
-                relations: resolvedCheckoutRelations(
-                    for: personLaneWorking + personLaneDurable,
-                    live: liveCheckout,
-                    repoRootPath: repoRootPath
-                )
+            let relations = await resolvedCheckoutRelations(
+                for: personLaneWorking + personLaneDurable,
+                live: liveCheckout,
+                repoRootPath: repoRootPath
             )
+            let nowMs = stores.nowMs()
+            let working = personLaneWorking
+            let durable = personLaneDurable
+            func merge(limit: Int) -> [Hit] {
+                mergeHits(
+                    sessionHits: working,
+                    durableHits: durable,
+                    limit: limit,
+                    nowMs: nowMs,
+                    query: request.query,
+                    liveCheckout: liveCheckout,
+                    relations: relations
+                )
+            }
+            window = merge(limit: mergeLimit)
+            policyTop = mergeLimit == request.limit ? window : merge(limit: request.limit)
             if personLane {
                 let cardHits = await OwnerCard.hits(
                     from: stores.longTermMemory,
                     nowMs: stores.nowMs(),
                     preview: stores.preview
                 )
-                if let card = OwnerCard.collapsedHit(from: cardHits, preview: stores.preview) {
-                    // Card leads; leftover prefs still fill the window.
-                    let rest = searched.filter { hit in
-                        !hit.flags.contains(.ownerCard)
-                            && !OwnerCard.matchesCompiledSlot(text: hit.text, metadata: hit.metadata)
-                    }
-                    merged = Array(([card] + rest).prefix(request.limit))
-                } else {
-                    merged = searched
-                }
-            } else {
-                merged = searched
+                ownerCard = OwnerCard.collapsedHit(from: cardHits, preview: stores.preview)
             }
         }
 
-        let selected = selectHits(merged: merged, scope: request.scope, identity: identity)
-        var projectMiss = selected.projectMiss
-        var scopeMissMessage = selected.scopeMissMessage
-        if request.scope == .project,
-           selected.hits.isEmpty,
-           projectMiss,
-           identity.project != nil || identity.repo != nil,
-           await projectLaneOccupied(identity: identity, request: request, stores: stores) {
-            // Query miss in an occupied project is not an empty lane.
-            projectMiss = false
-            scopeMissMessage = nil
-        }
-        let keptHits = Array(selected.hits.prefix(request.limit))
-        let laneDiagnostics = combinedLaneDiagnostics(
-            working: lanes.workingExecution,
-            durable: lanes.durableExecution
-        )
-
-        return RecallResult(
-            hits: keptHits,
-            scope: request.scope,
+        let outline = PreparedRecall.Outline(
+            request: request,
             identity: identity,
-            projectMiss: projectMiss,
-            scopeMissMessage: scopeMissMessage,
-            scopeDropped: selected.scopeDropped,
-            diagnostics: laneDiagnostics,
-            searchTopK: request.searchTopK,
+            diagnostics: combinedLaneDiagnostics(
+                working: lanes.workingExecution,
+                durable: lanes.durableExecution
+            ),
             retrievalTopK: fetchRequest.searchTopK,
-            limit: request.limit,
-            collapsed: collapsedTotal(in: keptHits)
+            ownerCard: ownerCard
         )
+        // A nonempty window reranks to at least one hit, so the occupied-lane check below,
+        // which reads a store, can only be needed when nothing is scored.
+        if let stage, request.limit > 0, !window.isEmpty {
+            var texts: [MemoryID: String] = [:]
+            for hit in window.prefix(stage.options.candidateCount)
+            where !hit.flags.contains(.unlandedDemoted) {
+                texts[hit.id] = await rerankText(for: hit, stores: stores)
+            }
+            return PreparedRecall(state: .scoring(PreparedRecall.Scoring(
+                outline: outline,
+                window: window,
+                policyTop: policyTop,
+                stage: stage,
+                texts: texts
+            )))
+        }
+        let result = await outline.result(merged: window) {
+            await projectLaneOccupied(identity: identity, request: request, stores: stores)
+        }
+        return PreparedRecall(state: .finished(result))
     }
 
     private static func combinedLaneDiagnostics(

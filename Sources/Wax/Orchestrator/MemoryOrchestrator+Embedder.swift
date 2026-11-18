@@ -31,6 +31,7 @@ extension MemoryOrchestrator {
                             continuation.resume(throwing: CancellationError())
                         } else {
                             readinessWaiters[waiterID] = continuation
+                            readinessWaitCount += 1
                         }
                     }
                 } onCancel: {
@@ -117,7 +118,10 @@ extension MemoryOrchestrator {
         }
         if config.enableVectorSearch {
             do {
-                try await session.ensureVectorEngine(dimensions: provider.dimensions)
+                try await session.ensureVectorEngine(
+                    dimensions: provider.dimensions,
+                    metric: VectorMetric(provider.similarity)
+                )
             } catch {
                 markUnavailable(error.localizedDescription)
                 return

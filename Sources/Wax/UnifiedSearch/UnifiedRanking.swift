@@ -80,6 +80,11 @@ package enum UnifiedRanking {
         guard !queryTerms.isEmpty else { return results }
         let cappedWindow = min(max(0, maxWindow), results.count)
         guard cappedWindow > 1 else { return results }
+        // Only text-lane hits are lifted, so a window without one (any vector-only search)
+        // comes back unchanged; skip tokenizing its previews.
+        guard results.prefix(cappedWindow).contains(where: { $0.sources.contains(.text) }) else {
+            return results
+        }
 
         let recentMs: Int64 = 3 * 24 * 60 * 60 * 1000
         struct Scored {
@@ -168,6 +173,9 @@ package enum UnifiedRanking {
         return combined
     }
 
+    /// Weight of intent signals relative to the fused retrieval score.
+    package static let intentSignalScale: Float = 0.02
+
     package static func intentAwareRerank(
         results: [SearchResponse.Result],
         query: String,
@@ -211,13 +219,20 @@ package enum UnifiedRanking {
             guard let preview = result.previewText, !preview.isEmpty else { return total }
 
             let comparablePreview = dehighlightedPreviewText(preview)
-            let previewTerms = Set(analyzer.normalizedTerms(query: comparablePreview))
-            let previewEntities = analyzer.entityTerms(query: comparablePreview)
-            let previewYears = analyzer.yearTerms(in: comparablePreview)
-            let previewDateKeys = analyzer.normalizedDateKeys(in: comparablePreview)
+            // Each preview feature is read only when the query has the matching signal,
+            // so skip extracting it otherwise (the window is scored on every search).
+            let previewTerms: Set<String> = queryTerms.isEmpty
+                ? [] : Set(analyzer.normalizedTerms(query: comparablePreview))
+            let previewEntities: Set<String> = queryEntities.isEmpty
+                ? [] : analyzer.entityTerms(query: comparablePreview)
+            let previewYears: Set<String> = queryYears.isEmpty
+                ? [] : analyzer.yearTerms(in: comparablePreview)
+            let previewDateKeys: Set<String> = queryDateKeys.isEmpty
+                ? [] : analyzer.normalizedDateKeys(in: comparablePreview)
             let previewAlphaEntities = previewEntities.filter { isLettersOnly($0) }
             let lower = comparablePreview.lowercased()
-            let normalizedLower = normalizedPhraseComparableText(comparablePreview)
+            let normalizedLower = normalizedPhrases.isEmpty
+                ? "" : normalizedPhraseComparableText(comparablePreview)
             let vectorInfluenced = result.sources.contains(.vector)
 
             if !queryTerms.isEmpty, !previewTerms.isEmpty {
@@ -344,11 +359,16 @@ package enum UnifiedRanking {
             return total
         }
 
+        // The signals above are sized in whole points, but fused RRF scores are
+        // about 1/(k + rank), roughly 0.1 at rank 1. At full size a date literal
+        // or an entity hit outranks every retrieval signal in the window, so the
+        // signals are scaled down to break near-ties between retrieved results.
         var scoredHead: [(index: Int, score: Float)] = []
         scoredHead.reserveCapacity(cappedWindow)
         for index in 0..<cappedWindow {
             let result = results[index]
-            scoredHead.append((index: index, score: compositeScore(for: result)))
+            let signal = compositeScore(for: result) - result.score
+            scoredHead.append((index: index, score: result.score + signal * intentSignalScale))
         }
         scoredHead.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
@@ -626,9 +646,7 @@ package enum UnifiedRanking {
     }
 
     private static func normalizedPhraseComparableText(_ text: String) -> String {
-        text
-            .lowercased()
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        QueryAnalyzer.alphanumericRuns(text.lowercased())
             .map(String.init)
             .joined(separator: " ")
     }

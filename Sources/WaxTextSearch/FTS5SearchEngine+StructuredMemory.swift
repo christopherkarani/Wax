@@ -45,6 +45,25 @@ extension FTS5SearchEngine {
         }
     }
 
+    /// Whether any entity has an alias. Without one, ``resolveEntities(matchingAlias:limit:)``
+    /// matches nothing, so a search can skip its per-token alias queries. The answer is
+    /// cached until the next structured write; a check that overlaps one is not cached.
+    package func hasEntityAliases() async throws -> Bool {
+        try await flushPendingOpsIfNeeded()
+        if let entityAliasPresence { return entityAliasPresence }
+        let generation = structuredWriteGeneration
+        let dbQueue = self.dbQueue
+        let present = try await io.run {
+            try dbQueue.read { db in
+                try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM sm_entity_alias)") ?? false
+            }
+        }
+        if generation == structuredWriteGeneration {
+            entityAliasPresence = present
+        }
+        return present
+    }
+
     package func resolveEntities(matchingAlias alias: String, limit: Int) async throws -> [StructuredEntityMatch] {
         try await flushPendingOpsIfNeeded()
         let normalized = StructuredMemoryCanonicalizer.normalizedAlias(alias)

@@ -3,7 +3,7 @@ import WaxCore
 
 extension AgentBrokerService {
     func refreshSessionManifest(_ sessionID: UUID) async throws {
-        try virtualSessions.refreshManifest(sessionID)
+        try await virtualSessions.refreshManifest(sessionID)
     }
 
     func appendSessionEvent(
@@ -11,34 +11,41 @@ extension AgentBrokerService {
         kind: BrokerSessionEvent.Kind,
         payload: [String: String] = [:]
     ) async throws {
-        try virtualSessions.appendEvent(sessionID: sessionID, kind: kind, payload: payload)
+        try await virtualSessions.appendEvent(sessionID: sessionID, kind: kind, payload: payload)
     }
 
+    /// Refreshes the session lease and appends the event in one session-file write job.
+    func refreshSessionManifest(
+        _ sessionID: UUID,
+        recording kind: BrokerSessionEvent.Kind,
+        payload: [String: String]
+    ) async throws {
+        try await virtualSessions.refreshManifest(sessionID, recording: kind, payloads: [payload])
+    }
+
+    /// Refreshes the session lease and records the hits' events in one session-file write job.
     func recordRetrievalHits(
         sessionID: UUID,
         query: String,
         hits: [(frameID: UInt64, score: Float)],
         memory: MemoryOrchestrator
     ) async throws {
-        guard !hits.isEmpty else { return }
         let queryHash = Self.stableHash(query.lowercased())
         var seenFrameIDs = Set<UInt64>()
+        var payloads: [[String: String]] = []
         for hit in hits {
             let frameID = hit.frameID
             guard let canonicalFrameID = await bestEffortCanonicalDocumentFrameID(for: frameID, memory: memory) else {
                 continue
             }
             guard seenFrameIDs.insert(canonicalFrameID).inserted else { continue }
-            try await appendSessionEvent(
-                sessionID: sessionID,
-                kind: .retrievalHit,
-                payload: [
-                    "frame_id": String(canonicalFrameID),
-                    "score": String(hit.score),
-                    "query_hash": queryHash,
-                ]
-            )
+            payloads.append([
+                "frame_id": String(canonicalFrameID),
+                "score": String(hit.score),
+                "query_hash": queryHash,
+            ])
         }
+        try await virtualSessions.refreshManifest(sessionID, recording: .retrievalHit, payloads: payloads)
     }
 
     func recordHandoff(sessionID: UUID, content: String) async throws {
@@ -50,7 +57,7 @@ extension AgentBrokerService {
                 "summary": summary,
             ]
         )
-        try virtualSessions.updateLive(sessionID) { state in
+        try await virtualSessions.updateLive(sessionID) { state in
             let nowMs = BrokerClock.nowMs()
             state.manifest.lastHandoffAtMs = nowMs
             state.manifest.latestHandoff = summary
@@ -59,7 +66,7 @@ extension AgentBrokerService {
     }
 
     func recordCheckpoint(sessionID: UUID, summary: String, compactedText: String) async throws {
-        try virtualSessions.updateLive(sessionID) { state in
+        try await virtualSessions.updateLive(sessionID) { state in
             let nowMs = BrokerClock.nowMs()
             state.manifest.lastCheckpointAtMs = nowMs
             state.manifest.lastCompactionAtMs = nowMs
@@ -343,5 +350,30 @@ extension AgentBrokerService {
             hash &*= 1099511628211
         }
         return String(hash, radix: 16)
+    }
+
+    /// Every store a recall can merge hits from: the durable store, the corpus store, and the
+    /// live and ended session stores under the session root. Missing stores are listed too;
+    /// the embedder probe skips them.
+    static func servedStoreURLs(
+        longTermStoreURL: URL,
+        corpusStoreURL: URL,
+        sessionRootURL: URL
+    ) -> [URL] {
+        var urls = [longTermStoreURL, corpusStoreURL]
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionRootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return urls
+        }
+        var sessionStores: [URL] = []
+        for case let candidate as URL in enumerator
+            where candidate.pathExtension.caseInsensitiveCompare("wax") == .orderedSame {
+            sessionStores.append(candidate.standardizedFileURL)
+        }
+        urls.append(contentsOf: sessionStores.sorted { $0.path < $1.path })
+        return urls
     }
 }

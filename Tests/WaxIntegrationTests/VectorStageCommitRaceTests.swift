@@ -97,9 +97,9 @@ private func committedVectorsAfterInterleavedRemember(
 }
 
 /// Without a session there is no embedding write gate, so an embedding can land between the
-/// engine's sync and its stage. The staged index claims only what the engine synced, so the
-/// commit refuses it loudly instead of marking the late embedding committed without its vector.
-@Test func directEngineStageAfterLateEmbeddingIsStaleNotSilentlyShort() async throws {
+/// engine's sync and its stage. The commit writes every pending embedding from the WAL, not
+/// what the engine synced, so the late embedding is committed with its vector.
+@Test func directEngineStageAfterLateEmbeddingCommitsTheLateVector() async throws {
     try await TempFiles.withTempFile { url in
         let wax = try await Wax.create(at: url)
         let first = try await wax.put(Data("first".utf8))
@@ -110,30 +110,26 @@ private func committedVectorsAfterInterleavedRemember(
             dimensions: 2,
             preference: .cpuOnly
         )
-        let synced = try await WaxVectorSearchSession.syncPendingEmbeddings(wax: wax, into: engine, watermark: nil)
+        _ = try await WaxVectorSearchSession.syncPendingEmbeddings(wax: wax, into: engine, watermark: nil)
 
         let second = try await wax.put(Data("second".utf8))
         try await wax.putEmbedding(frameId: second, vector: [0, 1])
-        try await engine.stageForCommit(into: wax, syncedThrough: synced)
-
-        do {
-            try await wax.commit()
-            Issue.record("Expected WaxError.vectorIndexStale")
-        } catch let error as WaxError {
-            guard case .vectorIndexStale = error else {
-                Issue.record("Expected WaxError.vectorIndexStale, got \(error)")
-                return
-            }
-        }
-
-        let resynced = try await WaxVectorSearchSession.syncPendingEmbeddings(wax: wax, into: engine, watermark: synced)
-        try await engine.stageForCommit(into: wax, syncedThrough: resynced)
+        try await engine.stageForCommit(into: wax)
         try await wax.commit()
+
+        #expect(try await wax.committedVectorFrameIds() == [first, second])
+        #expect(await wax.pendingEmbeddingMutations().isEmpty)
         try await wax.close()
 
         let reopened = try await Wax.open(at: url)
         #expect(await reopened.committedVecIndexManifest()?.vectorCount == 2)
         #expect(await reopened.pendingEmbeddingMutations().isEmpty)
+        let committed = try #require(try await reopened.readCommittedVectors())
+        var vectors: [UInt64: [Float]] = [:]
+        for (row, frameId) in committed.frameIds.enumerated() {
+            vectors[frameId] = Array(committed.vectors[(row * 2)..<(row * 2 + 2)])
+        }
+        #expect(vectors == [first: [1, 0], second: [0, 1]])
         try await reopened.close()
     }
 }

@@ -29,6 +29,9 @@ package enum BrokerRecall {
         package var preview: @Sendable (String?) -> String
         package var canonicalFrameID: @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?
         package var nowMs: @Sendable () -> Int64
+        /// Reranks recall once its hits merge; `nil` keeps the merge's order. Search and
+        /// memory_search are not reranked.
+        package var reranking: RerankStage?
 
         package init(
             longTermMemory: MemoryOrchestrator,
@@ -36,7 +39,8 @@ package enum BrokerRecall {
             endedSessions: DiskEndedSessionStore,
             preview: @escaping @Sendable (String?) -> String,
             canonicalFrameID: @escaping @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?,
-            nowMs: @escaping @Sendable () -> Int64
+            nowMs: @escaping @Sendable () -> Int64,
+            reranking: RerankStage? = nil
         ) {
             self.longTermMemory = longTermMemory
             self.sessions = sessions
@@ -44,6 +48,7 @@ package enum BrokerRecall {
             self.preview = preview
             self.canonicalFrameID = canonicalFrameID
             self.nowMs = nowMs
+            self.reranking = reranking
         }
     }
 
@@ -100,6 +105,30 @@ package enum BrokerRecall {
         _ command: BrokerCommand.Recall,
         in environment: Environment
     ) async throws -> PackedRecall {
+        try await prepare(command, in: environment).finish()
+    }
+
+    /// A recall whose stores have been read; ``finish()`` ranks and packs it without them.
+    package struct PreparedRecall: Sendable {
+        let command: BrokerCommand.Recall
+        let recall: LayeredRecall.PreparedRecall
+        let nowMs: @Sendable () -> Int64
+
+        /// Whether `finish()` scores with a cross-encoder.
+        package var needsScoring: Bool { recall.needsScoring }
+
+        @concurrent
+        package func finish() async throws -> PackedRecall {
+            let result = try await recall.finish()
+            return BrokerRecall.pack(command: command, result: result, nowMs: nowMs())
+        }
+    }
+
+    /// The part of `recall` that reads the stores (snapshot, fetch, merge, frame texts).
+    package static func prepare(
+        _ command: BrokerCommand.Recall,
+        in environment: Environment
+    ) async throws -> PreparedRecall {
         let request = LayeredRecall.RecallRequest(
             query: command.query,
             identity: command.identity,
@@ -122,10 +151,14 @@ package enum BrokerRecall {
             endedSessions: environment.endedSessions,
             preview: environment.preview,
             canonicalFrameID: environment.canonicalFrameID,
+            nowMs: environment.nowMs,
+            reranking: environment.reranking
+        )
+        return PreparedRecall(
+            command: command,
+            recall: try await LayeredRecall.prepareRecall(request: request, stores: stores),
             nowMs: environment.nowMs
         )
-        let result = try await LayeredRecall.recall(request: request, stores: stores)
-        return pack(command: command, result: result, nowMs: environment.nowMs())
     }
 
     /// MCP search fetch + merge + pack. Rank law is score desc, working before
@@ -162,7 +195,10 @@ package enum BrokerRecall {
         } else if parsedFilters.sessionId != nil {
             sessionExecution = MemoryOrchestrator.SearchExecution(
                 hits: [],
-                diagnostics: .text(requested: mode, embedding: .notRequested)
+                diagnostics: .text(
+                    requested: mode.resolved(defaultHybridAlpha: await stores.longTermMemory.defaultHybridAlpha),
+                    embedding: .notRequested
+                )
             )
             sessionHits = []
         } else {
@@ -283,7 +319,8 @@ package enum BrokerRecall {
         endedSessions: DiskEndedSessionStore,
         preview: @escaping @Sendable (String?) -> String,
         canonicalFrameID: @escaping @Sendable (UInt64, MemoryOrchestrator) async -> UInt64?,
-        nowMs: @escaping @Sendable () -> Int64
+        nowMs: @escaping @Sendable () -> Int64,
+        reranking: RerankStage? = nil
     ) -> LayeredRecall.Stores {
         LayeredRecall.Stores(
             longTermMemory: longTermMemory,
@@ -320,7 +357,8 @@ package enum BrokerRecall {
             preview: preview,
             canonicalFrameID: canonicalFrameID,
             endedSessions: endedSessions,
-            nowMs: nowMs
+            nowMs: nowMs,
+            reranking: reranking
         )
     }
 

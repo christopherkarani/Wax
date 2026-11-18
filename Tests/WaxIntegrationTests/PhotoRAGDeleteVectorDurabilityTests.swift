@@ -8,18 +8,17 @@ import WaxVectorSearch
 import WaxCore
 import WaxTextSearch
 
-// Byte-level proof that PhotoRAG delete and re-ingest (supersede) remove vectors from
+// Proof that PhotoRAG delete and re-ingest (supersede) remove vectors from
 // the committed vector index, mirroring MemoryDeleteVectorDurabilityTests. Before the
 // fix, PhotoRAGOrchestrator only deleted frames and left ghost vectors searchable.
 
 private let photoDeleteTinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 
-private func photoDeleteCommittedVecFrameIds(from bytes: Data) throws -> [UInt64] {
-    let decoded = try VectorSerializer.decodeVecSegment(from: bytes)
-    guard case .metal(_, _, let frameIds) = decoded else {
-        throw WaxError.io("unexpected vec payload (expected .metal/.flat decode)")
-    }
-    return frameIds
+/// The committed vector index's frame ids; `nil` when the store has none.
+private func photoDeleteCommittedVecFrameIds(of wax: Wax) async throws -> [UInt64]? {
+    guard let committed = try await wax.readCommittedVectors() else { return nil }
+    #expect(try await wax.committedVectorFrameIds() == Set(committed.frameIds))
+    return committed.frameIds
 }
 
 private func photoDeleteMakeOrchestrator(storeURL: URL) async throws -> PhotoRAGOrchestrator {
@@ -61,16 +60,16 @@ func photoRAGDeleteRemovesRootVectorFromCommittedVecBytes() async throws {
         let wax = await orchestrator.wax
         let rootId = try await photoDeleteRootId(wax: wax, assetID: "delete-me", superseded: false)
 
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil, "setup: committed vec must exist after flush")
-        #expect(try photoDeleteCommittedVecFrameIds(from: beforeBytes!).contains(rootId))
+        let beforeVec = try await photoDeleteCommittedVecFrameIds(of: wax)
+        #expect(beforeVec != nil, "setup: committed vec must exist after flush")
+        #expect((beforeVec ?? []).contains(rootId))
 
         try await orchestrator.delete(photoID: PhotoID(source: .file, id: "delete-me"))
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil, "committed vec bytes must be non-nil after delete")
+        let afterVec = try await photoDeleteCommittedVecFrameIds(of: wax)
+        #expect(afterVec != nil, "committed vec index must exist after delete")
         #expect(
-            !(try photoDeleteCommittedVecFrameIds(from: afterBytes!).contains(rootId)),
+            !((afterVec ?? []).contains(rootId)),
             "deleted photo root vector still present in committed vec after delete"
         )
 
@@ -94,9 +93,9 @@ func photoRAGReingestRemovesSupersededRootVectorFromCommittedVecBytes() async th
 
         let wax = await orchestrator.wax
         let oldRootId = try await photoDeleteRootId(wax: wax, assetID: "reingest-me", superseded: false)
-        let beforeBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(beforeBytes != nil, "setup: committed vec must exist after first flush")
-        #expect(try photoDeleteCommittedVecFrameIds(from: beforeBytes!).contains(oldRootId))
+        let beforeVec = try await photoDeleteCommittedVecFrameIds(of: wax)
+        #expect(beforeVec != nil, "setup: committed vec must exist after first flush")
+        #expect((beforeVec ?? []).contains(oldRootId))
 
         // Re-ingesting the same asset supersedes the previous root.
         try await orchestrator.ingest(files: [file])
@@ -105,9 +104,9 @@ func photoRAGReingestRemovesSupersededRootVectorFromCommittedVecBytes() async th
         let newRootId = try await photoDeleteRootId(wax: wax, assetID: "reingest-me", superseded: false)
         #expect(newRootId != oldRootId)
 
-        let afterBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(afterBytes != nil)
-        let afterIds = try photoDeleteCommittedVecFrameIds(from: afterBytes!)
+        let afterVec = try await photoDeleteCommittedVecFrameIds(of: wax)
+        #expect(afterVec != nil)
+        let afterIds = try #require(afterVec)
         #expect(
             !afterIds.contains(oldRootId),
             "superseded photo root vector still present in committed vec after re-ingest"
@@ -144,9 +143,9 @@ func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         // root's vector is still present in the committed index.
         try await wax.putEmbedding(frameId: oldRootId, vector: [1, 0, 0, 0])
         try await orchestrator.flush()
-        let legacyBytes = try await wax.readCommittedVecIndexBytes()
+        let legacyVec = try await photoDeleteCommittedVecFrameIds(of: wax)
         #expect(
-            try photoDeleteCommittedVecFrameIds(from: legacyBytes!).contains(oldRootId),
+            (legacyVec ?? []).contains(oldRootId),
             "setup: injected legacy ghost must be committed"
         )
 
@@ -156,13 +155,44 @@ func photoRAGRebuildSweepsLegacyGhostVectorForSupersededTree() async throws {
         ])
         try await orchestrator.flush()
 
-        let sweptBytes = try await wax.readCommittedVecIndexBytes()
-        #expect(sweptBytes != nil)
-        let sweptIds = try photoDeleteCommittedVecFrameIds(from: sweptBytes!)
+        let sweptVec = try await photoDeleteCommittedVecFrameIds(of: wax)
+        #expect(sweptVec != nil)
+        let sweptIds = try #require(sweptVec)
         #expect(!sweptIds.contains(oldRootId), "legacy ghost vector survived the retired-tree sweep")
         #expect(sweptIds.contains(newRootId), "current root vector must survive the sweep")
 
         try await orchestrator.flush()
+    }
+}
+
+/// Every index rebuild sweeps the retired trees. Their vectors went at retirement, so a
+/// rebuild that finds them gone must not append a removal record per frame each time.
+@Test
+func photoRAGRebuildDoesNotGrowTheWALForRetiredFramesWithoutVectors() async throws {
+    try await TempFiles.withTempFile { storeURL in
+        let imageURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent("wax-rebuild-wal-photo-\(UUID().uuidString).png")
+        try photoDeleteTinyPNGData.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let file = PhotoFile(id: "retire-me", url: imageURL, captureDate: Date(timeIntervalSince1970: 1_700_000_000))
+        let orchestrator = try await photoDeleteMakeOrchestrator(storeURL: storeURL)
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.flush()
+        let oldRootId = try await photoDeleteRootId(wax: await orchestrator.wax, assetID: "retire-me", superseded: false)
+        try await orchestrator.ingest(files: [file])
+        try await orchestrator.close()
+
+        for _ in 0..<2 {
+            let reopened = try await photoDeleteMakeOrchestrator(storeURL: storeURL)
+            let wax = await reopened.wax
+            #expect(try await photoDeleteRootId(wax: wax, assetID: "retire-me", superseded: true) == oldRootId)
+            #expect(try await !wax.committedVectorFrameIds().contains(oldRootId))
+            let wal: WaxWALStats = await wax.walStats()
+            #expect(wal.pendingBytes == 0, "the rebuild at open appended WAL records for retired frames")
+            #expect(await wax.pendingEmbeddingMutations(since: nil).removedFrameIds.isEmpty)
+            try await reopened.close()
+        }
     }
 }
 #endif

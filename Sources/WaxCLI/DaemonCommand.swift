@@ -21,9 +21,15 @@ struct DaemonCommand: AsyncParsableCommand {
 
     @Flag(
         name: .customLong("skip-prewarm"),
-        help: "Skip background embedder prewarm. Cold first writes may then wait on MiniLM."
+        help: "Skip background embedder prewarm. Cold first writes may then wait on the embedder."
     )
     var skipPrewarm = false
+
+    @Flag(
+        name: .customLong("no-rerank"),
+        help: "Keep recall in the broker's merged order instead of reranking hybrid recall with the built-in cross-encoder."
+    )
+    var noRerank = false
 
     @Option(name: .customLong("socket-path"), help: "Listen on a Unix domain socket instead of stdio")
     var socketPath: String?
@@ -54,6 +60,7 @@ struct DaemonCommand: AsyncParsableCommand {
         let signalSources = installShutdownSignalHandlers(shutdown)
         defer { signalSources.forEach { $0.cancel() } }
 
+        let reranking = try await BuiltInRerankerCompiler.stage(for: noRerank ? .disabled : .automatic)
         let service = try await AgentBrokerService(
             storePath: store.storePath,
             sessionRootPath: AgentBrokerPathing.resolveSessionRootPath(
@@ -67,12 +74,16 @@ struct DaemonCommand: AsyncParsableCommand {
                 "WAX_MCP_FEATURE_ACCESS_STATS",
                 default: true
             ),
-            embedderTuning: store.embedderTuning
+            embedderTuning: store.embedderTuning,
+            reranking: reranking
         )
 
+        // Without an embedder, recall is text-only and never reranked, so the reranker is
+        // not loaded either. It loads after the embedder, which writes need first.
         if !store.noEmbedder, !skipPrewarm {
             Task {
                 await service.prewarmEmbedder()
+                await service.prewarmReranker()
             }
         }
         #if DEBUG
@@ -104,6 +115,7 @@ struct DaemonCommand: AsyncParsableCommand {
             // the drain bound finishes first. That extends graceful shutdown;
             // a second signal forces the exit.
             try await service.close()
+            DaemonTestHooks.current?.markClosed()
             // Such a command's response is written only once it releases the
             // locks, so give it a moment to go out before the process exits.
             await waitWhileHandling(inflight, seconds: socketResponseFlushSeconds)
@@ -123,7 +135,7 @@ private extension DaemonCommand {
     var maxSocketRequestBytes: Int { 1_048_576 }
     /// A client must send its whole request within this many seconds of being
     /// accepted. One deadline, so trickled bytes cannot hold a client thread.
-    var socketRequestReadSeconds: TimeInterval { 5 }
+    var socketRequestReadSeconds: TimeInterval { DaemonTestHooks.current?.requestReadSeconds ?? 5 }
     /// How long shutdown waits for requests already in `service.handle`. Well
     /// under the client's 2s SIGTERM grace; `service.close()` then queues behind
     /// any command still holding the store's locks.
@@ -286,7 +298,9 @@ private extension DaemonCommand {
             loopError = error
         }
 
-        await drainHandledRequests(inflight)
+        // Bounded from the signal: the accept loop notices it only at its next
+        // poll slice, and on a busy host resuming here can take longer still.
+        await drainHandledRequests(inflight, startedAt: shutdown.requestedAt ?? ContinuousClock.now)
         if let loopError {
             throw loopError
         }
@@ -301,14 +315,18 @@ private extension DaemonCommand {
         idleTimeoutSeconds: Double,
         shutdown: DaemonShutdown
     ) throws {
-        var lastActivity = Date()
+        // Monotonic: a wall-clock change must not trigger or postpone the idle exit.
+        var lastActivity = ContinuousClock.now
         while !inflight.shouldStop, !shutdown.isRequested {
             var descriptor = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, shutdownPollSliceMS)
             if pollResult == 0 {
-                if idleTimeoutSeconds > 0,
-                   Date().timeIntervalSince(lastActivity) >= idleTimeoutSeconds,
-                   !inflight.hasClients {
+                // Idle time counts from when the last client left, not from the
+                // last accept: a long-lived connection must not use up the timeout.
+                if inflight.hasClients {
+                    lastActivity = ContinuousClock.now
+                } else if idleTimeoutSeconds > 0,
+                          lastActivity.duration(to: .now) / .seconds(1) >= idleTimeoutSeconds {
                     return
                 }
                 continue
@@ -324,13 +342,13 @@ private extension DaemonCommand {
                 throw CLIError("Broker accept failed: \(String(cString: strerror(errno)))")
             }
 
-            lastActivity = Date()
+            lastActivity = ContinuousClock.now
             disableSIGPIPE(on: client)
             guard inflight.admitClient(limit: maxClients) else {
                 rejectBusyClient(client)
                 continue
             }
-            let readDeadline = Date().addingTimeInterval(socketRequestReadSeconds)
+            let readDeadline = ContinuousClock.Instant.deadline(afterSeconds: socketRequestReadSeconds)
             Task {
                 defer { inflight.clientDone() }
                 do {
@@ -354,15 +372,18 @@ private extension DaemonCommand {
     /// Stops new requests from reaching the service, then waits a bounded time
     /// for the ones already in it. Clients still sending a request are not
     /// waited for: the process exits under them once the store is closed.
-    func drainHandledRequests(_ inflight: SocketInflight) async {
+    func drainHandledRequests(_ inflight: SocketInflight, startedAt: ContinuousClock.Instant) async {
         inflight.startDraining()
         DaemonTestHooks.current?.markDraining()
-        await waitWhileHandling(inflight, seconds: socketShutdownDrainSeconds)
+        await waitWhileHandling(inflight, until: startedAt.advanced(by: .seconds(socketShutdownDrainSeconds)))
     }
 
     func waitWhileHandling(_ inflight: SocketInflight, seconds: TimeInterval) async {
-        let deadline = Date().addingTimeInterval(seconds)
-        while inflight.isHandling, Date() < deadline {
+        await waitWhileHandling(inflight, until: .deadline(afterSeconds: seconds))
+    }
+
+    func waitWhileHandling(_ inflight: SocketInflight, until deadline: ContinuousClock.Instant) async {
+        while inflight.isHandling, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -397,7 +418,7 @@ private extension DaemonCommand {
     func handleSocketClient(
         service: AgentBrokerService,
         fd: Int32,
-        readDeadline: Date,
+        readDeadline: ContinuousClock.Instant,
         inflight: SocketInflight
     ) async throws -> Bool {
         defer { close(fd) }
@@ -424,12 +445,16 @@ private extension DaemonCommand {
         case .empty:
             response = AgentBrokerResponse.failure(message: "Invalid request: empty payload")
         case .line(let line):
-            // Once shutdown is draining, nothing new reaches the service.
-            guard inflight.beginHandling() else { return false }
-            admitted = true
-            let handled = await handleRequest(line, service: service)
-            response = handled.0
-            command = handled.1
+            // Once shutdown is draining, nothing new reaches the service. The
+            // client is told so rather than left to read a bare EOF.
+            if inflight.beginHandling() {
+                admitted = true
+                let handled = await handleRequest(line, service: service)
+                response = handled.0
+                command = handled.1
+            } else {
+                response = AgentBrokerResponse.failure(message: "Broker is shutting down; retry the request")
+            }
         }
 
         do {
@@ -500,10 +525,10 @@ private extension DaemonCommand {
 
     /// Reads one request line, giving up at `deadline`. Blocks its thread, so
     /// callers run it off the pool.
-    func readSocketRequestLine(fd: Int32, deadline: Date) throws -> SocketRequestRead {
+    func readSocketRequestLine(fd: Int32, deadline: ContinuousClock.Instant) throws -> SocketRequestRead {
         var buffer = Data()
         while true {
-            let remainingMS = AgentBrokerClient.pollTimeoutMilliseconds(remaining: deadline.timeIntervalSinceNow)
+            let remainingMS = AgentBrokerClient.pollTimeoutMilliseconds(remaining: deadline.secondsRemaining)
             guard remainingMS > 0 else { return .timedOut }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = poll(&descriptor, 1, remainingMS)
@@ -607,19 +632,27 @@ private enum SocketRequestRead: Sendable {
 private final class DaemonShutdown: @unchecked Sendable {
     private let lock = NSLock()
     private var signalsReceived = 0
+    private var firstSignalAt: ContinuousClock.Instant?
 
     /// Records a signal. Returns true for the first one.
     func recordSignal() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        signalsReceived += 1
-        return signalsReceived == 1
+        lock.withLock {
+            signalsReceived += 1
+            if signalsReceived == 1 {
+                firstSignalAt = ContinuousClock.now
+            }
+            return signalsReceived == 1
+        }
+    }
+
+    /// When the first signal was handled, so shutdown's bounds count from the
+    /// signal rather than from whenever the server loop noticed it.
+    var requestedAt: ContinuousClock.Instant? {
+        lock.withLock { firstSignalAt }
     }
 
     var isRequested: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return signalsReceived > 0
+        lock.withLock { signalsReceived > 0 }
     }
 }
 
@@ -628,9 +661,8 @@ private final class DaemonShutdown: @unchecked Sendable {
 /// handlers and stdio flushing, which may themselves be what is wedged.
 private func installShutdownSignalHandlers(_ shutdown: DaemonShutdown) -> [DispatchSourceSignal] {
     ShutdownSignals.observe { signalNumber in
-        if !shutdown.recordSignal() {
-            _exit(128 + signalNumber)
-        }
+        guard shutdown.recordSignal() else { _exit(128 + signalNumber) }
+        DaemonTestHooks.current?.markSignalled()
     }
 }
 
@@ -645,62 +677,48 @@ private final class SocketInflight: @unchecked Sendable {
 
     /// Takes a client slot. False once `limit` clients are being served.
     func admitClient(limit: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard clients < limit else { return false }
-        clients += 1
-        return true
+        lock.withLock {
+            guard clients < limit else { return false }
+            clients += 1
+            return true
+        }
     }
 
     func clientDone() {
-        lock.lock()
-        clients = max(0, clients - 1)
-        lock.unlock()
+        lock.withLock { clients = max(0, clients - 1) }
     }
 
     var hasClients: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients > 0
+        lock.withLock { clients > 0 }
     }
 
     /// Admits a request to the service. False once draining has started.
     func beginHandling() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !draining else { return false }
-        handling += 1
-        return true
+        lock.withLock {
+            guard !draining else { return false }
+            handling += 1
+            return true
+        }
     }
 
     func endHandling() {
-        lock.lock()
-        handling = max(0, handling - 1)
-        lock.unlock()
+        lock.withLock { handling = max(0, handling - 1) }
     }
 
     func startDraining() {
-        lock.lock()
-        draining = true
-        lock.unlock()
+        lock.withLock { draining = true }
     }
 
     var isHandling: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return handling > 0
+        lock.withLock { handling > 0 }
     }
 
     func requestStop() {
-        lock.lock()
-        stop = true
-        lock.unlock()
+        lock.withLock { stop = true }
     }
 
     var shouldStop: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stop
+        lock.withLock { stop }
     }
 }
 

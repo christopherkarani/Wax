@@ -22,11 +22,11 @@ Do not load this skill at session start or for MCP `remember` / `recall` /
 2. Use experimental `PhotoMemory` / `VideoMemory` (`import Wax`) for photo and video RAG on Darwin. Build the embedder with `BuiltInMultimodalEmbeddings.make`.
 3. `MemoryOrchestrator`, `PhotoRAGOrchestrator`, `VideoRAGOrchestrator`, `Wax`, `WaxSession`, and `MiniLMEmbedder` are **package-only internals** — downstream apps cannot import or construct them. Do not generate client code against them.
 4. Structured memory (entities/facts) stays MCP/broker-facing, not a public Swift CRUD API.
-5. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`).
+5. Import `Wax` to get the re-exported embedding protocols (`EmbeddingProvider`, `BatchEmbeddingProvider`, `EmbeddingIdentity`, `VectorSimilarity`). A custom embedder for a dot-product-trained model declares `let similarity = VectorSimilarity.dotProduct` with `normalize = false`; the default is `.cosine`.
 
 ## Core Workflow
 1. Choose a `.wax` store URL.
-2. Open `Memory(at:)` — `.automatic` opens immediately while MiniLM loads (iOS 18/macOS 15+, default `MiniLMEmbeddings` trait), then live-attaches. Check `stats().embeddingStatus`.
+2. Open `Memory(at:)` — `.automatic` opens immediately while the built-in embedder loads (e5 for a new store, the one that wrote an existing store; iOS 18/macOS 15+, default `E5Embeddings` and `MiniLMEmbeddings` traits), then live-attaches. Check `stats().embeddingStatus`.
 3. Or select the embedder in config: `Memory(at: url) { $0.embedding = .custom(MyEmbedder()) }`, or force a built-in via `$0.embedding = .builtIn(.miniLM)` (throws when unavailable).
 4. Call `save(...)` to ingest and `search(...)` to retrieve `RAGContext`.
 5. Call `flush()` or `close()` to persist.
@@ -63,7 +63,7 @@ func demoDefault() async throws {
 
     // Verify which retrieval mode actually ran.
     if let diagnostics = results.diagnostics {
-        print(diagnostics.effectiveMode)  // Memory.RetrievalMode (alias of SearchMode); prints "hybrid(alpha=0.500)" or "text"
+        print(diagnostics.effectiveMode)  // Memory.RetrievalMode (alias of SearchMode); prints "hybrid(alpha=0.400)" on an e5 store, "hybrid(alpha=0.500)" on others, or "text"
     }
 
     try await memory.close()
@@ -147,7 +147,7 @@ func demoPhotoMemory(storeURL: URL, imageURL: URL) async throws {
 - `BuiltInMultimodalEmbeddings`: Factory for the on-device multimodal embedder used by the photo/video facades.
 - `RAGContext`: Retrieval output with items, total token count, and `diagnostics` (requested vs. effective mode).
 - `EmbeddingProvider`: Supplies text embeddings for vector search.
-- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` on-device CoreML embedders (iOS 18/macOS 15+).
+- `BuiltInEmbeddingProvider`: `.miniLM` / `.arctic` / `.e5` on-device CoreML embedders (iOS 18/macOS 15+).
 
 ## References
 - `references/public-api.md`

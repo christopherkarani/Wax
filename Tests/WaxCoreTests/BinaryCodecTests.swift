@@ -345,3 +345,107 @@ import Testing
         #expect(reason.contains("UTF-8"))
     }
 }
+
+/// A repairing UTF-8 decode turns a truncated 4-byte sequence into one U+FFFD, which is
+/// also 3 bytes, so a byte-count check alone would accept it. The decoder must reject it.
+@Test func truncatedMultibyteSequenceThrowsAsInvalidUTF8() throws {
+    let bytes: [UInt8] = [0xF0, 0x9F, 0x98, 0x41]
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt32(bytes.count))
+    var data = encoder.data
+    data.append(contentsOf: bytes)
+
+    var decoder = try BinaryDecoder(data: data)
+    #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
+}
+
+/// ASCII strings take a fast path. Its edges are NUL, 0x7F and the empty string, and a
+/// non-ASCII byte anywhere, the last byte included, must still reach UTF-8 validation.
+@Test func asciiStringsRoundtripAndATrailingInvalidByteThrows() throws {
+    let values = ["", "a", "\u{0}nul", "del\u{7F}", "source", String(repeating: "x", count: 1_000)]
+    var encoder = BinaryEncoder()
+    for value in values {
+        try encoder.encode(value)
+    }
+    var decoder = try BinaryDecoder(data: encoder.data)
+    for value in values {
+        #expect(try decoder.decode(String.self) == value)
+    }
+    try decoder.finalize()
+
+    for prefixLength in [0, 1, 15, 16, 63] {
+        let bytes = [UInt8](repeating: 0x61, count: prefixLength) + [0xFF]
+        var invalid = BinaryEncoder()
+        invalid.encode(UInt32(bytes.count))
+        var data = invalid.data
+        data.append(contentsOf: bytes)
+        var invalidDecoder = try BinaryDecoder(data: data)
+        #expect(throws: WaxError.self, "prefix \(prefixLength)") { _ = try invalidDecoder.decode(String.self) }
+    }
+}
+
+@Test func multibyteAndReplacementCharacterStringsRoundtrip() throws {
+    let values = ["naïve café ☕️ 日本語 🧠", "literal \u{FFFD} replacement", "\u{FEFF}leading BOM"]
+    var encoder = BinaryEncoder()
+    for value in values {
+        try encoder.encode(value)
+    }
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    for value in values {
+        let decoded = try decoder.decode(String.self)
+        #expect(Array(decoded.utf8) == Array(value.utf8))
+    }
+    try decoder.finalize()
+}
+
+@Test func stringLongerThanTheBufferThrows() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt32(10))
+    var data = encoder.data
+    data.append(contentsOf: Array("abc".utf8))
+
+    var decoder = try BinaryDecoder(data: data)
+    #expect(throws: WaxError.self) { _ = try decoder.decode(String.self) }
+}
+
+/// A `Data` slice keeps its parent's indices; decoding must read from the
+/// slice's first byte, not from absolute index 0.
+@Test func decodesFromDataSliceWithNonzeroStartIndex() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt8(7))
+    encoder.encode(UInt16(0xBEEF))
+    encoder.encode(UInt32(0xDEADBEEF))
+    encoder.encode(UInt64(0x0102_0304_0506_0708))
+    encoder.encode(Int64(-42))
+    try encoder.encode("slice")
+
+    let padded = Data([0xFF, 0xFF, 0xFF]) + encoder.data
+    let slice = padded.dropFirst(3)
+    #expect(slice.startIndex == 3)
+
+    var decoder = try BinaryDecoder(data: slice)
+    #expect(try decoder.decode(UInt8.self) == 7)
+    #expect(try decoder.decode(UInt16.self) == 0xBEEF)
+    #expect(try decoder.decode(UInt32.self) == 0xDEADBEEF)
+    #expect(try decoder.decode(UInt64.self) == 0x0102_0304_0506_0708)
+    #expect(try decoder.decode(Int64.self) == -42)
+    #expect(try decoder.decode(String.self) == "slice")
+    try decoder.finalize()
+}
+
+/// Integers sit at odd offsets in the format; reads must not assume alignment.
+@Test func decodesUnalignedIntegers() throws {
+    var encoder = BinaryEncoder()
+    encoder.encode(UInt8(1))
+    encoder.encode(UInt64.max - 1)
+    encoder.encode(UInt8(2))
+    encoder.encode(UInt32(0x0A0B_0C0D))
+
+    var decoder = try BinaryDecoder(data: encoder.data)
+    #expect(try decoder.decode(UInt8.self) == 1)
+    #expect(try decoder.decode(UInt64.self) == UInt64.max - 1)
+    #expect(try decoder.decode(UInt8.self) == 2)
+    #expect(try decoder.decode(UInt32.self) == 0x0A0B_0C0D)
+    try decoder.finalize()
+}

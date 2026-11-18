@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 /// Writes 200 KB to stdout and then 200 KB to stderr. Either stream left
 /// unread past ~64 KB blocks the child.
@@ -22,7 +23,7 @@ func processPipeDrainCollectsLargeOutputOnBothStreams() throws {
 
     try process.run()
     let captured = ProcessPipeDrain(stdout: stdout, stderr: stderr).wait()
-    process.waitUntilExit()
+    process.waitForExit(timeout: 60)
 
     #expect(process.terminationStatus == 0)
     #expect(captured.stdout.count == 200_000)
@@ -58,7 +59,7 @@ func processPipeDrainKeepsReadingPastItsCap() throws {
 
     try process.run()
     let captured = ProcessPipeDrain(stdout: stdout, stderr: stderr, maxBytesPerStream: 1_000).wait()
-    process.waitUntilExit()
+    process.waitForExit(timeout: 60)
 
     #expect(process.terminationStatus == 0)
     #expect(captured.stdout.count == 1_000)

@@ -267,11 +267,13 @@ private func connectedSocketsBlocking(port: Int) throws -> Int {
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     try process.run()
-    // Read pipe before waitUntilExit: lsof lists every fd in this process,
+    // Read pipe before waiting for exit: lsof lists every fd in this process,
     // and under --parallel that output can exceed the 64KB pipe buffer,
     // deadlocking lsof on write while the parent waits for exit.
     let data = output.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+    guard process.waitForExit(timeout: 60) != nil else {
+        throw HTTPLeakTestError.lsofTimedOut
+    }
     let text = String(decoding: data, as: UTF8.self)
     let marker = ":\(port)->"
     return text.split(separator: "\n").filter { line in
@@ -334,5 +336,6 @@ private enum HTTPLeakTestError: Error {
     case connect
     case write
     case noSession
+    case lsofTimedOut
 }
 #endif

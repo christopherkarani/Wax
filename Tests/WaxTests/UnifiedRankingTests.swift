@@ -118,6 +118,29 @@ struct UnifiedRankingTests {
     }
 
     @Test
+    func distinctiveTokenRerankLeavesAWindowWithoutTextHitsUnchanged() {
+        let query = "why agents use text search instead of vector waxmcp recall"
+        let results = [
+            SearchResponse.Result(frameId: 1, score: 0.9, previewText: "Embedding neighbors only.", sources: [.vector]),
+            SearchResponse.Result(
+                frameId: 2,
+                score: 0.3,
+                previewText: "Agents use text search because the waxmcp playbook hard-codes recall mode text.",
+                sources: [.vector, .structured]
+            ),
+        ]
+
+        let ranked = UnifiedRanking.distinctiveTokenRerank(
+            results: results,
+            query: query,
+            nowMs: Self.nowMs,
+            maxWindow: 10
+        )
+
+        #expect(ranked == results)
+    }
+
+    @Test
     func distinctiveTokenRerankDoesNotPromoteRecentNoiseWithoutOverlap() {
         let query = "why agents use text search instead of vector waxmcp recall"
         let lexical = SearchResponse.Result(

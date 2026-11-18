@@ -55,6 +55,18 @@ package actor AsyncReadWriteLock {
         }
     }
 
+    /// Takes the write lock only if nobody holds it now; returns whether it did. Waiters
+    /// imply a holder, so this never jumps the queue.
+    package func tryWriteLock() -> Bool {
+        guard readers == 0, writers == 0 else { return false }
+        writers += 1
+        return true
+    }
+
+    package func writersWaitingForTesting() -> Int {
+        writerWaiters.count
+    }
+
     package func withReadLock<T: Sendable>(_ body: @Sendable () async throws -> T) async rethrows -> T {
         await readLock()
         do {

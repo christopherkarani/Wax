@@ -17,6 +17,6 @@ Use when the active Hermes memory provider is `wax-memory`.
 
 ## Recovery
 
-- If recall is empty, run `npx waxmcp --embedder minilm --transport http`
+- If recall is empty, run `npx waxmcp --transport http`
 - If vector search is disabled, rebuild both `wax-cli` and `wax-mcp` with MiniLM/Arctic traits
 - After `/reset` or `/resume`, rely on the provider session switch — do not invent a new session id

@@ -1,11 +1,17 @@
 import Foundation
 
+/// The vector changes pending in the WAL, reduced to each frame's last change.
 package struct PendingEmbeddingSnapshot: Equatable, Sendable {
+    /// The last embedding of each frame whose last change is an embedding, in WAL order.
     package let embeddings: [PutEmbedding]
+    /// Frames whose last change is a removal, ascending.
+    package let removedFrameIds: [UInt64]
+    /// Sequence of the newest pending vector change, whether or not it is in the window.
     package let latestSequence: UInt64?
 
-    package init(embeddings: [PutEmbedding], latestSequence: UInt64?) {
+    package init(embeddings: [PutEmbedding], removedFrameIds: [UInt64] = [], latestSequence: UInt64?) {
         self.embeddings = embeddings
+        self.removedFrameIds = removedFrameIds
         self.latestSequence = latestSequence
     }
 }
@@ -21,6 +27,7 @@ extension Wax {
         let mutation = PendingMutation(sequence: sequence, entry: entry)
         pendingMutations.append(mutation)
         pendingMutationSummary.record(mutation)
+        rememberDedupIndex?.record(entry)
     }
 
     /// Internal only because of the file split; call only while holding `opLock` for writing.
@@ -66,22 +73,25 @@ extension Wax {
 
         let storedChecksum = SHA256Checksum.digest(storedBytes)
 
-        let payloadOffset = dataEnd
-        let entry = WALEntry.putFrame(
-            PutFrame(
-                frameId: frameId,
-                timestampMs: timestampMs ?? currentTimestampMs(),
-                options: options,
-                payloadOffset: payloadOffset,
-                payloadLength: UInt64(storedBytes.count),
-                canonicalEncoding: canonicalEncoding,
-                canonicalLength: UInt64(content.count),
-                canonicalChecksum: canonicalChecksum,
-                storedChecksum: storedChecksum
-            )
+        var putFrame = PutFrame(
+            frameId: frameId,
+            timestampMs: timestampMs ?? currentTimestampMs(),
+            options: options,
+            payloadOffset: 0,
+            payloadLength: UInt64(storedBytes.count),
+            canonicalEncoding: canonicalEncoding,
+            canonicalLength: UInt64(content.count),
+            canonicalChecksum: canonicalChecksum,
+            storedChecksum: storedChecksum
         )
+        // The offset is fixed-width in the encoding, so the size is known before placement.
+        let walPayloadSize = try WALEntryCodec.encode(.putFrame(putFrame)).count
+        // May commit, which places segments and a TOC; place the payload only afterwards.
+        try await ensureWalCapacityLocked(payloadSize: walPayloadSize)
+        let payloadOffset = allocateDataLocked(length: UInt64(storedBytes.count))
+        putFrame.payloadOffset = payloadOffset
+        let entry = WALEntry.putFrame(putFrame)
         let payload = try WALEntryCodec.encode(entry)
-        try await ensureWalCapacityLocked(payloadSize: payload.count)
         let file = self.file
         let wal = self.wal
         let bytesToStore = storedBytes
@@ -90,7 +100,6 @@ extension Wax {
             return try wal.append(payload: payload)
         }
 
-        dataEnd += UInt64(storedBytes.count)
         appendPendingMutation(sequence: seq, entry: entry)
         dirty = true
         return frameId
@@ -101,7 +110,7 @@ extension Wax {
         options: FrameMetaSubset = .init(),
         compression: CanonicalEncoding = .plain
     ) async throws -> UInt64 {
-        try await withWriteLock {
+        try await withMutationLock {
             try await putLocked(content, options: options, timestampMs: nil, compression: compression)
         }
     }
@@ -112,7 +121,7 @@ extension Wax {
         compression: CanonicalEncoding = .plain,
         timestampMs: Int64
     ) async throws -> UInt64 {
-        try await withWriteLock {
+        try await withMutationLock {
             try await putLocked(content, options: options, timestampMs: timestampMs, compression: compression)
         }
     }
@@ -192,7 +201,7 @@ extension Wax {
             for (index, frame) in prepared.enumerated() {
                 try await ensureWalCapacityLocked(payloadSize: walPayloadSizes[index])
                 var putFrame = frame.putFrame
-                putFrame.payloadOffset = dataEnd
+                putFrame.payloadOffset = allocateDataLocked(length: UInt64(frame.storedBytes.count))
                 let entry = WALEntry.putFrame(putFrame)
                 let walPayload = try WALEntryCodec.encode(entry)
 
@@ -202,7 +211,6 @@ extension Wax {
                     try file.writeAll(storedBytes, at: payloadOffset)
                     return try wal.append(payload: walPayload)
                 }
-                dataEnd += UInt64(frame.storedBytes.count)
                 appendPendingMutation(sequence: seq, entry: entry)
                 frameIds.append(putFrame.frameId)
             }
@@ -221,14 +229,15 @@ extension Wax {
         // Capture values for Sendable closure
         let file = self.file
         let wal = self.wal
-        let startOffset = dataEnd
+        // One contiguous range for the batch, so its payloads go out in one I/O hop.
+        let startOffset = allocateDataLocked(length: UInt64(totalPayloadSize))
         let storedBytesArray = prepared.map { $0.storedBytes }
 
         var walPayloadsArray: [Data] = []
         walPayloadsArray.reserveCapacity(prepared.count)
         var entries: [WALEntry] = []
         entries.reserveCapacity(prepared.count)
-        var currentOffset = dataEnd
+        var currentOffset = startOffset
 
         for frame in prepared {
             var putFrame = frame.putFrame
@@ -262,7 +271,6 @@ extension Wax {
         }
 
         // Update state
-        dataEnd = currentOffset
         for (index, entry) in entries.enumerated() {
             appendPendingMutation(sequence: sequences[index], entry: entry)
         }
@@ -284,7 +292,7 @@ extension Wax {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != options.count (\(options.count))")
         }
 
-        return try await withWriteLock {
+        return try await withMutationLock {
             try await putBatchLocked(contents, options: options, timestampsMs: nil, compression: compression)
         }
     }
@@ -305,7 +313,7 @@ extension Wax {
             throw WaxError.encodingError(reason: "putBatch: contents.count (\(contents.count)) != timestampsMs.count (\(timestampsMs.count))")
         }
 
-        return try await withWriteLock {
+        return try await withMutationLock {
             try await putBatchLocked(contents, options: options, timestampsMs: timestampsMs, compression: compression)
         }
     }
@@ -350,10 +358,10 @@ extension Wax {
                     )
                 }
             }
-            if let staged = stagedVecIndex {
-                guard staged.dimension == dimension else {
+            if let configured = vectorConfiguration {
+                guard configured.dimension == dimension else {
                     throw WaxError.invalidToc(
-                        reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                        reason: "embedding dimension mismatch vs vec index configuration: expected \(configured.dimension), got \(dimension)"
                     )
                 }
             }
@@ -418,10 +426,10 @@ extension Wax {
                     )
                 }
             }
-            if let staged = stagedVecIndex {
-                guard staged.dimension == dimension else {
+            if let configured = vectorConfiguration {
+                guard configured.dimension == dimension else {
                     throw WaxError.invalidToc(
-                        reason: "embedding dimension mismatch vs staged vec index: expected \(staged.dimension), got \(dimension)"
+                        reason: "embedding dimension mismatch vs vec index configuration: expected \(configured.dimension), got \(dimension)"
                     )
                 }
             }
@@ -444,26 +452,64 @@ extension Wax {
         return snapshot.embeddings
     }
 
+    /// The pending vector changes with their WAL sequences, in WAL order.
+    /// Internal only because of the file split; use only under `opLock`.
+    func pendingVectorChangesLocked() -> [(sequence: UInt64, change: PendingVectorChange)] {
+        orderedPendingMutationsLocked().compactMap { mutation in
+            switch mutation.entry {
+            case .putEmbedding(let embedding): (mutation.sequence, .put(embedding))
+            case .removeEmbedding(let removal): (mutation.sequence, .remove(removal.frameId))
+            case .putFrame, .deleteFrame, .supersedeFrame: nil
+            }
+        }
+    }
+
+    /// The pending vector changes after `sequence` (all of them for `nil`), reduced to each
+    /// frame's last change in that window.
     package func pendingEmbeddingMutations(since sequence: UInt64?) async -> PendingEmbeddingSnapshot {
         await withReadLock {
-            guard pendingMutationSummary.hasPendingEmbedding else {
+            guard pendingMutationSummary.hasPendingVectorChange else {
                 return PendingEmbeddingSnapshot(embeddings: [], latestSequence: nil)
             }
-            var embeddings: [PutEmbedding] = []
-            embeddings.reserveCapacity(pendingMutations.count)
+            var changes: [PendingVectorChange] = []
             var latestSequence: UInt64?
-            for mutation in pendingMutations {
-                guard case .putEmbedding(let embedding) = mutation.entry else { continue }
-                latestSequence = mutation.sequence
-                if let sequence, mutation.sequence <= sequence { continue }
-                embeddings.append(embedding)
+            for (changeSequence, change) in pendingVectorChangesLocked() {
+                latestSequence = changeSequence
+                if let sequence, changeSequence <= sequence { continue }
+                changes.append(change)
             }
-            return PendingEmbeddingSnapshot(embeddings: embeddings, latestSequence: latestSequence)
+            let reduced = PendingVectorChange.lastChanges(changes)
+            return PendingEmbeddingSnapshot(
+                embeddings: reduced.embeddings,
+                removedFrameIds: reduced.removedFrameIds.sorted(),
+                latestSequence: latestSequence
+            )
+        }
+    }
+
+    /// Removes `frameId`'s vector at the next commit, and any embedding written for it before.
+    /// A frame with neither writes nothing.
+    package func removeEmbedding(frameId: UInt64) async throws {
+        try await withEmbeddingWriteLock {
+            try validateKnownFrameForMutationLocked(frameId)
+            // Photo and video rebuilds remove every retired frame's vector each time.
+            guard try await hasVectorToRemoveLocked(frameId: frameId) else { return }
+            // Format 1.0 cannot read this record, so no 1.0 build may open the file after it.
+            try await ensureHeaderPagesCurrentLocked()
+            let entry = WALEntry.removeEmbedding(RemoveEmbedding(frameId: frameId))
+            let payload = try WALEntryCodec.encode(entry)
+            try await ensureWalCapacityLocked(payloadSize: payload.count)
+            let wal = self.wal
+            let seq = try await io.run {
+                try wal.append(payload: payload)
+            }
+            appendPendingMutation(sequence: seq, entry: entry)
+            dirty = true
         }
     }
 
     package func delete(frameId: UInt64) async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             try validateKnownFrameForMutationLocked(frameId)
             let entry = WALEntry.deleteFrame(DeleteFrame(frameId: frameId))
             let payload = try WALEntryCodec.encode(entry)
@@ -478,7 +524,7 @@ extension Wax {
     }
 
     package func supersede(supersededId: UInt64, supersedingId: UInt64) async throws {
-        try await withWriteLock {
+        try await withMutationLock {
             guard supersededId != supersedingId else {
                 throw WaxError.invalidToc(reason: "supersedeFrame requires distinct ids")
             }
@@ -537,6 +583,8 @@ extension Wax {
     struct PendingMutationSummary {
         var putFrameCount: UInt64 = 0
         var hasPendingEmbedding = false
+        /// An embedding or a removal is pending.
+        var hasPendingVectorChange = false
         var latestPendingEmbeddingSequence: UInt64?
         var pendingEmbeddingDimension: UInt32?
         var pendingEmbeddingHasMixedDimensions = false
@@ -555,12 +603,16 @@ extension Wax {
                 putFrameCount &+= 1
             case .putEmbedding(let embedding):
                 hasPendingEmbedding = true
+                hasPendingVectorChange = true
                 latestPendingEmbeddingSequence = mutation.sequence
                 if let pendingEmbeddingDimension, pendingEmbeddingDimension != embedding.dimension {
                     pendingEmbeddingHasMixedDimensions = true
                 } else {
                     pendingEmbeddingDimension = embedding.dimension
                 }
+            case .removeEmbedding:
+                hasPendingVectorChange = true
+                latestPendingEmbeddingSequence = mutation.sequence
             case .deleteFrame, .supersedeFrame:
                 break
             }

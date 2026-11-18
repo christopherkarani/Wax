@@ -18,7 +18,7 @@ The builder issues a ``SearchRequest`` that runs across multiple search lanes si
 
 ### 2. Answer-Focused Reranking
 
-When `enableAnswerFocusedRanking` is true (default), the top candidates are reranked within a configurable window (`answerRerankWindow`, default 12).
+When `enableAnswerFocusedRanking` is true (default false), the top candidates are reranked within a configurable window (`answerRerankWindow`, default 12).
 
 Reranking factors:
 
@@ -106,10 +106,10 @@ config.maxSurrogates = 10
 // Search
 config.searchTopK = 32
 config.searchMode = .hybrid(alpha: 0.5)
-config.rrfK = 60
+config.rrfK = 10
 
 // Reranking
-config.enableAnswerFocusedRanking = true
+config.enableAnswerFocusedRanking = false
 config.answerRerankWindow = 12
 config.answerDistractorPenalty = 0.70
 ```

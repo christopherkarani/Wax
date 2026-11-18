@@ -17,6 +17,15 @@ enum TempFiles {
         defer { try? FileManager.default.removeItem(at: url) }
         return try body(url)
     }
+
+    static func withTempFile<T>(
+        fileExtension ext: String = "wax",
+        _ body: (URL) async throws -> T
+    ) async rethrows -> T {
+        let url = uniqueURL(fileExtension: ext)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try await body(url)
+    }
 }
 
 @Test func tempURLIsUnique() {

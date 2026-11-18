@@ -25,7 +25,7 @@ extension WaxCLI.MCP {
         @Option(name: .customLong("license-key"), help: "Wax license key (optional)")
         var licenseKey: String?
 
-        @Flag(name: .customLong("no-embedder"), help: "Disable MiniLM embedder")
+        @Flag(name: .customLong("no-embedder"), help: "Disable the embedder")
         var noEmbedder = false
 
         @Flag(name: .customLong("feature-license"), help: "Enable license validation (default disabled)")

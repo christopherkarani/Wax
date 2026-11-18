@@ -43,7 +43,7 @@ package enum AgentBrokerClient {
     /// Silence window after our spawned peer exits before startup fails.
     /// A bind-race winner answers within milliseconds; anything longer
     /// means no broker will ever serve this socket.
-    private static let peerExitGraceSeconds: TimeInterval = 1.0
+    private static let peerExitGrace: Duration = .seconds(1)
 
     /// How long a cancelled or failed start lets the launched broker exit on SIGTERM
     /// before it is SIGKILLed, so a broker mid-write can close its store cleanly.
@@ -126,8 +126,8 @@ package enum AgentBrokerClient {
         configuration: AgentBrokerConfiguration
     ) throws {
         guard try requestShutdown(configuration: configuration) else { return }
-        let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
-        while Date() < deadline {
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: shutdownTimeoutSeconds)
+        while ContinuousClock.now < deadline {
             if try brokerShutdownCompleted(
                 socketPath: configuration.socketPath,
                 storePath: configuration.storePath
@@ -215,6 +215,9 @@ package enum AgentBrokerClient {
         if configuration.requireVector {
             process.arguments?.append("--require-vector")
         }
+        if configuration.noRerank {
+            process.arguments?.append("--no-rerank")
+        }
         process.environment = ProcessInfo.processInfo.environment
 
         // Keep stdin and stdout on separate descriptors. Foundation may close a
@@ -236,12 +239,13 @@ package enum AgentBrokerClient {
         }
         onBrokerLaunched?(process.processIdentifier)
 
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        let launchedAt = ContinuousClock.now
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: timeoutSeconds)
         var observedExitStatus: Int32?
         var observedStderr: String?
-        var peerExitNotedAt: Date?
+        var peerExitNotedAt: ContinuousClock.Instant?
         var failedFast = false
-        while Date() < deadline {
+        while ContinuousClock.now < deadline {
             if let response = try await sendOffPool(
                 AgentBrokerRequest(id: "__ping__", command: "stats"),
                 socketPath: configuration.socketPath
@@ -261,7 +265,7 @@ package enum AgentBrokerClient {
                     observedStderr = await BlockingWork.run { readPipeText(stderrPipe) }
                 }
                 if peerExitNotedAt == nil {
-                    peerExitNotedAt = Date()
+                    peerExitNotedAt = ContinuousClock.now
                 }
             } else {
                 peerExitNotedAt = nil
@@ -272,7 +276,7 @@ package enum AgentBrokerClient {
             // answers within milliseconds), and the post-loop ping below
             // remains the last chance for a slow winner.
             if let noted = peerExitNotedAt,
-               Date().timeIntervalSince(noted) > peerExitGraceSeconds {
+               noted.duration(to: .now) > peerExitGrace {
                 failedFast = true
                 break
             }
@@ -292,6 +296,9 @@ package enum AgentBrokerClient {
             return observedExitStatus == nil
         }
 
+        // Recorded before the cleanup below stops it. A broker still running at the
+        // deadline was slow or stuck; one that had exited crashed or lost a race.
+        let runningAtDeadline = process.isRunning
         await terminateLaunchedBroker(process)
 
         if let observedExitStatus, observedExitStatus != EXIT_SUCCESS {
@@ -312,8 +319,33 @@ package enum AgentBrokerClient {
             throw BrokerClientError(message)
         }
 
-        throw BrokerClientError("Timed out waiting for broker startup.")
+        throw BrokerClientError(Self.startupTimeoutMessage(
+            waited: launchedAt.duration(to: .now),
+            pid: process.processIdentifier,
+            runningAtDeadline: runningAtDeadline,
+            stderr: observedStderr
+        ))
         #endif
+    }
+
+    /// Says how long the start waited and whether the broker was still running, so a
+    /// timeout on a loaded host can be told from a broker that hung or crashed.
+    static func startupTimeoutMessage(
+        waited: Duration,
+        pid: pid_t,
+        runningAtDeadline: Bool,
+        stderr: String?
+    ) -> String {
+        let seconds = Double(waited.components.seconds)
+            + Double(waited.components.attoseconds) / 1_000_000_000_000_000_000
+        var message = "Timed out waiting for broker startup after \(String(format: "%.1f", seconds))s"
+        message += runningAtDeadline
+            ? " (broker \(pid) was running but never answered its socket)."
+            : " (broker \(pid) had exited)."
+        if let stderr = stderr?.trimmingCharacters(in: .whitespacesAndNewlines), !stderr.isEmpty {
+            message += " stderr: \(stderr.suffix(2_000))"
+        }
+        return message
     }
 
     /// Returns only after the launched broker has exited, so a cancelled or failed
@@ -345,8 +377,8 @@ package enum AgentBrokerClient {
 
     /// Blocks until `process` exits or `seconds` pass. Returns whether it exited.
     private static func waitForExit(_ process: Process, seconds: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
-        while process.isRunning, Date() < deadline {
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: seconds)
+        while process.isRunning, ContinuousClock.now < deadline {
             usleep(10_000)
         }
         return !process.isRunning
@@ -366,8 +398,8 @@ package enum AgentBrokerClient {
 
     private static func shutdownStartedBroker(configuration: AgentBrokerConfiguration) async throws {
         guard try await BlockingWork.run({ try requestShutdown(configuration: configuration) }) else { return }
-        let deadline = Date().addingTimeInterval(shutdownTimeoutSeconds)
-        while Date() < deadline {
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: shutdownTimeoutSeconds)
+        while ContinuousClock.now < deadline {
             if try await brokerShutdownCompletedOffPool(
                 socketPath: configuration.socketPath,
                 storePath: configuration.storePath
@@ -469,8 +501,8 @@ package enum AgentBrokerClient {
             return false
         }
         kill(pid, SIGTERM)
-        let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline, !Task.isCancelled {
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: 2)
+        while ContinuousClock.now < deadline, !Task.isCancelled {
             let stillRunning = kill(pid, 0) == 0
             if !stillRunning, await !isSocketLiveOffPool(socketPath: configuration.socketPath) {
                 return true
@@ -686,9 +718,9 @@ package enum AgentBrokerClient {
     ) throws -> String? {
         var buffer = Data()
         // One overall deadline: a broker trickling bytes must not reset the clock per chunk.
-        let deadline = Date().addingTimeInterval(timeoutSeconds ?? responseTimeoutSeconds)
+        let deadline = ContinuousClock.Instant.deadline(afterSeconds: timeoutSeconds ?? responseTimeoutSeconds)
         while true {
-            let remainingMS = pollTimeoutMilliseconds(remaining: deadline.timeIntervalSinceNow)
+            let remainingMS = pollTimeoutMilliseconds(remaining: deadline.secondsRemaining)
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let pollResult = remainingMS > 0 ? poll(&descriptor, 1, remainingMS) : 0
             if pollResult == 0 {

@@ -5,6 +5,8 @@ import WaxCore
 extension FTS5SearchEngine {
     func enqueueStructuredOp(_ op: StructuredOp) {
         pendingStructuredOps.append(op)
+        structuredWriteGeneration &+= 1
+        entityAliasPresence = nil
         dirty = true
     }
 
@@ -14,6 +16,10 @@ extension FTS5SearchEngine {
     }
 
     func flushPendingStructuredOpsIfNeeded() async throws {
+        guard !pendingStructuredOps.isEmpty else { return }
+        await beginWrite()
+        defer { endWrite() }
+        // Another flush may have written these ops while this one waited for the gate.
         guard !pendingStructuredOps.isEmpty else { return }
 
         let ops = pendingStructuredOps
@@ -325,8 +331,13 @@ extension FTS5SearchEngine {
                 }
             }
         }
+        if let afterFlushWriteForTesting {
+            try await afterFlushWriteForTesting()
+        }
 
-        pendingStructuredOps.removeAll(keepingCapacity: true)
+        // Other calls can append ops while the write is awaited, and only a flush (which
+        // holds the write gate) removes them, so the written ops are still the first ones.
+        pendingStructuredOps.removeFirst(ops.count)
     }
 
     private struct FactObjectColumns {

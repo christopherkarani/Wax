@@ -316,6 +316,87 @@ package final class FDFile {
         }
     }
 
+    /// Writes `parts` back to back from `offset`, as `writeAll` of their concatenation would,
+    /// without first copying them into one buffer: one `pwritev` per chunk. Must write all
+    /// bytes or throw.
+    package func writeAll(contentsOf parts: [Data], at offset: UInt64) throws {
+        try ensureOpen()
+        let parts = parts.filter { !$0.isEmpty }
+        guard parts.count > 1 else {
+            if let part = parts.first {
+                try writeAll(part, at: offset)
+            }
+            return
+        }
+        try Self.withBuffers(of: parts[...], pinned: []) { buffers in
+            try writeAll(buffers: buffers, at: offset)
+        }
+    }
+
+    /// Calls `body` with every part's bytes pinned at once.
+    private static func withBuffers(
+        of parts: ArraySlice<Data>,
+        pinned: [UnsafeRawBufferPointer],
+        _ body: ([UnsafeRawBufferPointer]) throws -> Void
+    ) throws {
+        guard let first = parts.first else {
+            try body(pinned)
+            return
+        }
+        try first.withUnsafeBytes { buffer in
+            try withBuffers(of: parts.dropFirst(), pinned: pinned + [buffer], body)
+        }
+    }
+
+    /// Most iovecs passed to one `pwritev`, well under `IOV_MAX` on Darwin and Linux.
+    private static let maxIOVecCount = 64
+
+    private func writeAll(buffers: [UnsafeRawBufferPointer], at offset: UInt64) throws {
+        let total = buffers.reduce(0) { $0 + $1.count }
+        var totalWritten = 0
+        // Where the next unwritten byte is: buffers[part][partOffset].
+        var part = 0
+        var partOffset = 0
+        while totalWritten < total {
+            let currentOffset = try checkedOffset(offset, adding: totalWritten)
+            var iov: [iovec] = []
+            var budget = ioChunkLimit
+            var index = part
+            var start = partOffset
+            while index < buffers.count, budget > 0, iov.count < Self.maxIOVecCount {
+                guard let base = buffers[index].baseAddress else {
+                    throw WaxError.io("Unable to access write buffer")
+                }
+                let length = min(buffers[index].count - start, budget)
+                iov.append(iovec(iov_base: UnsafeMutableRawPointer(mutating: base + start), iov_len: length))
+                budget -= length
+                index += 1
+                start = 0
+            }
+            let result = pwritevWithFaults(iov, offset: currentOffset)
+            if result > 0 {
+                totalWritten += result
+                var advance = result
+                while advance > 0 {
+                    let left = buffers[part].count - partOffset
+                    if advance < left {
+                        partOffset += advance
+                        break
+                    }
+                    advance -= left
+                    part += 1
+                    partOffset = 0
+                }
+                continue
+            }
+            if result == 0 {
+                throw WaxError.io("pwritev returned 0 bytes")
+            }
+            if errno == EINTR { continue }
+            throw WaxError.io("pwritev failed: \(stringError())")
+        }
+    }
+
     // MARK: - Durability
 
     package func fsync() throws {
@@ -456,6 +537,33 @@ package final class FDFile {
         }
         faultInjectionState?.record(.pwrite(offset: UInt64(offset), length: requestedLength))
         return pwrite(fd, base, requestedLength, offset)
+    }
+
+    /// Like `pwriteWithFaults`: an injected short write keeps the first `maxBytes` bytes.
+    private func pwritevWithFaults(_ iov: [iovec], offset: off_t) -> Int {
+        let length = iov.reduce(0) { $0 + $1.iov_len }
+        var vectors = iov
+        var requestedLength = length
+        switch faultInjectionState?.nextWriteDirective() ?? .none {
+        case .none:
+            break
+        case .fail(let code):
+            errno = code
+            return -1
+        case .short(let maxBytes):
+            requestedLength = min(length, maxBytes)
+            var remaining = requestedLength
+            vectors = []
+            for var vector in iov where remaining > 0 {
+                vector.iov_len = min(vector.iov_len, remaining)
+                remaining -= vector.iov_len
+                vectors.append(vector)
+            }
+        }
+        faultInjectionState?.record(.pwrite(offset: UInt64(offset), length: requestedLength))
+        return vectors.withUnsafeBufferPointer { buffer in
+            pwritev(fd, buffer.baseAddress, Int32(buffer.count), offset)
+        }
     }
 
     private static func stringError() -> String {

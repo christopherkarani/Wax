@@ -1,5 +1,6 @@
 #if MCPServer
 import Foundation
+import WaxCore
 
 /// Waits for a task's value up to a deadline, then stops waiting.
 ///
@@ -7,7 +8,13 @@ import Foundation
 /// and some awaits (a JSON-RPC request the peer never answers) ignore
 /// cancellation. The task keeps running after the deadline; only the wait
 /// is bounded.
+///
+/// The deadline counts from the call. A GCD timer armed here resumes the
+/// caller; a timer task would count from whenever a cooperative thread picked
+/// it up, which on a busy pool is seconds late.
 enum MCPDeadline {
+    private static let timerQueue = DispatchQueue(label: "com.wax.mcp-deadline", qos: .userInitiated)
+
     static func value<T: Sendable>(
         of task: Task<T, Never>,
         within deadline: Duration,
@@ -16,10 +23,13 @@ enum MCPDeadline {
         let gate = Gate<T>()
         return await withCheckedContinuation { continuation in
             gate.install(continuation)
-            let timer = Task {
-                try? await Task.sleep(for: deadline)
+            let timer = DispatchSource.makeTimerSource(queue: timerQueue)
+            timer.schedule(deadline: AsyncTimeout.dispatchDeadline(after: deadline))
+            timer.setEventHandler {
                 gate.finish(fallback)
+                timer.cancel()
             }
+            timer.resume()
             Task {
                 let value = await task.value
                 timer.cancel()
@@ -34,16 +44,15 @@ enum MCPDeadline {
         private var continuation: CheckedContinuation<T, Never>?
 
         func install(_ continuation: CheckedContinuation<T, Never>) {
-            lock.lock()
-            self.continuation = continuation
-            lock.unlock()
+            lock.withLock { self.continuation = continuation }
         }
 
         func finish(_ value: T) {
-            lock.lock()
-            let pending = continuation
-            continuation = nil
-            lock.unlock()
+            let pending: CheckedContinuation<T, Never>? = lock.withLock {
+                let installed = continuation
+                continuation = nil
+                return installed
+            }
             pending?.resume(returning: value)
         }
     }

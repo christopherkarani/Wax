@@ -25,11 +25,7 @@ extension MemoryOrchestrator {
         let attached = readyEmbedderSnapshot
         let localEmbedder = attached
 
-        var docMeta = Metadata(metadata)
-        docMeta.entries[Self.contentHashMetadataKey] = contentHash
-        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
-            docMeta.entries["session_id"] = session.uuidString
-        }
+        let docMeta = rememberDocumentMetadata(metadata, contentHash: contentHash)
         let effectiveSessionId = docMeta.entries["session_id"]
         if let existingProbe = await wax.rememberDedupProbe(
             contentHash: contentHash,
@@ -123,6 +119,13 @@ extension MemoryOrchestrator {
                 chunkEmbedding = nil
             }
 
+            if let chunkEmbedding {
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: [chunk],
+                    metadata: docMeta.entries,
+                    embeddingDimensions: chunkEmbedding.count
+                ))
+            }
             // Put without identity so doc metadata stays user keys + hash.
             // `put(..., identity:)` stamps wax.embedding.* and the rematch
             // probe uses exact metadata equality without those keys.
@@ -229,6 +232,13 @@ extension MemoryOrchestrator {
                 "ingest batching incomplete: expected \(batchRanges.count) prepared embedding batches, got \(preparedEmbeddingsByBatch.count)"
             )
         }
+        if writeVectors {
+            try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                searchTexts: [nil],
+                metadata: docMeta.entries,
+                embeddingDimensions: nil
+            ))
+        }
         let docId = try await localSession.put(
             contentData,
             options: FrameMetaSubset(
@@ -262,6 +272,11 @@ extension MemoryOrchestrator {
                 guard let embeddings = preparedEmbeddingsByBatch[entry.index] else {
                     throw WaxError.io("missing prepared embeddings for batch \(entry.index)")
                 }
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: batchChunks,
+                    metadata: metadata,
+                    embeddingDimensions: embeddings.first?.count
+                ))
                 let frameIds = try await localSession.putBatch(
                     contents: batchContents,
                     embeddings: embeddings,
@@ -303,14 +318,82 @@ extension MemoryOrchestrator {
         )
     }
 
+    /// Texts up to this many UTF-8 bytes are tokenized on the caller's thread. Tokenizing never
+    /// suspends and grows with the text: a long remember held a cooperative thread for hundreds
+    /// of milliseconds, so longer texts move to a private queue. For a short text that hop
+    /// cost more than the tokenizing and cut 100k-passage ingest by about 10%.
+    static let inlineChunkingMaxBytes = 4_096
+
     /// Internal only for tests.
     func ingestChunks(for content: String) async -> [String] {
-        let chunks = await TextChunker.chunk(text: content, strategy: config.chunking)
-        guard config.fitsChunksToMiniLMInput else { return chunks }
-        return await MiniLMChunkSizing.fit(chunks)
+        await Self.ingestChunks(
+            for: content,
+            strategy: config.chunking,
+            fitsMiniLMInput: config.fitsChunksToMiniLMInput
+        )
     }
 
-    private static func rememberDedupEmbeddingIdentity(
+    /// `ingestChunks(for:)` of each text, in order. The texts are split into one run per
+    /// core and chunked concurrently: an import plans its documents one at a time, and
+    /// chunking them in turn was 60% of that planning (100k passages: 0.6 s of 1.0 s).
+    func ingestChunks(forEach texts: [String]) async -> [[String]] {
+        let strategy = config.chunking
+        let fitsMiniLMInput = config.fitsChunksToMiniLMInput
+        let runLength = max(1, (texts.count + ProcessInfo.processInfo.activeProcessorCount - 1)
+            / ProcessInfo.processInfo.activeProcessorCount)
+        return await withTaskGroup(of: (start: Int, chunks: [[String]]).self) { group in
+            for start in stride(from: 0, to: texts.count, by: runLength) {
+                let run = texts[start..<min(start + runLength, texts.count)]
+                group.addTask {
+                    var chunks: [[String]] = []
+                    chunks.reserveCapacity(run.count)
+                    for text in run {
+                        chunks.append(await Self.ingestChunks(
+                            for: text,
+                            strategy: strategy,
+                            fitsMiniLMInput: fitsMiniLMInput
+                        ))
+                    }
+                    return (start, chunks)
+                }
+            }
+            var all = [[String]](repeating: [], count: texts.count)
+            for await run in group {
+                all.replaceSubrange(run.start..<(run.start + run.chunks.count), with: run.chunks)
+            }
+            return all
+        }
+    }
+
+    private static func ingestChunks(
+        for content: String,
+        strategy: ChunkingStrategy,
+        fitsMiniLMInput: Bool
+    ) async -> [String] {
+        let work: @Sendable () async -> [String] = {
+            let chunks = await TextChunker.chunk(text: content, strategy: strategy)
+            guard fitsMiniLMInput else { return chunks }
+            return await MiniLMChunkSizing.fit(chunks)
+        }
+        if content.utf8.count <= Self.inlineChunkingMaxBytes {
+            return await work()
+        }
+        return await BlockingWork.runAsync(work)
+    }
+
+    /// Document metadata a remember writes: the caller's keys, the content hash and the
+    /// current session unless the caller set one. Internal only because of the file split.
+    func rememberDocumentMetadata(_ metadata: [String: String], contentHash: String) -> Metadata {
+        var docMeta = Metadata(metadata)
+        docMeta.entries[Self.contentHashMetadataKey] = contentHash
+        if docMeta.entries["session_id"] == nil, let session = currentSessionId {
+            docMeta.entries["session_id"] = session.uuidString
+        }
+        return docMeta
+    }
+
+    /// Internal only because of the file split.
+    static func rememberDedupEmbeddingIdentity(
         from identity: EmbeddingIdentity?
     ) -> RememberDedupEmbeddingIdentity? {
         guard let identity else { return nil }
@@ -323,42 +406,52 @@ extension MemoryOrchestrator {
         )
     }
 
+    /// What making an existing single-chunk document searchable takes: indexing its text,
+    /// embedding it, both or neither. Internal only because of the file split.
+    func singleChunkDocumentRepair(
+        documentId: UInt64,
+        text: String
+    ) async -> (indexText: Bool, embed: Bool) {
+        if await isSingleChunkDocumentSearchable(documentId: documentId, expectedText: text) {
+            return (false, false)
+        }
+        let indexText = config.enableTextSearch
+            ? !(await documentIsInTextIndex(documentId: documentId, text: text))
+            : false
+        let embed = config.enableVectorSearch
+            ? !(await documentHasEmbedding(frameId: documentId))
+            : false
+        return (indexText, embed)
+    }
+
     /// Re-index / re-embed an existing single-chunk document in place (0 new frames).
     /// `searchText` cannot be patched on a written frame; FTS and embeddings can.
     private func ensureSingleChunkDocumentSearchable(
         documentId: UInt64,
         text: String
     ) async throws {
-        if await isSingleChunkDocumentSearchable(documentId: documentId, expectedText: text) {
-            return
+        let repair = await singleChunkDocumentRepair(documentId: documentId, text: text)
+
+        if repair.indexText {
+            try await session.indexText(frameId: documentId, text: text)
         }
 
-        if config.enableTextSearch {
-            let alreadyIndexed = await documentIsInTextIndex(documentId: documentId, text: text)
-            if !alreadyIndexed {
-                try await session.indexText(frameId: documentId, text: text)
+        if repair.embed {
+            guard let attached = readyEmbedderSnapshot else {
+                throw WaxError.missingEmbedder
             }
-        }
-
-        if config.enableVectorSearch {
-            let alreadyEmbedded = await documentHasEmbedding(frameId: documentId)
-            if !alreadyEmbedded {
-                guard let attached = readyEmbedderSnapshot else {
-                    throw WaxError.missingEmbedder
-                }
-                let localEmbedder = attached
-                let embedding = try await Self.embedOne(
-                    text,
-                    attached: attached,
-                    cache: embeddingCache,
-                    timeout: config.ingestEmbeddingTimeout
+            let localEmbedder = attached
+            let embedding = try await Self.embedOne(
+                text,
+                attached: attached,
+                cache: embeddingCache,
+                timeout: config.ingestEmbeddingTimeout
+            )
+            try await wax.putEmbedding(frameId: documentId, vector: embedding)
+            if let identity = localEmbedder.identity {
+                try await ensureMemoryBindingIfNeeded(
+                    MemoryBindingCompatibility.binding(from: identity)
                 )
-                try await wax.putEmbedding(frameId: documentId, vector: embedding)
-                if let identity = localEmbedder.identity {
-                    try await ensureMemoryBindingIfNeeded(
-                        MemoryBindingCompatibility.binding(from: identity)
-                    )
-                }
             }
         }
     }
@@ -408,15 +501,6 @@ extension MemoryOrchestrator {
                 fallback: "re-embed this document"
             )
             return false
-        }
-    }
-
-    /// Throws on a corrupt segment instead of returning an empty set, so a
-    /// decode failure is never mistaken for "no frame has a vector".
-    static func vecSegmentFrameIds(bytes: Data) throws -> Set<UInt64> {
-        switch try VectorSerializer.decodeVecSegment(from: bytes) {
-        case .metal(_, _, let frameIds):
-            return Set(frameIds)
         }
     }
 
