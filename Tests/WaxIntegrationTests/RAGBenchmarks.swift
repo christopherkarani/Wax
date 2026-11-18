@@ -2,6 +2,7 @@
 import XCTest
 import Foundation
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 final class RAGPerformanceBenchmarks: XCTestCase {
@@ -52,7 +53,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     func testIngestHybridPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
 
         measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
             let url = Self.makeTempURL()
@@ -85,7 +86,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     func testIngestHybridBatchedPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
         let batchSize = 32
 
         measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
@@ -184,7 +185,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         let timeout = scale.timeout
 
         let factory = BenchmarkTextFactory(sentencesPerDocument: sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: vectorDimensions)
 
         measureAsync(timeout: timeout, iterations: iterations) {
             let url = Self.makeTempURL()
@@ -230,7 +231,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         let timeout = scale.timeout
 
         let factory = BenchmarkTextFactory(sentencesPerDocument: sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: vectorDimensions)
         let batchSize = 64
 
         measureAsync(timeout: timeout, iterations: iterations) {
@@ -429,7 +430,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     func testMemoryOrchestratorIngestPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
 
         measureAsync(timeout: scale.timeout, iterations: scale.iterations) {
             let url = Self.makeTempURL()
@@ -455,7 +456,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
         let iterations = max(3, min(5, scale.iterations))
 
         let stats = try await timedSamples(label: "memory_orchestrator_ingest", iterations: iterations, warmup: 0) {
@@ -486,7 +487,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
     func testMemoryOrchestratorRecallPerformance() async throws {
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
 
         try await TempFiles.withTempFile { url in
             var config = OrchestratorConfig.default
@@ -743,7 +744,7 @@ final class RAGPerformanceBenchmarks: XCTestCase {
         guard runSampledLatency else { throw XCTSkip("Set WAX_BENCHMARK_SAMPLES=1 to run sampled latency benchmarks.") }
         let scale = self.scale
         let factory = BenchmarkTextFactory(sentencesPerDocument: scale.sentencesPerDocument)
-        let embedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+        let embedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
 
         let clock = ContinuousClock()
         let batchSize = 64

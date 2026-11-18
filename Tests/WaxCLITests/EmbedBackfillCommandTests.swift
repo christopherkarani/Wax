@@ -4,6 +4,24 @@ import Wax
 import WaxCore
 @testable import wax_cli
 
+/// Writes vectors under the pre-mean-pooling MiniLM identity.
+private struct LegacyMiniLMEmbedder: EmbeddingProvider, Sendable {
+    let dimensions = 384
+    let normalize = true
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "Wax",
+        model: "MiniLMAll",
+        dimensions: 384,
+        normalized: true
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        var vector = [Float](repeating: 0, count: dimensions)
+        vector[abs(text.hashValue) % dimensions] = 1
+        return vector
+    }
+}
+
 struct EmbedBackfillCommandTests {
     @Test func waxCLIExposesEmbedBackfillCommand() throws {
         let source = try String(
@@ -90,5 +108,52 @@ struct EmbedBackfillCommandTests {
         let stats = await reopened.runtimeStats()
         #expect(stats.embeddingStatus == .disabled)
         try await reopened.close()
+    }
+    @Test(.disabled(
+        if: ProcessInfo.processInfo.environment["WAX_TEST_MINILM"] != "1",
+        "Set WAX_TEST_MINILM=1 to run the end-to-end MiniLM re-embed"
+    ))
+    func embedBackfillReembedsStoreBoundToSupersededMiniLM() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-reembed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("stale.wax")
+        let output = directory.appendingPathComponent("reembedded.wax")
+        do {
+            var config = OrchestratorConfig.default
+            config.automaticallyReembedSupersededVectors = false
+            let writer = try await MemoryOrchestrator(at: source, config: config, embedder: LegacyMiniLMEmbedder())
+            try await writer.remember("The quarterly budget review moved to Thursday afternoon.")
+            try await writer.remember("Grandma's apple pie needs a cold butter crust.")
+            try await writer.close()
+        }
+
+        var command = try EmbedBackfillCommand.parse([
+            "--direct-store",
+            "--store-path", source.path,
+            "--output", output.path,
+            "--format", "json",
+        ])
+        try await command.runAsync()
+
+        let sourceWax = try await Wax.open(at: source)
+        let sourceModel: String? = await sourceWax.memoryBinding()?.embeddingModel
+        try await sourceWax.close()
+        #expect(sourceModel == "MiniLMAll")
+
+        let outputWax = try await Wax.open(at: output)
+        let outputModel: String? = await outputWax.memoryBinding()?.embeddingModel
+        try await outputWax.close()
+        #expect(outputModel == "MiniLMAll-mean")
+
+        let reopened = try await StoreSession.open(at: output, requireVector: true)
+        try await reopened.waitUntilReadyForRemember()
+        let stats = await reopened.runtimeStats()
+        let hits = try await reopened.search(query: "When is the budget review?", mode: .vectorOnly, topK: 1)
+        try await reopened.close()
+        #expect(!stats.vectorsNeedReembed)
+        #expect(stats.framesWithoutVectors == 0)
+        #expect(hits.first?.previewText?.contains("budget") == true)
     }
 }

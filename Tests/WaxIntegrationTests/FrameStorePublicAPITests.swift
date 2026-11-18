@@ -12,7 +12,12 @@ func frameStoreCreatePutReadDeleteRoundTrip() async throws {
         let content = try await store.content(frameID: id)
         #expect(String(data: content, encoding: .utf8) == "hello frame store unique-payload")
         let frames = try await store.frames()
-        #expect(frames.contains(where: { $0.id == id && $0.status == .active && $0.kind == "note" }))
+        // Split out of #expect: the toolchain-bundled Testing macro expansion of
+        // this compound closure exceeds the type-checker's time budget.
+        let hasActiveNote = frames.contains { frame in
+            frame.id == id && frame.status == .active && frame.kind == "note"
+        }
+        #expect(hasActiveNote)
         try await store.delete(frameID: id)
         let after = try await store.frames()
         if let deleted = after.first(where: { $0.id == id }) {

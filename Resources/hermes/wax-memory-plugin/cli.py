@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -222,10 +223,10 @@ def _print_status(args: Any) -> int:
         print(provider.diagnose_vector_search())
     else:
         print("broker: not running")
-        print("hint: npx waxmcp --embedder minilm --transport http")
+        print("hint: npx waxmcp --transport http")
     conflicts = _hermes_config_conflicts(hermes_home)
     for conflict in conflicts:
-        print(f"configuration_error: {conflict}")
+        print(f"configuration_error: {conflict}", file=sys.stderr)
     return 0 if info.get("reachable") and info.get("query_embedding_available") and not conflicts else 1
 
 
@@ -259,6 +260,6 @@ def register_cli(subparser) -> None:
         elif command == "config":
             _print_config(args)
         else:
-            print("Usage: hermes wax-memory <status|doctor|config>")
+            print("Usage: hermes wax-memory <status|doctor|config>", file=sys.stderr)
 
     subparser.set_defaults(func=_dispatch)

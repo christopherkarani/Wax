@@ -21,6 +21,11 @@ package enum TextChunker {
     private static func tokenCountChunk(text: String, targetTokens: Int, overlapTokens: Int) async -> [String] {
         let cappedTarget = max(1, targetTokens)
         let cappedOverlap = max(0, overlapTokens)
+        // Every cl100k token covers at least one UTF-8 byte, so text with no more bytes
+        // than the target fits without being encoded.
+        if text.utf8.count <= cappedTarget {
+            return [text]
+        }
 
         let counter: TokenCounter
         do {
@@ -33,7 +38,7 @@ package enum TextChunker {
             )
             return [text]
         }
-        let tokens = await counter.encode(text)
+        let tokens = counter.encode(text)
         if tokens.count <= cappedTarget {
             return [text]
         }
@@ -47,7 +52,7 @@ package enum TextChunker {
         chunks.reserveCapacity(ranges.count)
         for range in ranges {
             let slice = Array(tokens[range])
-            let chunk = await counter.decode(slice)
+            let chunk = counter.decode(slice)
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 chunks.append(chunk)
             }
@@ -81,7 +86,7 @@ package enum TextChunker {
                     continuation.finish()
                     return
                 }
-                let tokens = await counter.encode(text)
+                let tokens = counter.encode(text)
                 if tokens.count <= cappedTarget {
                     continuation.yield(text)
                     continuation.finish()
@@ -96,7 +101,7 @@ package enum TextChunker {
 
                 for range in ranges {
                     let slice = Array(tokens[range])
-                    let chunk = await counter.decode(slice)
+                    let chunk = counter.decode(slice)
                     if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         continuation.yield(chunk)
                     }
@@ -104,6 +109,39 @@ package enum TextChunker {
                 continuation.finish()
             }
         }
+    }
+
+    /// Re-splits every chunk whose `inputTokenCount` exceeds `limit` until each piece fits, so an
+    /// embedder that truncates its input at `limit` tokens still sees all of the text. Pieces of a
+    /// split chunk do not overlap; they concatenate back to that chunk. A chunk that cannot be
+    /// split further (a single cl100k token) is kept as is.
+    package static func fit(
+        _ chunks: [String],
+        inputTokenLimit limit: Int,
+        inputTokenCount: (String) -> Int
+    ) async -> [String] {
+        guard limit > 0, let counter = try? await TokenCounter.shared() else { return chunks }
+        var fitted: [String] = []
+        fitted.reserveCapacity(chunks.count)
+        var pending = Array(chunks.reversed())
+        while let chunk = pending.popLast() {
+            let count = inputTokenCount(chunk)
+            let tokens = count > limit ? counter.encode(chunk) : []
+            guard tokens.count > 1 else {
+                fitted.append(chunk)
+                continue
+            }
+            // Size pieces by the observed token ratio; every piece is strictly shorter, so this ends.
+            let target = max(1, min(tokens.count - 1, tokens.count * limit / count))
+            let ranges = tokenCountChunkRanges(tokenCount: tokens.count, targetTokens: target, overlapTokens: 0)
+            var pieces: [String] = []
+            for range in ranges {
+                pieces.append(counter.decode(Array(tokens[range])))
+            }
+            pending.append(contentsOf: pieces.reversed())
+        }
+        let nonEmpty = fitted.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return nonEmpty.isEmpty ? chunks : nonEmpty
     }
 
     private static func tokenCountChunkRanges(

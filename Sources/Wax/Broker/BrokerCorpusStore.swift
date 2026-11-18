@@ -326,7 +326,7 @@ package enum BrokerCorpusStoreBuilder {
                 CorpusBuildManifest(
                     configuration: buildConfiguration,
                     sources: sourceFingerprints,
-                    generatedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
+                    generatedAtMs: BrokerClock.nowMs()
                 ),
                 for: standardizedTarget
             )
@@ -365,11 +365,33 @@ private extension BrokerCorpusStoreBuilder {
             embedderTuning: embedderTuning,
             structuredMemoryEnabled: false
         )
-        defer {
-            Task {
-                try? await sourceMemory.close()
-            }
+        // Close is awaited on both paths. A `defer { Task { ... } }` close is an
+        // unstructured task that can be dropped (for example when the CLI exits) and
+        // leaves the source store open while the next store is ingested.
+        let outcome: IngestOutcome
+        do {
+            outcome = try await ingestDocuments(
+                from: sourceMemory,
+                at: sourceStoreURL,
+                into: targetMemory,
+                noEmbedder: noEmbedder
+            )
+        } catch {
+            try? await sourceMemory.close()
+            throw error
         }
+        // The documents are already in the target, so a failed close of this
+        // read-only open must not mark the store skipped or abort the build.
+        try? await sourceMemory.close()
+        return outcome
+    }
+
+    static func ingestDocuments(
+        from sourceMemory: MemoryOrchestrator,
+        at sourceStoreURL: URL,
+        into targetMemory: MemoryOrchestrator,
+        noEmbedder: Bool
+    ) async throws -> IngestOutcome {
         let sourceDocuments = try await sourceMemory.corpusSourceDocuments()
         if noEmbedder {
             try await targetMemory.ingestCorpusDocumentsTextOnly(
@@ -542,6 +564,16 @@ private extension BrokerCorpusStoreBuilder {
         return false
     }
 
+    /// Corpus opens are brief: a superseded-vector re-embed would be cancelled by `close()`
+    /// before its first checkpoint, so it stays with the long-lived broker session.
+    package static func memoryConfig(structuredMemoryEnabled: Bool) -> OrchestratorConfig {
+        var config = OrchestratorConfig.default
+        config.enableStructuredMemory = structuredMemoryEnabled
+        config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
+        return config
+    }
+
     static func openMemory(
         at url: URL,
         noEmbedder: Bool,
@@ -549,8 +581,7 @@ private extension BrokerCorpusStoreBuilder {
         embedderTuning: CommandLineEmbedderRuntimeTuning,
         structuredMemoryEnabled: Bool
     ) async throws -> MemoryOrchestrator {
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = structuredMemoryEnabled
+        let config = memoryConfig(structuredMemoryEnabled: structuredMemoryEnabled)
         let request = try HostEmbeddingReadiness.request(
             noEmbedder: noEmbedder,
             requireVector: false,

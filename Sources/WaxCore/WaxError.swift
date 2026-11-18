@@ -23,8 +23,13 @@ public enum WaxError: Error, LocalizedError, Sendable {
     case invalidEmbedding(reason: String)
     /// Vector search is enabled but no embedding provider is configured.
     case missingEmbedder
-    /// A commit was attempted with pending embeddings but no staged vector index.
+    /// A commit was attempted with pending embeddings before the vector index's dimension and
+    /// similarity were set, in a store without committed vectors.
     case vectorIndexNotStaged
+    /// Vector-only search was requested while the store's vectors, written by a superseded
+    /// revision of the embedding model, are being re-embedded. `progress` is the fraction
+    /// (0...1) of the store already re-embedded. Text and hybrid search keep working.
+    case vectorsRebuilding(reason: String, progress: Double)
 
     public var errorDescription: String? {
         switch self {
@@ -61,7 +66,12 @@ public enum WaxError: Error, LocalizedError, Sendable {
         case .missingEmbedder:
             return "Vector search requires an embedding provider; set Memory.Config.embedding or disable vector search."
         case .vectorIndexNotStaged:
-            return "vector index must be staged before committing embeddings"
+            return "vector index dimension and similarity must be set before committing the first embeddings"
+        case .vectorsRebuilding(let reason, let progress):
+            let percent = Int((min(max(progress, 0), 1) * 100).rounded(.down))
+            return "Vector search is unavailable until stored vectors are re-embedded (\(reason); \(percent)% done). "
+                + "Text and hybrid search use the text lane meanwhile; keep the store open to finish, "
+                + "or run `wax-cli embed-backfill --direct-store` on a copy."
         }
     }
 }

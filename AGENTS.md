@@ -60,9 +60,10 @@ Edit one path.
 
 ## Toolchain and Verification
 
-- Swift 6.1+ package traits. Default trait: `MiniLMEmbeddings`. Opt-in: `ArcticEmbeddings`, `MCPServer`, `WaxRepo`. Linux CI uses Swift 6.2.
-- Day-to-day: `swift test --filter <TestTargetOrCase>`. MCP process tests require `--traits MCPServer`. MiniLM/Arctic suites stay skipped unless `WAX_TEST_MINILM=1` / `WAX_TEST_ARCTIC=1`.
-- Do not start with unfiltered `swift test` — it pulls benches. PR gate: `bash Resources/scripts/quality/production_readiness_gates.sh full` (skips soak/burn benches).
+- Swift 6.2+ (`swift-tools-version: 6.2`; `@concurrent` needs it). Package traits. Default traits: `MiniLMEmbeddings`, `E5Embeddings`, `MiniLMReranker`. Opt-in: `ArcticEmbeddings`, `MCPServer`, `WaxRepo`. Linux CI uses Swift 6.2.
+- Day-to-day: `swift test --filter <TestTargetOrCase>`. MCP process tests require `--traits MCPServer`. MiniLM/Arctic/e5 suites stay skipped unless `WAX_TEST_MINILM=1` / `WAX_TEST_ARCTIC=1` / `WAX_TEST_E5=1`.
+- Do not start with unfiltered `swift test` — it pulls benches. PR gate: `bash Resources/scripts/quality/production_readiness_gates.sh full` (skips soak/burn benches). CI also runs `opt-in-configs` (MiniLM inference + `--traits WaxRepo`); Arctic stays opt-in.
+- Tests must not `setenv`/`unsetenv`: `--parallel` runs suites concurrently. Inject an `environment:` dictionary into the code under test (or into a spawned `Process`). Assert ordering/events, not tight wall-clock bounds.
 - Linux CI (`.github/workflows/waxcore-linux.yml`) is WaxCore + Wax + `wax-cli`/`wax-mcp` with `default,MCPServer` and `swift test --filter WaxCoreTests`. It is not a full Apple/integration proof. Never add `-DGRDBCUSTOMSQLITE`.
 - After Linux workflow edits: `bash Resources/scripts/quality/linux_ci_workflow_tests.sh`. After Hermes plugin edits: `bash Resources/scripts/quality/hermes_plugin_tests.sh`.
 - Linux `Package.swift` excludes Darwin-only integration files via `waxIntegrationLinuxExcludes`; keep that list honest (`PackageTraitManifestTests`).
@@ -81,3 +82,5 @@ Edit one path.
 - Video RAG does not transcribe and does not store media bytes; the host supplies transcripts.
 - Photos iCloud-only assets are metadata-only / degraded.
 - Broker start timeout default is `WAX_BROKER_START_TIMEOUT_SECS=10`; do not drop it back to 5s (parallel process tests).
+- A cancelled or timed-out broker start sends SIGTERM and waits up to 2s before SIGKILL, then up to 5s to reap: up to 7s more on that path. The daemon must exit within the 2s grace (`daemon_sigterm_smoke.sh`).
+- Daemon graceful shutdown drains admitted requests for at most 1s, but closing the store waits for a command already running under the store's locks, such as a long remember or a migration. That command extends shutdown until it completes; a second SIGTERM/SIGINT forces the exit (`_exit(128 + signal)`).

@@ -2,26 +2,10 @@ import CoreGraphics
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 import WaxCore
 
-private struct TestVideoEmbedder: MultimodalEmbeddingProvider {
-    let executionMode: ProviderExecutionMode = .onDeviceOnly
-    let dimensions: Int = 8
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(provider: "Test", model: "Multimodal", dimensions: 8, normalized: true)
-
-    func embed(text: String) async throws -> [Float] {
-        let hash = text.utf8.reduce(0) { $0 &+ Int($1) }
-        let raw = (0..<dimensions).map { i in Float((hash &+ i) % 97) / 97.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-
-    func embed(image: CGImage) async throws -> [Float] {
-        let hash = (image.width &* 31) &+ image.height
-        let raw = (0..<dimensions).map { i in Float((hash &+ i &* 13) % 101) / 101.0 }
-        return VectorMath.normalizeL2(raw)
-    }
-}
+private let testVideoEmbedder = ByteSumMultimodalEmbedder(model: "Multimodal")
 
 private struct TestTranscriptProvider: VideoTranscriptProvider {
     static let token = "INGEST_TOKEN"
@@ -80,10 +64,14 @@ func videoRAGTypesAndOrchestratorTakeVideoIDNotRawString() throws {
     #expect(types.contains("case assetIDs([VideoID])"))
     #expect(!types.contains("case assetIDs([String])"))
 
-    let orchestrator = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/VideoRAG/VideoRAGOrchestrator.swift"),
-        encoding: .utf8
-    )
+    let orchestratorDir = repoRoot.appendingPathComponent("Sources/Wax/VideoRAG")
+    let orchestratorFiles = try FileManager.default.contentsOfDirectory(atPath: orchestratorDir.path)
+        .filter { $0.hasPrefix("VideoRAGOrchestrator") && $0.hasSuffix(".swift") }
+        .sorted()
+    try #require(orchestratorFiles.contains("VideoRAGOrchestrator.swift"))
+    let orchestrator = try orchestratorFiles
+        .map { try String(contentsOf: orchestratorDir.appendingPathComponent($0), encoding: .utf8) }
+        .joined(separator: "\n")
     #expect(!orchestrator.contains("VideoID(source: .file, id: file.id)"))
 }
 
@@ -106,7 +94,7 @@ func videoRAGFileIngestWritesSearchableTranscriptAndRecallFindsIt() async throws
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -148,7 +136,7 @@ func videoRAGFileIngestRecallWithThumbsIsDeterministic() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -238,7 +226,7 @@ func videoRAGFileIngestRespectsCaptureTimeRangeForSegmentSearch() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: SegmentScopedTranscriptProvider()
         )
 
@@ -268,7 +256,7 @@ func videoRAGRejectsNetworkTranscriptProviderByDefault() async throws {
             _ = try await VideoRAGOrchestrator(
                 storeURL: url,
                 config: .default,
-                embedder: TestVideoEmbedder(),
+                embedder: testVideoEmbedder,
                 transcriptProvider: NetworkTranscriptProvider()
             )
             Issue.record("Expected WaxError for network transcript provider")
@@ -304,7 +292,7 @@ func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -337,6 +325,117 @@ func videoRAGIngestFailureKeepsSuccessfullyIngestedFiles() async throws {
     }
 }
 
+private struct FailingTranscriptProvider: VideoTranscriptProvider {
+    struct TranscriptUnavailable: Error {}
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        throw TranscriptUnavailable()
+    }
+}
+
+@Test
+func videoRAGTranscriptFailureFallsBackToFrameOnlyIngest() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 60
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 1
+        config.searchTopK = 20
+
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: testVideoEmbedder,
+            transcriptProvider: FailingTranscriptProvider()
+        )
+
+        let videoID = VideoID(source: .file, id: "frames-only")
+        try await rag.ingest(files: [VideoFile(id: videoID, url: mp4Url, captureDate: nil)])
+        try await rag.flush()
+
+        let query = VideoQuery(
+            text: "keyframe",
+            timeRange: nil,
+            videoIDs: [videoID],
+            resultLimit: 5,
+            segmentLimitPerVideo: 5,
+            contextBudget: VideoContextBudget(maxTextTokens: 200, maxThumbnails: 0, maxTranscriptLinesPerSegment: 2)
+        )
+        let ctx = try await rag.recall(query)
+        #expect(ctx.items.count == 1)
+        #expect(ctx.items.first?.videoID == videoID)
+        let segments = ctx.items.first?.segments ?? []
+        #expect(!segments.isEmpty)
+        let hasTranscriptText = segments.contains { !($0.transcriptSnippet ?? "").isEmpty }
+        #expect(!hasTranscriptText)
+        #expect(ctx.diagnostics.transcriptUnavailableVideoCount == 1)
+    }
+}
+
+/// Simulates a provider whose own work is cancelled (e.g. a network call) and that reports
+/// it with its own error type instead of `CancellationError`.
+private struct CancellationObservingTranscriptProvider: VideoTranscriptProvider {
+    struct ProviderCancelled: Error {}
+    let executionMode: ProviderExecutionMode = .onDeviceOnly
+    let started: AsyncStream<Void>.Continuation
+
+    func transcript(for request: VideoTranscriptRequest) async throws -> [VideoTranscriptChunk] {
+        _ = request
+        started.yield()
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        throw ProviderCancelled()
+    }
+}
+
+@Test
+func videoRAGTranscriptCancellationPropagatesInsteadOfFallingBack() async throws {
+    try await TempFiles.withTempFile { url in
+        let mp4Url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer { try? FileManager.default.removeItem(at: mp4Url) }
+
+        try await VideoRAGTestVideoGenerator.writeTinyMP4(to: mp4Url, width: 32, height: 32, frameCount: 2, fps: 2)
+
+        var config = VideoRAGConfig.default
+        config.segmentDurationSeconds = 60
+        config.segmentOverlapSeconds = 0
+        config.maxSegmentsPerVideo = 1
+
+        let (started, startedContinuation) = AsyncStream<Void>.makeStream()
+        let rag = try await VideoRAGOrchestrator(
+            storeURL: url,
+            config: config,
+            embedder: testVideoEmbedder,
+            transcriptProvider: CancellationObservingTranscriptProvider(started: startedContinuation)
+        )
+
+        let videoID = VideoID(source: .file, id: "cancelled")
+        let ingest = Task {
+            try await rag.ingest(files: [VideoFile(id: videoID, url: mp4Url, captureDate: nil)])
+        }
+        var iterator = started.makeAsyncIterator()
+        _ = await iterator.next()
+        ingest.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await ingest.value
+        }
+        try await rag.flush()
+    }
+}
+
 @Test
 func videoRAGFileIngestWithConcurrentEmbeddingIsDeterministic() async throws {
     try await TempFiles.withTempFile { url in
@@ -357,7 +456,7 @@ func videoRAGFileIngestWithConcurrentEmbeddingIsDeterministic() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -398,7 +497,7 @@ func videoRAGFileIngestSupportsBoundedConcurrentIngest() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -477,7 +576,7 @@ func videoRAGRecallTracksThumbnailUnavailableDiagnosticsForPhotosBackedItems() a
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: nil
         )
 
@@ -553,7 +652,7 @@ func videoRAGPhotosBackedLocalFileURLEnablesThumbnails() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: nil
         )
 
@@ -643,7 +742,7 @@ func videoRAGThumbnailBudgetDoesNotConsumeOnUnavailableBeforeFileBackedItems() a
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: FixedTokenTranscriptProvider(token: token)
         )
         try await rag.ingest(files: [VideoFile(id: "file-second", url: mp4Url, captureDate: nil)])
@@ -688,7 +787,7 @@ func videoRAGConfigIncludeThumbnailsFalseProducesNoThumbnails() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -731,7 +830,7 @@ func videoRAGFileIngestQueryWithVideoIDFilterReturnsOnlyMatchingVideos() async t
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 
@@ -779,7 +878,7 @@ func videoRAGDiagnosticsThumbnailCountsForFileBacked() async throws {
         let rag = try await VideoRAGOrchestrator(
             storeURL: url,
             config: config,
-            embedder: TestVideoEmbedder(),
+            embedder: testVideoEmbedder,
             transcriptProvider: TestTranscriptProvider()
         )
 

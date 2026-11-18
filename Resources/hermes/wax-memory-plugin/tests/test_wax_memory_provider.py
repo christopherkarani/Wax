@@ -198,6 +198,29 @@ class AutoStartTests(unittest.TestCase):
             self.assertFalse(manager.auto_start(timeout=0))
         popen.assert_not_called()
 
+    def test_auto_start_refuses_loopback_aliases_the_server_treats_as_remote(self) -> None:
+        # wax-mcp only treats localhost/127.0.0.1/::1 as loopback; 127.0.0.2
+        # would make it demand an auth token and refuse to start.
+        manager = plugin._WaxMCPManager("http://127.0.0.2:3000/mcp")
+        with mock.patch.object(manager, "probe", return_value={"reachable": False}), mock.patch.object(
+            manager, "_find_wax_mcp_binary", return_value="/tmp/wax-mcp"
+        ), mock.patch.object(plugin.subprocess, "Popen") as popen:
+            self.assertFalse(manager.auto_start(timeout=0))
+        popen.assert_not_called()
+
+    def test_auto_start_binds_ipv4_loopback_for_localhost_endpoint(self) -> None:
+        manager = plugin._WaxMCPManager("http://localhost:3000/mcp")
+        process = self.Process()
+        probes = iter(({"reachable": False}, {"reachable": True}))
+        with mock.patch.object(manager, "probe", side_effect=lambda: next(probes)), mock.patch.object(
+            manager, "_find_wax_mcp_binary", return_value="/tmp/wax-mcp"
+        ), mock.patch.object(plugin.subprocess, "Popen", return_value=process) as popen, mock.patch.object(
+            plugin.time, "sleep", return_value=None
+        ):
+            self.assertTrue(manager.auto_start(timeout=1))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("--http-host") + 1], "127.0.0.1")
+
     def test_auto_start_refuses_https_endpoint(self) -> None:
         manager = plugin._WaxMCPManager("https://localhost:3000/mcp")
         with mock.patch.object(manager, "probe", return_value={"reachable": False}), mock.patch.object(
@@ -242,6 +265,68 @@ class AutoStartTests(unittest.TestCase):
         self.assertTrue(process.killed)
         self.assertGreaterEqual(process.wait_calls, 2)
         self.assertIsNone(manager._process)
+
+
+class HTTPAuthTests(unittest.TestCase):
+    class Response:
+        status_code = 200
+        text = '{"jsonrpc":"2.0","id":1,"result":{}}'
+        headers = {"Mcp-Session-Id": "sid-1"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def test_auth_token_env_wins_over_config(self) -> None:
+        with mock.patch.dict(os.environ, {"WAX_MCP_HTTP_AUTH_TOKEN": " env-token "}):
+            self.assertEqual(plugin.resolve_auth_token({"auth_token": "file-token"}), "env-token")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(plugin.resolve_auth_token({"auth_token": "file-token"}), "file-token")
+            self.assertIsNone(plugin.resolve_auth_token({"auth_token": "  "}))
+            self.assertIsNone(plugin.resolve_auth_token({}))
+
+    def test_http_client_sends_bearer_token_on_every_request(self) -> None:
+        fake_requests = mock.Mock()
+        fake_requests.post.return_value = self.Response()
+        with mock.patch.object(plugin, "_HAS_HTTP", True), mock.patch.object(
+            plugin, "requests", fake_requests, create=True
+        ):
+            client = plugin._WaxHTTPClient("http://127.0.0.1:3000/mcp", auth_token="s3cret")
+            client.call_tool("stats", {})
+            client.close()
+        self.assertGreaterEqual(fake_requests.post.call_count, 2)
+        for call in fake_requests.post.call_args_list:
+            self.assertEqual(call.kwargs["headers"].get("Authorization"), "Bearer s3cret")
+        delete_headers = fake_requests.delete.call_args.kwargs["headers"]
+        self.assertEqual(delete_headers.get("Authorization"), "Bearer s3cret")
+        self.assertEqual(delete_headers.get("MCP-Session-Id"), "sid-1")
+
+    def test_http_client_omits_authorization_without_token(self) -> None:
+        client = plugin._WaxHTTPClient("http://127.0.0.1:3000/mcp")
+        self.assertNotIn("Authorization", client._headers())
+
+    def test_provider_passes_configured_token_to_transport(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            provider = plugin.WaxMemoryProvider(config={"auth_token": "from-config"})
+        self.assertEqual(provider._client.auth_token, "from-config")
+        self.assertEqual(provider._manager.auth_token, "from-config")
+
+
+class CLIStreamTests(unittest.TestCase):
+    def test_usage_error_goes_to_stderr_not_stdout(self) -> None:
+        parser = CLIDoctorTests.Parser()
+        plugin_cli.register_cli(parser)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), mock.patch.object(sys, "stderr", stderr):
+            parser.defaults["func"](Namespace(wax_memory_command=None))
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Usage: hermes wax-memory", stderr.getvalue())
 
 
 class DiagnosticsTests(unittest.TestCase):

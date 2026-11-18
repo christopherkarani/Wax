@@ -40,11 +40,21 @@ extension MemoryOrchestrator {
     }
 
     package func corpusSourceDocuments() async throws -> [CorpusSourceDocument] {
+        try await corpusSourceDocuments(matchingMetadata: { _ in true })
+    }
+
+    /// Active document frames whose metadata passes `include`. The predicate
+    /// runs on frame metadata before any payload is read, so callers that only
+    /// need a narrow slice (one type + project) skip decoding the rest.
+    package func corpusSourceDocuments(
+        matchingMetadata include: ([String: String]) -> Bool
+    ) async throws -> [CorpusSourceDocument] {
         let frameMetas = await wax.frameMetas()
         var documentMetas: [FrameMeta] = []
         documentMetas.reserveCapacity(frameMetas.count)
 
         for meta in frameMetas where meta.status == .active && meta.supersededBy == nil && meta.role == .document && meta.payloadLength > 0 {
+            guard include(meta.metadata?.entries ?? [:]) else { continue }
             documentMetas.append(meta)
         }
 

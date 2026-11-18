@@ -1,19 +1,21 @@
 import Foundation
+import Wax
 import WaxTextSearch
 
 /// Deterministic query-aware answer extractor over retrieved RAG items.
-/// Keeps Wax fully offline while producing concise answer spans for benchmarking
-/// and deterministic answer-style contexts.
+/// Test-only benchmark support: it scores the long-memory benchmark and FastRAG tests
+/// with heuristics tuned to their fixture vocabulary (owners, launch dates, flights,
+/// allergies, pets, dentist appointments), so it lives here rather than in `Wax`.
 ///
 /// - Important: This is a deterministic heuristic extractor for offline pipelines.
 ///   It is intentionally lightweight and predictable, but not a substitute for
 ///   full language-model reasoning.
-package struct DeterministicAnswerExtractor: Sendable {
+struct DeterministicAnswerExtractor: Sendable {
     private let analyzer = QueryAnalyzer()
 
-    package init() {}
+    init() {}
 
-    package func extractAnswer(query: String, items: [RAGContext.Item]) -> String {
+    func extractAnswer(query: String, items: [RAGContext.Item]) -> String {
         let normalizedItems = items
             .map { (item: $0, text: Self.cleanText($0.text)) }
             .filter { !$0.text.isEmpty }

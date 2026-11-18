@@ -75,6 +75,22 @@ func saveExamples(memory: Memory) async throws {
 
 Behind the scenes Wax chunks text, embeds when a provider is present, indexes BM25, and appends frames through the WAL.
 
+To import many texts, `save(contentsOf:)` embeds and writes them in batches. It returns one frame ID per text, in order, the same IDs a loop of `save(_:metadata:)` would return (including duplicates). It is not atomic: if it throws, earlier texts may already be saved.
+
+```swift
+import Foundation
+import Wax
+
+func importNotes(memory: Memory, notes: [String]) async throws -> [UInt64] {
+    let ids = try await memory.save(contentsOf: notes, metadata: ["source": "import"])
+    let tagged = try await memory.save(contentsOf: [
+        (text: "Sprint review notes", metadata: ["day": "2026-08-15"]),
+        (text: "Retro action items", metadata: ["day": "2026-08-16"]),
+    ])
+    return ids + tagged
+}
+```
+
 ## Search
 
 ```swift
@@ -142,6 +158,29 @@ func diagnosticsExample(memory: Memory) async throws {
     print(stats.vectorSearchEnabled, stats.queryEmbedderConfigured, stats.embeddingStatus)
 }
 ```
+
+### Context budget, time phrases, and delete
+
+```swift
+import Foundation
+import Wax
+
+func budgetAndDeleteExample(memory: Memory) async throws {
+    let frameID = try await memory.save("Draft agenda for the Lisbon offsite")
+
+    // A large topK needs a larger token budget to return every hit.
+    let wide = try await memory.search("offsite") { options in
+        options.topK = 20
+        options.maxContextTokens = 8_000
+        options.inferTimeRange = false // search all time even for "last week" queries
+    }
+    print("items:", wide.items.count, "inferred:", String(describing: wide.diagnostics?.inferredTimeRange))
+
+    try await memory.delete(frameID: frameID)
+}
+```
+
+`maxContextTokens` defaults to the store budget (1,500 tokens) and is clamped to `Memory.SearchOptions.maxContextTokensRange`. Past-looking phrases such as "last week" filter by save time unless `inferTimeRange` is `false`; future phrases such as "tomorrow" never filter.
 
 ## Lifecycle
 

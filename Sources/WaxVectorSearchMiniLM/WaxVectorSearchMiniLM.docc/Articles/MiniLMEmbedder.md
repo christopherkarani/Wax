@@ -73,16 +73,14 @@ Text is tokenized using the full BERT WordPiece pipeline:
 
 ### Sequence Length Optimization
 
-Instead of always padding to 512 tokens, the tokenizer selects the smallest bucket that fits the longest text in each batch:
+Inputs are truncated at 256 tokens, the `max_seq_length` of sentence-transformers all-MiniLM-L6-v2, so vectors match the reference model. Text search still indexes the full chunk. Instead of always padding to 256 tokens, the tokenizer selects the smallest bucket that fits the longest text in each batch:
 
 | Bucket | Use Case |
 |--------|----------|
 | 32 | Short phrases |
 | 64 | Single sentences |
 | 128 | Short paragraphs |
-| 256 | Long paragraphs |
-| 384 | Multi-paragraph text |
-| 512 | Maximum (full BERT limit) |
+| 256 | Maximum (sentence-transformers limit) |
 
 This reduces computation by 2-4x for typical inputs.
 
@@ -134,7 +132,7 @@ The embedder reports its identity for provenance tracking:
 embedder.identity
 // EmbeddingIdentity(
 //     provider: "Wax",
-//     model: "MiniLMAll",
+//     model: "MiniLMAll-mean",
 //     dimensions: 384,
 //     normalized: true
 // )

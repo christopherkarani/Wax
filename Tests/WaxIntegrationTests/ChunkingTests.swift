@@ -22,17 +22,17 @@ func tokenChunkingHonorsOverlapStrideWhenPossible() async throws {
     #expect(chunks.count >= 2)
 
     let counter = try await TokenCounter()
-    let tokens = await counter.encode(text)
+    let tokens = counter.encode(text)
     #expect(tokens.count > 10)
 
-    let expected0 = await counter.decode(Array(tokens[0..<10]))
-    let expected1 = await counter.decode(Array(tokens[7..<min(17, tokens.count)]))
+    let expected0 = counter.decode(Array(tokens[0..<10]))
+    let expected1 = counter.decode(Array(tokens[7..<min(17, tokens.count)]))
 
     #expect(chunks[0] == expected0)
     #expect(chunks[1] == expected1)
 
-    let chunk0Tokens = await counter.encode(chunks[0])
-    let chunk1Tokens = await counter.encode(chunks[1])
+    let chunk0Tokens = counter.encode(chunks[0])
+    let chunk1Tokens = counter.encode(chunks[1])
     #expect(Array(chunk0Tokens.suffix(3)) == Array(chunk1Tokens.prefix(3)))
 }
 
@@ -45,10 +45,10 @@ func tokenChunkingDisablesOverlapWhenOverlapWouldStall() async throws {
     #expect(chunks.count >= 2)
 
     let counter = try await TokenCounter()
-    let tokens = await counter.encode(text)
+    let tokens = counter.encode(text)
     #expect(tokens.count > 10)
 
-    let expected1 = await counter.decode(Array(tokens[10..<min(20, tokens.count)]))
+    let expected1 = counter.decode(Array(tokens[10..<min(20, tokens.count)]))
     #expect(chunks[1] == expected1)
 }
 

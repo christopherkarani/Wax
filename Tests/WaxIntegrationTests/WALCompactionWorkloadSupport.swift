@@ -1,5 +1,6 @@
 import Foundation
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 enum WALCompactionWorkloadMode: String, Codable, Sendable {
@@ -266,43 +267,6 @@ enum WALCompactionReportWriter {
     }
 }
 
-actor WALCompactionDeterministicEmbedder: EmbeddingProvider {
-    let dimensions: Int
-    let normalize: Bool
-    let identity: EmbeddingIdentity?
-
-    init(dimensions: Int, normalize: Bool = true) {
-        self.dimensions = dimensions
-        self.normalize = normalize
-        self.identity = EmbeddingIdentity(
-            provider: "wal-bench",
-            model: "fnv1a-lcg",
-            dimensions: dimensions,
-            normalized: normalize
-        )
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        var state = Self.fnv1a64(Array(text.utf8))
-        var vector = [Float](repeating: 0, count: dimensions)
-        for idx in vector.indices {
-            state = state &* 6364136223846793005 &+ 1442695040888963407
-            let signed = Int64(bitPattern: state)
-            vector[idx] = Float(signed) / Float(Int64.max)
-        }
-        return normalize ? VectorMath.normalizeL2(vector) : vector
-    }
-
-    private static func fnv1a64(_ bytes: [UInt8]) -> UInt64 {
-        var hash: UInt64 = 14695981039346656037
-        for byte in bytes {
-            hash ^= UInt64(byte)
-            hash &*= 1099511628211
-        }
-        return hash
-    }
-}
-
 enum WALCompactionHarness {
     static func run(
         workload: WALCompactionWorkload,
@@ -329,7 +293,7 @@ enum WALCompactionHarness {
         )
         let session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
         let embedder = workload.mode == .hybrid
-            ? WALCompactionDeterministicEmbedder(dimensions: workload.vectorDimensions)
+            ? SeededHashEmbedder(dimensions: workload.vectorDimensions, provider: "wal-bench")
             : nil
 
         var putLatenciesMs: [Double] = []
@@ -545,7 +509,7 @@ enum WALCompactionHarness {
         Int64((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
-    private static func durationMs(_ duration: Duration) -> Double {
+    static func durationMs(_ duration: Duration) -> Double {
         let components = duration.components
         return Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1_000_000_000_000_000
     }

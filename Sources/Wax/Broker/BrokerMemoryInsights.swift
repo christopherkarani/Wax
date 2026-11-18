@@ -46,8 +46,9 @@ package struct BrokerPromotionSettings: Sendable, Equatable {
         maxCandidates: 6
     )
 
-    package static func fromEnvironment() -> BrokerPromotionSettings {
-        let env = ProcessInfo.processInfo.environment
+    package static func fromEnvironment(
+        _ env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> BrokerPromotionSettings {
         let minimumConfidence = env["WAX_OPENCLAW_PROMOTION_MIN_CONFIDENCE"]
             .flatMap(Float.init)
             .map { min(max($0, 0), 1) }
@@ -295,7 +296,8 @@ package enum BrokerMemoryInsights {
         documents: [MemoryOrchestrator.CorpusSourceDocument],
         accessStats: [UInt64: FrameAccessStats],
         facts: StructuredFactsResult?,
-        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        nowMs: Int64 = BrokerClock.nowMs(),
+        settings: MemoryRetentionSettings = .default
     ) -> BrokerMemoryHealth {
         var typedCounts: [String: Int] = [:]
         var expired: [UInt64] = []
@@ -321,7 +323,8 @@ package enum BrokerMemoryInsights {
             if MemoryRetention.isQuarantineCandidate(
                 metadata: document.metadata,
                 stats: accessStats[document.frameId],
-                nowMs: nowMs
+                nowMs: nowMs,
+                settings: settings
             ) {
                 quarantine.append(document.frameId)
             }

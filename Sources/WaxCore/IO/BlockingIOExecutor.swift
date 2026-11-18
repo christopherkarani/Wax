@@ -1,10 +1,7 @@
 import Dispatch
 
-/// High-performance I/O executor with concurrent reads and exclusive writes.
-/// Uses a concurrent dispatch queue with barrier flags for write operations.
-///
-/// - Read operations execute concurrently for maximum throughput
-/// - Write operations use barriers for exclusive access without blocking reads
+/// Runs blocking POSIX I/O off the cooperative thread pool on a concurrent dispatch queue.
+/// Callers (the owning actor) are responsible for ordering writes.
 package final class BlockingIOExecutor: @unchecked Sendable {
     private let queue: DispatchQueue
 
@@ -13,8 +10,7 @@ package final class BlockingIOExecutor: @unchecked Sendable {
         self.queue = DispatchQueue(label: label, qos: qos, attributes: .concurrent)
     }
 
-    /// Execute a read operation concurrently.
-    /// Multiple reads can execute in parallel.
+    /// Execute blocking work on the I/O queue. Multiple calls can run in parallel.
     package func run<T>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
@@ -27,33 +23,10 @@ package final class BlockingIOExecutor: @unchecked Sendable {
         }
     }
 
-    /// Execute a non-throwing read operation concurrently.
+    /// Execute non-throwing blocking work on the I/O queue.
     package func run<T>(_ work: @Sendable @escaping () -> T) async -> T {
         await withCheckedContinuation { continuation in
             queue.async {
-                continuation.resume(returning: work())
-            }
-        }
-    }
-    
-    /// Execute a write operation with exclusive access.
-    /// Uses a barrier to ensure no other operations are running.
-    package func runWrite<T>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async(flags: .barrier) {
-                do {
-                    continuation.resume(returning: try work())
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-    
-    /// Execute a non-throwing write operation with exclusive access.
-    package func runWrite<T>(_ work: @Sendable @escaping () -> T) async -> T {
-        await withCheckedContinuation { continuation in
-            queue.async(flags: .barrier) {
                 continuation.resume(returning: work())
             }
         }

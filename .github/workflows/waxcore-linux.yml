@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
         with:
           swift-version: "6.2"
 
@@ -42,6 +42,13 @@ jobs:
 
       - name: Build wax-mcp product
         run: swift build --product wax-mcp --traits default,MCPServer
+
+      # libdispatch delivers signal sources through signalfd on Linux, not
+      # kqueue as on Darwin, so graceful SIGTERM shutdown is checked here too.
+      - name: Smoke-test SIGTERM shutdown
+        run: |
+          BIN_DIR="$(swift build --product wax-cli --show-bin-path --traits default,MCPServer)"
+          bash Resources/scripts/quality/daemon_sigterm_smoke.sh "$BIN_DIR/wax-cli" "$BIN_DIR/wax-mcp"
 
       - name: Run WaxCore tests
         run: swift test --filter WaxCoreTests

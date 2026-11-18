@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 
 @Test
 func memoryOrchestratorRememberFlushRecallReopenAndNoSidecars() async throws {
@@ -168,7 +169,7 @@ func memoryOrchestratorVectorSearchStagesVecIndexOnFlush() async throws {
         config.enableVectorSearch = true
         config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
 
-        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: DeterministicTextEmbedder(identity: testEmbedderIdentity))
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.close()
 
@@ -194,7 +195,7 @@ func memoryOrchestratorVectorRecallWithEmbeddingUsesVectorResults() async throws
             searchMode: .vectorOnly
         )
 
-        let embedder = TestEmbedder()
+        let embedder = DeterministicTextEmbedder(identity: testEmbedderIdentity)
         let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.flush()
@@ -319,12 +320,12 @@ func memoryOrchestratorIncompleteIdentityMismatchesWhenBindingHasField(
         config.enableTextSearch = true
         config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
 
-        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: DeterministicTextEmbedder(identity: testEmbedderIdentity))
         try await writer.remember("Persist a complete embedding identity on the store.")
         try await writer.flush()
         try await writer.close()
 
-        let incomplete = ConfigurableIdentityEmbedder(identity: testCase.identity)
+        let incomplete = DeterministicTextEmbedder(identity: testCase.identity)
         do {
             _ = try await MemoryOrchestrator(at: url, config: config, embedder: incomplete)
             Issue.record("expected memory binding mismatch for \(testCase.name)")
@@ -371,7 +372,7 @@ func memoryOrchestratorReopenVectorSearchWithoutEmbedderAllowsRecallWithEmbeddin
             searchMode: .vectorOnly
         )
 
-        let embedder = TestEmbedder()
+        let embedder = DeterministicTextEmbedder(identity: testEmbedderIdentity)
         let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: embedder)
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.close()
@@ -452,7 +453,7 @@ func memoryOrchestratorRememberRequiresEmbedderWhenVectorSearchEnabledAfterReope
         config.enableTextSearch = true
         config.chunking = .tokenCount(targetTokens: 10, overlapTokens: 2)
 
-        let seeded = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        let seeded = try await MemoryOrchestrator(at: url, config: config, embedder: DeterministicTextEmbedder(identity: testEmbedderIdentity))
         try await seeded.remember("Swift concurrency uses actors and tasks.")
         try await seeded.close()
 
@@ -492,7 +493,7 @@ func memoryOrchestratorRecallWithEmbeddingPolicyUsesEmbedderWhenAvailable() asyn
             searchMode: .vectorOnly
         )
 
-        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: TestEmbedder())
+        let orchestrator = try await MemoryOrchestrator(at: url, config: config, embedder: DeterministicTextEmbedder(identity: testEmbedderIdentity))
         try await orchestrator.remember("Swift concurrency uses actors and tasks.")
         try await orchestrator.flush()
 
@@ -575,7 +576,7 @@ struct MemoryOrchestratorIngestFastPathTests {
             let orchestrator = try await MemoryOrchestrator(
                 at: url,
                 config: config,
-                embedder: DeterministicEmbedder(dimensions: 8)
+                embedder: SeededHashEmbedder(dimensions: 8)
             )
             try await MemoryOrchestrator._withIsolatedDebugCountersForTests { scopeKey in
                 MemoryOrchestrator._resetBatchPreparationPathCallCountForTests(scopeKey: scopeKey)
@@ -606,7 +607,7 @@ struct MemoryOrchestratorIngestFastPathTests {
             let orchestrator = try await MemoryOrchestrator(
                 at: url,
                 config: config,
-                embedder: DeterministicEmbedder(dimensions: 8)
+                embedder: SeededHashEmbedder(dimensions: 8)
             )
             try await MemoryOrchestrator._withIsolatedDebugCountersForTests { scopeKey in
                 MemoryOrchestrator._resetMemoryBindingEnsureCallCountForTests(scopeKey: scopeKey)
@@ -765,22 +766,7 @@ private actor RejectConcurrentEmbedderState {
     }
 }
 
-private struct TestEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "Deterministic",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        let a = Float(text.utf8.count % 97) / 97.0
-        let b = Float(text.unicodeScalars.count % 89) / 89.0
-        return VectorMath.normalizeL2([a, b])
-    }
-}
+private let testEmbedderIdentity = EmbeddingIdentity(provider: "Test", model: "Deterministic", dimensions: 2, normalized: true)
 
 private extension String {
     func repeating(times: Int) -> String {

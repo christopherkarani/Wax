@@ -1,4 +1,6 @@
 import Foundation
+import Wax
+import WaxCore
 
 /// Parses `git log` output into `GitCommit` values using a line-by-line state machine.
 enum GitLogParser {
@@ -35,8 +37,13 @@ enum GitLogParser {
             args.append(contentsOf: ["-n", "\(maxCount)"])
         }
         if let since {
+            guard isCommitHash(since) else {
+                throw GitLogError.invalidRevision(since)
+            }
             args.append("\(since)..HEAD")
         }
+        // Everything before `--` is a revision; nothing after it is an option.
+        args.append("--")
 
         let output = try await runGit(args)
         return parseOutput(output)
@@ -44,51 +51,62 @@ enum GitLogParser {
 
     /// Returns the full diff for a single commit hash.
     static func showCommit(hash: String, repoPath: String) async throws -> String {
+        guard isCommitHash(hash) else {
+            throw GitLogError.invalidRevision(hash)
+        }
         let args = [
             "git", "-C", repoPath,
-            "show", "--stat", "--patch", hash,
+            "show", "--stat", "--patch", hash, "--",
         ]
         return try await runGit(args)
     }
 
+    /// Full or abbreviated hex object name. Anything else (`--output=...`,
+    /// `HEAD~1`, ranges) is refused so a stored checkpoint cannot become a
+    /// git option.
+    static func isCommitHash(_ value: String) -> Bool {
+        (4...64).contains(value.utf8.count) && value.utf8.allSatisfy { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+                || (UInt8(ascii: "A")...UInt8(ascii: "F")).contains(byte)
+        }
+    }
+
     // MARK: - Shell execution
 
+    private static let exitAfterEOFTimeoutSeconds: TimeInterval = 30
+
     private static func runGit(_ arguments: [String]) async throws -> String {
-        // Move blocking I/O off the Swift cooperative thread pool.
-        // readDataToEndOfFile() and waitUntilExit() both block their calling thread;
-        // running them on a DispatchQueue.global() thread prevents starving async work.
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = arguments
+        // readDataToEndOfFile() and waitUntilExit() block their thread, so git runs on a
+        // private serial queue: off the cooperative pool, and not queued behind other
+        // work on a shared global queue.
+        try await BlockingWork.run { () throws -> String in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = arguments
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
 
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
+            try process.run()
 
-                // Read ALL stdout before waitUntilExit to avoid pipe buffer deadlock.
-                // macOS pipes have a 64 KB buffer; large git log output fills it and
-                // blocks the writing process if we wait for exit first.
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-
-                guard process.terminationStatus == 0 else {
-                    let message = String(data: data, encoding: .utf8) ?? "git exited with \(process.terminationStatus)"
-                    continuation.resume(throwing: GitLogError.gitFailed(message))
-                    return
-                }
-
-                let output = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: output)
+            // Drain stdout and stderr together before waiting: either
+            // pipe fills at ~64 KB and blocks git if left unread.
+            let captured = ProcessPipeDrain(stdout: stdoutPipe, stderr: stderrPipe).wait()
+            // Both pipes are closed, so git is exiting; the bound only
+            // stops a wedged wait.
+            guard process.waitForExit(timeout: exitAfterEOFTimeoutSeconds) != nil else {
+                throw GitLogError.gitFailed("git did not exit after closing its output")
             }
+            guard process.terminationStatus == 0 else {
+                let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
+                let message = stderr.isEmpty ? "git exited with \(process.terminationStatus)" : stderr
+                throw GitLogError.gitFailed(message)
+            }
+
+            return String(data: captured.stdout, encoding: .utf8) ?? ""
         }
     }
 
@@ -189,6 +207,18 @@ enum GitLogParser {
 }
 
 /// Errors from git log parsing.
-enum GitLogError: Error, Sendable {
+enum GitLogError: LocalizedError, CustomStringConvertible, Sendable {
     case gitFailed(String)
+    case invalidRevision(String)
+
+    var description: String { errorDescription ?? "git failed" }
+
+    var errorDescription: String? {
+        switch self {
+        case .gitFailed(let message):
+            return message
+        case .invalidRevision(let value):
+            return "Refusing non-hex git revision '\(value)'. Re-run with --full to rebuild the index checkpoint."
+        }
+    }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 
 @Test
 func memoryCustomEmbeddingIsActiveImmediately() async throws {

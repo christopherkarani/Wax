@@ -2,6 +2,7 @@
 import Foundation
 import XCTest
 @testable import Wax
+import WaxTestSupport
 import WaxCore
 
 struct BenchmarkScale {
@@ -112,57 +113,12 @@ struct BenchmarkTextFactory {
     }
 }
 
-actor DeterministicEmbedder: EmbeddingProvider {
-    let dimensions: Int
-    let normalize: Bool
-    let identity: EmbeddingIdentity?
-
-    init(dimensions: Int, normalize: Bool = true) {
-        self.dimensions = dimensions
-        self.normalize = normalize
-        self.identity = EmbeddingIdentity(
-            provider: "bench",
-            model: "fnv1a-lcg",
-            dimensions: dimensions,
-            normalized: normalize
-        )
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        let seed = Self.fnv1a64(bytes: Array(text.utf8))
-        var state = seed
-        var vector = [Float](repeating: 0, count: dimensions)
-        for index in vector.indices {
-            state = state &* 6364136223846793005 &+ 1442695040888963407
-            let signed = Int64(bitPattern: state)
-            vector[index] = Float(signed) / Float(Int64.max)
-        }
-        if normalize {
-            return Self.normalized(vector)
-        }
-        return vector
-    }
-
-    private static func fnv1a64(bytes: [UInt8]) -> UInt64 {
-        var hash: UInt64 = 14695981039346656037
-        for byte in bytes {
-            hash ^= UInt64(byte)
-            hash &*= 1099511628211
-        }
-        return hash
-    }
-
-    private static func normalized(_ vector: [Float]) -> [Float] {
-        VectorMath.normalizeL2(vector)
-    }
-}
-
 struct BenchmarkFixture {
     let url: URL
     let wax: Wax
     let text: WaxSession
     let vector: WaxVectorSearchSession?
-    let embedder: DeterministicEmbedder?
+    let embedder: SeededHashEmbedder?
     let queryText: String
     let queryEmbedding: [Float]?
     let scale: BenchmarkScale
@@ -175,9 +131,9 @@ struct BenchmarkFixture {
         let wax = try await Wax.create(at: url)
         let text = try await wax.openSession(.readWrite(), config: WaxSession.Config(enableVectorSearch: false))
         var vector: WaxVectorSearchSession?
-        var embedder: DeterministicEmbedder?
+        var embedder: SeededHashEmbedder?
         if includeVectors {
-            let localEmbedder = DeterministicEmbedder(dimensions: scale.vectorDimensions)
+            let localEmbedder = SeededHashEmbedder(dimensions: scale.vectorDimensions)
             embedder = localEmbedder
             vector = try await wax.enableVectorSearch(dimensions: localEmbedder.dimensions)
         }

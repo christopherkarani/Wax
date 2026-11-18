@@ -8,6 +8,8 @@ package enum VideoMetadataKey: String, Sendable, CaseIterable {
     case durationMs = "video.duration_ms"
     case isLocal = "video.availability.local"
     case pipelineVersion = "video.pipeline.version"
+    /// `"unavailable"` when the transcript provider failed and the video was indexed frame-only.
+    case transcriptStatus = "video.transcript.status"
 
     case segmentIndex = "video.segment.index"
     case segmentCount = "video.segment.count"

@@ -22,12 +22,14 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// L2 normalization is baked into the CoreML graph (CLS extraction + L2 norm),
     /// so the caller (MemoryOrchestrator.embedOne) should NOT re-normalize.
     package nonisolated let normalize: Bool = false
-    package nonisolated let identity: EmbeddingIdentity? = EmbeddingIdentity(
+    /// The identity a store records for vectors from this model.
+    package static let bindingIdentity = EmbeddingIdentity(
         provider: "Wax",
         model: "ArcticEmbedS",
         dimensions: 384,
         normalized: true
     )
+    package nonisolated let identity: EmbeddingIdentity? = ArcticEmbedder.bindingIdentity
 
     private nonisolated let model: ArcticEmbeddings
 
@@ -122,7 +124,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     // MARK: - EmbeddingProvider
 
     package func embed(_ text: String) async throws -> [Float] {
-        guard let vector = await model.encode(sentence: text) else {
+        guard let vector = try await model.encode(sentence: text) else {
             throw WaxError.io("Arctic embedding failed to produce a vector.")
         }
         if vector.count != dimensions {
@@ -168,7 +170,7 @@ package actor ArcticEmbedder: EmbeddingProvider, BatchEmbeddingProvider, QueryAw
     /// Tokenization happens synchronously on the actor (needs inout access to buffers),
     /// then prediction is dispatched off the cooperative pool via ArcticEmbeddings.
     private func embedBatchCoreML(texts: [String]) async throws -> [[Float]] {
-        guard let vectors = await model.encode(batch: texts) else {
+        guard let vectors = try await model.encode(batch: texts) else {
             throw WaxError.io("Arctic batch embedding failed.")
         }
         guard vectors.count == texts.count else {
@@ -209,9 +211,7 @@ extension ArcticEmbedder {
         tuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment()
     ) async throws -> ArcticEmbedder {
         var failures: [String] = []
-        let resolvedUnits = computeUnitsOrder.isEmpty
-            ? tuning.computeUnitsOrder.map(\.coreMLValue)
-            : computeUnitsOrder
+        let resolvedUnits = resolveComputeUnitsOrder(explicit: computeUnitsOrder, tuning: tuning)
         for units in resolvedUnits {
             let matchingUnit = tuning.computeUnitsOrder.first(where: { $0.coreMLValue == units }) ?? .cpuOnly
             let modelConfiguration = tuning.modelConfiguration(for: matchingUnit)
@@ -219,6 +219,9 @@ extension ArcticEmbedder {
                 let embedder = try ArcticEmbedder(
                     config: Config(batchSize: tuning.batchSize, modelConfiguration: modelConfiguration)
                 )
+                // Probe immediately so failing / non-finite compute-unit paths fall through
+                // to the next candidate instead of failing later on the first real save/search.
+                _ = try await embedder.embed("wax")
                 if !skipPrewarm {
                     try await embedder.prewarm(batchSize: prewarmBatchSize)
                 }
@@ -231,6 +234,24 @@ extension ArcticEmbedder {
         throw WaxError.io(
             "Arctic init failed for all compute units (\(failures.joined(separator: " | ")))."
         )
+    }
+
+    /// Arctic's compute units when neither the caller nor `WAX_EMBEDDER_COMPUTE_UNITS`
+    /// chose any. The Neural Engine path intermittently emits non-finite embeddings for
+    /// this model, and a single startup probe cannot catch that, so ANE is opt-in only.
+    /// There is no GPU fallback: `ArcticEmbeddings` refuses `.cpuAndGPU`, whose load stalls.
+    package static let defaultComputeUnitsOrder: [MLComputeUnits] = [.cpuOnly]
+
+    /// Explicit order wins, then a customized tuning order, then `defaultComputeUnitsOrder`.
+    package static func resolveComputeUnitsOrder(
+        explicit: [MLComputeUnits],
+        tuning: CommandLineEmbedderRuntimeTuning
+    ) -> [MLComputeUnits] {
+        if !explicit.isEmpty { return explicit }
+        if tuning.computeUnitsOrder != CommandLineEmbedderRuntimeTuning.defaultComputeUnitsOrder {
+            return tuning.computeUnitsOrder.map(\.coreMLValue)
+        }
+        return defaultComputeUnitsOrder
     }
 
     /// Test helper for deterministic batch planning verification.

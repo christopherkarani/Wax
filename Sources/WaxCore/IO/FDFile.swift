@@ -53,16 +53,26 @@ enum FDFileWriteFault: Sendable, Equatable {
     case shortWrite(maxBytes: Int)
 }
 
+/// A file operation observed while a fault plan with `recordsOperations` is installed.
+enum FDFileOperation: Sendable, Equatable {
+    case pwrite(offset: UInt64, length: Int)
+    case fsync
+}
+
 struct FDFileFaultPlan: Sendable, Equatable {
     var pread: [FDFileReadFault]
     var pwrite: [FDFileWriteFault]
+    /// Record every `pwrite` and `fsync`, in order, for ordering assertions in tests.
+    var recordsOperations: Bool
 
     init(
         pread: [FDFileReadFault] = [],
-        pwrite: [FDFileWriteFault] = []
+        pwrite: [FDFileWriteFault] = [],
+        recordsOperations: Bool = false
     ) {
         self.pread = pread
         self.pwrite = pwrite
+        self.recordsOperations = recordsOperations
     }
 }
 
@@ -84,10 +94,22 @@ package final class FDFile {
         private let lock = NSLock()
         private var preadPlan: [FDFileReadFault]
         private var pwritePlan: [FDFileWriteFault]
+        private let recordsOperations: Bool
+        private var operations: [FDFileOperation] = []
 
         init(plan: FDFileFaultPlan) {
             self.preadPlan = plan.pread
             self.pwritePlan = plan.pwrite
+            self.recordsOperations = plan.recordsOperations
+        }
+
+        func record(_ operation: FDFileOperation) {
+            guard recordsOperations else { return }
+            lock.withLock { operations.append(operation) }
+        }
+
+        func recordedOperations() -> [FDFileOperation] {
+            lock.withLock { operations }
         }
 
         func nextReadDirective() -> ReadDirective {
@@ -137,27 +159,43 @@ package final class FDFile {
 
     private let fd: Int32
     private let url: URL
-    package private(set) var isClosed = false
+    /// Guarded by `closeLock`; read it through `isClosed`.
+    private var closed = false
     private let closeLock = NSLock()
     private var faultInjectionState: FaultInjectionState?
 
-    private init(fd: Int32, url: URL) {
+    /// Largest single `pread`/`pwrite`. Darwin rejects transfers over `INT_MAX` bytes with
+    /// EINVAL, so larger buffers are moved in chunks. Tests may lower it at creation.
+    static let defaultIOChunkLimit = 1 << 30
+    let ioChunkLimit: Int
+
+    private init(fd: Int32, url: URL, ioChunkLimit: Int = FDFile.defaultIOChunkLimit) {
+        precondition(ioChunkLimit > 0, "ioChunkLimit must be positive")
         self.fd = fd
         self.url = url
+        self.ioChunkLimit = ioChunkLimit
     }
 
     deinit {
-        if !isClosed {
+        if !closed {
             _ = posixClose(fd)
         }
+    }
+
+    package var isClosed: Bool {
+        closeLock.withLock { closed }
     }
 
     // MARK: - Factory
 
     /// Create a new file (truncates if exists).
     package static func create(at url: URL) throws -> FDFile {
+        try create(at: url, ioChunkLimit: defaultIOChunkLimit)
+    }
+
+    static func create(at url: URL, ioChunkLimit: Int) throws -> FDFile {
         let fd = try openFile(at: url, flags: O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, mode: mode_t(0o644))
-        return FDFile(fd: fd, url: url)
+        return FDFile(fd: fd, url: url, ioChunkLimit: ioChunkLimit)
     }
 
     /// Open an existing file for read/write.
@@ -178,6 +216,10 @@ package final class FDFile {
 
     func clearFaultPlan() {
         faultInjectionState = nil
+    }
+
+    func recordedOperations() -> [FDFileOperation] {
+        faultInjectionState?.recordedOperations() ?? []
     }
 
     // MARK: - Read/Write
@@ -223,7 +265,7 @@ package final class FDFile {
             }
             while totalRead < length {
                 let currentOffset = try checkedOffset(offset, adding: totalRead)
-                let remaining = length - totalRead
+                let remaining = min(length - totalRead, ioChunkLimit)
                 let result = preadWithFaults(
                     base: base.advanced(by: totalRead),
                     length: remaining,
@@ -255,7 +297,7 @@ package final class FDFile {
             }
             while totalWritten < data.count {
                 let currentOffset = try checkedOffset(offset, adding: totalWritten)
-                let remaining = data.count - totalWritten
+                let remaining = min(data.count - totalWritten, ioChunkLimit)
                 let result = pwriteWithFaults(
                     base: base.advanced(by: totalWritten),
                     length: remaining,
@@ -274,10 +316,92 @@ package final class FDFile {
         }
     }
 
+    /// Writes `parts` back to back from `offset`, as `writeAll` of their concatenation would,
+    /// without first copying them into one buffer: one `pwritev` per chunk. Must write all
+    /// bytes or throw.
+    package func writeAll(contentsOf parts: [Data], at offset: UInt64) throws {
+        try ensureOpen()
+        let parts = parts.filter { !$0.isEmpty }
+        guard parts.count > 1 else {
+            if let part = parts.first {
+                try writeAll(part, at: offset)
+            }
+            return
+        }
+        try Self.withBuffers(of: parts[...], pinned: []) { buffers in
+            try writeAll(buffers: buffers, at: offset)
+        }
+    }
+
+    /// Calls `body` with every part's bytes pinned at once.
+    private static func withBuffers(
+        of parts: ArraySlice<Data>,
+        pinned: [UnsafeRawBufferPointer],
+        _ body: ([UnsafeRawBufferPointer]) throws -> Void
+    ) throws {
+        guard let first = parts.first else {
+            try body(pinned)
+            return
+        }
+        try first.withUnsafeBytes { buffer in
+            try withBuffers(of: parts.dropFirst(), pinned: pinned + [buffer], body)
+        }
+    }
+
+    /// Most iovecs passed to one `pwritev`, well under `IOV_MAX` on Darwin and Linux.
+    private static let maxIOVecCount = 64
+
+    private func writeAll(buffers: [UnsafeRawBufferPointer], at offset: UInt64) throws {
+        let total = buffers.reduce(0) { $0 + $1.count }
+        var totalWritten = 0
+        // Where the next unwritten byte is: buffers[part][partOffset].
+        var part = 0
+        var partOffset = 0
+        while totalWritten < total {
+            let currentOffset = try checkedOffset(offset, adding: totalWritten)
+            var iov: [iovec] = []
+            var budget = ioChunkLimit
+            var index = part
+            var start = partOffset
+            while index < buffers.count, budget > 0, iov.count < Self.maxIOVecCount {
+                guard let base = buffers[index].baseAddress else {
+                    throw WaxError.io("Unable to access write buffer")
+                }
+                let length = min(buffers[index].count - start, budget)
+                iov.append(iovec(iov_base: UnsafeMutableRawPointer(mutating: base + start), iov_len: length))
+                budget -= length
+                index += 1
+                start = 0
+            }
+            let result = pwritevWithFaults(iov, offset: currentOffset)
+            if result > 0 {
+                totalWritten += result
+                var advance = result
+                while advance > 0 {
+                    let left = buffers[part].count - partOffset
+                    if advance < left {
+                        partOffset += advance
+                        break
+                    }
+                    advance -= left
+                    part += 1
+                    partOffset = 0
+                }
+                continue
+            }
+            if result == 0 {
+                throw WaxError.io("pwritev returned 0 bytes")
+            }
+            if errno == EINTR { continue }
+            throw WaxError.io("pwritev failed: \(stringError())")
+        }
+    }
+
     // MARK: - Durability
 
     package func fsync() throws {
         try ensureOpen()
+        faultInjectionState?.record(.fsync)
         #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
         if fcntl(fd, F_FULLFSYNC, 0) == 0 { return }
         #endif
@@ -307,67 +431,40 @@ package final class FDFile {
         }
     }
 
-    /// Ensure the file is at least the requested size, extending with zeros if needed.
-    package func ensureSize(atLeast size: UInt64) throws {
-        let current = try self.size()
-        if current < size {
-            try truncate(to: size)
-        }
-    }
-
-    /// Map a writable region of the file at the given offset and length.
-    /// The returned region must be closed to unmap the memory.
-    func mapWritable(length: Int, at offset: UInt64) throws -> MappedWritableRegion {
-        try ensureOpen()
-        guard length > 0 else {
-            throw WaxError.io("mapWritable length must be > 0")
-        }
-        let endOffset = offset + UInt64(length)
-        try ensureSize(atLeast: endOffset)
-
-        let pageSize = UInt64(getpagesize())
-        let alignedOffset = (offset / pageSize) * pageSize
-        let offsetDelta = Int(offset - alignedOffset)
-        let mapLength = length + offsetDelta
-
-        guard mapLength > 0 else {
-            throw WaxError.io("mapWritable mapLength invalid: \(mapLength)")
-        }
-        let ptr = mmap(
-            nil,
-            mapLength,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED,
-            fd,
-            off_t(alignedOffset)
-        )
-        if ptr == MAP_FAILED {
-            throw WaxError.io("mmap failed: \(stringError())")
-        }
-
-        guard let base = ptr else {
-            munmap(ptr, mapLength)
-            throw WaxError.io("mmap returned nil pointer")
-        }
-        let advanced = base.advanced(by: offsetDelta)
-        return MappedWritableRegion(
-            basePointer: base,
-            mappedLength: mapLength,
-            bufferPointer: UnsafeMutableRawBufferPointer(start: advanced, count: length)
-        )
-    }
-
     package func close() throws {
         try closeLock.withLock {
-            if isClosed { return }
+            if closed { return }
             let result = posixClose(fd)
-            if result == 0 { isClosed = true; return }
-            if errno == EINTR { isClosed = true; return }
+            if result == 0 { closed = true; return }
+            if errno == EINTR { closed = true; return }
             throw WaxError.io("close failed: \(Self.stringError())")
         }
     }
 
     package var fileDescriptor: Int32 { fd }
+
+    /// Flush the directory entry of `url` so a newly created or renamed file survives a
+    /// crash; `fsync` on the file itself does not persist its name.
+    ///
+    /// Some network and FUSE filesystems cannot sync a directory and return EINVAL or
+    /// ENOTSUP; that is treated as success (there is nothing more to flush there). Any
+    /// other failure throws.
+    package static func fsyncParentDirectory(of url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        let descriptor = try openFile(at: directory, flags: O_RDONLY | O_CLOEXEC, mode: nil)
+        defer { _ = posixClose(descriptor) }
+        #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+        if fcntl(descriptor, F_FULLFSYNC, 0) == 0 { return }
+        #endif
+        guard posixFsync(descriptor) == 0 else {
+            if isDirectorySyncUnsupported(errno) { return }
+            throw WaxError.io("fsync failed for directory \(directory.path): \(stringError())")
+        }
+    }
+
+    static func isDirectorySyncUnsupported(_ code: Int32) -> Bool {
+        code == EINVAL || code == ENOTSUP || code == EOPNOTSUPP
+    }
 
     // MARK: - Helpers
 
@@ -438,7 +535,35 @@ package final class FDFile {
         case .short(let maxBytes):
             requestedLength = min(length, maxBytes)
         }
+        faultInjectionState?.record(.pwrite(offset: UInt64(offset), length: requestedLength))
         return pwrite(fd, base, requestedLength, offset)
+    }
+
+    /// Like `pwriteWithFaults`: an injected short write keeps the first `maxBytes` bytes.
+    private func pwritevWithFaults(_ iov: [iovec], offset: off_t) -> Int {
+        let length = iov.reduce(0) { $0 + $1.iov_len }
+        var vectors = iov
+        var requestedLength = length
+        switch faultInjectionState?.nextWriteDirective() ?? .none {
+        case .none:
+            break
+        case .fail(let code):
+            errno = code
+            return -1
+        case .short(let maxBytes):
+            requestedLength = min(length, maxBytes)
+            var remaining = requestedLength
+            vectors = []
+            for var vector in iov where remaining > 0 {
+                vector.iov_len = min(vector.iov_len, remaining)
+                remaining -= vector.iov_len
+                vectors.append(vector)
+            }
+        }
+        faultInjectionState?.record(.pwrite(offset: UInt64(offset), length: requestedLength))
+        return vectors.withUnsafeBufferPointer { buffer in
+            pwritev(fd, buffer.baseAddress, Int32(buffer.count), offset)
+        }
     }
 
     private static func stringError() -> String {
@@ -451,37 +576,3 @@ package final class FDFile {
 }
 
 extension FDFile: @unchecked Sendable {}
-
-/// RAII wrapper around a writable mmap region.
-final class MappedWritableRegion: @unchecked Sendable {
-    private let basePointer: UnsafeMutableRawPointer
-    private let mappedLength: Int
-    package let buffer: UnsafeMutableRawBufferPointer
-    private var isClosed = false
-    private let closeLock = NSLock()
-
-    init(basePointer: UnsafeMutableRawPointer, mappedLength: Int, bufferPointer: UnsafeMutableRawBufferPointer) {
-        self.basePointer = basePointer
-        self.mappedLength = mappedLength
-        self.buffer = bufferPointer
-    }
-
-    package func close() {
-        closeLock.withLock {
-            if isClosed { return }
-            _ = munmap(basePointer, mappedLength)
-            isClosed = true
-        }
-    }
-
-    package func copyBytes(from data: Data) {
-        precondition(data.count <= buffer.count, "data length exceeds mapped buffer")
-        buffer.copyBytes(from: data)
-    }
-
-    deinit {
-        if !isClosed {
-            _ = munmap(basePointer, mappedLength)
-        }
-    }
-}

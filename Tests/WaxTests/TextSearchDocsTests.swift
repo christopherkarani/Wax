@@ -60,7 +60,7 @@ func textSearchDocsDoNotShowPackageOnlyStructuredMemoryExamplesAsPublicAPI() thr
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/WaxTextSearch/FTS5SearchEngine.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxTextSearch/FTS5SearchEngine+StructuredMemory.swift"),
         encoding: .utf8
     )
     #expect(source.contains("package func upsertEntity"))

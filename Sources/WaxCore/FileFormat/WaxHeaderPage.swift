@@ -18,6 +18,24 @@ package struct WaxHeaderPage: Equatable, Sendable {
     private static let replaySnapshotFlagsOffset: Int = 200
     private static let replaySnapshotValidFlag: UInt64 = 0x1
     private static let replaySnapshotMagic = Data([0x57, 0x41, 0x4C, 0x53, 0x4E, 0x41, 0x50, 0x31]) // WALSNAP1
+    private static let recoveryFenceMagicOffset: Int = 208
+    private static let recoveryFenceMagicCount: Int = 8
+    private static let recoveryFenceOffset: Int = 216
+    private static let recoveryFenceCeilingOffset: Int = 224
+    private static let recoveryFenceMagic = Data([0x57, 0x41, 0x58, 0x46, 0x45, 0x4E, 0x43, 0x31]) // WAXFENC1
+
+    /// Which footers a recovery may select besides the one the page names.
+    ///
+    /// A footer can sync while its commit's header never lands (a crash or a failed header
+    /// write between the two). An open that does not find such a footer treats its bytes as
+    /// free, so once a session reuses space no later recovery may select it. Before its first
+    /// write, a session records `generation`: no footer at or below it counts unless the page
+    /// names it. It also records `ceiling`, the highest generation it may write, which becomes
+    /// the next session's `generation`. The session's commits number above `generation`.
+    struct RecoveryFence: Equatable, Sendable {
+        package var generation: UInt64
+        package var ceiling: UInt64
+    }
 
     struct WALReplaySnapshot: Equatable, Sendable {
         package var fileGeneration: UInt64
@@ -62,6 +80,8 @@ package struct WaxHeaderPage: Equatable, Sendable {
     package var walCommittedSeq: UInt64
 
     var walReplaySnapshot: WALReplaySnapshot?
+    /// Nil on pages written before recovery fences existed.
+    var recoveryFence: RecoveryFence?
 
     package var tocChecksum: Data
     package var headerChecksum: Data
@@ -79,6 +99,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
         walCheckpointPos: UInt64,
         walCommittedSeq: UInt64,
         walReplaySnapshot: WALReplaySnapshot? = nil,
+        recoveryFence: RecoveryFence? = nil,
         tocChecksum: Data,
         headerChecksum: Data = Data(repeating: 0, count: 32)
     ) {
@@ -94,8 +115,15 @@ package struct WaxHeaderPage: Equatable, Sendable {
         self.walCheckpointPos = walCheckpointPos
         self.walCommittedSeq = walCommittedSeq
         self.walReplaySnapshot = walReplaySnapshot
+        self.recoveryFence = recoveryFence
         self.tocChecksum = tocChecksum
         self.headerChecksum = headerChecksum
+    }
+
+    /// Whether a recovery may select the footer at `footerOffset` with `generation`: the one
+    /// this page names, or one newer than the page's recovery fence.
+    func admitsRecovery(footerOffset: UInt64, generation: UInt64) -> Bool {
+        footerOffset == self.footerOffset || generation > (recoveryFence?.generation ?? 0)
     }
 
     package func encodeWithChecksum() throws -> Data {
@@ -104,7 +132,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
         guard specMajor == unpackedMajor && specMinor == unpackedMinor else {
             throw WaxError.invalidHeader(reason: "spec_major/spec_minor mismatch format_version")
         }
-        guard formatVersion == Constants.specVersion else {
+        guard Constants.supportedSpecVersions.contains(formatVersion) else {
             throw WaxError.invalidHeader(reason: "unsupported format_version 0x\(String(format: "%04X", formatVersion))")
         }
         guard tocChecksum.count == 32 else {
@@ -153,6 +181,14 @@ package struct WaxHeaderPage: Equatable, Sendable {
             putUInt64(snapshot.walPendingBytes, at: Self.replaySnapshotPendingBytesOffset)
             putUInt64(snapshot.walLastSequence, at: Self.replaySnapshotLastSequenceOffset)
             putUInt64(Self.replaySnapshotValidFlag, at: Self.replaySnapshotFlagsOffset)
+        }
+        if let recoveryFence {
+            page.replaceSubrange(
+                Self.recoveryFenceMagicOffset..<(Self.recoveryFenceMagicOffset + Self.recoveryFenceMagicCount),
+                with: Self.recoveryFenceMagic
+            )
+            putUInt64(recoveryFence.generation, at: Self.recoveryFenceOffset)
+            putUInt64(recoveryFence.ceiling, at: Self.recoveryFenceCeilingOffset)
         }
 
         let computed = Self.computeHeaderChecksum(over: page)
@@ -211,7 +247,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
             throw WaxError.invalidHeader(reason: "spec_major/spec_minor mismatch format_version")
         }
 
-        guard formatVersion == Constants.specVersion else {
+        guard Constants.supportedSpecVersions.contains(formatVersion) else {
             throw WaxError.invalidHeader(reason: "unsupported format_version 0x\(String(format: "%04X", formatVersion))")
         }
 
@@ -242,6 +278,22 @@ package struct WaxHeaderPage: Equatable, Sendable {
             )
         } else {
             walReplaySnapshot = nil
+        }
+
+        let recoveryFence: RecoveryFence?
+        if data.subdata(
+            in: Self.recoveryFenceMagicOffset..<(Self.recoveryFenceMagicOffset + Self.recoveryFenceMagicCount)
+        ) == Self.recoveryFenceMagic {
+            let fence = RecoveryFence(
+                generation: readUInt64(at: Self.recoveryFenceOffset),
+                ceiling: readUInt64(at: Self.recoveryFenceCeilingOffset)
+            )
+            guard fence.ceiling >= fence.generation else {
+                throw WaxError.invalidHeader(reason: "recovery fence ceiling below its generation")
+            }
+            recoveryFence = fence
+        } else {
+            recoveryFence = nil
         }
 
         let tocChecksum = data.subdata(in: 72..<104)
@@ -296,6 +348,7 @@ package struct WaxHeaderPage: Equatable, Sendable {
             walCheckpointPos: walCheckpointPos,
             walCommittedSeq: walCommittedSeq,
             walReplaySnapshot: walReplaySnapshot,
+            recoveryFence: recoveryFence,
             tocChecksum: tocChecksum,
             headerChecksum: headerChecksum
         )

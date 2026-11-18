@@ -12,6 +12,7 @@ The ``EmbeddingProvider`` protocol defines a pluggable interface for converting 
 public protocol EmbeddingProvider: Sendable {
     var dimensions: Int { get }
     var normalize: Bool { get }
+    var similarity: VectorSimilarity { get }   // default .cosine
     var identity: EmbeddingIdentity? { get }
     var executionMode: ProviderExecutionMode { get }
     func embed(_ text: String) async throws -> [Float]
@@ -23,9 +24,46 @@ public protocol EmbeddingProvider: Sendable {
 | Property | Purpose |
 |----------|---------|
 | `dimensions` | Vector dimensionality (e.g., 384 for MiniLM, 1536 for OpenAI) |
-| `normalize` | Whether output vectors are L2-normalized |
+| `normalize` | Whether Wax L2-normalizes each vector before storing it and before searching with it |
+| `similarity` | How stored vectors are ranked against a query: `.cosine` (default) or `.dotProduct` |
 | `identity` | Optional metadata identifying the provider/model |
 | `executionMode` | Whether the provider requires network access |
+
+### Similarity
+
+``VectorSimilarity`` picks how the store ranks vectors. It defaults to `.cosine`, so providers that do not declare it rank exactly as before.
+
+| Similarity | Ranks by | Use for |
+|------------|----------|---------|
+| `.cosine` | Angle between vectors; length is ignored | Most sentence-embedding models (MiniLM, Arctic, e5, OpenAI) |
+| `.dotProduct` | Inner product; a longer vector can outrank a better-aligned one | Models trained with a dot-product objective, such as `facebook/contriever` |
+
+`similarity` and `normalize` are separate settings:
+
+| `similarity` | `normalize` | Result |
+|--------------|-------------|--------|
+| `.cosine` | `true` or `false` | Cosine ranking. Wax normalizes vectors inside the index either way. |
+| `.dotProduct` | `false` | Raw inner product of the vectors the provider returns. Use this for dot-product models. |
+| `.dotProduct` | `true` | Every vector has unit length, so the ranking equals cosine. Allowed, but it gives up what dot product adds. |
+
+With `.dotProduct`, vector-lane scores are raw inner products, not values in `-1...1`.
+
+A store records its similarity when it first commits vectors. Opening it with an embedder that declares a different similarity throws `WaxError.io` with a "vector similarity mismatch" message, the same way an embedder identity mismatch does. A provider that attaches later (for example after a built-in model finishes loading) is reported as `EmbeddingStatus.unavailable` instead, and search uses the text lane. The stored vectors cannot be converted, because a cosine index keeps only unit-length vectors. To switch similarity, ingest into a new store.
+
+```swift
+struct ContrieverEmbedder: EmbeddingProvider {
+    let dimensions = 768
+    let normalize = false
+    let similarity = VectorSimilarity.dotProduct
+    let identity: EmbeddingIdentity? = EmbeddingIdentity(
+        provider: "MyApp", model: "contriever", dimensions: 768, normalized: false
+    )
+
+    func embed(_ text: String) async throws -> [Float] {
+        // Call your model here.
+    }
+}
+```
 
 ### Execution Mode
 
@@ -97,3 +135,12 @@ public actor MyEmbedder: EmbeddingProvider, BatchEmbeddingProvider {
 ## Built-in Provider
 
 The WaxVectorSearchMiniLM module provides a ready-to-use on-device provider based on the all-MiniLM-L6-v2 model. See the WaxVectorSearchMiniLM documentation for details.
+
+Two more on-device CoreML providers ship as package traits. `E5Embeddings` is on by default, and `Memory.Config.embedding = .automatic` gives new stores e5; `ArcticEmbeddings` is opt-in. Select one explicitly through `BuiltInEmbeddingProvider` (for example `config.embedding = .builtIn(.arctic)`):
+
+| Provider | Model | Trait | Pooling | License |
+|----------|-------|-------|---------|---------|
+| `.arctic` | Snowflake Arctic Embed Small | `ArcticEmbeddings` | CLS, query prefix | Apache-2.0 |
+| `.e5` | `intfloat/e5-small-v2` | `E5Embeddings` | Mean, query/passage prefixes | MIT |
+
+Both produce 384-dimensional unit vectors, run on the CPU by default, and require iOS 18/macOS 15 or later. The e5 provider prepends `"query: "` to search queries and `"passage: "` to stored text, the prefixes the model was trained with.

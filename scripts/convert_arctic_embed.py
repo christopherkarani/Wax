@@ -10,12 +10,16 @@ Optimized for Wax's on-device memory/RAG use case:
   - CLS token extraction + L2 normalization baked into the graph (no Swift-side post-processing needed)
   - Targets macOS 15+ / iOS 18+ to match Wax's platform requirements
   - Uses eager attention (not SDPA) for coremltools compatibility
+  - Applies the attention mask as `(1 - mask) * -1e4`, not Hugging Face's
+    `finfo(float32).min`: that constant becomes -inf when the Neural Engine runs in
+    Float16, and `0 * -inf` turns every row of a padded batch into NaN
 
 Requirements:
     conda install: transformers>=4.36,<5.0 torch>=2.1,<2.8 coremltools>=8.0 numpy
 
 Usage:
     conda run -n arctic-convert python scripts/convert_arctic_embed.py
+    WAX_TEST_ARCTIC=1 swift test -j 4 --filter ArcticPaddedInputSmoke
 
 Output:
     Sources/WaxVectorSearchArctic/Resources/snowflake-arctic-embed-s.mlmodelc
@@ -51,6 +55,9 @@ SEQ_LENGTHS = [32, 64, 128, 256, 384, 512]
 # enumerated shapes only need common sizes — larger batches are chunked by planBatchSizes)
 BATCH_SIZES = [1, 8, 16, 32, 64]
 
+# Finite additive mask fill, representable in Float16 (max ~6.5e4). See the module docstring.
+MASK_FILL = -1.0e4
+
 
 class ArcticEmbedWrapper(nn.Module):
     """Wraps the HuggingFace model to extract CLS embedding and L2-normalize.
@@ -65,9 +72,11 @@ class ArcticEmbedWrapper(nn.Module):
         self.model = hf_model
 
     def forward(self, input_ids, attention_mask):
-        # Pass both input_ids and attention_mask explicitly to avoid coremltools #1545
-        # where unnamed inputs cause "attention_mask variable not found" errors
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        # Build the additive mask here instead of letting BertModel use finfo(float32).min.
+        mask = attention_mask.to(torch.float32)
+        additive = (1.0 - mask[:, None, None, :]) * MASK_FILL
+        hidden = self.model.embeddings(input_ids=input_ids)
+        outputs = self.model.encoder(hidden, attention_mask=additive)
         # CLS token = first token's hidden state (standard BERT pooling)
         # When torchscript=True, outputs is a tuple; otherwise it's a named object
         if isinstance(outputs, tuple):

@@ -8,8 +8,8 @@ set -euo pipefail
 #
 # Surfaces managed:
 #   1. Resources/npm/waxmcp/package.json (npm package)
-#   2. Sources/WaxMCPServer/main.swift (Swift server)
-#   3. Sources/WaxCLI/WaxCLICommand.swift (wax-cli --version)
+#   2. Sources/Wax/WaxReleaseInfo.swift (wax-mcp and wax-cli --version)
+#   3. Sources/WaxCLI/WaxCLICommand.swift (must reference WaxReleaseInfo.version)
 #   4. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw plugin version)
 #   5. Resources/openclaw/wax-memory-plugin/package.json (OpenClaw waxmcp dependency)
 #   6. Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb (Homebrew URL)
@@ -22,7 +22,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Configuration ───────────────────────────────────────────────────────────
 NPM_PKG="$ROOT/Resources/npm/waxmcp"
-SERVER_SWIFT="$ROOT/Sources/WaxMCPServer/main.swift"
+SERVER_SWIFT="$ROOT/Sources/Wax/WaxReleaseInfo.swift"
 CLI_SWIFT="$ROOT/Sources/WaxCLI/WaxCLICommand.swift"
 OPENCLAW_PKG="$ROOT/Resources/openclaw/wax-memory-plugin"
 OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
@@ -83,7 +83,8 @@ read_swift_version() {
 
 # Read version from wax-cli ArgumentParser configuration
 read_cli_version() {
-  perl -0ne 'if (/CommandConfiguration\(\s*commandName:\s*"wax-cli".*?version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s) { print "$1\n" }' "$CLI_SWIFT" || echo "NOT_FOUND"
+  # wax-cli --version derives from WaxReleaseInfo.version; a literal here is drift.
+  if grep -Fq 'version: WaxReleaseInfo.version' "$CLI_SWIFT"; then read_swift_version; else echo "NOT_FOUND"; fi
 }
 
 # Read current version from Homebrew formula URL
@@ -214,7 +215,7 @@ printf "  %-50s │ %-10s │ %-10s\n" "Surface" "Old" "New"
 printf "  %-50s ├ %-10s ┼ %-10s\n" "$(printf '%*s' 50 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')" "$(printf '%*s' 10 '' | tr ' ' '-')"
 
 [[ "$CURRENT_NPM" != "$TARGET_VERSION" ]] && print_row "npm/waxmcp/package.json" "$CURRENT_NPM" "$TARGET_VERSION"
-[[ "$CURRENT_SWIFT" != "$TARGET_VERSION" ]] && print_row "Sources/WaxMCPServer/main.swift" "$CURRENT_SWIFT" "$TARGET_VERSION"
+[[ "$CURRENT_SWIFT" != "$TARGET_VERSION" ]] && print_row "Sources/Wax/WaxReleaseInfo.swift" "$CURRENT_SWIFT" "$TARGET_VERSION"
 [[ "$CURRENT_CLI" != "$TARGET_VERSION" ]] && print_row "Sources/WaxCLI/WaxCLICommand.swift" "$CURRENT_CLI" "$TARGET_VERSION"
 [[ "$CURRENT_OPENCLAW" != "$TARGET_VERSION" ]] && print_row "openclaw plugin (version)" "$CURRENT_OPENCLAW" "$TARGET_VERSION"
 [[ "$CURRENT_OPENCLAW_DEP" != "$TARGET_VERSION" ]] && print_row "openclaw plugin (waxmcp dep)" "$CURRENT_OPENCLAW_DEP" "$TARGET_VERSION"

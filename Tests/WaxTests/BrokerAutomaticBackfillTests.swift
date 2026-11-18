@@ -3,7 +3,7 @@ import Testing
 @testable import Wax
 
 private actor BackfillProviderGate {
-    private var released = false
+    private(set) var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private(set) var started = false
 
@@ -136,20 +136,27 @@ struct BrokerAutomaticBackfillTests {
             noEmbedder: false, embedderChoice: "auto", requireVector: false,
             embedderOverride: BlockedBackfillEmbedder(gate: gate)
         )
+        // Hang backstop only. The gate is otherwise released solely by this
+        // test *after* close() returns, so a close() that waits for the blocked
+        // backfill can only finish once the watchdog fires — which the
+        // `released == false` assertion below turns into a deterministic
+        // failure instead of a wall-clock race under `--parallel`.
         let watchdog = Task {
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(30))
             await gate.release()
         }
         defer { watchdog.cancel() }
         do {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
             while !(await gate.started), ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(await gate.started)
-            let start = ContinuousClock.now
             try await broker.close()
-            #expect(start.duration(to: .now) < .seconds(1))
+            #expect(
+                await gate.released == false,
+                "close() waited for the blocked backfill instead of abandoning it"
+            )
             await gate.release()
 
             let reopened = try await AgentBrokerService(

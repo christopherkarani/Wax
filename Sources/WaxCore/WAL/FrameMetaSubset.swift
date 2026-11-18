@@ -109,6 +109,10 @@ extension FrameMetaSubset: BinaryDecodable {
         guard tagCount <= Constants.maxArrayCount else {
             throw WaxError.decodingError(reason: "tags count \(tagCount) exceeds limit \(Constants.maxArrayCount)")
         }
+        // Each tag is two strings, each with a 4-byte length prefix.
+        guard decoder.canFit(count: tagCount, minimumElementBytes: 8) else {
+            throw WaxError.decodingError(reason: "tags count \(tagCount) exceeds remaining bytes (\(decoder.remainingByteCount))")
+        }
         var tags: [TagPair] = []
         tags.reserveCapacity(tagCount)
         for _ in 0..<tagCount {

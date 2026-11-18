@@ -67,6 +67,76 @@ int32_t wax_lz4_decompress(
     return 0;
 }
 
+static uint32_t wax_read_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+int32_t wax_lz4_decompress_apple_framed(
+    const uint8_t *src,
+    size_t src_len,
+    uint8_t *dst,
+    size_t dst_len
+) {
+    if (src == NULL || dst == NULL) {
+        return -1;
+    }
+    if (dst_len > (size_t)INT32_MAX) {
+        return -2;
+    }
+
+    const size_t history_limit = 64 * 1024;
+    size_t in = 0;
+    size_t out = 0;
+    for (;;) {
+        if (src_len - in < 4) {
+            return -3; // missing end marker
+        }
+        const uint8_t *magic = src + in;
+        if (memcmp(magic, "bv4$", 4) == 0) {
+            return (in + 4 == src_len && out == dst_len) ? 0 : -4;
+        }
+        if (src_len - in < 8) {
+            return -3;
+        }
+        const size_t raw_len = wax_read_le32(src + in + 4);
+        if (raw_len > dst_len - out) {
+            return -4;
+        }
+        if (memcmp(magic, "bv4-", 4) == 0) {
+            in += 8;
+            if (raw_len > src_len - in) {
+                return -3;
+            }
+            memcpy(dst + out, src + in, raw_len);
+            in += raw_len;
+            out += raw_len;
+            continue;
+        }
+        if (memcmp(magic, "bv41", 4) != 0 || src_len - in < 12) {
+            return -5;
+        }
+        const size_t enc_len = wax_read_le32(src + in + 8);
+        in += 12;
+        if (enc_len > src_len - in || enc_len > (size_t)INT32_MAX) {
+            return -3;
+        }
+        const size_t dict_len = out < history_limit ? out : history_limit;
+        const int written = LZ4_decompress_safe_usingDict(
+            (const char *)(src + in),
+            (char *)(dst + out),
+            (int)enc_len,
+            (int)raw_len,
+            (const char *)(dst + out - dict_len),
+            (int)dict_len
+        );
+        if (written < 0 || (size_t)written != raw_len) {
+            return -6;
+        }
+        in += enc_len;
+        out += raw_len;
+    }
+}
+
 int32_t wax_deflate_compress(
     const uint8_t *src,
     size_t src_len,

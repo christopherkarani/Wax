@@ -1,5 +1,8 @@
 import Foundation
 import WaxCore
+#if canImport(os)
+import os
+#endif
 
 package enum VectorSerializer {
     package struct SegmentInfo: Sendable, Equatable {
@@ -7,12 +10,22 @@ package enum VectorSerializer {
         package var dimension: UInt32
         package var vectorCount: UInt64
         package var payloadLength: UInt64
+        /// Rows dropped while decoding because a vector component was NaN or infinite.
+        /// `vectorCount` and `payloadLength` describe the rows that were kept.
+        package var droppedNonFiniteRowCount: Int
 
-        package init(similarity: VecSimilarity, dimension: UInt32, vectorCount: UInt64, payloadLength: UInt64) {
+        package init(
+            similarity: VecSimilarity,
+            dimension: UInt32,
+            vectorCount: UInt64,
+            payloadLength: UInt64,
+            droppedNonFiniteRowCount: Int = 0
+        ) {
             self.similarity = similarity
             self.dimension = dimension
             self.vectorCount = vectorCount
             self.payloadLength = payloadLength
+            self.droppedNonFiniteRowCount = droppedNonFiniteRowCount
         }
     }
 
@@ -40,7 +53,7 @@ package enum VectorSerializer {
         guard version == 1 else {
             throw WaxError.invalidToc(reason: "unsupported vec segment version \(version)")
         }
-        let encodingRaw = data[6]
+        let encodingRaw = data[data.startIndex + 6]
         guard let encoding = VecEncoding(rawValue: encodingRaw) else {
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(encodingRaw)")
         }
@@ -73,12 +86,30 @@ package enum VectorSerializer {
 
         var encoder = BinaryEncoder()
         header.encode(to: &encoder)
-        var data = encoder.data
-        data.append(vectors.withUnsafeBufferPointer { Data(buffer: $0) })
+        let headerBytes = encoder.data
 
-        var frameIdBytesLE = UInt64(frameIdBytes).littleEndian
-        withUnsafeBytes(of: &frameIdBytesLE) { data.append(contentsOf: $0) }
-        data.append(frameIds.withUnsafeBufferPointer { Data(buffer: $0) })
+        // One exact-size buffer: every commit serializes the whole index, and growing a Data
+        // through appends copied the vectors up to three times.
+        let lengthFieldSize = MemoryLayout<UInt64>.size
+        var data = Data(count: headerBytes.count + vectorBytes + lengthFieldSize + frameIdBytes)
+        data.withUnsafeMutableBytes { (output: UnsafeMutableRawBufferPointer) in
+            var offset = 0
+            headerBytes.withUnsafeBytes { output.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+            offset += headerBytes.count
+            vectors.withUnsafeBytes { raw in
+                if let base = raw.baseAddress {
+                    (output.baseAddress! + offset).copyMemory(from: base, byteCount: vectorBytes)
+                }
+            }
+            offset += vectorBytes
+            output.storeBytes(of: UInt64(frameIdBytes).littleEndian, toByteOffset: offset, as: UInt64.self)
+            offset += lengthFieldSize
+            frameIds.withUnsafeBytes { raw in
+                if let base = raw.baseAddress {
+                    (output.baseAddress! + offset).copyMemory(from: base, byteCount: frameIdBytes)
+                }
+            }
+        }
         return data
     }
 
@@ -92,7 +123,7 @@ package enum VectorSerializer {
         let header = try VecSegmentHeaderV1.decodeAnyEncoding(from: &headerDecoder)
         try headerDecoder.finalize()
 
-        let info = SegmentInfo(
+        var info = SegmentInfo(
             similarity: header.similarity,
             dimension: header.dimension,
             vectorCount: header.vectorCount,
@@ -115,13 +146,14 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec vector data length mismatch")
             }
 
+            // Offsets below are relative to data.startIndex (data may be a slice).
             var offset = VecSegmentHeaderV1.encodedSize
             let frameIdLengthOffset = offset + vectorLength
             guard data.count >= frameIdLengthOffset + MemoryLayout<UInt64>.stride else {
                 throw WaxError.invalidToc(reason: "vec segment missing frameIds length")
             }
 
-            let vectorsData = data[offset..<offset + vectorLength]
+            let vectorsOffset = offset
             offset += vectorLength
 
             let frameIdLength = UInt64(littleEndian: data.withUnsafeBytes {
@@ -140,17 +172,86 @@ package enum VectorSerializer {
                 throw WaxError.invalidToc(reason: "vec segment length mismatch: expected \(expectedTotal), got \(data.count)")
             }
 
-            let vectors = Array(vectorsData.withUnsafeBytes {
-                Array($0.bindMemory(to: Float.self))
-            })
-            let frameIds = Array(data[offset..<offset + Int(frameIdLength)].withUnsafeBytes {
-                Array($0.bindMemory(to: UInt64.self))
-            })
+            var vectors: [Float] = copyUnaligned(
+                from: data,
+                byteOffset: vectorsOffset,
+                count: vectorLength / MemoryLayout<Float>.stride
+            )
+            var frameIds: [UInt64] = copyUnaligned(
+                from: data,
+                byteOffset: offset,
+                count: Int(frameIdLength) / MemoryLayout<UInt64>.stride
+            )
             try validateUniqueFrameIds(frameIds)
+
+            // Stores written before inserts rejected NaN/Inf can contain non-finite rows.
+            // Drop them (vector and frameId together) instead of failing the whole load.
+            let dropped = dropNonFiniteRows(
+                vectors: &vectors,
+                frameIds: &frameIds,
+                dimension: Int(header.dimension)
+            )
+            if dropped > 0 {
+                info.droppedNonFiniteRowCount = dropped
+                info.vectorCount = UInt64(frameIds.count)
+                info.payloadLength = UInt64(vectors.count * MemoryLayout<Float>.stride)
+                logDroppedNonFiniteRows(dropped, of: Int(header.vectorCount))
+            }
 
             return .metal(info: info, vectors: vectors, frameIds: frameIds)
         default:
             throw WaxError.invalidToc(reason: "unsupported vec segment encoding \(header.encoding)")
+        }
+    }
+
+    /// Removes rows whose vector contains NaN or infinity. Returns the number removed.
+    private static func dropNonFiniteRows(
+        vectors: inout [Float],
+        frameIds: inout [UInt64],
+        dimension: Int
+    ) -> Int {
+        guard dimension > 0, !vectors.allSatisfy(\.isFinite) else { return 0 }
+        var keptVectors: [Float] = []
+        var keptFrameIds: [UInt64] = []
+        keptVectors.reserveCapacity(vectors.count)
+        keptFrameIds.reserveCapacity(frameIds.count)
+        for (row, frameId) in frameIds.enumerated() {
+            let start = row * dimension
+            let rowValues = vectors[start..<(start + dimension)]
+            guard rowValues.allSatisfy(\.isFinite) else { continue }
+            keptVectors.append(contentsOf: rowValues)
+            keptFrameIds.append(frameId)
+        }
+        let dropped = frameIds.count - keptFrameIds.count
+        vectors = keptVectors
+        frameIds = keptFrameIds
+        return dropped
+    }
+
+    private static func logDroppedNonFiniteRows(_ dropped: Int, of total: Int) {
+        #if canImport(os)
+        Logger(subsystem: "com.wax.vectorsearch", category: "VectorSerializer").warning(
+            "Dropped \(dropped, privacy: .public) of \(total, privacy: .public) vec index rows with non-finite values; the index is rewritten on the next commit"
+        )
+        #else
+        let message = "Wax: dropped \(dropped) of \(total) vec index rows with non-finite values\n"
+        FileHandle.standardError.write(Data(message.utf8))
+        #endif
+    }
+
+    /// Copies `count` trivially-typed elements starting at `byteOffset` (relative to
+    /// `data.startIndex`) into a properly aligned array. Never binds the source bytes
+    /// to `T`, so it is safe for slices and arbitrarily aligned offsets.
+    private static func copyUnaligned<T: BitwiseCopyable>(from data: Data, byteOffset: Int, count: Int) -> [T] {
+        guard count > 0 else { return [] }
+        return data.withUnsafeBytes { raw in
+            [T](unsafeUninitializedCapacity: count) { buffer, initializedCount in
+                let byteCount = count * MemoryLayout<T>.stride
+                UnsafeMutableRawBufferPointer(buffer).copyMemory(
+                    from: UnsafeRawBufferPointer(rebasing: raw[byteOffset..<byteOffset + byteCount])
+                )
+                initializedCount = count
+            }
         }
     }
 

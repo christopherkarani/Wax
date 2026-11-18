@@ -143,6 +143,45 @@ func publicAPINamesBuiltInMultimodalEmbeddingsForPhotoVideoFacades() throws {
     }
 }
 
+@Test
+func vectorSimilarityIsPublicAPIAndDocumentedWithNormalize() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    let source = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/WaxVectorSearch/Embeddings/EmbeddingProvider.swift"),
+        encoding: .utf8
+    )
+    #expect(source.contains("public enum VectorSimilarity"))
+    #expect(source.contains("var similarity: VectorSimilarity { get }"))
+    #expect(source.contains("var similarity: VectorSimilarity { .cosine }"))
+
+    let aliases = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PublicAliases.swift"),
+        encoding: .utf8
+    )
+    #expect(aliases.contains("public typealias VectorSimilarity = WaxVectorSearch.VectorSimilarity"))
+
+    let publicAPI = try String(
+        contentsOf: repoRoot.appendingPathComponent("Resources/skills/public/wax/references/public-api.md"),
+        encoding: .utf8
+    )
+    #expect(publicAPI.contains("public enum VectorSimilarity"))
+    #expect(publicAPI.contains("vector similarity mismatch"))
+
+    for relativePath in [
+        "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/EmbeddingProviders.md",
+        "Resources/website/docs/vector-search/embedding-providers.md",
+    ] {
+        let doc = try String(contentsOf: repoRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        #expect(doc.contains("var similarity: VectorSimilarity { get }"), "\(relativePath)")
+        #expect(doc.contains("| `.dotProduct` | `true` |"), "\(relativePath) must document dot product with normalize")
+        #expect(doc.contains("vector similarity mismatch"), "\(relativePath) must document the reopen mismatch")
+    }
+}
+
 private let vectorSearchDocPaths = [
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Documentation.md",
     "Sources/WaxVectorSearch/WaxVectorSearch.docc/Articles/VectorSearchEngines.md",

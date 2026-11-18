@@ -701,3 +701,32 @@ func queryAnalyzerRejectsImpossibleCalendarDates() {
     #expect(analyzer.containsDateLiteral("Atlas-10 public launch is 2028-02-29."))
     #expect(analyzer.normalizedDateKeys(in: "Atlas-10 public launch is 2028-02-29.") == Set(["2028-02-29"]))
 }
+
+/// The snippet truncation check must answer exactly as Foundation's `contains("...")`,
+/// including a period followed by a combining mark, which has the bytes but not the match.
+@Test func snippetEllipsisCheckMatchesFoundationContains() {
+    let fixed = [
+        "", "...", "a...b", "..", ". . .", "....", "\u{2026}", "a..\u{301}.b", "a...\u{301}b",
+        "e\u{301}...", ".\u{200B}..", "..\u{FEFF}.", "\u{FF0E}\u{FF0E}\u{FF0E}",
+    ]
+    for text in fixed {
+        let expected: Bool = text.contains("...")
+        #expect(FastRAGContextBuilder.containsEllipsis(text) == expected, "\(text.debugDescription)")
+    }
+    let alphabet: [String] = [".", ".", ".", "\u{301}", "\u{200B}", "\u{2026}", "a", " ", "\u{FE0F}", "\u{200D}"]
+    var state: UInt64 = 0xE11_1951
+    var mismatches: [String] = []
+    for _ in 0..<20_000 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        var text = ""
+        var bits = state
+        for _ in 0..<(1 + Int(bits % 9)) {
+            bits /= 9
+            text += alphabet[Int(bits % UInt64(alphabet.count))]
+            bits = bits &* 0x9E37_79B9_7F4A_7C15 &+ 1
+        }
+        let expected: Bool = text.contains("...")
+        if FastRAGContextBuilder.containsEllipsis(text) != expected { mismatches.append(text.debugDescription) }
+    }
+    #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
+}

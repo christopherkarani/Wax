@@ -6,7 +6,7 @@ Native Hermes memory provider backed by [Wax](https://github.com/christopherkara
 
 ```bash
 # 1. Start Wax MCP with vector search
-npx waxmcp --embedder minilm --transport http
+npx waxmcp --transport http
 
 # 2. Install the plugin into the active Hermes profile
 npx waxmcp install-hermes-plugin
@@ -44,6 +44,7 @@ Resolution order for the MCP endpoint:
 |----------|-------------|
 | `WAX_MCP_HTTP_ENDPOINT` | Wax MCP HTTP endpoint |
 | `WAX_MCP_AUTO_START` | Set to `1` to auto-start `wax-mcp` during `initialize()` |
+| `WAX_MCP_HTTP_AUTH_TOKEN` | Bearer token sent as `Authorization` (or `auth_token` in `wax-memory.json`); required whenever the server was started with a token, loopback included |
 | `WAX_STRUCTURED_MEMORY` | Enable structured memory tools (`1` default) |
 | `WAX_HERMES_EXTENDED_TOOLS` | Expose additional markdown/compact/search tools; lifecycle stays provider-owned |
 | `WAX_STORE_PATH` | Extra path included in `hermes backup` |

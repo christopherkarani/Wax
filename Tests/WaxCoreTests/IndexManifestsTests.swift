@@ -5,18 +5,44 @@ import Testing
 @Test func indexManifestsRoundtrip() throws {
     let lex = LexIndexManifest(
         docCount: 10,
-        bytesOffset: 1000,
-        bytesLength: 2000,
-        checksum: Data(repeating: 0xAA, count: 32),
-        version: 1
+        version: 1,
+        pageSize: 4096,
+        runs: [
+            LexRunManifest(
+                bytesOffset: 1000,
+                bytesLength: 2000,
+                checksum: Data(repeating: 0xAA, count: 32),
+                addedGeneration: 1,
+                imageLength: 2000
+            ),
+        ]
     )
     let vec = VecIndexManifest(
         vectorCount: 42,
         dimension: 384,
-        bytesOffset: 3000,
-        bytesLength: 4000,
-        checksum: Data(repeating: 0xBB, count: 32),
-        similarity: .cosine
+        similarity: .cosine,
+        runs: [
+            VecRunManifest(
+                bytesOffset: 3000,
+                bytesLength: 4000,
+                checksum: Data(repeating: 0xBB, count: 32),
+                rowCount: 40,
+                tombstoneCount: 0,
+                level: 64,
+                addedGeneration: 0,
+                keysChecksum: nil
+            ),
+            VecRunManifest(
+                bytesOffset: 7000,
+                bytesLength: 100,
+                checksum: Data(repeating: 0xCC, count: 32),
+                rowCount: 2,
+                tombstoneCount: 1,
+                level: 0,
+                addedGeneration: 9,
+                keysChecksum: Data(repeating: 0xDD, count: 32)
+            ),
+        ]
     )
 
     var manifests = IndexManifests(lex: lex, vec: vec)

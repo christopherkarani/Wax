@@ -121,7 +121,14 @@ public struct WaxMemoryToolConfig: Sendable, Equatable {
     public var recallMaxItems: Int
     public var searchTopK: Int
     public var maxSearchTopK: Int
-    public var searchAlpha: Float
+    /// Hybrid text weight for searches that pass no `alpha`. Left unset, search uses the
+    /// store's default (0.4 when the store's embedder is e5-small-v2, 0.5 otherwise), and
+    /// reading it returns 0.5. A value passed to the initializer or assigned here is used.
+    public var searchAlpha: Float {
+        get { chosenSearchAlpha ?? HybridTextWeight.standard }
+        set { chosenSearchAlpha = newValue }
+    }
+    private var chosenSearchAlpha: Float?
     public var embeddingPolicy: Memory.EmbeddingPolicy
     public var includeScores: Bool
     public var maxItemCharacters: Int
@@ -139,7 +146,7 @@ public struct WaxMemoryToolConfig: Sendable, Equatable {
         recallMaxItems: Int = 6,
         searchTopK: Int = 8,
         maxSearchTopK: Int = 20,
-        searchAlpha: Float = 0.5,
+        searchAlpha: Float? = nil,
         embeddingPolicy: Memory.EmbeddingPolicy = .automatic,
         includeScores: Bool = false,
         maxItemCharacters: Int = 280,
@@ -156,7 +163,7 @@ public struct WaxMemoryToolConfig: Sendable, Equatable {
         self.maxSearchTopK = clampedMaxTopK
         self.recallMaxItems = max(0, min(recallMaxItems, clampedMaxTopK))
         self.searchTopK = max(1, min(searchTopK, clampedMaxTopK))
-        self.searchAlpha = min(1, max(0, searchAlpha))
+        self.chosenSearchAlpha = searchAlpha.map { min(1, max(0, $0)) }
         self.embeddingPolicy = embeddingPolicy
         self.includeScores = includeScores
         self.maxItemCharacters = max(0, maxItemCharacters)
@@ -192,13 +199,16 @@ public struct WaxMemoryToolConfig: Sendable, Equatable {
         topK requestedTopK: Int? = nil,
         alpha requestedAlpha: Float? = nil
     ) -> Memory.SearchOptions {
-        let mode: Memory.RetrievalMode = switch embeddingPolicy {
+        // No requested or configured weight leaves the mode unset: hybrid at the store's default.
+        let mode: Memory.RetrievalMode? = switch embeddingPolicy {
         case .never:
             .textOnly
         case .always:
             .vectorOnly
         case .automatic:
-            .hybrid(alpha: alpha(requestedAlpha))
+            (requestedAlpha ?? chosenSearchAlpha).map { (weight: Float) -> Memory.RetrievalMode in
+                .hybrid(alpha: alpha(weight))
+            }
         }
         return Memory.SearchOptions(
             topK: topK(requestedTopK),
@@ -584,9 +594,9 @@ public enum WaxMemoryToolExecutor: Sendable {
             frameIDs.append(item.frameId)
         }
 
-        let outcome = await deleteFramesReportingPartial(
+        let outcome = await deleteFramesReportingCount(
             frameIDs: frameIDs,
-            delete: { try await memory.delete(frameID: $0) }
+            delete: { try await memory.delete(frameIDs: $0) }
         )
         if let failure = outcome.failure {
             return .error(
@@ -607,23 +617,27 @@ public enum WaxMemoryToolExecutor: Sendable {
         )
     }
 
-    /// Deletes frames one-by-one, tracking successful deletes for accurate partial reporting.
+    /// Deletes all frames in one batch and reports how many requested frames
+    /// were deleted.
+    ///
+    /// A batch that fails before writing anything reports `0`. A batch that
+    /// fails part-way throws ``MemoryOrchestrator/PartialDeleteError``, whose
+    /// committed ids are the count reported.
     ///
     /// Package-visible so unit tests can inject a throwing `delete` without a live store.
-    package static func deleteFramesReportingPartial(
+    package static func deleteFramesReportingCount(
         frameIDs: [UInt64],
-        delete: (UInt64) async throws -> Void
+        delete: ([UInt64]) async throws -> Void
     ) async -> (deleted: Int, failure: Error?) {
-        var deleted = 0
-        for frameID in frameIDs {
-            do {
-                try await delete(frameID)
-                deleted += 1
-            } catch {
-                return (deleted, error)
-            }
+        guard !frameIDs.isEmpty else { return (0, nil) }
+        do {
+            try await delete(frameIDs)
+            return (frameIDs.count, nil)
+        } catch let partial as MemoryOrchestrator.PartialDeleteError {
+            return (partial.deletedFrameIds.count, partial.underlying)
+        } catch {
+            return (0, error)
         }
-        return (deleted, nil)
     }
 
     /// Search with optional vector→text fallback (shared by tools and session prepare/recall).

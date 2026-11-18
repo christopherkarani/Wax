@@ -191,3 +191,56 @@ private func restampTocChecksum(_ bytes: inout Data) {
 
     #expect(decoded == manifest)
 }
+
+/// Readers reject a TOC above `maxTocBytes`, so a commit must not write one: the store would
+/// then open on an older footer whose WAL was already checkpointed.
+@Test func tocEncodeRejectsATocReadersWouldReject() throws {
+    let toc = WaxTOC.emptyV1()
+    let size = try toc.encode().count
+    #expect(throws: WaxError.self) { try toc.encode(maxBytes: UInt64(size - 1)) }
+    #expect(try toc.encode(maxBytes: UInt64(size)).count == size)
+}
+
+/// A commit writes the encoding in parts with the cached frames payload in the middle; joined,
+/// they are the bytes `encode` returns, with or without the cache.
+@Test func tocEncodedPartsJoinToTheEncodingWithTheCachedFramesPayloadUncopied() throws {
+    var toc = WaxTOC.emptyV1()
+    toc.frames = (0..<3).map { index in
+        FrameMeta(
+            id: UInt64(index),
+            timestamp: 100 + Int64(index),
+            payloadOffset: 9_216 + UInt64(index) * 8,
+            payloadLength: 8,
+            checksum: Data(repeating: 0xAA, count: 32),
+            canonicalEncoding: .plain,
+            storedChecksum: Data(repeating: 0xBB, count: 32)
+        )
+    }
+    toc.merkleRoot = Data(repeating: 0x5A, count: 32)
+    let fresh = try toc.encode()
+    // toc_version, then the frame count.
+    let framesStart = MemoryLayout<UInt64>.size + MemoryLayout<UInt32>.size
+
+    var encoder = BinaryEncoder()
+    for frame in toc.frames {
+        var mutable = frame
+        try mutable.encode(to: &encoder)
+    }
+    let framesPayload = encoder.data
+
+    let parts = try toc.encodeParts(cachedFramesPayload: framesPayload)
+    #expect(parts.head.count == framesStart)
+    #expect(parts.frames == framesPayload)
+    #expect(parts.parts.reduce(Data(), +) == fresh)
+    #expect(parts.byteCount == fresh.count)
+    #expect(parts.checksum == WaxTOC.computeChecksum(for: fresh))
+    #expect(try toc.encode(cachedFramesPayload: framesPayload) == fresh)
+
+    let uncached = try toc.encodeParts()
+    #expect(uncached.frames.isEmpty)
+    #expect(uncached.parts.reduce(Data(), +) == fresh)
+
+    #expect(throws: WaxError.self) {
+        try toc.encodeParts(cachedFramesPayload: framesPayload, maxBytes: UInt64(fresh.count - 1))
+    }
+}

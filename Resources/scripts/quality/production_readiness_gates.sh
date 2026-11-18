@@ -4,6 +4,46 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
+# Per-run log directory: fixed /tmp paths collide when two gate runs share a
+# machine and ignore $TMPDIR. Override with GATE_LOG_DIR to keep logs elsewhere.
+GATE_LOG_DIR="${GATE_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wax-gate.XXXXXX")}"
+mkdir -p "$GATE_LOG_DIR"
+
+# Tests that started and never finished, in start order. A timed-out run otherwise shows
+# only its log tail, where a test that hung long before the timeout does not appear.
+# Handles swift-testing ("Test x() started." / "passed|failed after" / "skipped:") and
+# XCTest ("Test Case '-[S t]' started." / "passed|failed (").
+unfinished_tests() {
+  local log_file="$1"
+  sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g; s/\r$//' "$log_file" 2>/dev/null \
+    | sed -nE \
+      -e "/Test Case '/{
+            s/.*Test Case '(-\[[^]]+\])' started.*/START \1/p
+            s/.*Test Case '(-\[[^]]+\])' (passed|failed) .*/END \1/p
+            d
+          }" \
+      -e '/recorded an issue/d' \
+      -e '/Test run (started|with)/d' \
+      -e '/Test case passing /d' \
+      -e 's/ with [0-9]+ test cases? (passed|failed) after / \1 after /' \
+      -e 's/.*Test (.+) started\.$/START \1/p' \
+      -e 's/.*Test (.+) (passed|failed) after .*/END \1/p' \
+      -e 's/.*Test (.+) skipped(:.*)?$/END \1/p' \
+    | awk '
+        $1 == "START" { name = substr($0, 7); if (!(name in open)) order[++n] = name; open[name] = 1 }
+        $1 == "END" { delete open[substr($0, 5)] }
+        END { for (i = 1; i <= n; i++) if (order[i] in open) print order[i] }
+      '
+}
+
+descendant_pids() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    echo "$child"
+    descendant_pids "$child"
+  done
+}
+
 run_and_capture() {
   local log_file="$1"
   shift
@@ -12,8 +52,8 @@ run_and_capture() {
   local last_line
   local shell_flags=$-
 
-  # Full swift test output includes hundreds of MB of swift-testing
-  # deprecation warnings. Teeing that onto stdout stalls the GitHub
+  # Full swift test output is large (it used to include hundreds of MB of
+  # swift-testing package deprecation warnings). Teeing it onto stdout stalls the GitHub
   # Actions log pipe (local Popen has the same failure). Keep the full
   # log on disk for skip/pass-rate checks; print only breadcrumbs.
   # Run under `script -F` so Swift line-buffers; a plain file redirect
@@ -46,6 +86,19 @@ run_and_capture() {
       echo "GATE_TIMEOUT ${timeout_secs}s: $*"
       last_line="$(tail -n 1 "$log_file" 2>/dev/null | tr -cd '[:print:]' | cut -c1-160)"
       echo "GATE_TIMEOUT_LAST ${last_line}"
+      unfinished_tests "$log_file" | head -n 40 | sed 's/^/GATE_UNFINISHED_TEST /'
+      # Test-spawned processes still alive (daemons, CLI children) often explain a hang.
+      ps -axo pid,ppid,etime,command 2>/dev/null \
+        | grep -E "wax|xctest|swiftpm-testing-helper" | grep -v grep | head -n 40 \
+        | sed 's/^/GATE_LIVE_PROCESS /' || true
+      # Every thread's stack in a hung test process says where it is stuck (macOS only).
+      if command -v sample >/dev/null 2>&1; then
+        local test_pid
+        for test_pid in $(descendant_pids "$cmd_pid"); do
+          ps -o command= -p "$test_pid" 2>/dev/null | grep -qE "swiftpm-testing-helper|xctest" || continue
+          sample "$test_pid" 3 2>/dev/null | head -n 600 | sed "s/^/GATE_STACK ${test_pid} /" || true
+        done
+      fi
       kill "$cmd_pid" 2>/dev/null || true
       sleep 2
       kill -9 "$cmd_pid" 2>/dev/null || true
@@ -83,7 +136,7 @@ run_and_capture() {
 # explicit env var or package trait is set. These are not silent product gaps.
 expected_optional_skip_pattern() {
   printf '%s' \
-    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_|Requires macOS 26.0"
+    "Set WAX_TEST_ARCTIC=1|Set WAX_TEST_E5=1|Set WAX_TEST_RERANKER=1|Set WAX_TEST_MINILM=1|Set WAX_GENERATE_MINILM_FIXTURES=1|Build with --traits default,WaxRepo|Build with --traits default,MCPServer|Set WAX_RUN_XCTEST_BENCHMARKS=1|Set WAX_BENCHMARK_|Requires macOS 26.0"
 }
 
 assert_no_skips() {
@@ -135,8 +188,9 @@ assert_full_pass_rate() {
   if [[ $runnable -le 0 ]]; then
     # Swift Testing emits an XCTest wrapper of "Executed 0 tests" when the
     # selected filter has no XCTest cases. Require a positive swift-testing
-    # count so an empty --filter cannot green as 100%.
-    if grep -E "Test run with [1-9][0-9]* tests passed" "$log_file" >/dev/null; then
+    # count so an empty --filter cannot green as 100%. Newer Swift Testing
+    # prints "Test run with N tests in M suites passed".
+    if grep -E "Test run with [1-9][0-9]* tests? (in [0-9]+ suites? )?passed" "$log_file" >/dev/null; then
       echo "PASS_RATE: 100.00% (swift-testing; XCTest wrapper executed 0)"
       return 0
     fi
@@ -156,9 +210,18 @@ assert_full_pass_rate() {
 }
 
 require_swiftpm_traits() {
+  # Package.swift is swift-tools-version 6.2; an older compiler would fail later
+  # with a less obvious manifest error.
+  local swift_version
+  swift_version="$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+  if [[ -n "$swift_version" ]] \
+     && [[ "$(printf '%s\n' "6.2" "$swift_version" | sort -V | head -n 1)" != "6.2" ]]; then
+    echo "FAIL: Swift $swift_version is too old; this package needs Swift 6.2+." >&2
+    return 1
+  fi
   if ! swift test --help | grep -q -- "--traits <traits>"; then
     echo "FAIL: current Swift toolchain does not support package traits (--traits)." >&2
-    echo "Install a Swift toolchain that supports package traits (for example Swift 6.1+)." >&2
+    echo "Install a Swift toolchain that supports package traits (Swift 6.2+)." >&2
     return 1
   fi
 }
@@ -215,12 +278,12 @@ assert_mcp_cli_doctor_smokes_ran() {
   echo "MCP_CLI_DOCTOR_SMOKES: executed"
 }
 
+# The default test list (`swift test list`) is captured once by run_full, which
+# shards on it before this check reads it.
 assert_mcp_trait_test_inventory() {
-  local default_list_log="/tmp/wax-gate-default-test-list.log"
-  local mcp_list_log="/tmp/wax-gate-mcp-test-list.log"
+  local default_list_log="$1"
+  local mcp_list_log="$GATE_LOG_DIR/wax-gate-mcp-test-list.log"
 
-  run_and_capture "$default_list_log" \
-    swift test --disable-automatic-resolution list
   assert_default_mcp_trait_tests_omitted "$default_list_log"
 
   run_and_capture "$mcp_list_log" \
@@ -228,21 +291,67 @@ assert_mcp_trait_test_inventory() {
   assert_mcp_trait_tests_listed "$mcp_list_log"
 }
 
+# Test targets named in a `swift test list` log, in first-listed order. Build and
+# warning lines are ignored; every test target's name ends in "Tests".
+full_gate_test_targets() {
+  local list_log="$1"
+  sed -E $'s/\x1b\\[[0-9;]*m//g; s/\r$//' "$list_log" \
+    | grep -oE '^[A-Za-z_][A-Za-z0-9_]*Tests\.' \
+    | sed 's/\.$//' \
+    | awk '!seen[$0]++'
+}
+
+# One `swift test` run per test target. A single run of every target starts all of
+# the package's ~2,600 tests at once, and on a 3-core runner a test that times itself
+# (a deadline, a readiness wait) then waits behind the whole backlog. Every shard runs
+# even after one fails, so one failure cannot hide another. Shards reuse the build
+# that `swift test list` made (--skip-build): on the macos-15 runner each shard
+# otherwise recompiled every Wax module, about 3.5 minutes apiece.
+run_full_shards() {
+  local list_log="$1"
+  local skip_regex="$2"
+  local target shard_log targets=() failed=()
+  # An array, not a `while read` loop: run_and_capture's `script` reads stdin and
+  # would take the remaining target names with it.
+  while IFS= read -r target; do
+    targets+=("$target")
+  done < <(full_gate_test_targets "$list_log")
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    echo "FAIL: the default test list names no test target: $list_log" >&2
+    return 1
+  fi
+  for target in "${targets[@]}"; do
+    shard_log="$GATE_LOG_DIR/wax-gate-full-$target.log"
+    echo "FULL_SHARD: $target"
+    if ! run_and_capture "$shard_log" \
+      swift test --parallel --skip-build --filter "^${target}\." --skip "$skip_regex"; then
+      failed+=("$target")
+      continue
+    fi
+    if ! assert_no_skips "$shard_log" || ! assert_full_pass_rate "$shard_log"; then
+      failed+=("$target")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: full gate shards failed: ${failed[*]}" >&2
+    return 1
+  fi
+}
+
 run_full() {
-  local log_file="/tmp/wax-gate-full.log"
-  local mcp_unit_log="/tmp/wax-gate-full-mcp-unit.log"
-  local mcp_cli_log="/tmp/wax-gate-full-mcp-cli.log"
-  local mcp_process_log="/tmp/wax-gate-full-mcp-process.log"
+  local default_list_log="$GATE_LOG_DIR/wax-gate-default-test-list.log"
+  local mcp_unit_log="$GATE_LOG_DIR/wax-gate-full-mcp-unit.log"
+  local mcp_cli_log="$GATE_LOG_DIR/wax-gate-full-mcp-cli.log"
+  local mcp_process_log="$GATE_LOG_DIR/wax-gate-full-mcp-process.log"
   local skip_regex
   skip_regex="$(full_gate_skip_regex)"
 
-  run_and_capture "$log_file" \
-    swift test --parallel --skip "$skip_regex"
-  assert_no_skips "$log_file"
-  assert_full_pass_rate "$log_file"
+  run_and_capture "$default_list_log" \
+    swift test --disable-automatic-resolution list
+  run_full_shards "$default_list_log" "$skip_regex"
 
   require_swiftpm_traits
-  assert_mcp_trait_test_inventory
+  assert_mcp_trait_test_inventory "$default_list_log"
 
   # Do not re-run the default suite serially under --traits MCPServer: that
   # hung GitHub macos-15 for 75m with a frozen log after compile. Keep
@@ -270,8 +379,8 @@ run_full() {
 }
 
 run_soak_smoke() {
-  local stability_log="/tmp/wax-gate-soak-stability.log"
-  local wal_log="/tmp/wax-gate-soak-wal.log"
+  local stability_log="$GATE_LOG_DIR/wax-gate-soak-stability.log"
+  local wal_log="$GATE_LOG_DIR/wax-gate-soak-wal.log"
 
   run_and_capture "$stability_log" env \
     WAX_REPLAY_SEED="${WAX_REPLAY_SEED:-2026021801}" \
@@ -292,8 +401,8 @@ run_soak_smoke() {
 }
 
 run_burn_smoke() {
-  local stability_log="/tmp/wax-gate-burn-stability.log"
-  local wal_log="/tmp/wax-gate-burn-wal.log"
+  local stability_log="$GATE_LOG_DIR/wax-gate-burn-stability.log"
+  local wal_log="$GATE_LOG_DIR/wax-gate-burn-wal.log"
 
   run_and_capture "$stability_log" env \
     WAX_REPLAY_SEED="${WAX_REPLAY_SEED:-2026021802}" \
@@ -313,6 +422,67 @@ run_burn_smoke() {
   assert_no_skips "$wal_log"
 }
 
+# `full` tolerates these opt-in skips (expected_optional_skip_pattern). The
+# opt-in-configs mode turns them on, so the same skip reason must not appear.
+assert_opt_in_suite_ran() {
+  local log_file="$1"
+  local skip_reason="$2"
+  if grep -F "$skip_reason" "$log_file" >/dev/null; then
+    echo "FAIL: opt-in suite was skipped (\"$skip_reason\") in $log_file" >&2
+    grep -F "$skip_reason" "$log_file" | head -n 10 >&2
+    return 1
+  fi
+}
+
+# Configurations that `full` skips: the WaxRepo trait build + its executable
+# smoke tests, and real MiniLM inference (WAX_TEST_MINILM=1). Arctic stays
+# opt-in. Every step runs even if an earlier one fails, so one regression
+# cannot hide another; the mode fails at the end if any step failed.
+# Steps return explicitly on failure: run_opt_in_configs calls them in an
+# `||` context, where bash ignores `set -e`.
+run_opt_in_waxrepo() {
+  local waxrepo_build_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo-build.log"
+  local waxrepo_log="$GATE_LOG_DIR/wax-gate-opt-in-waxrepo.log"
+
+  require_swiftpm_traits || return 1
+  run_and_capture "$waxrepo_build_log" \
+    swift build --traits WaxRepo --product WaxRepo || return 1
+
+  run_and_capture "$waxrepo_log" \
+    swift test --parallel --traits WaxRepo --filter 'waxTests\.waxRepo' || return 1
+  assert_opt_in_suite_ran "$waxrepo_log" "Build with --traits default,WaxRepo" || return 1
+  # Guard against a filter that silently matches nothing.
+  grep -E "Test waxRepoFullReindexReplacesExistingStore\(\) passed" "$waxrepo_log" >/dev/null \
+    || { echo "FAIL: WaxRepo executable smoke tests did not run" >&2; return 1; }
+  assert_full_pass_rate "$waxrepo_log" || return 1
+}
+
+run_opt_in_minilm() {
+  local minilm_log="$GATE_LOG_DIR/wax-gate-opt-in-minilm.log"
+
+  run_and_capture "$minilm_log" env WAX_TEST_MINILM=1 \
+    swift test --parallel --filter 'WaxIntegrationTests\.(miniLMEmbedder|minilmEmbedding)' || return 1
+  assert_opt_in_suite_ran "$minilm_log" "Set WAX_TEST_MINILM=1" || return 1
+  # Guard against a filter that silently matches nothing.
+  grep -E "Test minilmEmbeddingsStayCloseToBaseline\(\) passed" "$minilm_log" >/dev/null \
+    || { echo "FAIL: MiniLM quality suite did not run" >&2; return 1; }
+  assert_full_pass_rate "$minilm_log" || return 1
+}
+
+run_opt_in_configs() {
+  local step failed=()
+  for step in run_opt_in_waxrepo run_opt_in_minilm; do
+    if ! "$step"; then
+      echo "OPT_IN_STEP_FAILED: $step" >&2
+      failed+=("$step")
+    fi
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "FAIL: opt-in-configs steps failed: ${failed[*]}" >&2
+    return 1
+  fi
+}
+
 main() {
   local mode="${1:-all}"
   case "$mode" in
@@ -325,13 +495,16 @@ main() {
     burn-smoke)
       run_burn_smoke
       ;;
+    opt-in-configs)
+      run_opt_in_configs
+      ;;
     all)
       run_full
       run_soak_smoke
       run_burn_smoke
       ;;
     *)
-      echo "Usage: $0 [full|soak-smoke|burn-smoke|all]" >&2
+      echo "Usage: $0 [full|soak-smoke|burn-smoke|opt-in-configs|all]" >&2
       exit 64
       ;;
   esac

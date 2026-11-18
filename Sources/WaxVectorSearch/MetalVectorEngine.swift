@@ -15,26 +15,35 @@ import Foundation
 import Metal
 import WaxCore
 
+/// Brute-force GPU cosine search over vectors held in Metal buffers.
+///
+/// - Important: Deprecated. Wax's search path does not use this engine: it searches with
+///   ``AccelerateVectorEngine`` (exact, CPU) or ``MetalANNSVectorEngine`` (approximate, GPU)
+///   through ``LoadedVectorSearchEngine``. Use one of those instead. This engine and its
+///   shaders will be removed in the next major version. It is `package`, not public API, so
+///   it carries no `@available(*, deprecated)` attribute.
 package actor MetalVectorEngine {
-    private static let maxResults = 10_000
+    static let maxResults = 10_000
     private static let initialReserve: UInt32 = 64
-    private static let maxThreadsPerThreadgroup = 256
-    private static let gpuTopKThreshold = 1_000
+    static let maxThreadsPerThreadgroup = 256
+    static let gpuTopKThreshold = 1_000
+    /// Upper bound on idle transient buffer sets kept for reuse across searches.
+    static let maxPooledTransientBufferSets = 4
     
     /// Threshold for switching to SIMD8 kernel (optimal for MiniLM 384-dim vectors)
     private static let simd8DimensionThreshold = 384
 
-    private struct TopKEntry {
+    struct TopKEntry {
         var distance: Float
         var index: UInt32
     }
 
-    private struct TopKResult {
+    struct TopKResult {
         var frameId: UInt64
         var score: Float
     }
 
-    private struct TransientBuffers {
+    struct TransientBuffers {
         let query: MTLBuffer
         let distances: MTLBuffer
         let count: MTLBuffer
@@ -44,16 +53,17 @@ package actor MetalVectorEngine {
     struct BufferPoolStats: Sendable {
         var transientAllocations: Int
         var reuseCount: Int
+        var pooledBufferSets: Int
     }
 
-    private let metric: VectorMetric
+    let metric: VectorMetric
     package let dimensions: Int
 
-    private var vectorCount: UInt64
+    var vectorCount: UInt64
     private var reservedCapacity: UInt32
     // Zero-Copy: 'vectors' array removed. Primary storage is `vectorsBuffer`.
     
-    private var frameIds: [UInt64]
+    var frameIds: [UInt64]
     private var positions: [UInt64: Int]
     private let opLock = AsyncReadWriteLock()
     private var dirty: Bool
@@ -70,7 +80,7 @@ package actor MetalVectorEngine {
         }
     }
 
-    private func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
+    func withReadLock<T: Sendable>(_ body: () async throws -> T) async rethrows -> T {
         await opLock.readLock()
         do {
             let value = try await body()
@@ -81,16 +91,19 @@ package actor MetalVectorEngine {
             throw error
         }
     }
-    private var gpuBufferNeedsSync: Bool = false // Deprecated/Unused but kept if logic needs refactor
 
-    private func acquireTransientBuffers(vectorCount: Int) throws -> TransientBuffers {
-        if let index = transientBufferPool.firstIndex(where: { $0.capacity >= vectorCount }) {
+    func acquireTransientBuffers(vectorCount: Int) throws -> TransientBuffers {
+        // Best fit: the smallest pooled set that can hold this search.
+        let bestFit = transientBufferPool.indices
+            .filter { transientBufferPool[$0].capacity >= vectorCount }
+            .min { transientBufferPool[$0].capacity < transientBufferPool[$1].capacity }
+        if let index = bestFit {
             transientReuseCount += 1
             return transientBufferPool.remove(at: index)
         }
 
         transientAllocations += 1
-        let capacity = max(vectorCount, Int(Self.initialReserve))
+        let capacity = Self.transientCapacity(for: vectorCount)
 
         guard let query = device.makeBuffer(
             length: dimensions * MemoryLayout<Float>.stride,
@@ -114,30 +127,53 @@ package actor MetalVectorEngine {
         return TransientBuffers(query: query, distances: distances, count: count, capacity: capacity)
     }
 
-    private func releaseTransientBuffers(_ buffers: TransientBuffers) {
+    func releaseTransientBuffers(_ buffers: TransientBuffers) {
         transientBufferPool.append(buffers)
+        // Keep the pool bounded; the smallest sets are the least likely to fit future searches.
+        while transientBufferPool.count > Self.maxPooledTransientBufferSets {
+            guard let smallest = transientBufferPool.indices.min(by: {
+                transientBufferPool[$0].capacity < transientBufferPool[$1].capacity
+            }) else { break }
+            transientBufferPool.remove(at: smallest)
+        }
+    }
+
+    /// Geometric growth (next power of two, at least `initialReserve`) so alternating
+    /// add/search allocates O(log n) transient sets instead of one per new vector count.
+    private static func transientCapacity(for vectorCount: Int) -> Int {
+        var capacity = Int(initialReserve)
+        while capacity < vectorCount {
+            let (doubled, overflow) = capacity.multipliedReportingOverflow(by: 2)
+            if overflow { return vectorCount }
+            capacity = doubled
+        }
+        return capacity
     }
 
     func debugBufferPoolStats() -> BufferPoolStats {
-        BufferPoolStats(transientAllocations: transientAllocations, reuseCount: transientReuseCount)
+        BufferPoolStats(
+            transientAllocations: transientAllocations,
+            reuseCount: transientReuseCount,
+            pooledBufferSets: transientBufferPool.count
+        )
     }
     
-    private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
-    private let computePipeline: MTLComputePipelineState
+    let device: MTLDevice
+    let commandQueue: MTLCommandQueue
+    let computePipeline: MTLComputePipelineState
     /// Secondary pipeline for SIMD8 kernel (used for high-dimensional vectors 384+)
-    private let computePipelineSIMD8: MTLComputePipelineState?
-    private let topKReduceDistancesPipeline: MTLComputePipelineState
-    private let topKReduceEntriesPipeline: MTLComputePipelineState
+    let computePipelineSIMD8: MTLComputePipelineState?
+    let topKReduceDistancesPipeline: MTLComputePipelineState
+    let topKReduceEntriesPipeline: MTLComputePipelineState
     /// Whether to use SIMD8 kernel based on dimensions
-    private let useSIMD8: Bool
+    let useSIMD8: Bool
     
     // Metal Buffers
-    private var vectorsBuffer: MTLBuffer
+    var vectorsBuffer: MTLBuffer
     private var distancesBuffer: MTLBuffer
     private var queryBuffer: MTLBuffer
     private let vectorCountBuffer: MTLBuffer
-    private let dimensionsBuffer: MTLBuffer
+    let dimensionsBuffer: MTLBuffer
 
     private var transientBufferPool: [TransientBuffers] = []
     private var transientAllocations: Int = 0
@@ -323,12 +359,22 @@ package actor MetalVectorEngine {
     /// Load engine from Wax persistence layer.
     package static func load(from wax: Wax, metric: VectorMetric, dimensions: Int) async throws -> MetalVectorEngine {
         let engine = try MetalVectorEngine(metric: metric, dimensions: dimensions)
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
-            try await engine.deserialize(bytes)
+        if let committed = try await wax.readCommittedVectors() {
+            try VectorPreparation.validateCommitted(committed, dimensions: dimensions, metric: metric)
+            let rows = stride(from: 0, to: committed.vectors.count, by: dimensions).map {
+                Array(committed.vectors[$0..<($0 + dimensions)])
+            }
+            try await engine.addBatch(frameIds: committed.frameIds, vectors: rows)
         }
-        let pending = await wax.pendingEmbeddingMutations()
-        for embedding in pending {
-            try await engine.add(frameId: embedding.frameId, vector: embedding.vector)
+        let pending = await wax.pendingEmbeddingMutations(since: nil)
+        if !pending.embeddings.isEmpty {
+            try await engine.addBatch(
+                frameIds: pending.embeddings.map(\.frameId),
+                vectors: pending.embeddings.map(\.vector)
+            )
+        }
+        for frameId in pending.removedFrameIds {
+            try await engine.remove(frameId: frameId)
         }
         return engine
     }
@@ -445,244 +491,6 @@ package actor MetalVectorEngine {
             vectorCount -= 1
             dirty = true
         }
-    }
-
-    package func search(vector: [Float], topK: Int) async throws -> [(frameId: UInt64, score: Float)] {
-        try await withReadLock {
-            try validate(vector)
-            guard vectorCount > 0 else { return [] }
-            let limit = Self.clampTopK(topK)
-            let topKCount = min(limit, Int(vectorCount))
-            let reductionThreadsPerThreadgroup = Self.reductionThreadgroupSize(
-                maxThreads: topKReduceDistancesPipeline.maxTotalThreadsPerThreadgroup
-            )
-            let useGpuTopK = Int(vectorCount) >= Self.gpuTopKThreshold && topKCount <= reductionThreadsPerThreadgroup
-            
-            // Zero-Copy: No sync needed. vectorsBuffer is always up to date.
-
-            // Allocate transient buffers for concurrency safety
-            let transientBuffers = try acquireTransientBuffers(vectorCount: Int(vectorCount))
-            defer { releaseTransientBuffers(transientBuffers) }
-
-            let transientQueryBuffer = transientBuffers.query
-            let transientDistancesBuffer = transientBuffers.distances
-            let transientCountBuffer = transientBuffers.count
-
-            let query = Self.normalizedCosineQuery(vector)
-            let queryPtr = transientQueryBuffer.contents().assumingMemoryBound(to: Float.self)
-            queryPtr.update(from: query, count: query.count)
-
-            var currentVectorCount = UInt32(vectorCount)
-            withUnsafeBytes(of: &currentVectorCount) { raw in
-                transientCountBuffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
-            }
-
-            guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-                throw WaxError.invalidToc(reason: "Failed to create command buffer")
-            }
-
-            var reductionBuffers: [MTLBuffer] = []
-            var finalTopKBuffer: MTLBuffer?
-            defer { _ = reductionBuffers.count }
-
-            guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-                throw WaxError.invalidToc(reason: "Failed to create compute encoder")
-            }
-
-            computeEncoder.setBuffer(vectorsBuffer, offset: 0, index: 0)
-            computeEncoder.setBuffer(transientQueryBuffer, offset: 0, index: 1)
-            computeEncoder.setBuffer(transientDistancesBuffer, offset: 0, index: 2)
-            computeEncoder.setBuffer(transientCountBuffer, offset: 0, index: 3)
-            computeEncoder.setBuffer(dimensionsBuffer, offset: 0, index: 4)
-
-            let threadgroupMemorySize = dimensions * MemoryLayout<Float>.stride
-            computeEncoder.setThreadgroupMemoryLength(threadgroupMemorySize, index: 0)
-
-            let activePipeline = (useSIMD8 && computePipelineSIMD8 != nil) ? computePipelineSIMD8! : computePipeline
-            computeEncoder.setComputePipelineState(activePipeline)
-
-            let maxThreads = activePipeline.maxTotalThreadsPerThreadgroup
-            let threadsPerThreadgroup = min(maxThreads, Self.maxThreadsPerThreadgroup)
-            let threadgroups = MTLSize(
-                width: (Int(vectorCount) + threadsPerThreadgroup - 1) / threadsPerThreadgroup,
-                height: 1,
-                depth: 1
-            )
-            let threadgroupSize = MTLSize(width: threadsPerThreadgroup, height: 1, depth: 1)
-
-            computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
-            computeEncoder.endEncoding()
-
-            if useGpuTopK {
-                // GPU top-k reduction: per-threadgroup bitonic sort on chunks,
-                // then iteratively merge until a single sorted top-k remains.
-                let threadgroupSize = reductionThreadsPerThreadgroup
-                let groupCount = (Int(vectorCount) + threadgroupSize - 1) / threadgroupSize
-                let stage1Count = groupCount * topKCount
-                let stage1Length = stage1Count * MemoryLayout<TopKEntry>.stride
-                guard let stage1Buffer = device.makeBuffer(length: stage1Length, options: .storageModeShared) else {
-                    throw WaxError.invalidToc(reason: "Failed to allocate top-k stage1 buffer")
-                }
-                reductionBuffers.append(stage1Buffer)
-
-                guard let reduceEncoder = commandBuffer.makeComputeCommandEncoder() else {
-                    throw WaxError.invalidToc(reason: "Failed to create top-k reduction encoder")
-                }
-                reduceEncoder.setComputePipelineState(topKReduceDistancesPipeline)
-                reduceEncoder.setBuffer(transientDistancesBuffer, offset: 0, index: 0)
-                var vectorCount32 = UInt32(vectorCount)
-                var topK32 = UInt32(topKCount)
-                reduceEncoder.setBytes(&vectorCount32, length: MemoryLayout<UInt32>.stride, index: 1)
-                reduceEncoder.setBytes(&topK32, length: MemoryLayout<UInt32>.stride, index: 2)
-                reduceEncoder.setBuffer(stage1Buffer, offset: 0, index: 3)
-                reduceEncoder.setThreadgroupMemoryLength(
-                    threadgroupSize * MemoryLayout<TopKEntry>.stride,
-                    index: 0
-                )
-                let reduceGroups = MTLSize(width: groupCount, height: 1, depth: 1)
-                let reduceGroupSize = MTLSize(width: threadgroupSize, height: 1, depth: 1)
-                reduceEncoder.dispatchThreadgroups(reduceGroups, threadsPerThreadgroup: reduceGroupSize)
-                reduceEncoder.endEncoding()
-
-                var currentBuffer = stage1Buffer
-                var currentCount = stage1Count
-                while currentCount > topKCount {
-                    let nextGroupCount = (currentCount + threadgroupSize - 1) / threadgroupSize
-                    let nextCount = nextGroupCount * topKCount
-                    let nextLength = nextCount * MemoryLayout<TopKEntry>.stride
-                    guard let nextBuffer = device.makeBuffer(length: nextLength, options: .storageModeShared) else {
-                        throw WaxError.invalidToc(reason: "Failed to allocate top-k merge buffer")
-                    }
-                    reductionBuffers.append(nextBuffer)
-
-                    guard let mergeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-                        throw WaxError.invalidToc(reason: "Failed to create top-k merge encoder")
-                    }
-                    mergeEncoder.setComputePipelineState(topKReduceEntriesPipeline)
-                    mergeEncoder.setBuffer(currentBuffer, offset: 0, index: 0)
-                    var entryCount32 = UInt32(currentCount)
-                    mergeEncoder.setBytes(&entryCount32, length: MemoryLayout<UInt32>.stride, index: 1)
-                    mergeEncoder.setBytes(&topK32, length: MemoryLayout<UInt32>.stride, index: 2)
-                    mergeEncoder.setBuffer(nextBuffer, offset: 0, index: 3)
-                    mergeEncoder.setThreadgroupMemoryLength(
-                        threadgroupSize * MemoryLayout<TopKEntry>.stride,
-                        index: 0
-                    )
-                    let mergeGroups = MTLSize(width: nextGroupCount, height: 1, depth: 1)
-                    mergeEncoder.dispatchThreadgroups(mergeGroups, threadsPerThreadgroup: reduceGroupSize)
-                    mergeEncoder.endEncoding()
-
-                    currentBuffer = nextBuffer
-                    currentCount = nextCount
-                }
-
-                finalTopKBuffer = currentBuffer
-            }
-
-            await withCheckedContinuation { continuation in
-                commandBuffer.addCompletedHandler { _ in
-                    continuation.resume()
-                }
-                commandBuffer.commit()
-            }
-            try Self.validateCommandBufferCompleted(commandBuffer)
-
-            if useGpuTopK, let finalTopKBuffer {
-                guard let resultsBuffer = device.makeBuffer(
-                    length: topKCount * MemoryLayout<TopKResult>.stride,
-                    options: .storageModeShared
-                ) else {
-                    throw WaxError.invalidToc(reason: "Failed to allocate top-k results buffer")
-                }
-
-                let entriesPtr = finalTopKBuffer.contents().assumingMemoryBound(to: TopKEntry.self)
-                let resultsPtr = resultsBuffer.contents().assumingMemoryBound(to: TopKResult.self)
-                var resultCount = 0
-                for i in 0..<topKCount {
-                    let entry = entriesPtr[i]
-                    if entry.index == UInt32.max || !entry.distance.isFinite { continue }
-                    let index = Int(entry.index)
-                    if index >= frameIds.count { continue }
-                    let score = metric.score(fromDistance: entry.distance)
-                    resultsPtr[resultCount] = TopKResult(frameId: frameIds[index], score: score)
-                    resultCount += 1
-                }
-
-                var results: [(UInt64, Float)] = []
-                results.reserveCapacity(resultCount)
-                for i in 0..<resultCount {
-                    let entry = resultsPtr[i]
-                    results.append((entry.frameId, entry.score))
-                }
-                return results
-            }
-
-            let distancesPtr = transientDistancesBuffer.contents().assumingMemoryBound(to: Float.self)
-            let topResults = Self.topK(distances: distancesPtr, count: Int(vectorCount), k: limit)
-
-            var results: [(UInt64, Float)] = []
-            results.reserveCapacity(topResults.count)
-
-            for (index, distance) in topResults {
-                let score = metric.score(fromDistance: distance)
-                results.append((frameIds[index], score))
-            }
-
-            return results
-        }
-    }
-
-    /// O(n log k) partial selection to avoid full sort of distance buffer.
-    private static func topK(distances: UnsafePointer<Float>, count: Int, k: Int) -> [(Int, Float)] {
-        guard k > 0, count > 0 else { return [] }
-        var heap: [(Float, Int)] = [] // (distance, index)
-        heap.reserveCapacity(k)
-
-        func siftDown(_ start: Int, _ end: Int) {
-            var root = start
-            while true {
-                let child = root * 2 + 1
-                if child > end { break }
-                var swap = root
-                if heap[swap].0 < heap[child].0 { swap = child }
-                if child + 1 <= end, heap[swap].0 < heap[child + 1].0 { swap = child + 1 }
-                if swap == root { return }
-                heap.swapAt(root, swap)
-                root = swap
-            }
-        }
-
-        func siftUp(_ index: Int) {
-            var child = index
-            while child > 0 {
-                let parent = (child - 1) / 2
-                if heap[parent].0 >= heap[child].0 { break }
-                heap.swapAt(parent, child)
-                child = parent
-            }
-        }
-
-        let initial = min(k, count)
-        for i in 0..<initial {
-            heap.append((distances[i], i))
-        }
-        // Build max-heap
-        for i in stride(from: (heap.count / 2), through: 0, by: -1) {
-            siftDown(i, heap.count - 1)
-        }
-
-        if initial < count {
-            for i in initial..<count {
-                let value = distances[i]
-                if value >= heap[0].0 { continue }
-                heap[0] = (value, i)
-                siftDown(0, heap.count - 1)
-            }
-        }
-
-        // Heap contains k smallest distances unordered; sort ascending
-        heap.sort { $0.0 < $1.0 }
-        return heap.map { ($0.1, $0.0) }
     }
 
     package func serialize() async throws -> Data {
@@ -857,60 +665,17 @@ package actor MetalVectorEngine {
         }
     }
 
-    /// Stage current state for commit to Wax.
+    /// Records the index's dimension and similarity for the commit; the commit writes the
+    /// pending embeddings and removals themselves from the WAL.
     package func stageForCommit(into wax: Wax) async throws {
-        if !dirty { return }
-        let blob = try await serialize()
-        try await wax.stageVecIndexForNextCommit(
-            bytes: blob,
-            vectorCount: vectorCount,
-            dimension: UInt32(dimensions),
-            similarity: metric.toVecSimilarity()
-        )
+        try await wax.setVectorIndexConfiguration(dimension: UInt32(dimensions), similarity: metric.toVecSimilarity())
         dirty = false
     }
 
-    private func validate(_ vector: [Float]) throws {
+    func validate(_ vector: [Float]) throws {
         try VectorValidation.validate(vector, dimensions: dimensions)
     }
 
-    private static func clampTopK(_ topK: Int) -> Int {
-        if topK < 1 { return 1 }
-        if topK > maxResults { return maxResults }
-        return topK
-    }
-
-    private static func normalizedCosineQuery(_ vector: [Float]) -> [Float] {
-        var sumOfSquares: Float = 0
-        for value in vector {
-            sumOfSquares += value * value
-        }
-
-        guard sumOfSquares > 0 else { return vector }
-        let magnitude = sumOfSquares.squareRoot()
-        guard magnitude > 0 else { return vector }
-
-        return vector.map { $0 / magnitude }
-    }
-
-    private static func validateCommandBufferCompleted(_ commandBuffer: MTLCommandBuffer) throws {
-        guard commandBuffer.status == .completed else {
-            let detail = commandBuffer.error.map { ": \($0.localizedDescription)" } ?? ""
-            throw WaxError.invalidToc(
-                reason: "Metal command buffer failed with status \(commandBuffer.status)\(detail)"
-            )
-        }
-    }
-
-    private static func reductionThreadgroupSize(maxThreads: Int) -> Int {
-        let capped = min(maxThreads, maxThreadsPerThreadgroup)
-        var size = 1
-        while size * 2 <= capped {
-            size *= 2
-        }
-        return size
-    }
-    
     private func reserveIfNeeded(for requiredCount: UInt64) async throws {
         guard requiredCount <= UInt64(UInt32.max) else {
             throw WaxError.capacityExceeded(limit: UInt64(UInt32.max), requested: requiredCount)

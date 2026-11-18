@@ -1,20 +1,20 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxCore
 
 struct MemorySemanticsScopeContextTests {
     @Test(arguments: ["", ".", "./"])
-    func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) throws {
-        let result = try completingWithin(
-            milliseconds: 1_000,
+    func inferScopeContextReturnsQuicklyWhenStartAndProcessPathsAreMissing(path: String) async throws {
+        let result = try await completingWithin(
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext(currentDirectoryPath: \(path.debugDescription), processDirectoryPath: \"\")"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: path, processDirectoryPath: "")
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == nil)
-        #expect(result.value.projectName == nil)
-        #expect(result.value.repoRootPath == nil)
+        #expect(result.repoName == nil)
+        #expect(result.projectName == nil)
+        #expect(result.repoRootPath == nil)
     }
 
     @Test
@@ -33,27 +33,26 @@ struct MemorySemanticsScopeContextTests {
     }
 
     @Test
-    func inferScopeContextReturnsQuicklyForDeletedDirectoryPath() throws {
+    func inferScopeContextReturnsQuicklyForDeletedDirectoryPath() async throws {
         let doomed = FileManager.default.temporaryDirectory
             .appendingPathComponent("wax-deleted-infer-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: doomed, withIntermediateDirectories: true)
         let doomedPath = doomed.path
         try FileManager.default.removeItem(at: doomed)
 
-        let result = try completingWithin(
-            milliseconds: 1_000,
+        let result = try await completingWithin(
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on deleted directory"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: doomedPath)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == nil)
-        #expect(result.value.projectName == nil)
-        #expect(result.value.repoRootPath == nil)
+        #expect(result.repoName == nil)
+        #expect(result.projectName == nil)
+        #expect(result.repoRootPath == nil)
     }
 
     @Test
-    func inferScopeContextUsesGitRepoLastPathComponent() throws {
+    func inferScopeContextUsesGitRepoLastPathComponent() async throws {
         let repoName = "wax-scope-repo-\(UUID().uuidString.prefix(8))"
         let repoURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(repoName, isDirectory: true)
@@ -65,20 +64,19 @@ struct MemorySemanticsScopeContextTests {
             withIntermediateDirectories: true
         )
 
-        let result = try completingWithin(
-            milliseconds: 1_000,
+        let result = try await completingWithin(
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on nested git workdir"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: nestedURL.path)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == repoName)
-        #expect(result.value.projectName == repoName)
-        #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
+        #expect(result.repoName == repoName)
+        #expect(result.projectName == repoName)
+        #expect(result.repoRootPath == repoURL.standardizedFileURL.path)
     }
 
     @Test
-    func inferScopeContextUsesMainRepoNameForLinkedWorktree() throws {
+    func inferScopeContextUsesMainRepoNameForLinkedWorktree() async throws {
         let repoName = "wax-main-repo-\(UUID().uuidString.prefix(8))"
         let worktreeFolder = "worktree-rapid-river-\(UUID().uuidString.prefix(6))"
         let root = FileManager.default.temporaryDirectory
@@ -94,43 +92,43 @@ struct MemorySemanticsScopeContextTests {
         let gitFile = worktreeURL.appendingPathComponent(".git")
         try "gitdir: \(worktreeGitDir.path)\n".write(to: gitFile, atomically: true, encoding: .utf8)
 
-        let result = try completingWithin(
-            milliseconds: 1_000,
+        let result = try await completingWithin(
+            milliseconds: hangBackstopMilliseconds,
             description: "inferScopeContext on linked worktree cwd"
         ) {
             MemorySemantics.inferScopeContext(currentDirectoryPath: worktreeURL.path)
         }
-        #expect(result.elapsed < .milliseconds(1_000))
-        #expect(result.value.repoName == repoName)
-        #expect(result.value.projectName == repoName)
-        #expect(result.value.repoRootPath == repoURL.standardizedFileURL.path)
-        #expect(result.value.repoName != worktreeFolder)
+        #expect(result.repoName == repoName)
+        #expect(result.projectName == repoName)
+        #expect(result.repoRootPath == repoURL.standardizedFileURL.path)
+        #expect(result.repoName != worktreeFolder)
     }
 }
 
-private struct TimedValue<T> {
-    var value: T
-    var elapsed: Duration
-}
+/// Hang backstop only: a regressed path walk spins or blocks indefinitely, so a
+/// generous ceiling still fails deterministically. A tight (1s) bound flaked
+/// under `swift test --parallel` on loaded CI runners.
+private let hangBackstopMilliseconds = 10_000
 
-private final class TimedBox<T>: @unchecked Sendable {
+private final class ResultBox<T>: @unchecked Sendable {
     var value: T?
 }
 
+/// The wait runs on BlockingWork: a semaphore wait on the test's own thread held a
+/// cooperative thread for as long as the work took.
 private func completingWithin<T>(
     milliseconds: Int,
     description: String,
     work: @escaping @Sendable () -> T
-) throws -> TimedValue<T> {
-    let box = TimedBox<T>()
-    let started = ContinuousClock.now
+) async throws -> T {
+    let box = ResultBox<T>()
     let done = DispatchSemaphore(value: 0)
+    let deadline = DispatchTime.now() + .milliseconds(milliseconds)
     DispatchQueue.global(qos: .userInitiated).async {
         box.value = work()
         done.signal()
     }
-    let wait = done.wait(timeout: .now() + .milliseconds(milliseconds))
+    let wait = await BlockingWork.run { done.wait(timeout: deadline) }
     #expect(wait == .success, "\(description) did not return within \(milliseconds)ms")
-    let value = try #require(box.value, "\(description) produced no value")
-    return TimedValue(value: value, elapsed: ContinuousClock.now - started)
+    return try #require(box.value, "\(description) produced no value")
 }

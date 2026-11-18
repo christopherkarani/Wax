@@ -7,96 +7,6 @@ import WaxCore
 /// `@unchecked Sendable` plus `NSLock` because async open hops off the owning
 /// `AgentBrokerService` actor. Every `live` read/write goes through the lock.
 package final class VirtualSessionStore: @unchecked Sendable {
-    package struct SessionState: Sendable {
-        package let id: UUID
-        package var manifest: BrokerSessionManifest
-        package let manifestURL: URL
-        package let eventLogURL: URL
-        package let storeURL: URL
-        package let memory: MemoryOrchestrator
-    }
-
-    package enum LifecycleResult: Sendable {
-        case started(SessionState)
-        case resumed(SessionState, recoveredLease: Bool)
-
-        package var state: SessionState {
-            switch self {
-            case .started(let state), .resumed(let state, _):
-                return state
-            }
-        }
-
-        package var resumed: Bool {
-            switch self {
-            case .started:
-                return false
-            case .resumed:
-                return true
-            }
-        }
-
-        package var recoveredLease: Bool {
-            switch self {
-            case .started:
-                return false
-            case .resumed(_, let recoveredLease):
-                return recoveredLease
-            }
-        }
-    }
-
-    package enum EndResult: Sendable {
-        case idle
-        case ended(sessionID: UUID, remainingActive: Int, harvest: SessionHarvest.Report)
-
-        package var sessionID: UUID? {
-            switch self {
-            case .idle:
-                return nil
-            case .ended(let sessionID, _, _):
-                return sessionID
-            }
-        }
-
-        package var ended: Bool {
-            switch self {
-            case .idle:
-                return false
-            case .ended:
-                return true
-            }
-        }
-
-        package var remainingActive: Bool {
-            activeCount > 0
-        }
-
-        package var activeCount: Int {
-            switch self {
-            case .idle:
-                return 0
-            case .ended(_, let remainingActive, _):
-                return remainingActive
-            }
-        }
-
-        package var harvest: SessionHarvest.Report {
-            switch self {
-            case .idle:
-                return .skipped
-            case .ended(_, _, let harvest):
-                return harvest
-            }
-        }
-    }
-
-    package enum Lookup: Sendable {
-        /// No virtual session. Caller uses long-term Memory.
-        case none
-        case live(MemoryOrchestrator)
-    }
-
     private enum EndTarget {
         case idle
         case session(id: UUID, state: SessionState)
@@ -111,16 +21,14 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
     package static let defaultSessionLeaseSeconds = 300
 
-    package static func nowMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000)
-    }
-
     package let sessionRootURL: URL
     package let brokerInstanceID: String
     private let leaseSeconds: Int
-    private let nowMs: @Sendable () -> Int64
+    let nowMs: @Sendable () -> Int64
     private let waxOptions: WaxOptions
-    private let openExisting: @Sendable (URL) async throws -> MemoryOrchestrator
+    /// Opens a session store. The `Bool` says whether this open owns the store and may commit
+    /// a text-index catch-up (`OrchestratorConfig.catchUpTextIndexOnOpen`).
+    private let openExisting: @Sendable (URL, Bool) async throws -> MemoryOrchestrator
     private let endMutex = AsyncMutex()
     private let lock = NSLock()
     private var _live: [UUID: SessionState] = [:]
@@ -130,6 +38,17 @@ package final class VirtualSessionStore: @unchecked Sendable {
     private var endEventFailuresForTesting = 0
     private var creatingPairs: Set<SessionPairKey> = []
     private var pairWaiters: [SessionPairKey: [CheckedContinuation<LifecycleResult?, Error>]] = [:]
+    /// Session manifest and event-log writes run on these serial queues, never on a
+    /// cooperative thread, and `lock` is never held across one, so an fsync delays only
+    /// later writes, not lookups. A session always maps to the same queue, so its writes
+    /// run one at a time in the order requests submit them; different sessions mostly
+    /// map to different queues and write in parallel.
+    private let fileQueues = (0..<VirtualSessionStore.fileQueueCount).map {
+        DispatchQueue(label: "com.wax.virtual-session.files.\($0)")
+    }
+    private static let fileQueueCount = 16
+    private let hookLock = NSLock()
+    private var fileWriteHookForTesting: (@Sendable () -> Void)?
 
     package var live: [UUID: SessionState] {
         locked { _live.filter { !endingSessions.contains($0.key) } }
@@ -147,13 +66,25 @@ package final class VirtualSessionStore: @unchecked Sendable {
         locked { endEventFailuresForTesting = max(0, count) }
     }
 
+    /// Runs just before each session manifest or event-log write.
+    package func setFileWriteHookForTesting(_ hook: (@Sendable () -> Void)?) {
+        hookLock.withLock { fileWriteHookForTesting = hook }
+    }
+
+    /// Whether some thread holds the session state lock right now.
+    package func stateLockIsHeldForTesting() -> Bool {
+        guard lock.try() else { return true }
+        lock.unlock()
+        return false
+    }
+
     package init(
         sessionRootURL: URL,
         brokerInstanceID: String,
         leaseSeconds: Int = VirtualSessionStore.defaultSessionLeaseSeconds,
-        nowMs: @escaping @Sendable () -> Int64 = { VirtualSessionStore.nowMs() },
+        nowMs: @escaping @Sendable () -> Int64 = { BrokerClock.nowMs() },
         waxOptions: WaxOptions = CommandLineEmbedderFactory.waxOptions(),
-        openExisting: @escaping @Sendable (URL) async throws -> MemoryOrchestrator
+        openExisting: @escaping @Sendable (URL, Bool) async throws -> MemoryOrchestrator
     ) {
         self.sessionRootURL = sessionRootURL
         self.brokerInstanceID = brokerInstanceID
@@ -174,17 +105,19 @@ package final class VirtualSessionStore: @unchecked Sendable {
             )
             try await created.close()
         }
-        return try await openExisting(url)
+        return try await openExisting(url, true)
     }
 
     /// Open an existing session file. Missing files fail closed and do not mint.
-    package func openExistingSessionMemory(at url: URL) async throws -> MemoryOrchestrator {
+    /// `catchUp` is `true` only for the open that makes the session live and owns its store;
+    /// brief reads (export, inspection) pass `false` so they never write.
+    package func openExistingSessionMemory(at url: URL, catchUp: Bool) async throws -> MemoryOrchestrator {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw BrokerValidationError.invalid(
                 "session store is missing at \(url.lastPathComponent); call session_start again"
             )
         }
-        return try await openExisting(url)
+        return try await openExisting(url, catchUp)
     }
 
     package func start(
@@ -277,7 +210,10 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
         let timestamp = nowMs()
         let recoveredLease = manifest.brokerLeaseOwnerID != nil && manifest.brokerLeaseOwnerID != brokerInstanceID
-        let memory = try await openExistingSessionMemory(at: URL(fileURLWithPath: manifest.storePath))
+        let memory = try await openExistingSessionMemory(
+            at: URL(fileURLWithPath: manifest.storePath),
+            catchUp: true
+        )
         do {
             if let existing = locked({
                 endingSessions.contains(manifest.sessionID) ? nil : _live[manifest.sessionID]
@@ -301,20 +237,23 @@ package final class VirtualSessionStore: @unchecked Sendable {
 
             let manifestURL = BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: manifest.sessionID)
             let eventLogURL = URL(fileURLWithPath: refreshed.eventLogPath)
-            try BrokerSessionPersistence.appendEvent(
-                BrokerSessionEvent(
-                    sessionID: refreshed.sessionID,
-                    agentID: refreshed.agentID,
-                    runID: refreshed.runID,
-                    timestampMs: timestamp,
-                    kind: .resumed,
-                    payload: [
-                        "recovered_lease": recoveredLease ? "true" : "false",
-                    ]
-                ),
-                to: eventLogURL
-            )
-            try BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)
+            let resumedManifest = refreshed
+            try await onFileQueue(for: resumedManifest.sessionID) { [self] in
+                try writeEvent(
+                    BrokerSessionEvent(
+                        sessionID: resumedManifest.sessionID,
+                        agentID: resumedManifest.agentID,
+                        runID: resumedManifest.runID,
+                        timestampMs: timestamp,
+                        kind: .resumed,
+                        payload: [
+                            "recovered_lease": recoveredLease ? "true" : "false",
+                        ]
+                    ),
+                    to: eventLogURL
+                )
+                try writeManifest(resumedManifest, to: manifestURL)
+            }
             let state = SessionState(
                 id: refreshed.sessionID,
                 manifest: refreshed,
@@ -397,37 +336,9 @@ package final class VirtualSessionStore: @unchecked Sendable {
             if let afterFlush {
                 harvest = await afterFlush(target.state)
             }
-            _ = try locked {
-                guard var state = _live[target.id] else {
-                    throw Self.notActiveError(for: target.id)
-                }
-                let timestamp = nowMs()
-                let wasEnded = state.manifest.status == .ended
-                if !wasEnded {
-                    state.manifest.status = .ended
-                    state.manifest.endedAtMs = timestamp
-                    state.manifest.brokerLeaseOwnerID = nil
-                    state.manifest.leaseExpiresAtMs = nil
-                    if endEventFailuresForTesting > 0 {
-                        endEventFailuresForTesting -= 1
-                        throw BrokerValidationError.invalid("injected session end event failure")
-                    }
-                    try BrokerSessionPersistence.appendEvent(
-                        BrokerSessionEvent(
-                            sessionID: state.id,
-                            agentID: state.manifest.agentID,
-                            runID: state.manifest.runID,
-                            timestampMs: timestamp,
-                            kind: .ended
-                        ),
-                        to: state.eventLogURL
-                    )
-                }
-                state.manifest.updatedAtMs = timestamp
-                Self.applyHarvest(harvest, to: &state.manifest, nowMs: timestamp)
-                try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-                _live[target.id] = state
-                return state
+            let endHarvest = harvest
+            try await onFileQueue(for: target.id) { [self] in
+                try writeEndedManifest(target.id, harvest: endHarvest)
             }
         } catch {
             _ = locked { endingSessions.remove(target.id) }
@@ -451,6 +362,44 @@ package final class VirtualSessionStore: @unchecked Sendable {
             return _live.count - endingSessions.count
         }
         return .ended(sessionID: target.id, remainingActive: remaining, harvest: harvest)
+    }
+
+    /// Runs on the session's file queue. `endingSessions` already hides the session, so a
+    /// request write queued behind this one fails closed, and any queued ahead has finished.
+    private func writeEndedManifest(_ sessionID: UUID, harvest: SessionHarvest.Report) throws {
+        let (current, injectEventFailure) = try locked { () throws -> (SessionState, Bool) in
+            guard let state = _live[sessionID] else {
+                throw Self.notActiveError(for: sessionID)
+            }
+            let inject = state.manifest.status != .ended && endEventFailuresForTesting > 0
+            if inject { endEventFailuresForTesting -= 1 }
+            return (state, inject)
+        }
+        var state = current
+        let timestamp = nowMs()
+        if state.manifest.status != .ended {
+            state.manifest.status = .ended
+            state.manifest.endedAtMs = timestamp
+            state.manifest.brokerLeaseOwnerID = nil
+            state.manifest.leaseExpiresAtMs = nil
+            if injectEventFailure {
+                throw BrokerValidationError.invalid("injected session end event failure")
+            }
+            try writeEvent(
+                BrokerSessionEvent(
+                    sessionID: state.id,
+                    agentID: state.manifest.agentID,
+                    runID: state.manifest.runID,
+                    timestampMs: timestamp,
+                    kind: .ended
+                ),
+                to: state.eventLogURL
+            )
+        }
+        state.manifest.updatedAtMs = timestamp
+        Self.applyHarvest(harvest, to: &state.manifest, nowMs: timestamp)
+        try writeManifest(state.manifest, to: state.manifestURL)
+        locked { commitManifestLocked(state) }
     }
 
     /// Lookup never infers or mints. Omitted `session_id` is no virtual session.
@@ -522,18 +471,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
         _ = try await ensureLive(sessionID)
     }
 
-    /// Returns the on-disk manifest status for `sessionID`, or `nil` if no manifest exists.
-    package func persistedStatus(for sessionID: UUID) throws -> BrokerSessionManifest.Status? {
-        do {
-            return try BrokerSessionPersistence.loadManifest(
-                rootURL: sessionRootURL,
-                sessionID: sessionID
-            ).status
-        } catch BrokerSessionPersistenceError.manifestNotFound {
-            return nil
-        }
-    }
-
     package func findActive(agentID: String, runID: String) throws -> BrokerSessionManifest? {
         if let liveMatch = locked({ liveMatchLocked(agentID: agentID, runID: runID) }) {
             return liveMatch.manifest
@@ -587,7 +524,7 @@ package final class VirtualSessionStore: @unchecked Sendable {
         if result.state.manifest.runID == runID {
             return result
         }
-        try updateLive(sessionID) { state in
+        try await updateLive(sessionID) { [self] state in
             state.manifest.runID = runID
             state.manifest.updatedAtMs = nowMs()
         }
@@ -599,41 +536,21 @@ package final class VirtualSessionStore: @unchecked Sendable {
         return .resumed(updated, recoveredLease: result.recoveredLease)
     }
 
-    package func resolveManifest(
-        explicitSessionID: UUID?,
-        agentID: String?,
-        runID: String?
-    ) throws -> BrokerSessionManifest {
-        if let explicitSessionID {
-            return try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: explicitSessionID)
+    package func refreshManifest(_ sessionID: UUID) async throws {
+        try await onFileQueue(for: sessionID) { [self] in
+            try updateLiveOnFileQueue(sessionID) { [self] state in refreshLease(&state) }
         }
-
-        let manifests = try BrokerSessionPersistence.listManifests(rootURL: sessionRootURL)
-        let filtered = manifests.filter { manifest in
-            guard manifest.status == .active else { return false }
-            if let agentID, manifest.agentID != agentID { return false }
-            if let runID, manifest.runID != runID { return false }
-            return true
-        }
-        guard filtered.count <= 1 else {
-            throw BrokerValidationError.invalid("multiple active sessions matched the requested selectors")
-        }
-        guard let match = filtered.first else {
-            throw BrokerValidationError.invalid("No resumable session manifest matched the requested selectors")
-        }
-        return match
     }
 
-    package func refreshManifest(_ sessionID: UUID) throws {
-        try locked {
-            guard !endingSessions.contains(sessionID), var state = _live[sessionID] else {
-                throw Self.notActiveError(for: sessionID)
-            }
-            state.manifest.updatedAtMs = nowMs()
-            state.manifest.brokerLeaseOwnerID = brokerInstanceID
-            state.manifest.leaseExpiresAtMs = state.manifest.updatedAtMs + Int64(leaseSeconds * 1000)
-            try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-            _live[sessionID] = state
+    /// Refreshes the lease, then appends one event per payload, in one file-queue job.
+    package func refreshManifest(
+        _ sessionID: UUID,
+        recording kind: BrokerSessionEvent.Kind,
+        payloads: [[String: String]]
+    ) async throws {
+        try await onFileQueue(for: sessionID) { [self] in
+            try updateLiveOnFileQueue(sessionID) { [self] state in refreshLease(&state) }
+            try appendEventsOnFileQueue(sessionID: sessionID, kind: kind, payloads: payloads)
         }
     }
 
@@ -641,35 +558,75 @@ package final class VirtualSessionStore: @unchecked Sendable {
         sessionID: UUID,
         kind: BrokerSessionEvent.Kind,
         payload: [String: String] = [:]
+    ) async throws {
+        try await onFileQueue(for: sessionID) { [self] in
+            try appendEventsOnFileQueue(sessionID: sessionID, kind: kind, payloads: [payload])
+        }
+    }
+
+    /// Applies `body` to a live session and persists its manifest. The session's writers
+    /// share one serial file queue, so each reads the manifest the previous one committed.
+    package func updateLive(
+        _ sessionID: UUID,
+        _ body: @escaping @Sendable (inout SessionState) throws -> Void
+    ) async throws {
+        try await onFileQueue(for: sessionID) { [self] in
+            try updateLiveOnFileQueue(sessionID, body)
+        }
+    }
+
+    private func refreshLease(_ state: inout SessionState) {
+        state.manifest.updatedAtMs = nowMs()
+        state.manifest.brokerLeaseOwnerID = brokerInstanceID
+        state.manifest.leaseExpiresAtMs = state.manifest.updatedAtMs + Int64(leaseSeconds * 1000)
+    }
+
+    private func updateLiveOnFileQueue(_ sessionID: UUID, _ body: (inout SessionState) throws -> Void) throws {
+        var state = try locked { () throws -> SessionState in
+            guard !endingSessions.contains(sessionID), let state = _live[sessionID] else {
+                throw Self.notActiveError(for: sessionID)
+            }
+            return state
+        }
+        try body(&state)
+        try writeManifest(state.manifest, to: state.manifestURL)
+        locked { commitManifestLocked(state) }
+    }
+
+    private func appendEventsOnFileQueue(
+        sessionID: UUID,
+        kind: BrokerSessionEvent.Kind,
+        payloads: [[String: String]]
     ) throws {
+        guard !payloads.isEmpty else { return }
         let snapshot = try locked { () -> (agentID: String, runID: String, eventLogURL: URL) in
             guard !endingSessions.contains(sessionID), let state = _live[sessionID] else {
                 throw Self.notActiveError(for: sessionID)
             }
             return (state.manifest.agentID, state.manifest.runID, state.eventLogURL)
         }
-        try BrokerSessionPersistence.appendEvent(
-            BrokerSessionEvent(
-                sessionID: sessionID,
-                agentID: snapshot.agentID,
-                runID: snapshot.runID,
-                timestampMs: nowMs(),
-                kind: kind,
-                payload: payload
-            ),
+        let timestampMs = nowMs()
+        try writeEvents(
+            payloads.map { payload in
+                BrokerSessionEvent(
+                    sessionID: sessionID,
+                    agentID: snapshot.agentID,
+                    runID: snapshot.runID,
+                    timestampMs: timestampMs,
+                    kind: kind,
+                    payload: payload
+                )
+            },
+            sessionID: sessionID,
             to: snapshot.eventLogURL
         )
     }
 
-    package func updateLive(_ sessionID: UUID, _ body: (inout SessionState) throws -> Void) throws {
-        try locked {
-            guard !endingSessions.contains(sessionID), var state = _live[sessionID] else {
-                throw Self.notActiveError(for: sessionID)
-            }
-            try body(&state)
-            try BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)
-            _live[sessionID] = state
-        }
+    /// Stores a written manifest unless the session left `_live` meanwhile (`closeAll`)
+    /// or a different open of it replaced the entry.
+    private func commitManifestLocked(_ state: SessionState) {
+        guard let current = _live[state.id], current.memory === state.memory else { return }
+        _live[state.id]?.manifest = state.manifest
     }
 
     package func closeAll() async {
@@ -751,21 +708,23 @@ package final class VirtualSessionStore: @unchecked Sendable {
                 createdAtMs: timestamp,
                 updatedAtMs: timestamp
             )
-            try BrokerSessionPersistence.appendEvent(
-                BrokerSessionEvent(
-                    sessionID: sessionID,
-                    agentID: resolvedAgentID,
-                    runID: resolvedRunID,
-                    timestampMs: timestamp,
-                    kind: .started,
-                    payload: [
-                        "project": manifest.project ?? "",
-                        "repo": manifest.repo ?? "",
-                    ]
-                ),
-                to: eventLogURL
-            )
-            try BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)
+            try await onFileQueue(for: sessionID) { [self] in
+                try writeEvent(
+                    BrokerSessionEvent(
+                        sessionID: sessionID,
+                        agentID: resolvedAgentID,
+                        runID: resolvedRunID,
+                        timestampMs: timestamp,
+                        kind: .started,
+                        payload: [
+                            "project": manifest.project ?? "",
+                            "repo": manifest.repo ?? "",
+                        ]
+                    ),
+                    to: eventLogURL
+                )
+                try writeManifest(manifest, to: manifestURL)
+            }
             let state = SessionState(
                 id: sessionID,
                 manifest: manifest,
@@ -870,52 +829,6 @@ package final class VirtualSessionStore: @unchecked Sendable {
         }
     }
 
-    package func persistHarvestToDisk(
-        sessionID: UUID,
-        report: SessionHarvest.Report,
-        markEnded: Bool,
-        nowMs: Int64? = nil
-    ) throws -> BrokerSessionManifest {
-        let timestamp = nowMs ?? self.nowMs()
-        var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
-        if markEnded, manifest.status != .ended {
-            manifest.status = .ended
-            manifest.endedAtMs = timestamp
-            manifest.brokerLeaseOwnerID = nil
-            manifest.leaseExpiresAtMs = nil
-        }
-        manifest.updatedAtMs = timestamp
-        Self.applyHarvest(report, to: &manifest, nowMs: timestamp)
-        try BrokerSessionPersistence.saveManifest(
-            manifest,
-            to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
-        )
-        return manifest
-    }
-
-    package static func applyHarvest(
-        _ report: SessionHarvest.Report,
-        to manifest: inout BrokerSessionManifest,
-        nowMs: Int64
-    ) {
-        if report.harvested {
-            manifest.harvestError = (report.error?.isEmpty == false) ? report.error : nil
-            if manifest.harvestedAtMs == nil {
-                manifest.harvestedAtMs = nowMs
-            }
-            manifest.promotedCount = report.promotedCount
-            if report.immediateReclaimEligible {
-                manifest.reclaimAfterMs = manifest.harvestedAtMs
-            } else if let reclaimAfterMs = report.reclaimAfterMs {
-                manifest.reclaimAfterMs = reclaimAfterMs
-            }
-            return
-        }
-        if let error = report.error, !error.isEmpty {
-            manifest.harvestError = error
-        }
-    }
-
     private func abandonUnusedSessionFile(
         at url: URL,
         sessionID: UUID,
@@ -931,6 +844,41 @@ package final class VirtualSessionStore: @unchecked Sendable {
         try? FileManager.default.removeItem(
             at: BrokerSessionPersistence.eventLogURL(rootURL: sessionRootURL, sessionID: sessionID)
         )
+    }
+
+    private func fileQueue(for sessionID: UUID) -> DispatchQueue {
+        fileQueues[Int(sessionID.uuid.15) % Self.fileQueueCount]
+    }
+
+    func onFileQueue<T: Sendable>(
+        for sessionID: UUID,
+        _ work: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            fileQueue(for: sessionID).async {
+                continuation.resume(with: Result { try work() })
+            }
+        }
+    }
+
+    func writeManifest(_ manifest: BrokerSessionManifest, to url: URL) throws {
+        #if DEBUG
+        dispatchPrecondition(condition: .onQueue(fileQueue(for: manifest.sessionID)))
+        #endif
+        hookLock.withLock { fileWriteHookForTesting }?()
+        try BrokerSessionPersistence.saveManifest(manifest, to: url)
+    }
+
+    private func writeEvent(_ event: BrokerSessionEvent, to url: URL) throws {
+        try writeEvents([event], sessionID: event.sessionID, to: url)
+    }
+
+    private func writeEvents(_ events: [BrokerSessionEvent], sessionID: UUID, to url: URL) throws {
+        #if DEBUG
+        dispatchPrecondition(condition: .onQueue(fileQueue(for: sessionID)))
+        #endif
+        hookLock.withLock { fileWriteHookForTesting }?()
+        try BrokerSessionPersistence.appendEvents(events, to: url)
     }
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {

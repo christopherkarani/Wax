@@ -61,7 +61,7 @@ func photoRAGFullLibrarySyncFetchesImagesOnly() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator+Ingest.swift"),
         encoding: .utf8
     )
     let fullLibraryStart = try #require(source.range(of: "case .fullLibrary:"))
@@ -80,7 +80,7 @@ func photoRAGPhotosRegionCropFailureDoesNotReturnBeforeSupersede() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator+Ingest.swift"),
         encoding: .utf8
     )
     let photosIngestStart = try #require(source.range(of: "private func ingestOne(photoID: PhotoID)"))
@@ -99,16 +99,16 @@ func photoRAGRegionCropResultsUseCompactCropIndices() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator+Ingest.swift"),
         encoding: .utf8
     )
     let photosIngestStart = try #require(source.range(of: "private func ingestOne(photoID: PhotoID)"))
     let localIngestStart = try #require(source[photosIngestStart.upperBound...].range(of: "private func ingestOne(file: PhotoFile)"))
     let localHelperStart = try #require(source[localIngestStart.upperBound...].range(of: "private func writeRegionEmbeddingsIfNeeded"))
-    let rebuildIndexStart = try #require(source[localHelperStart.upperBound...].range(of: "private func rebuildIndex"))
+    let defaultOCRProviderStart = try #require(source[localHelperStart.upperBound...].range(of: "private static func defaultOCRProvider"))
 
     let photosIngestBody = source[photosIngestStart.lowerBound..<localIngestStart.lowerBound]
-    let localRegionHelperBody = source[localHelperStart.lowerBound..<rebuildIndexStart.lowerBound]
+    let localRegionHelperBody = source[localHelperStart.lowerBound..<defaultOCRProviderStart.lowerBound]
 
     for regionEmbeddingBody in [photosIngestBody, localRegionHelperBody] {
         #expect(regionEmbeddingBody.contains("crops.append((crops.count, crop, region))"))
@@ -202,7 +202,7 @@ func photoRAGDocsDoNotAdvertiseClassifierTags() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/PhotoRAG/PhotoRAGOrchestrator+Surrogates.swift"),
         encoding: .utf8
     )
     #expect(source.contains("metadata.exif.keywords"))

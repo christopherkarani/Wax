@@ -512,31 +512,6 @@ private func blockCurrentThread(for seconds: TimeInterval) {
     #expect(value == iterations * workers)
 }
 
-@Test func unfairLockNoLostUpdatesUnderContention() async {
-    let lock = UnfairLock()
-    let iterations = 500
-    let workers = 8
-    // Use a class box so concurrent tasks share one counter under the lock.
-    final class Box: @unchecked Sendable {
-        var value = 0
-    }
-    let box = Box()
-
-    await withTaskGroup(of: Void.self) { group in
-        for _ in 0..<workers {
-            group.addTask {
-                for _ in 0..<iterations {
-                    lock.withLock {
-                        box.value += 1
-                    }
-                }
-            }
-        }
-    }
-
-    #expect(box.value == iterations * workers)
-}
-
 // MARK: - Helpers
 
 private actor AdversarialCounter {

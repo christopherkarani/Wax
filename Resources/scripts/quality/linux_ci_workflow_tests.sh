@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-grep -Fq 'swift-actions/setup-swift@v2' "$WORKFLOW" \
+grep -Eq 'swift-actions/setup-swift@[0-9a-f]{40} # v2' "$WORKFLOW" \
   || fail "Linux CI must install the requested Swift toolchain"
 
 grep -Eq 'swift build --product Wax([[:space:]]|$)' "$WORKFLOW" \
@@ -20,6 +20,12 @@ grep -Fq 'swift build --product wax-cli --traits default,MCPServer' "$WORKFLOW" 
 
 grep -Fq 'swift build --product wax-mcp --traits default,MCPServer' "$WORKFLOW" \
   || fail "Linux CI must build wax-mcp with MCPServer traits"
+
+grep -Fq 'Resources/scripts/quality/daemon_sigterm_smoke.sh "$BIN_DIR/wax-cli" "$BIN_DIR/wax-mcp"' "$WORKFLOW" \
+  || fail "Linux CI must smoke-test SIGTERM shutdown of wax-cli and wax-mcp"
+
+[ -x "$ROOT_DIR/Resources/scripts/quality/daemon_sigterm_smoke.sh" ] \
+  || fail "daemon_sigterm_smoke.sh must exist and be executable"
 
 grep -Fq 'swift test --filter WaxCoreTests' "$WORKFLOW" \
   || fail "Linux CI must run WaxCoreTests"

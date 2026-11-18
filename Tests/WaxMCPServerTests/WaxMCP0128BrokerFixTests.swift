@@ -3,6 +3,7 @@ import Foundation
 import MCP
 import Testing
 @testable import Wax
+import WaxTestSupport
 @testable import wax_mcp
 
 private func withIsolatedBroker<T>(
@@ -49,22 +50,6 @@ private func requireObject(_ value: AgentBrokerValue?) throws -> [String: AgentB
 
 private func requireString(_ object: [String: AgentBrokerValue], _ key: String) throws -> String {
     try #require(object[key]?.stringValue)
-}
-
-private struct StatsReasonEmbedder: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "StatsReason",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return [1, 0]
-    }
 }
 
 @Test
@@ -317,7 +302,8 @@ func hintedSessionStampsProjectOnOmittedSessionDurableRemember() async throws {
         #expect(remembered.isError != true)
         let payload = try requireJSONObject(firstTextContent(remembered))
         #expect(payload["scope"] as? String == "durable")
-        #expect(payload["unresolved_project"] as? Bool == false)
+        // Compact remember payloads omit `unresolved_project` (RememberAssembly.compactRememberKeys).
+        #expect(payload["unresolved_project"] as? Bool != true)
         #expect(payload["project"] as? String == "HintRepo")
     }
 }
@@ -909,7 +895,7 @@ func statsIncludesReasonWhenEmbeddingStatusIsDegradedOrUnavailable() async throw
         noEmbedder: false,
         embedderChoice: "auto",
         requireVector: false,
-        embedderOverride: StatsReasonEmbedder(),
+        embedderOverride: ConstantEmbedder(vector: [1, 0], provider: "Test", model: "StatsReason"),
         automaticEmbeddingBackfill: false
     )
     defer { Task { try? await service.close() } }
@@ -1121,6 +1107,7 @@ func rememberOversizeIsRejectedWithTypedContentLimit() async throws {
 @Test
 func waxMCPServerCommandAdvertisesVersionAndHTTPBodyCap() throws {
     #expect(WaxMCPServerCommand.configuration.version == WaxMCPServerMetadata.version)
+    #expect(WaxMCPServerMetadata.version == WaxReleaseInfo.version)
     let command = try WaxMCPServerCommand.parse([])
     #expect(command.httpMaxBodyBytes == 1_048_576)
 }

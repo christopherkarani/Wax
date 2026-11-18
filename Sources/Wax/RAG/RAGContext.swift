@@ -54,6 +54,9 @@ public struct RAGContext: Sendable, Equatable {
         case vectorDisabled = "vector_disabled"
         /// Query embedding failed; the search fell back to the text lane.
         case failed = "failed"
+        /// Stored vectors come from a superseded embedding model and are being re-embedded;
+        /// the text lane was used.
+        case vectorsRebuilding = "vectors_rebuilding"
     }
 
     /// Retrieval diagnostics for a search: what was asked for vs. what actually ran.
@@ -75,6 +78,13 @@ public struct RAGContext: Sendable, Equatable {
         }
 
         private let kind: Kind
+
+        /// Save-time window Wax inferred from the query text (for example "last week")
+        /// and applied as a filter. `nil` when nothing was inferred, inference was
+        /// disabled with ``Memory/SearchOptions/inferTimeRange``, or the caller passed
+        /// an explicit ``Memory/SearchOptions/timeRange``. Future-looking phrases
+        /// ("tomorrow", "next week") are never applied.
+        public package(set) var inferredTimeRange: Memory.TimeRange?
 
         /// The retrieval mode requested by the caller.
         public var requestedMode: SearchMode {
@@ -137,6 +147,7 @@ public struct RAGContext: Sendable, Equatable {
 
         private init(kind: Kind) {
             self.kind = kind
+            self.inferredTimeRange = nil
         }
     }
 

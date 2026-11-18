@@ -336,15 +336,25 @@ package enum BrokerSessionPersistence {
     }
 
     package static func appendEvent(_ event: BrokerSessionEvent, to url: URL) throws {
-        let line = try encoder.encode(event) + Data([0x0A])
+        try appendEvents([event], to: url)
+    }
+
+    /// Appends one line per event with a single write.
+    package static func appendEvents(_ events: [BrokerSessionEvent], to url: URL) throws {
+        var lines = Data()
+        for event in events {
+            lines += try encoder.encode(event)
+            lines.append(0x0A)
+        }
+        guard !lines.isEmpty else { return }
         if !FileManager.default.fileExists(atPath: url.path) {
-            try line.write(to: url, options: .withoutOverwriting)
+            try lines.write(to: url, options: .withoutOverwriting)
             return
         }
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
         try handle.seekToEnd()
-        try handle.write(contentsOf: line)
+        try handle.write(contentsOf: lines)
     }
 
     package static func loadEvents(from url: URL) throws -> [BrokerSessionEvent] {

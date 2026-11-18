@@ -8,25 +8,22 @@ actor UnifiedSearchEngineCache {
 
     enum TextSourceKey: Hashable, Sendable {
         case empty
-        case committed(checksum: Data)
+        /// The checksums of the committed lex runs, which together name one image.
+        case committed(runChecksums: [Data])
         case staged(stamp: UInt64)
     }
 
+    /// The index a cached vector engine was loaded from. Pending vector changes
+    /// are not part of the key: they are applied to the cached engine incrementally
+    /// (see `CachedVector.syncedThrough`), so a write does not force a reload.
+    /// The commit generation is: every commit starts a new pending window.
     enum VectorSourceKey: Hashable, Sendable {
-        case pendingOnly(dimensions: Int, engine: LoadedVectorSearchEngine.Kind, pendingSequence: UInt64?)
-        case committed(
-            checksum: Data,
+        case pendingOnly(generation: UInt64, dimensions: Int, engine: LoadedVectorSearchEngine.Kind)
+        case indexed(
+            generation: UInt64,
             similarity: VecSimilarity,
             dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind,
-            pendingSequence: UInt64?
-        )
-        case staged(
-            stamp: UInt64,
-            similarity: VecSimilarity,
-            dimensions: Int,
-            engine: LoadedVectorSearchEngine.Kind,
-            pendingSequence: UInt64?
+            engine: LoadedVectorSearchEngine.Kind
         )
     }
 
@@ -35,25 +32,62 @@ actor UnifiedSearchEngineCache {
         var vectorDeserializations: Int = 0
     }
 
+    /// Points in a vector engine refresh that a test can observe or pause at.
+    enum VectorRefreshEvent: Sendable {
+        /// About to take the store's refresh lock, waiting while another refresh holds it.
+        case waitingForRefresh
+        /// A reloaded engine is about to be cached.
+        case loaded
+        /// Pending changes were applied to the cached engine; its watermark is about to move.
+        case synced
+    }
+
+    typealias VectorRefreshHook = @Sendable (VectorRefreshEvent) async -> Void
+
+    private let vectorRefreshHook: VectorRefreshHook?
+
+    init(vectorRefreshHook: VectorRefreshHook? = nil) {
+        self.vectorRefreshHook = vectorRefreshHook
+    }
+
+    /// Entries are found by `ObjectIdentifier(wax)` but only belong to the store
+    /// that `owner` still points at: once a store is freed its address can be
+    /// reused by a new one, which must not inherit the old store's engines.
     private struct CachedText {
+        weak var owner: Wax?
         var key: TextSourceKey
         var engine: FTS5SearchEngine
     }
 
     private struct CachedVector {
+        weak var owner: Wax?
         var key: VectorSourceKey
         var engine: LoadedVectorSearchEngine
+        /// Latest pending-embedding sequence applied to `engine`.
+        var syncedThrough: UInt64?
+    }
+
+    private struct OwnedStats {
+        weak var owner: Wax?
+        var stats: Stats
+    }
+
+    private struct VectorRefreshLock {
+        weak var owner: Wax?
+        let mutex: AsyncMutex
     }
 
     private var textByWax: [ObjectIdentifier: CachedText] = [:]
     private var vectorByWax: [ObjectIdentifier: CachedVector] = [:]
+    private var vectorRefreshLocks: [ObjectIdentifier: VectorRefreshLock] = [:]
     private var stats = Stats()
-    private var statsByWax: [ObjectIdentifier: Stats] = [:]
+    private var statsByWax: [ObjectIdentifier: OwnedStats] = [:]
 
     func snapshotStats() -> Stats { stats }
 
     func snapshotStats(for wax: Wax) -> Stats {
-        statsByWax[ObjectIdentifier(wax)] ?? Stats()
+        guard let entry = statsByWax[ObjectIdentifier(wax)], entry.owner === wax else { return Stats() }
+        return entry.stats
     }
 
     func resetStats() {
@@ -61,47 +95,45 @@ actor UnifiedSearchEngineCache {
     }
 
     func resetStats(for wax: Wax) {
-        statsByWax[ObjectIdentifier(wax)] = Stats()
+        statsByWax[ObjectIdentifier(wax)] = OwnedStats(owner: wax, stats: Stats())
     }
 
     func textEngine(for wax: Wax) async throws -> FTS5SearchEngine {
-        let waxId = ObjectIdentifier(wax)
-
         if let stamp = await wax.stagedLexIndexStamp() {
-            let stagedBytes = await wax.readStagedLexIndexBytes()
             let key: TextSourceKey = .staged(stamp: stamp)
-            if let cached = textByWax[waxId], cached.key == key {
+            if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }
+            let stagedBytes = try await wax.readStagedLexIndexBytes()
             guard let bytes = stagedBytes else {
                 let engine = try FTS5SearchEngine.inMemory()
-                textByWax[waxId] = CachedText(key: .empty, engine: engine)
+                storeText(CachedText(owner: wax, key: .empty, engine: engine), for: wax)
                 return engine
             }
             let engine = try FTS5SearchEngine.deserialize(from: bytes)
-            incrementTextDeserializations(for: waxId)
-            textByWax[waxId] = CachedText(key: key, engine: engine)
+            incrementTextDeserializations(for: wax)
+            storeText(CachedText(owner: wax, key: key, engine: engine), for: wax)
             return engine
         }
 
         if let manifest = await wax.committedLexIndexManifest() {
-            let key: TextSourceKey = .committed(checksum: manifest.checksum)
-            if let cached = textByWax[waxId], cached.key == key {
+            let key: TextSourceKey = .committed(runChecksums: manifest.runs.map(\.checksum))
+            if let cached = cachedText(for: wax), cached.key == key {
                 return cached.engine
             }
             if let bytes = try await wax.readCommittedLexIndexBytes() {
                 let engine = try FTS5SearchEngine.deserialize(from: bytes)
-                incrementTextDeserializations(for: waxId)
-                textByWax[waxId] = CachedText(key: key, engine: engine)
+                incrementTextDeserializations(for: wax)
+                storeText(CachedText(owner: wax, key: key, engine: engine), for: wax)
                 return engine
             }
         }
 
-        if let cached = textByWax[waxId], cached.key == .empty {
+        if let cached = cachedText(for: wax), cached.key == .empty {
             return cached.engine
         }
         let engine = try FTS5SearchEngine.inMemory()
-        textByWax[waxId] = CachedText(key: .empty, engine: engine)
+        storeText(CachedText(owner: wax, key: .empty, engine: engine), for: wax)
         return engine
     }
 
@@ -120,10 +152,75 @@ actor UnifiedSearchEngineCache {
         ) else {
             return nil
         }
-
-        let waxId = ObjectIdentifier(wax)
-        if let cached = vectorByWax[waxId], cached.key == descriptor.key {
+        if let cached = cachedVector(for: wax),
+           cached.key == descriptor.key,
+           cached.syncedThrough == pendingSnapshot.latestSequence {
             return cached.engine
+        }
+
+        // A refresh spans awaits. Two at once could record one engine's watermark on an
+        // engine the other cached meanwhile, or apply an older delta over a newer one,
+        // leaving writes missing for good; so one store's refreshes run one at a time.
+        let lock = vectorRefreshLock(for: wax)
+        await vectorRefreshHook?(.waitingForRefresh)
+        await lock.lock()
+        do {
+            let engine = try await refreshVectorEngine(
+                for: wax,
+                queryEmbeddingDimensions: queryEmbeddingDimensions,
+                preference: preference
+            )
+            await lock.unlock()
+            return engine
+        } catch {
+            await lock.unlock()
+            throw error
+        }
+    }
+
+    /// Rechecks the cached engine and brings it up to date. Callers hold the store's refresh lock.
+    private func refreshVectorEngine(
+        for wax: Wax,
+        queryEmbeddingDimensions: Int,
+        preference: VectorEnginePreference
+    ) async throws -> LoadedVectorSearchEngine? {
+        let pendingSnapshot = await wax.pendingEmbeddingMutations(since: nil)
+        guard let descriptor = try await vectorLoadDescriptor(
+            for: wax,
+            queryEmbeddingDimensions: queryEmbeddingDimensions,
+            preference: preference,
+            pendingSnapshot: pendingSnapshot
+        ) else {
+            return nil
+        }
+
+        let latestPending = pendingSnapshot.latestSequence
+        if let cached = cachedVector(for: wax), cached.key == descriptor.key {
+            if cached.syncedThrough == latestPending {
+                return cached.engine
+            }
+            if let latestPending, cached.syncedThrough.map({ $0 < latestPending }) ?? true {
+                // Only new writes since the last search: apply them instead of
+                // rebuilding the engine from the whole index. `load` adds pending
+                // embeddings with the same `addBatch`, so the exact (Accelerate)
+                // engine ends up identical; MetalANNS grows its graph per insert,
+                // so its approximate top-K may differ slightly from a rebuild.
+                let delta = await wax.pendingEmbeddingMutations(since: cached.syncedThrough)
+                if !delta.embeddings.isEmpty {
+                    try await cached.engine.addBatch(
+                        frameIds: delta.embeddings.map(\.frameId),
+                        vectors: delta.embeddings.map(\.vector)
+                    )
+                }
+                for frameId in delta.removedFrameIds {
+                    try await cached.engine.remove(frameId: frameId)
+                }
+                await vectorRefreshHook?(.synced)
+                recordVectorSync(for: wax, key: descriptor.key, through: delta.latestSequence)
+                return cached.engine
+            }
+            // Pending embeddings were dropped without an index change; the cached
+            // engine may hold vectors that are gone. Reload.
         }
 
         let loaded = try await LoadedVectorSearchEngine.load(
@@ -132,23 +229,79 @@ actor UnifiedSearchEngineCache {
             dimensions: descriptor.dimensions,
             preference: preference
         )
-        incrementVectorDeserializations(for: waxId)
-        vectorByWax[waxId] = CachedVector(key: descriptor.key, engine: loaded)
+        incrementVectorDeserializations(for: wax)
+        await vectorRefreshHook?(.loaded)
+        // `load` applies every pending embedding present when it read them, which
+        // is at least `latestPending`; a later write is re-applied idempotently.
+        storeVector(
+            CachedVector(owner: wax, key: descriptor.key, engine: loaded, syncedThrough: latestPending),
+            for: wax
+        )
         return loaded
     }
 
-    private func incrementTextDeserializations(for waxId: ObjectIdentifier) {
-        stats.textDeserializations += 1
-        var waxStats = statsByWax[waxId] ?? Stats()
-        waxStats.textDeserializations += 1
-        statsByWax[waxId] = waxStats
+    /// Only moves the watermark forward, and only for the same index.
+    private func recordVectorSync(for wax: Wax, key: VectorSourceKey, through sequence: UInt64?) {
+        guard var cached = cachedVector(for: wax), cached.key == key, let sequence else { return }
+        if let synced = cached.syncedThrough, synced >= sequence { return }
+        cached.syncedThrough = sequence
+        vectorByWax[ObjectIdentifier(wax)] = cached
     }
 
-    private func incrementVectorDeserializations(for waxId: ObjectIdentifier) {
+    private func cachedText(for wax: Wax) -> CachedText? {
+        guard let cached = textByWax[ObjectIdentifier(wax)], cached.owner === wax else { return nil }
+        return cached
+    }
+
+    private func cachedVector(for wax: Wax) -> CachedVector? {
+        guard let cached = vectorByWax[ObjectIdentifier(wax)], cached.owner === wax else { return nil }
+        return cached
+    }
+
+    private func vectorRefreshLock(for wax: Wax) -> AsyncMutex {
+        if let lock = vectorRefreshLocks[ObjectIdentifier(wax)], lock.owner === wax {
+            return lock.mutex
+        }
+        pruneReleasedStores()
+        let mutex = AsyncMutex()
+        vectorRefreshLocks[ObjectIdentifier(wax)] = VectorRefreshLock(owner: wax, mutex: mutex)
+        return mutex
+    }
+
+    private func storeText(_ entry: CachedText, for wax: Wax) {
+        pruneReleasedStores()
+        textByWax[ObjectIdentifier(wax)] = entry
+    }
+
+    private func storeVector(_ entry: CachedVector, for wax: Wax) {
+        pruneReleasedStores()
+        vectorByWax[ObjectIdentifier(wax)] = entry
+    }
+
+    /// Drops entries whose store was freed, so engines do not outlive their store.
+    /// Runs only when an engine is (re)built, which already costs O(index size),
+    /// or when a store first needs a refresh lock.
+    private func pruneReleasedStores() {
+        textByWax = textByWax.filter { $0.value.owner != nil }
+        vectorByWax = vectorByWax.filter { $0.value.owner != nil }
+        vectorRefreshLocks = vectorRefreshLocks.filter { $0.value.owner != nil }
+        statsByWax = statsByWax.filter { $0.value.owner != nil }
+    }
+
+    private func incrementTextDeserializations(for wax: Wax) {
+        stats.textDeserializations += 1
+        updateStats(for: wax) { $0.textDeserializations += 1 }
+    }
+
+    private func incrementVectorDeserializations(for wax: Wax) {
         stats.vectorDeserializations += 1
-        var waxStats = statsByWax[waxId] ?? Stats()
-        waxStats.vectorDeserializations += 1
-        statsByWax[waxId] = waxStats
+        updateStats(for: wax) { $0.vectorDeserializations += 1 }
+    }
+
+    private func updateStats(for wax: Wax, _ change: (inout Stats) -> Void) {
+        var waxStats = snapshotStats(for: wax)
+        change(&waxStats)
+        statsByWax[ObjectIdentifier(wax)] = OwnedStats(owner: wax, stats: waxStats)
     }
 
     private func vectorLoadDescriptor(
@@ -157,6 +310,7 @@ actor UnifiedSearchEngineCache {
         preference: VectorEnginePreference,
         pendingSnapshot: PendingEmbeddingSnapshot
     ) async throws -> (key: VectorSourceKey, metric: VectorMetric, dimensions: Int)? {
+        let generation = await wax.stats().generation
         guard let kind = try await LoadedVectorSearchEngine.preferredKind(
             for: wax,
             queryEmbeddingDimensions: queryEmbeddingDimensions,
@@ -166,34 +320,17 @@ actor UnifiedSearchEngineCache {
             return nil
         }
 
-        if let stamp = await wax.stagedVecIndexStamp(),
-           let staged = await wax.readStagedVecIndexBytes(),
-           let metric = VectorMetric(vecSimilarity: staged.similarity) {
+        if let configuration = await wax.vectorIndexConfiguration(),
+           let metric = VectorMetric(vecSimilarity: configuration.similarity) {
             return (
-                .staged(
-                    stamp: stamp,
-                    similarity: staged.similarity,
-                    dimensions: Int(staged.dimension),
-                    engine: kind,
-                    pendingSequence: pendingSnapshot.latestSequence
+                .indexed(
+                    generation: generation,
+                    similarity: configuration.similarity,
+                    dimensions: Int(configuration.dimension),
+                    engine: kind
                 ),
                 metric,
-                Int(staged.dimension)
-            )
-        }
-
-        if let manifest = await wax.committedVecIndexManifest(),
-           let metric = VectorMetric(vecSimilarity: manifest.similarity) {
-            return (
-                .committed(
-                    checksum: manifest.checksum,
-                    similarity: manifest.similarity,
-                    dimensions: Int(manifest.dimension),
-                    engine: kind,
-                    pendingSequence: pendingSnapshot.latestSequence
-                ),
-                metric,
-                Int(manifest.dimension)
+                Int(configuration.dimension)
             )
         }
 
@@ -202,9 +339,9 @@ actor UnifiedSearchEngineCache {
         }
         return (
             .pendingOnly(
+                generation: generation,
                 dimensions: queryEmbeddingDimensions,
-                engine: kind,
-                pendingSequence: pendingSnapshot.latestSequence
+                engine: kind
             ),
             .cosine,
             queryEmbeddingDimensions

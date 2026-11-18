@@ -4,6 +4,7 @@ import Testing
 #if MCPServer
 @testable import wax_mcp
 @testable import Wax
+import WaxTestSupport
 @testable import WaxCore
 
 private func withIsolatedBroker<T>(
@@ -821,7 +822,7 @@ func coldRememberReturnsPendingThenFrameLandsWhenDeferredEmbedderBecomesReady() 
         readiness: readiness
     ) {
         await gate.wait()
-        return PendingRememberTestEmbedder()
+        return HashBucketEmbedder(model: "PendingRemember")
     }
     do {
         let token = "PENDINGLAND\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
@@ -970,9 +971,11 @@ func requireVectorOpenPreservesLockUnavailableError() async throws {
     let holder = try await MemoryOrchestrator(at: storeURL, config: config)
     defer { Task { try? await holder.close() } }
 
-    setenv("WAX_LOCK_TIMEOUT_SECS", "0.2", 1)
-    defer { unsetenv("WAX_LOCK_TIMEOUT_SECS") }
-
+    // No `setenv("WAX_LOCK_TIMEOUT_SECS")`: mutating the process environment
+    // races with every concurrently running broker test. The broker opens via
+    // CommandLineEmbedderFactory.waxOptions(), whose default lock wait is 2s
+    // (the CLI StoreSession default is 5s, not used here); waiting it out
+    // yields the same lockUnavailable error, just 2s later instead of 0.2s.
     do {
         _ = try await AgentBrokerService(
             storePath: storeURL.path,
@@ -982,7 +985,7 @@ func requireVectorOpenPreservesLockUnavailableError() async throws {
             requireVector: true,
             readiness: EmbeddingReadiness()
         ) {
-            PendingRememberTestEmbedder()
+            HashBucketEmbedder(model: "PendingRemember")
         }
         Issue.record("require-vector open should preserve WaxError.lockUnavailable")
     } catch let error as WaxError {
@@ -1849,29 +1852,6 @@ private enum PendingRememberFactoryError: LocalizedError {
 
     var errorDescription: String? {
         "Embedding provider is unavailable."
-    }
-}
-
-private struct PendingRememberTestEmbedder: EmbeddingProvider {
-    let dimensions = 8
-    let normalize = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "PendingRemember",
-        dimensions: 8,
-        normalized: true
-    )
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
-
-    func embed(_ text: String) async throws -> [Float] {
-        var vector = [Float](repeating: 0, count: dimensions)
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in text.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        vector[0] = Float(hash % 1_000) / 1_000
-        return vector
     }
 }
 

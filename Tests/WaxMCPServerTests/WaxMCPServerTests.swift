@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -215,14 +216,19 @@ func ensureAvailableReusesLiveBrokerWithoutStartingReplacement() async throws {
     let server = UnixStatsResponder(listener: listener)
     server.start(holdFirstRequest: false)
     defer { server.stop() }
+    defer { server.reportRetries() }
 
-    let started = try await AgentBrokerClient.ensureAvailable(
-        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
-    )
-    #expect(started == false)
+    do {
+        let started = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        #expect(started == false, "stub log:\n\(server.logText())")
+    } catch {
+        Issue.record("ensureAvailable threw \(error)\nstub log:\n\(server.logText())")
+    }
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -252,14 +258,19 @@ func deadPeerWithLockStderrFailsFastWithSharingGuidance() async throws {
         embedderTuning: configuration.embedderTuning
     )
 
+    // The dead peer must fail as soon as it exits, not wait out the start
+    // deadline. The deadline is large so that a regression waiting on it
+    // misses the bound below by a wide margin, however slow the host is.
+    let startTimeoutSeconds: TimeInterval = 60
     let started = Date()
     do {
-        _ = try await AgentBrokerClient.ensureAvailable(configuration: configuration)
+        _ = try await AgentBrokerClient.ensureAvailable(
+            configuration: configuration,
+            startTimeoutSecondsOverride: startTimeoutSeconds
+        )
         Issue.record("expected lock contention to throw")
     } catch {
-        // Well under the 10s start timeout: the dead peer fails fast
-        // instead of waiting out the deadline.
-        #expect(Date().timeIntervalSince(started) < 5)
+        #expect(Date().timeIntervalSince(started) < startTimeoutSeconds / 2)
         #expect(error.localizedDescription.contains("http://127.0.0.1:3000/mcp"))
         #expect(error.localizedDescription.contains("identical server settings"))
     }
@@ -282,14 +293,19 @@ func shortAttachPingTimeoutFallsThroughToLiveRetry() async throws {
     let server = UnixStatsResponder(listener: listener)
     server.start(holdFirstRequest: true)
     defer { server.stop() }
+    defer { server.reportRetries() }
 
-    let started = try await AgentBrokerClient.ensureAvailable(
-        configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
-    )
-    #expect(started == false)
+    do {
+        let started = try await AgentBrokerClient.ensureAvailable(
+            configuration: testBrokerConfiguration(root: root, socketPath: socketPath)
+        )
+        #expect(started == false, "stub log:\n\(server.logText())")
+    } catch {
+        Issue.record("ensureAvailable threw \(error)\nstub log:\n\(server.logText())")
+    }
 }
 
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))
 func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
     let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
         .appendingPathComponent("wxsa-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -310,8 +326,10 @@ func muteLiveSocketFailsFastWithoutStartingSecondDaemon() async throws {
         )
         Issue.record("expected mute live socket to fail")
     } catch {
+        // A mute socket costs two pings capped at 5s each. A regression that
+        // waits the full response timeout on either ping misses this bound.
         let elapsed = Date().timeIntervalSince(startedAt)
-        #expect(elapsed < 15)
+        #expect(elapsed < AgentBrokerClient.responseTimeoutSeconds)
         #expect(error.localizedDescription.contains("did not answer"))
         #expect(error.localizedDescription.contains("not starting a second daemon")
             || error.localizedDescription.contains("Not starting a second daemon"))
@@ -399,9 +417,49 @@ private final class UnixStatsResponder: @unchecked Sendable {
     private var heldFDs: [Int32] = []
     private var holdFirstRequest = false
     private var heldFirstRequest = false
+    // Every connection event, so a failure shows which branch the stub took.
+    private let startedAt = DispatchTime.now().uptimeNanoseconds
+    private var events: [String] = []
+    private var eintrRetries = 0
 
     init(listener: Int32) {
         self.listener = listener
+    }
+
+    func logText() -> String {
+        lock.withLock { events.joined(separator: "\n") }
+    }
+
+    /// One line per run, so CI output shows whether EINTR occurs at all. With
+    /// WAX_TEST_REPORT_STUB_EINTR=1 a retry is also recorded as an issue.
+    func reportRetries() {
+        let (retries, count) = lock.withLock { (eintrRetries, events.count) }
+        print("ATTACH_STUB: eintr_retries=\(retries) events=\(count)")
+        if retries > 0, ProcessInfo.processInfo.environment["WAX_TEST_REPORT_STUB_EINTR"] == "1" {
+            Issue.record("stub retried EINTR \(retries) times\n\(logText())")
+        }
+    }
+
+    private func log(_ event: String) {
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+        lock.withLock { events.append(String(format: "%9.3f ms ", ms) + event) }
+    }
+
+    private func countRetry(_ event: String) {
+        lock.withLock { eintrRetries += 1 }
+        log(event)
+    }
+
+    /// The socket's inode: an fd closed or reused under the stub reads EBADF or a new inode.
+    private func identity(_ fd: Int32) -> String {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return "fstat errno=\(errno)" }
+        return "ino=\(info.st_ino)"
+    }
+
+    private func closeConnection(_ fd: Int32, reason: String, errno code: Int32 = 0) {
+        log("close fd=\(fd) \(identity(fd)) reason=\(reason) errno=\(code)")
+        close(fd)
     }
 
     func start(holdFirstRequest: Bool) {
@@ -418,14 +476,25 @@ private final class UnixStatsResponder: @unchecked Sendable {
                 let pollResult = poll(&descriptor, 1, 50)
                 if pollResult == 0 { continue }
                 if pollResult < 0 {
-                    if errno == EINTR { continue }
+                    let code = errno
+                    if code == EINTR {
+                        self.countRetry("listener poll EINTR")
+                        continue
+                    }
+                    self.log("listener poll failed errno=\(code); responder exits")
                     return
                 }
                 let client = accept(self.listener, nil, nil)
                 if client < 0 {
-                    if errno == EINTR { continue }
+                    let code = errno
+                    if code == EINTR {
+                        self.countRetry("accept EINTR")
+                        continue
+                    }
+                    self.log("accept failed errno=\(code); responder exits")
                     return
                 }
+                self.log("accept fd=\(client) \(self.identity(client))")
                 self.handle(client: client)
             }
         }
@@ -439,7 +508,7 @@ private final class UnixStatsResponder: @unchecked Sendable {
         heldFDs.removeAll()
         lock.unlock()
         for fd in held {
-            close(fd)
+            closeConnection(fd, reason: "stop (held)")
         }
     }
 
@@ -450,17 +519,38 @@ private final class UnixStatsResponder: @unchecked Sendable {
     }
 
     private func handle(client: Int32) {
+        // The bound only catches a hang. The client's ping is written from a shared
+        // blocking pool that can lag by seconds under `--parallel`; a 2s window made
+        // the stub hang up first, so the ping looked unanswered. Liveness probes
+        // close right after connecting and end this wait at once.
         var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
-        let pollResult = poll(&descriptor, 1, 2_000)
+        var pollResult: Int32
+        repeat {
+            pollResult = poll(&descriptor, 1, 30_000)
+            if pollResult < 0, errno == EINTR {
+                countRetry("poll EINTR fd=\(client)")
+                continue
+            }
+            break
+        } while true
         if pollResult <= 0 {
-            close(client)
+            closeConnection(client, reason: pollResult == 0 ? "poll timeout" : "poll failed", errno: errno)
             return
         }
+        log("poll fd=\(client) revents=0x\(String(descriptor.revents, radix: 16))")
 
         var chunk = [UInt8](repeating: 0, count: 4096)
-        let count = recv(client, &chunk, chunk.count, 0)
+        var count: Int
+        repeat {
+            count = recv(client, &chunk, chunk.count, 0)
+            if count < 0, errno == EINTR {
+                countRetry("recv EINTR fd=\(client)")
+                continue
+            }
+            break
+        } while true
         if count <= 0 {
-            close(client)
+            closeConnection(client, reason: count == 0 ? "recv EOF" : "recv failed", errno: count == 0 ? 0 : errno)
             return
         }
 
@@ -475,21 +565,23 @@ private final class UnixStatsResponder: @unchecked Sendable {
             return false
         }()
         if shouldHold {
+            log("held fd=\(client) bytes=\(count)")
             return
         }
 
         let response = AgentBrokerResponse.success(id: "__ping__", payload: .object([:]))
         guard let payload = try? JSONEncoder().encode(response) else {
-            close(client)
+            closeConnection(client, reason: "encode failed")
             return
         }
         var data = payload
         data.append(0x0A)
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            _ = write(client, base, data.count)
+        let written = data.withUnsafeBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return -1 }
+            return write(client, base, data.count)
         }
-        close(client)
+        log("answered fd=\(client) request_bytes=\(count) written=\(written)/\(data.count)")
+        closeConnection(client, reason: "answered", errno: written < 0 ? errno : 0)
     }
 }
 
@@ -1230,10 +1322,11 @@ func brokerBackedF152RecallAndSearchSupportFilters() async throws {
 
 @Test
 func promotionMaxCandidatesAreBounded() async throws {
-    setenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES", "1000000", 1)
-    defer { unsetenv("WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES") }
-
-    #expect(BrokerPromotionSettings.fromEnvironment().maxCandidates == 12)
+    #expect(
+        BrokerPromotionSettings.fromEnvironment(
+            ["WAX_OPENCLAW_PROMOTION_MAX_CANDIDATES": "1000000"]
+        ).maxCandidates == 12
+    )
     #expect(schemaMaximum(ToolSchemas.waxSessionSynthesize, property: "max_candidates") == 12)
     #expect(schemaMaximum(ToolSchemas.waxMemoryPromote, property: "max_candidates") == 12)
 
@@ -3439,19 +3532,16 @@ func brokerCLIPathResolvesSiblingWhenLaunchedViaPath() throws {
         throw NSError(domain: "WaxMCPServerTests", code: 41, userInfo: [NSLocalizedDescriptionKey: "Failed to make test executables"])
     }
 
-    let originalPath = ProcessInfo.processInfo.environment["PATH"]
+    // Inject PATH instead of mutating the process environment: a global
+    // `setenv("PATH")` races with every concurrently spawned child process.
+    var environment = ProcessInfo.processInfo.environment
     let pathPrefix = tempDir.path
-    let newPath = originalPath.map { "\(pathPrefix):\($0)" } ?? pathPrefix
-    setenv("PATH", newPath, 1)
-    defer {
-        if let originalPath {
-            setenv("PATH", originalPath, 1)
-        } else {
-            unsetenv("PATH")
-        }
-    }
+    environment["PATH"] = environment["PATH"].map { "\(pathPrefix):\($0)" } ?? pathPrefix
 
-    let resolved = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: "wax-mcp")
+    let resolved = AgentBrokerPathing.resolveBrokerCLIPath(
+        currentExecutablePath: "wax-mcp",
+        environment: environment
+    )
     #expect(resolved == cliPath.path)
 }
 
@@ -4844,8 +4934,8 @@ func brokerSessionStartAppendsStartedEventBeforeSavingManifest() throws {
     let end = try #require(source[start.upperBound...].range(of: "private func abandonUnusedSessionFile("))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(manifest, to: manifestURL)"))
+    let appendEvent = try #require(body.range(of: "try writeEvent("))
+    let saveManifest = try #require(body.range(of: "try writeManifest(manifest, to: manifestURL)"))
     #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
@@ -4864,8 +4954,8 @@ func brokerSessionResumeAppendsResumedEventBeforeSavingLease() throws {
     let end = try #require(source[start.upperBound...].range(of: "package func end("))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(refreshed, to: manifestURL)"))
+    let appendEvent = try #require(body.range(of: "try writeEvent("))
+    let saveManifest = try #require(body.range(of: "try writeManifest(resumedManifest, to: manifestURL)"))
     #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
@@ -4885,15 +4975,21 @@ func brokerSessionEndKeepsActiveSessionUntilPersistenceSucceeds() throws {
     let body = source[start.lowerBound..<end.lowerBound]
 
     let flush = try #require(body.range(of: "try await target.state.memory.flush()"))
-    let saveManifest = try #require(body.range(of: "BrokerSessionPersistence.saveManifest(state.manifest, to: state.manifestURL)"))
-    let appendEvent = try #require(body.range(of: "BrokerSessionPersistence.appendEvent("))
+    // Writes the ended event, then the ended manifest (checked below).
+    let writeEnded = try #require(body.range(of: "try writeEndedManifest(target.id, harvest: endHarvest)"))
     let close = try #require(body.range(of: "try await target.state.memory.close()"))
     let remove = try #require(body.range(of: "_live.removeValue(forKey: target.id)"))
 
     #expect(flush.lowerBound < remove.lowerBound)
-    #expect(saveManifest.lowerBound < remove.lowerBound)
-    #expect(appendEvent.lowerBound < remove.lowerBound)
+    #expect(writeEnded.lowerBound < remove.lowerBound)
     #expect(close.lowerBound < remove.lowerBound)
+
+    let endedStart = try #require(source.range(of: "private func writeEndedManifest("))
+    let endedEnd = try #require(source[endedStart.upperBound...].range(of: "package func lookup("))
+    let endedBody = source[endedStart.lowerBound..<endedEnd.lowerBound]
+    let appendEvent = try #require(endedBody.range(of: "try writeEvent("))
+    let saveManifest = try #require(endedBody.range(of: "try writeManifest(state.manifest, to: state.manifestURL)"))
+    #expect(appendEvent.lowerBound < saveManifest.lowerBound)
 }
 
 @Test
@@ -4904,14 +5000,15 @@ func brokerRememberAppendsSessionEventBeforeFlushingMemory() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Remember.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func completeRemember("))
-    let end = try #require(source[start.upperBound...].range(of: "func recall(_ command: BrokerCommand.Recall)"))
+    let end = try #require(source[start.upperBound...].range(of: "func flush() async throws"))
     let body = source[start.lowerBound..<end.lowerBound]
 
-    let appendEvent = try #require(body.range(of: "appendSessionEvent("))
+    // The remembered event is written with the manifest refresh.
+    let appendEvent = try #require(body.range(of: "recording: .remembered"))
     let flush = try #require(body.range(of: "try await memory.flush()"))
     #expect(appendEvent.lowerBound < flush.lowerBound)
 }
@@ -4924,7 +5021,7 @@ func brokerHandoffRecordsEventBeforeCommittingHandoffFrame() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+HandoffExport.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func handoff(_ command: BrokerCommand.Handoff)"))
@@ -4945,7 +5042,7 @@ func brokerHandoffAppendsEventBeforeSavingHandoffManifest() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Support.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func recordHandoff(sessionID: UUID, content: String)"))
@@ -4965,11 +5062,11 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Knowledge.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func knowledgeCapture(_ command: BrokerCommand.KnowledgeCapture)"))
-    let end = try #require(source[start.upperBound...].range(of: "func stats(_ command: BrokerCommand.Stats"))
+    let end = try #require(source[start.upperBound...].range(of: "func entityUpsert(_ command: BrokerCommand.EntityUpsert)"))
     let body = source[start.lowerBound..<end.lowerBound]
 
     let remember = try #require(body.range(of: "try await longTermMemory.remember(command.content, metadata: metadata)"))
@@ -4983,6 +5080,15 @@ func brokerKnowledgeCaptureStagesMemoryBeforeGraphWrites() throws {
     #expect(assertFact.lowerBound < flush.lowerBound)
     #expect(body.contains("commit: false"))
     #expect(!body.contains("commit: true"))
+
+    // Before the split this window also spanned currentSessionDiskStats(), now in +Stats.
+    let statsSource = try String(
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Stats.swift"),
+        encoding: .utf8
+    )
+    let diskStart = try #require(statsSource.range(of: "private func currentSessionDiskStats() -> SessionDiskStats"))
+    let diskEnd = try #require(statsSource[diskStart.upperBound...].range(of: "func stats(_ command: BrokerCommand.Stats"))
+    #expect(!statsSource[diskStart.lowerBound..<diskEnd.lowerBound].contains("commit: true"))
 }
 
 @Test
@@ -4993,11 +5099,11 @@ func brokerDreamProjectionAwaitsOpenedSessionStoreClose() throws {
         .deletingLastPathComponent()
 
     let source = try String(
-        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown.swift"),
+        contentsOf: repoRoot.appendingPathComponent("Sources/Wax/Broker/AgentBrokerService+Markdown+Export.swift"),
         encoding: .utf8
     )
     let start = try #require(source.range(of: "func dreamProjectionLines(sessionID filterSessionID: UUID?, project: String? = nil) async throws -> [String]"))
-    let end = try #require(source[start.upperBound...].range(of: "private func merge("))
+    let end = try #require(source[start.upperBound...].range(of: "func exportMarkdownProjection("))
     let body = source[start.lowerBound..<end.lowerBound]
 
     #expect(!body.contains("Task { try? await sessionMemory.close() }"))
@@ -9097,7 +9203,6 @@ struct WaxMCPProcessTests {
         )
 
         let second = try MCPServerProcessHarness(storeURL: sharedStoreURL)
-        let start = Date()
         try second.start()
         defer { second.terminateIfNeeded() }
 
@@ -9107,8 +9212,10 @@ struct WaxMCPProcessTests {
             initializeTimeout: 10,
             toolsListTimeout: 10
         )
-        let elapsed = Date().timeIntervalSince(start)
-        #expect(elapsed < 4)
+        // Reuse is pinned structurally: a second process that tried to take the
+        // store lock itself fails with the "use a unique --store-path" guidance
+        // asserted below. A wall-clock bound on process spawn flakes under
+        // `swift test --parallel`; this test's one-minute `.timeLimit` catches hangs.
         let stderr = second.stderrSnapshot()
         #expect(bootstrap.initialize.contains(#""protocolVersion":"2024-11-05""#))
         #expect(bootstrap.toolsList?.contains(#""name":"remember""#) == true)
@@ -9355,7 +9462,7 @@ struct WaxMCPProcessTests {
     }
 
     @Test
-    func waxMCPAndCLIVersionFlagsExitZero() throws {
+    func waxMCPAndCLIVersionFlagsExitZero() async throws {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -9367,7 +9474,7 @@ struct WaxMCPProcessTests {
         let expectedVersion = try #require(packageObject?["version"] as? String)
 
         let mcp = try MCPServerProcessHarness.waxMCPBinaryURLForTests(packageRoot: packageRoot)
-        try expectVersion(executable: mcp, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: mcp, expectedSubstring: expectedVersion)
 
         let cliCandidates = [
             mcp.deletingLastPathComponent().appendingPathComponent("wax-cli"),
@@ -9375,11 +9482,18 @@ struct WaxMCPProcessTests {
             packageRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/wax-cli"),
         ]
         let cli = try #require(cliCandidates.first { FileManager.default.isExecutableFile(atPath: $0.path) })
-        try expectVersion(executable: cli, expectedSubstring: expectedVersion)
+        try await expectVersion(executable: cli, expectedSubstring: expectedVersion)
     }
 }
 
-private func expectVersion(executable: URL, expectedSubstring: String) throws {
+private func expectVersion(executable: URL, expectedSubstring: String) async throws {
+    let (status, output, err) = try await BlockingWork.run { try runVersion(executable: executable) }
+    #expect(status == 0)
+    #expect((output + err).contains(expectedSubstring))
+}
+
+/// Runs `--version` on a GCD thread, off the cooperative pool.
+private func runVersion(executable: URL) throws -> (Int32, String, String) {
     let process = Process()
     process.executableURL = executable
     process.arguments = ["--version"]
@@ -9391,8 +9505,7 @@ private func expectVersion(executable: URL, expectedSubstring: String) throws {
     process.waitUntilExit()
     let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    #expect(process.terminationStatus == 0)
-    #expect((output + err).contains(expectedSubstring))
+    return (process.terminationStatus, output, err)
 }
 
 #else

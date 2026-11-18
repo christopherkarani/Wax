@@ -1,0 +1,127 @@
+import Foundation
+import WaxCore
+import WaxVectorSearch
+
+/// A reranker and its options, applied to the ranked candidates before context assembly.
+package struct RerankStage: Sendable {
+    /// The searches a stage reranks.
+    package enum Scope: Sendable, Equatable {
+        /// Every search, whatever its mode: a reranker the caller chose.
+        case allModes
+        /// Hybrid searches only. Text-only searches (often exact lookups such as IDs or quoted
+        /// strings) and vector-only searches keep their retrieval order.
+        case hybridOnly
+    }
+
+    package let provider: any RerankingProvider
+    package let options: RerankingOptions
+    package let scope: Scope
+    /// When `true`, a reranker error leaves the retrieval order instead of failing the search.
+    package let keepsRetrievalOrderOnFailure: Bool
+
+    package init(
+        provider: any RerankingProvider,
+        options: RerankingOptions,
+        scope: Scope = .allModes,
+        keepsRetrievalOrderOnFailure: Bool = false
+    ) {
+        self.provider = provider
+        self.options = options
+        self.scope = scope
+        self.keepsRetrievalOrderOnFailure = keepsRetrievalOrderOnFailure
+    }
+
+    /// Starts loading a lazily loaded built-in model now, so the first reranked search does
+    /// not wait for it. Other providers have nothing to load.
+    package func prewarm() async {
+        if let lazy = provider as? LazyBuiltInReranker {
+            await lazy.prewarm()
+        }
+    }
+
+    /// Whether a search in `mode` is reranked.
+    package func applies(to mode: SearchMode) -> Bool {
+        switch (scope, mode) {
+        case (.allModes, _):
+            true
+        case (.hybridOnly, .hybrid):
+            true
+        case (.hybridOnly, .textOnly), (.hybridOnly, .vectorOnly):
+            false
+        }
+    }
+
+    /// Rescores the first ``RerankingOptions/candidateCount`` results and reorders them by
+    /// ``RerankingOptions/fusion``; results below that window keep their order. `text`
+    /// supplies each candidate's text. Scores stay the retrieval scores: the order changes,
+    /// and each reranked result gains an explanation with its reranker score.
+    package func rerank(
+        query: String,
+        results: [SearchResponse.Result],
+        text: (SearchResponse.Result) async -> String
+    ) async throws -> [SearchResponse.Result] {
+        try await rerank(query: query, items: results, text: text) { result, explanation in
+            result.explanations.append(explanation)
+        }
+    }
+
+    /// ``rerank(query:results:text:)`` for any ranked candidates: `explain` records the
+    /// `rerank:` explanation on each reranked item.
+    package func rerank<Item>(
+        query: String,
+        items results: [Item],
+        text: (Item) async -> String,
+        explain: (inout Item, String) -> Void
+    ) async throws -> [Item] {
+        let window = Array(results.prefix(options.candidateCount))
+        guard !window.isEmpty else { return results }
+        var documents: [String] = []
+        documents.reserveCapacity(window.count)
+        for result in window {
+            documents.append(await text(result))
+        }
+        let scores: [Float]
+        do {
+            scores = try await provider.scores(query: query, documents: documents)
+        } catch where keepsRetrievalOrderOnFailure {
+            WaxDiagnostics.logSwallowed(error, context: "automatic reranking", fallback: "retrieval order kept")
+            return results
+        }
+        guard scores.count == window.count else {
+            throw WaxError.io("Reranker returned \(scores.count) scores for \(window.count) documents.")
+        }
+        guard scores.allSatisfy(\.isFinite) else {
+            throw WaxError.io("Reranker returned a non-finite score.")
+        }
+        let reordered = Self.fusedOrder(scores: scores, fusion: options.fusion).map { index in
+            var result = window[index]
+            explain(&result, "rerank: score \(scores[index]), retrieval rank \(index + 1)")
+            return result
+        }
+        return reordered + results.dropFirst(window.count)
+    }
+
+    /// The new order of candidates `0..<scores.count`, given in retrieval order with their
+    /// reranker scores. Ties keep the retrieval order.
+    package static func fusedOrder(scores: [Float], fusion: RerankingFusion) -> [Int] {
+        let retrieval = Array(scores.indices)
+        let rerankerOrder = retrieval.sorted { lhs, rhs in
+            scores[lhs] != scores[rhs] ? scores[lhs] > scores[rhs] : lhs < rhs
+        }
+        switch fusion {
+        case .rerankerOrder:
+            return rerankerOrder
+        case .reciprocalRank(let k):
+            var rerankerRank = Array(repeating: 0, count: scores.count)
+            for (position, index) in rerankerOrder.enumerated() {
+                rerankerRank[index] = position + 1
+            }
+            let fused = retrieval.map { index in
+                1 / Double(k + index + 1) + 1 / Double(k + rerankerRank[index])
+            }
+            return retrieval.sorted { lhs, rhs in
+                fused[lhs] != fused[rhs] ? fused[lhs] > fused[rhs] : lhs < rhs
+            }
+        }
+    }
+}

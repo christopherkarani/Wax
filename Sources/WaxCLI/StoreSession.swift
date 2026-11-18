@@ -69,13 +69,25 @@ enum StoreSession {
     /// - Parameters:
     ///   - skipPrewarm: Unused for automatic open (compile is process-wide and live-attaches).
     ///     Built-in / require-vector still compiles through embedding readiness.
-    ///   - embedderChoice: Which embedder to use: `.minilm` (default) or `.arctic`.
+    ///   - embedderChoice: The embedder for a new store: `.auto` (default; e5 unless the store
+    ///     is bound to MiniLM), `.minilm`, `.arctic`, or `.e5`.
     ///   - requireVector: Fail instead of opening while the provider is loading.
+    /// Direct-store CLI commands never start a superseded-model re-embed on their own:
+    /// recall/search/stats/vector-health must not rewrite vectors. `embed-backfill` runs it
+    /// explicitly on a copy.
+    static func orchestratorConfig() -> OrchestratorConfig {
+        var config = OrchestratorConfig.default
+        config.enableStructuredMemory = true
+        config.automaticallyReembedSupersededVectors = false
+        config.catchUpTextIndexOnOpen = false
+        return config
+    }
+
     static func open(
         at url: URL,
         noEmbedder: Bool = false,
         skipPrewarm: Bool = false,
-        embedderChoice: EmbedderChoice = .minilm,
+        embedderChoice: EmbedderChoice = .auto,
         embedderTuning: CommandLineEmbedderRuntimeTuning = .fromEnvironment(),
         requireVector: Bool = false
     ) async throws -> MemoryOrchestrator {
@@ -90,7 +102,8 @@ enum StoreSession {
                 noEmbedder: noEmbedder,
                 requireVector: requireVector,
                 embedderChoice: embedderChoice.rawValue,
-                options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning)
+                options: BuiltInEmbeddingProviderOptions(tuning: embedderTuning),
+                servedStores: [url]
             )
         } catch {
             if EmbeddingReadinessBinding.isTypedOpenFailure(error) {
@@ -99,8 +112,7 @@ enum StoreSession {
             throw CLIError(error.localizedDescription)
         }
 
-        var config = OrchestratorConfig.default
-        config.enableStructuredMemory = true
+        let config = orchestratorConfig()
         do {
             return try await EmbeddingReadinessBinding.openOrchestrator(
                 at: url,

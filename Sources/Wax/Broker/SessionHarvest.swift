@@ -62,7 +62,7 @@ package enum SessionHarvest {
         events: [BrokerSessionEvent],
         scope: MemoryScopeContext?,
         settings: BrokerPromotionSettings = .default,
-        retention: MemoryRetentionSettings = .fromEnvironment(),
+        retention: MemoryRetentionSettings,
         nowMs: Int64
     ) async -> Report {
         if let harvestedAtMs = manifest.harvestedAtMs, manifest.harvestError == nil {

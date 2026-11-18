@@ -23,7 +23,7 @@ import WaxVectorSearchArctic
 #endif
 
 enum WaxMCPServerMetadata {
-    static let version = "0.1.50"
+    static let version = WaxReleaseInfo.version
 }
 
 @available(macOS 10.15, macCatalyst 13, iOS 13, tvOS 13, watchOS 6, *)
@@ -43,11 +43,14 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("license-key"), help: "Wax license key (fallback: WAX_LICENSE_KEY)")
     var licenseKey: String?
 
-    @Option(name: .customLong("embedder"), help: "Embedding provider: minilm (default) or arctic")
-    var embedderChoice: String = "minilm"
+    @Option(name: .customLong("embedder"), help: "Embedder for new stores: auto (default), minilm, arctic, or e5. auto picks e5 unless a store the broker serves is bound to MiniLM; existing stores keep the embedder that wrote them")
+    var embedderChoice: String = "auto"
 
     @Flag(name: .customLong("no-embedder"), help: "Run in text-only mode without any embedder")
     var noEmbedder = false
+
+    @Flag(name: .customLong("no-rerank"), help: "Keep recall in the broker's merged order instead of reranking hybrid recall with the built-in cross-encoder")
+    var noRerank = false
 
     @Option(name: .customLong("transport"), help: "Transport to serve: stdio (default) or http.")
     var transport = "stdio"
@@ -64,7 +67,7 @@ struct WaxMCPServerCommand: ParsableCommand {
     @Option(name: .customLong("http-max-body-bytes"), help: "Maximum accepted HTTP request body size.")
     var httpMaxBodyBytes = 1_048_576
 
-    @Option(name: .customLong("http-auth-token"), help: "Bearer token required for non-loopback HTTP binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
+    @Option(name: .customLong("http-auth-token"), help: "Bearer token every HTTP request must send once set, loopback included; required for non-loopback binds (fallback: WAX_MCP_HTTP_AUTH_TOKEN).")
     var httpAuthToken: String?
 
     mutating func run() throws {
@@ -117,7 +120,8 @@ struct WaxMCPServerCommand: ParsableCommand {
             embedderChoice: embedderChoice,
             noEmbedder: noEmbedder,
             requireVector: false,
-            embedderTuning: embedderTuning
+            embedderTuning: embedderTuning,
+            noRerank: noRerank
         )
         // Owned daemon prewarms the embedder in a background Task unless --no-embedder
         // (AgentBrokerClient no longer passes --skip-prewarm). First recall still waits
@@ -140,11 +144,11 @@ struct WaxMCPServerCommand: ParsableCommand {
                 "accessStatsScoring=\(memoryConfig.enableAccessStatsScoring) " +
                 "licenseValidation=\(licenseEnabled) " +
                 "vectorSearch=\(!noEmbedder) " +
-                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased())"
+                "embedder=\(noEmbedder ? "text-only" : embedderChoice.lowercased()) " +
+                "rerank=\(!noRerank)"
         )
         writeStderr("wax-mcp toolset: \(activeToolNames.joined(separator: ","))")
 
-        // SYNC: keep this version in sync with Resources/npm/waxmcp/package.json "version"
         let serverVersion = WaxMCPServerMetadata.version
         writeStderr("wax-mcp v\(serverVersion) starting")
         switch normalizedTransport {
@@ -237,8 +241,9 @@ struct WaxMCPServerCommand: ParsableCommand {
             configuration: .default
         )
         if let connectionKey {
+            let rootsGate = MCPRootsFetchGate()
             MCPRootsProviderRegistry.shared.remember(key: connectionKey) {
-                await MCPRootsFetcher.fetchRoots(server: server)
+                await MCPRootsFetcher.fetchRoots(server: server, gate: rootsGate)
             }
         }
         let context = connectionKey.flatMap {
@@ -325,24 +330,46 @@ private func resolveExecutableOnPath(named executable: String) -> URL? {
     return nil
 }
 
-private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
-    var sources: [DispatchSourceSignal] = []
-    for sig in [SIGINT, SIGTERM] {
-        signal(sig, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-        source.setEventHandler {
-            writeStderr("Received signal \(sig), shutting down gracefully…")
-            Task { await stop() }
-        }
-        source.resume()
-        sources.append(source)
+/// First SIGINT/SIGTERM shuts down gracefully; any later one forces exit so
+/// a wedged teardown never needs SIGKILL.
+final class MCPShutdownSignalLatch: @unchecked Sendable {
+    enum Action: Equatable {
+        case graceful
+        case forceExit
     }
-    return sources
+
+    private let lock = NSLock()
+    private var received = 0
+
+    func record() -> Action {
+        lock.lock()
+        defer { lock.unlock() }
+        received += 1
+        return received == 1 ? .graceful : .forceExit
+    }
+}
+
+private func installSignalHandlers(stop: @escaping @Sendable () async -> Void) -> [DispatchSourceSignal] {
+    let latch = MCPShutdownSignalLatch()
+    // ShutdownSignals sets SIG_IGN on Darwin only; Linux delivery is libdispatch's.
+    return ShutdownSignals.observe(queue: .main) { sig in
+        switch latch.record() {
+        case .graceful:
+            writeStderr("Received signal \(sig), shutting down gracefully… (send again to force exit)")
+            Task { await stop() }
+        case .forceExit:
+            writeStderr("Received signal \(sig) again, forcing exit")
+            // _exit: atexit handlers and stdio flushing may be what is wedged.
+            _exit(128 + sig)
+        }
+    }
 }
 
 func writeStderr(_ message: String) {
     guard let data = (message + "\n").data(using: .utf8) else { return }
-    FileHandle.standardError.write(data)
+    // The throwing write: with SIGPIPE ignored, the legacy one raises an
+    // uncatchable exception once the host closes the stderr pipe.
+    try? FileHandle.standardError.write(contentsOf: data)
 }
 
 private func exitProcess(_ status: Int32) -> Never {

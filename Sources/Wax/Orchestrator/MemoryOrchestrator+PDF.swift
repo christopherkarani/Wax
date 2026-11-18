@@ -12,9 +12,7 @@ package extension MemoryOrchestrator {
             throw PDFIngestError.fileNotFound(url: url)
         }
 
-        let extracted = try await Task.detached(priority: .utility) {
-            try PDFTextExtractor.extractText(url: url, maxPages: maxPages)
-        }.value
+        let extracted = try await extractPDFText(url: url, maxPages: maxPages)
 
         var baseMetadata = metadata
         baseMetadata[PDFMetadataKeys.sourceKind] = "pdf"
@@ -48,3 +46,11 @@ private enum PDFMetadataKeys {
     static let pdfTruncated = "pdf_truncated"
     static let pdfPageNumber = "pdf_page_number"
 }
+
+#if canImport(PDFKit)
+/// Blocking PDF parse, kept off the orchestrator actor.
+@concurrent
+private func extractPDFText(url: URL, maxPages: Int) async throws -> PDFTextExtractor.Extraction {
+    try PDFTextExtractor.extractText(url: url, maxPages: maxPages)
+}
+#endif

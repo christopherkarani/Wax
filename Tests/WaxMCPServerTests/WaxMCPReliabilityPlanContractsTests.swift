@@ -4,6 +4,7 @@ import Testing
 #if MCPServer
 @testable import wax_mcp
 @testable import Wax
+import WaxTestSupport
 @testable import WaxCore
 
 /// Reliability contracts for project-scoped recall, session rebind, and honest writes.
@@ -471,7 +472,7 @@ func t05RememberNeverReturnsSuccessShapedPendingZero() async throws {
         readiness: readiness
     ) {
         await gate.wait()
-        return ReliabilityPendingEmbedder()
+        return HashBucketEmbedder(model: "ReliabilityPending")
     }
     defer { Task { try? await service.close() } }
 
@@ -486,29 +487,6 @@ func t05RememberNeverReturnsSuccessShapedPendingZero() async throws {
     let payload = try requireObject(remembered.payload)
     #expect(payload["status"]?.stringValue != "pending")
     #expect(payload["framesAdded"]?.intValue ?? 0 >= 1)
-}
-
-private struct ReliabilityPendingEmbedder: EmbeddingProvider {
-    let dimensions = 8
-    let normalize = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "ReliabilityPending",
-        dimensions: 8,
-        normalized: true
-    )
-    var executionMode: ProviderExecutionMode { .onDeviceOnly }
-
-    func embed(_ text: String) async throws -> [Float] {
-        var vector = [Float](repeating: 0, count: dimensions)
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in text.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        vector[0] = Float(hash % 1_000) / 1_000
-        return vector
-    }
 }
 
 private actor ReliabilityEmbedderGate {

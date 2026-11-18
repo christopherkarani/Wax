@@ -4,6 +4,7 @@ import Foundation
 import Testing
 import UniformTypeIdentifiers
 import Wax
+import WaxTestSupport
 
 private let photoFileTinyPNGData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6Q5+YAAAAASUVORK5CYII=")!
 

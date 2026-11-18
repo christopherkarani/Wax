@@ -6,7 +6,11 @@ import WaxCore
 struct EmbedBackfillCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "embed-backfill",
-        abstract: "Embed live frames that have no vectors on a copy of a store"
+        abstract: "Embed live frames that have no vectors on a copy of a store",
+        discussion: """
+        Stores whose vectors come from a superseded model revision (for example MiniLM \
+        before mean pooling) are re-embedded in full, then rebound to the current model.
+        """
     )
 
     @OptionGroup var store: VectorStoreOptions
@@ -71,7 +75,9 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
             examined: UInt64,
             embedded: UInt64,
             remaining: UInt64,
-            status: String
+            status: String,
+            reembedded: Bool,
+            stillNeedsReembed: Bool
         ) = try await StoreSession.withOpen(
                 at: stagingURL,
                 noEmbedder: false,
@@ -81,7 +87,7 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
             ) { memory in
                 try await memory.waitUntilReadyForRemember()
                 let before = await memory.runtimeStats()
-                let examined = before.framesWithoutVectors
+                let examined = before.vectorsNeedReembed ? before.frameCount : before.framesWithoutVectors
                 let embedded = try await memory.backfillUnembedded()
                 try await memory.flush()
                 let after = await memory.runtimeStats()
@@ -89,10 +95,15 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
                     examined: examined,
                     embedded: embedded,
                     remaining: after.framesWithoutVectors,
-                    status: after.embeddingStatus.wireName
+                    status: after.embeddingStatus.wireName,
+                    reembedded: before.vectorsNeedReembed,
+                    stillNeedsReembed: after.vectorsNeedReembed
                 )
             }
 
+        guard !result.stillNeedsReembed else {
+            throw CLIError("re-embed did not complete; no repair output was published")
+        }
         _ = try await StoreRepairSupport.verifyDeep(at: stagingURL)
         let sourceAfter = try StoreRepairSupport.fingerprint(of: sourceURL)
         guard sourceAfter == sourceFingerprint,
@@ -123,6 +134,7 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
             printJSON([
                 "examined": result.examined,
                 "embedded": result.embedded,
+                "reembeddedSupersededVectors": result.reembedded,
                 "framesWithoutVectors": result.remaining,
                 "embeddingStatus": result.status,
                 "storePath": destinationURL.path,
@@ -130,7 +142,11 @@ struct EmbedBackfillCommand: AsyncParsableCommand {
                 "deepVerified": true,
             ])
         case .text:
-            print("Backfill examined \(result.examined) unembedded frame(s); embedded \(result.embedded).")
+            if result.reembedded {
+                print("Re-embedded \(result.embedded) frame(s) whose vectors came from a superseded model.")
+            } else {
+                print("Backfill examined \(result.examined) unembedded frame(s); embedded \(result.embedded).")
+            }
             print("Frames without vectors: \(result.remaining)")
             print("Embedding status: \(result.status)")
             print("Output: \(destinationURL.path)")

@@ -15,112 +15,217 @@ package struct BinaryDecoder {
     private let limits: Limits
 
     package init(data: Data, limits: Limits = .init()) throws {
+        // `cursor` counts from the first byte. A slice keeps its parent's indices,
+        // so absolute positions add `startIndex` instead of copying the buffer.
         self.data = data
         self.limits = limits
     }
 
     // MARK: - Cursor helpers
 
-    private mutating func read(count: Int, context: String) throws -> Data {
+    /// Bytes not yet consumed.
+    package var remainingByteCount: Int { data.count - cursor }
+
+    /// Whether `count` elements, each encoded in at least `minimumElementBytes`, can still
+    /// fit in the unread bytes. Decoded counts are untrusted: check this before a count
+    /// sizes any allocation (`reserveCapacity`, `Array(repeating:count:)`).
+    package func canFit(count: Int, minimumElementBytes: Int) -> Bool {
+        count >= 0 && count <= remainingByteCount / max(1, minimumElementBytes)
+    }
+
+    /// Offset of the next unread byte from the start of `data`.
+    package var position: Int { cursor }
+
+    /// Moves to `position`, an offset from the start of `data` that an earlier pass over the
+    /// same bytes reported.
+    package mutating func seek(to position: Int) throws {
+        guard position >= 0, position <= data.count else {
+            throw WaxError.decodingError(reason: "seek to \(position) outside buffer of \(data.count) bytes")
+        }
+        cursor = position
+    }
+
+    /// A decoder with the same limits over a copy of the bytes at `range` (offsets from the
+    /// start of `data`), with storage of its own, positioned at its first byte. `range` must
+    /// lie within `data`.
+    package func copying(_ range: Range<Int>) -> BinaryDecoder {
+        precondition(range.lowerBound >= 0 && range.upperBound <= data.count, "range outside buffer")
+        let start = data.startIndex
+        return BinaryDecoder(
+            copiedData: data.subdata(in: (start + range.lowerBound)..<(start + range.upperBound)),
+            limits: limits
+        )
+    }
+
+    /// Calls `body` with the decoder's bytes; offsets count from the first byte, like
+    /// ``position``.
+    package func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
+        try data.withUnsafeBytes(body)
+    }
+
+    /// A decoder with the same limits over `bytes[range]`, positioned at its first byte,
+    /// that neither copies nor retains `bytes`: the caller keeps them alive and unchanged
+    /// while the decoder or anything it decoded lazily is in use. Decoded values never
+    /// share its storage (strings and byte fields are copied out), so a decoder per thread
+    /// reads one buffer without contending on a shared `Data`'s reference count.
+    package func borrowing(_ range: Range<Int>, of bytes: UnsafeRawBufferPointer) -> BinaryDecoder {
+        precondition(range.lowerBound >= 0 && range.upperBound <= bytes.count, "range outside buffer")
+        guard let base = bytes.baseAddress, !range.isEmpty else {
+            return BinaryDecoder(copiedData: Data(), limits: limits)
+        }
+        let borrowed = Data(
+            bytesNoCopy: UnsafeMutableRawPointer(mutating: base + range.lowerBound),
+            count: range.count,
+            deallocator: .none
+        )
+        return BinaryDecoder(copiedData: borrowed, limits: limits)
+    }
+
+    private init(copiedData: Data, limits: Limits) {
+        self.data = copiedData
+        self.limits = limits
+    }
+
+    /// Consumes `count` bytes without reading them.
+    package mutating func skip(byteCount count: Int) throws {
+        _ = try advance(by: count, context: "skipped bytes[\(count)]")
+    }
+
+    /// Consumes a length-prefixed string or byte run without decoding it.
+    package mutating func skipLengthPrefixed(maxBytes: Int? = nil) throws {
+        let length = try decodeLength(maxBytes: maxBytes ?? limits.maxStringBytes)
+        try skip(byteCount: length)
+    }
+
+    /// Reads an optional's presence tag: `true` when a value follows.
+    package mutating func decodePresence() throws -> Bool {
+        try decodeOptionalIsPresent()
+    }
+
+    /// Consumes `count` bytes and returns their offset from the start of `data`.
+    /// Decoding a TOC calls this tens of times per frame, so `context` is built only on error.
+    private mutating func advance(by count: Int, context: @autoclosure () -> String) throws -> Int {
         guard count >= 0 else {
-            throw WaxError.decodingError(reason: "invalid read size \(count) (\(context))")
+            throw WaxError.decodingError(reason: "invalid read size \(count) (\(context()))")
         }
-        guard cursor + count <= data.count else {
-            throw WaxError.decodingError(reason: "truncated buffer while reading \(context)")
+        guard count <= data.count - cursor else {
+            throw WaxError.decodingError(reason: "truncated buffer while reading \(context())")
         }
-        let range = cursor..<(cursor + count)
+        let offset = cursor
         cursor += count
-        return data.subdata(in: range)
+        return offset
+    }
+
+    private mutating func read(count: Int, context: @autoclosure () -> String) throws -> Data {
+        let offset = try advance(by: count, context: context())
+        let start = data.startIndex + offset
+        return data.subdata(in: start..<(start + count))
+    }
+
+    /// Reads a little-endian integer in place, without copying it into a `Data` first.
+    private mutating func decodeInteger<T: FixedWidthInteger>(_: T.Type, context: StaticString) throws -> T {
+        let offset = try advance(by: MemoryLayout<T>.size, context: "\(context)")
+        return T(littleEndian: data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) })
     }
 
     // MARK: - Primitives
 
     package mutating func decode(_ type: UInt8.Type) throws -> UInt8 {
-        let bytes = try read(count: 1, context: "UInt8")
-        return bytes[0]
+        try decodeInteger(UInt8.self, context: "UInt8")
     }
 
     package mutating func decode(_ type: UInt16.Type) throws -> UInt16 {
-        let bytes = try read(count: 2, context: "UInt16")
-        var raw: UInt16 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 2)
-        }
-        return UInt16(littleEndian: raw)
+        try decodeInteger(UInt16.self, context: "UInt16")
     }
 
     package mutating func decode(_ type: UInt32.Type) throws -> UInt32 {
-        let bytes = try read(count: 4, context: "UInt32")
-        var raw: UInt32 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 4)
-        }
-        return UInt32(littleEndian: raw)
+        try decodeInteger(UInt32.self, context: "UInt32")
     }
 
     package mutating func decode(_ type: UInt64.Type) throws -> UInt64 {
-        let bytes = try read(count: 8, context: "UInt64")
-        var raw: UInt64 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 8)
-        }
-        return UInt64(littleEndian: raw)
+        try decodeInteger(UInt64.self, context: "UInt64")
     }
 
     package mutating func decode(_ type: Int64.Type) throws -> Int64 {
-        let bytes = try read(count: 8, context: "Int64")
-        var raw: Int64 = 0
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes.copyBytes(to: dest, count: 8)
-        }
-        return Int64(littleEndian: raw)
+        try decodeInteger(Int64.self, context: "Int64")
     }
 
     // MARK: - Variable bytes
 
     package mutating func decodeBytes(maxBytes: Int? = nil) throws -> Data {
-        let length = Int(try decode(UInt32.self))
-        let effectiveMax = maxBytes ?? limits.maxBlobBytes
-        guard length <= effectiveMax else {
-            throw WaxError.decodingError(reason: "length \(length) exceeds limit \(effectiveMax)")
-        }
+        let length = try decodeLength(maxBytes: maxBytes ?? limits.maxBlobBytes)
         return try read(count: length, context: "bytes[\(length)]")
+    }
+
+    private mutating func decodeLength(maxBytes: Int) throws -> Int {
+        let length = Int(try decode(UInt32.self))
+        guard length <= maxBytes else {
+            throw WaxError.decodingError(reason: "length \(length) exceeds limit \(maxBytes)")
+        }
+        return length
     }
 
     // MARK: - Strings
 
+    /// Validates the UTF-8 in place. Invalid UTF-8 throws; it is never repaired.
     package mutating func decode(_ type: String.Type) throws -> String {
-        let bytes = try decodeBytes(maxBytes: limits.maxStringBytes)
-        guard let value = String(data: bytes, encoding: .utf8) else {
+        let length = try decodeLength(maxBytes: limits.maxStringBytes)
+        let offset = try advance(by: length, context: "bytes[\(length)]")
+        let value = data.withUnsafeBytes { raw in
+            Self.validatedUTF8(UnsafeRawBufferPointer(rebasing: raw[offset..<(offset + length)]))
+        }
+        guard let value else {
             throw WaxError.decodingError(reason: "invalid UTF-8")
         }
         return value
     }
 
+    private static func validatedUTF8(_ raw: UnsafeRawBufferPointer) -> String? {
+        let bytes = raw.assumingMemoryBound(to: UInt8.self)
+        // Pure ASCII is valid UTF-8 and never repaired, so the specialized decode returns its
+        // exact bytes. Most stored strings (metadata keys, ids, kinds) are ASCII, and this
+        // skips the generic validating initializer, whose per-call metadata lookup was a third
+        // of frame decoding when an open decodes the table of contents (100k frames).
+        var combined: UInt8 = 0
+        for byte in bytes {
+            combined |= byte
+        }
+        if combined < 0x80 {
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        if #available(macOS 15, iOS 18, watchOS 11, tvOS 18, visionOS 2, *) {
+            return String(validating: bytes, as: UTF8.self)
+        }
+        // `String(decoding:)` repairs invalid input, which always changes its bytes.
+        let decoded = String(decoding: bytes, as: UTF8.self)
+        return decoded.utf8.elementsEqual(bytes) ? decoded : nil
+    }
+
     // MARK: - Arrays
 
     package mutating func decodeArray(_ type: UInt8.Type) throws -> [UInt8] {
-        try decodeArrayElements { try $0.decode(UInt8.self) }
+        try decodeArrayElements(minimumElementBytes: 1) { try $0.decode(UInt8.self) }
     }
 
     package mutating func decodeArray(_ type: UInt16.Type) throws -> [UInt16] {
-        try decodeArrayElements { try $0.decode(UInt16.self) }
+        try decodeArrayElements(minimumElementBytes: 2) { try $0.decode(UInt16.self) }
     }
 
     package mutating func decodeArray(_ type: UInt32.Type) throws -> [UInt32] {
-        try decodeArrayElements { try $0.decode(UInt32.self) }
+        try decodeArrayElements(minimumElementBytes: 4) { try $0.decode(UInt32.self) }
     }
 
     package mutating func decodeArray(_ type: UInt64.Type) throws -> [UInt64] {
-        try decodeArrayElements { try $0.decode(UInt64.self) }
+        try decodeArrayElements(minimumElementBytes: 8) { try $0.decode(UInt64.self) }
     }
 
     package mutating func decodeArray(_ type: Int64.Type) throws -> [Int64] {
-        try decodeArrayElements { try $0.decode(Int64.self) }
+        try decodeArrayElements(minimumElementBytes: 8) { try $0.decode(Int64.self) }
     }
 
     package mutating func decodeArray(_ type: String.Type) throws -> [String] {
-        try decodeArrayElements { try $0.decode(String.self) }
+        // Every string carries a 4-byte length prefix.
+        try decodeArrayElements(minimumElementBytes: 4) { try $0.decode(String.self) }
     }
 
     // MARK: - Optionals
@@ -156,11 +261,15 @@ package struct BinaryDecoder {
     }
 
     private mutating func decodeArrayElements<Element>(
+        minimumElementBytes: Int,
         _ decodeElement: (inout BinaryDecoder) throws -> Element
     ) throws -> [Element] {
         let count = Int(try decode(UInt32.self))
         guard count <= limits.maxArrayCount else {
             throw WaxError.decodingError(reason: "array count \(count) exceeds limit \(limits.maxArrayCount)")
+        }
+        guard canFit(count: count, minimumElementBytes: minimumElementBytes) else {
+            throw WaxError.decodingError(reason: "array count \(count) exceeds remaining bytes (\(remainingByteCount))")
         }
 
         var result: [Element] = []

@@ -67,4 +67,43 @@ import SQLite3
     }
 }
 
+/// With SQLITE_DESERIALIZE_FREEONCLOSE, sqlite3_deserialize frees the buffer itself
+/// when it fails, so the caller must not free it again.
+@Test func fts5SerializerDeserializeFailureDoesNotDoubleFree() throws {
+    var source: OpaquePointer?
+    guard sqlite3_open(":memory:", &source) == SQLITE_OK, let sourceConn = source else {
+        Issue.record("Failed to open source database")
+        return
+    }
+    defer { sqlite3_close(sourceConn) }
+    guard sqlite3_exec(sourceConn, "CREATE TABLE t(x); INSERT INTO t VALUES(1);", nil, nil, nil) == SQLITE_OK else {
+        Issue.record("Failed to seed source database")
+        return
+    }
+    let blob = try FTS5Serializer.serialize(connection: sourceConn)
+
+    var target: OpaquePointer?
+    guard sqlite3_open(":memory:", &target) == SQLITE_OK, let targetConn = target else {
+        Issue.record("Failed to open target database")
+        return
+    }
+    defer { sqlite3_close(targetConn) }
+
+    // sqlite3_deserialize reopens the schema through an internal ATTACH; denying it
+    // forces the failure path deterministically.
+    sqlite3_set_authorizer(targetConn, { _, action, _, _, _, _ in
+        action == SQLITE_ATTACH ? SQLITE_DENY : SQLITE_OK
+    }, nil)
+
+    for _ in 0..<64 {
+        #expect(throws: WaxError.self) {
+            try FTS5Serializer.deserialize(blob, into: targetConn)
+        }
+    }
+
+    // The connection is still usable after the failed deserialize.
+    sqlite3_set_authorizer(targetConn, nil, nil)
+    #expect(sqlite3_exec(targetConn, "CREATE TABLE ok(x);", nil, nil, nil) == SQLITE_OK)
+}
+
 #endif // canImport(SQLite3)

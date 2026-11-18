@@ -1,4 +1,4 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -65,7 +65,7 @@ waxRepoPackageDependencies = [
     // rensbreur/SwiftTUI has no tagged releases; pin the exact revision for reproducible
     // builds instead of tracking the moving `main` branch. (WaxRepo TUI only.)
     .package(url: "https://github.com/rensbreur/SwiftTUI.git", revision: "537133031bc2b2731048d00748c69700e1b48185"),
-    .package(url: "https://github.com/tuist/Noora.git", from: "0.54.0"),
+    .package(url: "https://github.com/tuist/Noora.git", .upToNextMinor(from: "0.57.0")),
 ]
 waxRepoTargets = [
     .executableTarget(
@@ -110,7 +110,7 @@ let package = Package(
         .library(name: "WaxVectorSearch", targets: ["WaxVectorSearch"]),
     ],
     traits: [
-        .default(enabledTraits: ["MiniLMEmbeddings"]),
+        .default(enabledTraits: ["MiniLMEmbeddings", "E5Embeddings", "MiniLMReranker"]),
         .init(
             name: "MiniLMEmbeddings",
             description: "Includes the built-in MiniLM embedding provider",
@@ -119,6 +119,16 @@ let package = Package(
         .init(
             name: "ArcticEmbeddings",
             description: "Includes the Snowflake Arctic Embed Small provider",
+            enabledTraits: []
+        ),
+        .init(
+            name: "E5Embeddings",
+            description: "Includes the intfloat/e5-small-v2 provider",
+            enabledTraits: []
+        ),
+        .init(
+            name: "MiniLMReranker",
+            description: "Includes the cross-encoder/ms-marco-MiniLM-L-6-v2 on-device reranker",
             enabledTraits: []
         ),
         .init(
@@ -133,11 +143,10 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.3.0"),
+        .package(url: "https://github.com/christopherkarani/MetalANNS.git", exact: "0.4.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
-        .package(url: "https://github.com/swiftlang/swift-testing", from: "0.12.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.7.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
@@ -162,14 +171,12 @@ let package = Package(
                     name: "WaxCoreCompressionC",
                     condition: .when(platforms: [.linux])
                 ),
-            ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            ]
         ),
         .target(
             name: "WaxBertTokenizer",
             dependencies: [],
-            resources: [.process("Resources/bert_tokenizer_vocab.txt")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            resources: [.process("Resources/bert_tokenizer_vocab.txt")]
         ),
         .target(
             name: "WaxTextSearch",
@@ -179,21 +186,26 @@ let package = Package(
                 // Linux has no Darwin SQLite3 overlay. GRDB's system library
                 // exposes sqlite3_serialize so FTS5 can persist into the .wax file.
                 .product(name: "GRDBSQLite", package: "GRDB.swift"),
-            ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            ]
+        ),
+        .target(
+            name: "WaxVectorSearchC",
+            dependencies: [],
+            path: "Sources/WaxVectorSearchC",
+            publicHeadersPath: "include"
         ),
         .target(
             name: "WaxVectorSearch",
             dependencies: [
                 "WaxCore",
+                "WaxVectorSearchC",
                 .product(
                     name: "MetalANNS",
                     package: "MetalANNS",
                     condition: .when(platforms: [.macOS, .iOS])
                 ),
             ],
-            resources: [.process("Shaders")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            resources: [.process("Shaders")]
         ),
         .target(
             name: "WaxVectorSearchMiniLM",
@@ -203,8 +215,7 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/all-MiniLM-L6-v2.mlmodelc"),
-            ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            ]
         ),
         .target(
             name: "WaxVectorSearchArctic",
@@ -214,8 +225,30 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/snowflake-arctic-embed-s.mlmodelc"),
+            ]
+        ),
+        .target(
+            name: "WaxVectorSearchE5",
+            dependencies: [
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
             ],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            resources: [
+                .copy("Resources/e5-small-v2.mlmodelc"),
+                .copy("Resources/e5-small-v2-LICENSE.txt"),
+            ]
+        ),
+        .target(
+            name: "WaxRerankerMiniLM",
+            dependencies: [
+                "WaxCore",
+                "WaxVectorSearch",
+                "WaxBertTokenizer",
+            ],
+            resources: [
+                .copy("Resources/ms-marco-MiniLM-L-6-v2.mlmodelc"),
+                .copy("Resources/ms-marco-MiniLM-L-6-v2-LICENSE.txt"),
+            ]
         ),
         .target(
             name: "Wax",
@@ -231,12 +264,21 @@ let package = Package(
                     name: "WaxVectorSearchArctic",
                     condition: .when(traits: ["ArcticEmbeddings"])
                 ),
+                .target(
+                    name: "WaxVectorSearchE5",
+                    condition: .when(traits: ["E5Embeddings"])
+                ),
+                .target(
+                    name: "WaxRerankerMiniLM",
+                    condition: .when(traits: ["MiniLMReranker"])
+                ),
             ],
             resources: [.process("RAG/Resources")],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .executableTarget(
@@ -281,7 +323,6 @@ let package = Package(
             ],
             path: "Sources/WaxMCPServer",
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
@@ -300,7 +341,6 @@ let package = Package(
             ],
             path: "Sources/WaxCLI",
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
                 .define("ArcticEmbeddings", .when(traits: ["ArcticEmbeddings"])),
             ]
@@ -310,33 +350,38 @@ let package = Package(
             dependencies: [
                 "Wax",
             ],
-            path: "Sources/WaxCrashHarness",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            path: "Sources/WaxCrashHarness"
         ),
     ] + waxRepoTargets + [
+        // Deterministic stub embedders shared by the test targets below. Not a product.
+        .target(
+            name: "WaxTestSupport",
+            dependencies: [
+                "Wax",
+            ],
+            path: "Tests/WaxTestSupport"
+        ),
         .testTarget(
             name: "WaxCoreTests",
             dependencies: [
                 "WaxCore",
-                .product(name: "Testing", package: "swift-testing"),
             ],
-            resources: [.process("Fixtures")],
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "WaxIntegrationTests",
             dependencies: [
                 "Wax",
+                "WaxTestSupport",
                 "WaxVectorSearchMiniLM",
-                .product(name: "Testing", package: "swift-testing"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             exclude: waxIntegrationLinuxExcludes,
             resources: [.process("Fixtures")],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MiniLMEmbeddings", .when(traits: ["MiniLMEmbeddings"])),
+                .define("E5Embeddings", .when(traits: ["E5Embeddings"])),
             ]
         ),
         .testTarget(
@@ -346,16 +391,33 @@ let package = Package(
                 "WaxVectorSearchArctic",
                 "WaxVectorSearchMiniLM",
                 "WaxBertTokenizer",
-                .product(name: "Testing", package: "swift-testing"),
             ],
-            path: "Tests/WaxArcticTests",
-            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+            path: "Tests/WaxArcticTests"
+        ),
+        .testTarget(
+            name: "WaxE5Tests",
+            dependencies: [
+                "Wax",
+                "WaxVectorSearchE5",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxE5Tests",
+            resources: [.process("Fixtures")]
+        ),
+        .testTarget(
+            name: "WaxRerankerMiniLMTests",
+            dependencies: [
+                "WaxRerankerMiniLM",
+                "WaxBertTokenizer",
+            ],
+            path: "Tests/WaxRerankerMiniLMTests",
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "wax-mcpTests",
             dependencies: [
                 "Wax",
-                .product(name: "Testing", package: "swift-testing"),
+                "WaxTestSupport",
                 .target(
                     name: "wax-mcp",
                     condition: .when(traits: ["MCPServer"])
@@ -384,7 +446,6 @@ let package = Package(
             path: "Tests/WaxMCPServerTests",
             resources: [.copy("Fixtures")],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),
             ]
         ),
@@ -392,12 +453,12 @@ let package = Package(
             name: "waxTests",
             dependencies: [
                 "Wax",
-                .product(name: "Testing", package: "swift-testing"),
+                "WaxTestSupport",
             ],
             path: "Tests/WaxTests",
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("WaxRepo", .when(traits: ["WaxRepo"])),
+                .define("MiniLMReranker", .when(traits: ["MiniLMReranker"])),
             ]
         ),
         .testTarget(
@@ -406,12 +467,10 @@ let package = Package(
                 "Wax",
                 "WaxCore",
                 "wax-cli",
-                .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/WaxCLITests",
             resources: [.copy("Fixtures")],
             swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency"),
                 .define("MCPServer", .when(traits: ["MCPServer"])),
             ]
         ),

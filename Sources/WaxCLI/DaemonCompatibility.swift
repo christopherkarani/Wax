@@ -19,20 +19,25 @@ enum AgentDaemonTransport {
     static func configuration(
         storePath: String,
         embedderChoice: EmbedderChoice,
-        cliPathOverride: String? = nil
+        cliPathOverride: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentBrokerConfiguration {
         let brokerExecutable: String
         if let cliPathOverride {
             brokerExecutable = cliPathOverride
         } else {
             let executablePath = try Pathing.resolveSelfExecutablePath()
-            brokerExecutable = AgentBrokerPathing.resolveBrokerCLIPath(currentExecutablePath: executablePath)
+            brokerExecutable = AgentBrokerPathing.resolveBrokerCLIPath(
+                currentExecutablePath: executablePath,
+                environment: environment
+            )
         }
         return try AgentBrokerPathing.configuration(
             brokerExecutablePath: brokerExecutable,
             storePath: storePath,
             embedderChoice: embedderChoice.rawValue,
-            noEmbedder: false
+            noEmbedder: false,
+            environment: environment
         )
     }
 }
@@ -150,14 +155,14 @@ private extension CLIDaemonSession {
         }
 
         let modeString = request.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "text"
-        let mode: Memory.RetrievalMode
+        let mode: SearchModeRequest
         switch modeString {
         case "text":
             mode = .textOnly
         case "vector":
             mode = .vectorOnly
         case "hybrid":
-            mode = .hybrid(alpha: 0.5)
+            mode = .hybrid(alpha: nil)
         default:
             throw CLIError("mode must be one of: text, vector, hybrid")
         }

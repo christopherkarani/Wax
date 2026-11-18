@@ -1,15 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
-
-private struct LaneDiagnosticsEmbedder: EmbeddingProvider, Sendable {
-    let dimensions = 4
-    let normalize = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "LaneDiagnosticsTests", model: "deterministic", dimensions: 4, normalized: true
-    )
-    func embed(_ text: String) async throws -> [Float] { [1, 0, 0, 0] }
-}
+import WaxTestSupport
 
 @Suite
 struct LayeredRecallDiagnosticsTests {
@@ -28,7 +20,7 @@ struct LayeredRecallDiagnosticsTests {
             return try await MemoryOrchestrator(
                 at: root.appendingPathComponent(name + ".wax"),
                 config: config,
-                embedder: vector ? LaneDiagnosticsEmbedder() : nil
+                embedder: vector ? ConstantEmbedder(vector: [1, 0, 0, 0], provider: "LaneDiagnosticsTests", model: "deterministic") : nil
             )
         }
         let working = try await makeMemory("working", vector: workingVectorEnabled)

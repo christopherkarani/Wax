@@ -58,6 +58,17 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
+    package func storedFrameIds() async -> Set<UInt64> {
+        switch self {
+        case .accelerate(let engine):
+            await engine.storedFrameIds()
+        #if canImport(Metal) && canImport(MetalANNS)
+        case .metalANNS(let engine):
+            await engine.storedFrameIds()
+        #endif
+        }
+    }
+
     package func remove(frameId: UInt64) async throws {
         switch self {
         case .accelerate(let engine):
@@ -80,6 +91,8 @@ package enum LoadedVectorSearchEngine: Sendable {
         }
     }
 
+    /// Records the index's dimension and similarity for the commit, which writes the pending
+    /// vector changes from the WAL.
     package func stageForCommit(into wax: Wax) async throws {
         switch self {
         case .accelerate(let engine):
@@ -97,24 +110,54 @@ package enum LoadedVectorSearchEngine: Sendable {
         dimensions: Int,
         preference: VectorEnginePreference
     ) async throws -> LoadedVectorSearchEngine {
-        let encoding = try await currentEncoding(for: wax)
+        // Both kinds load the same committed vectors, read (and checksummed) once. The read
+        // starts first because choosing the kind can create the Metal device, about 30 ms the
+        // first time in a process.
+        async let committedRead = wax.readCommittedVectors()
         let projectedCount = try await projectedVectorCount(for: wax, fallbackDimensions: dimensions)
-        let selectedKind = try resolveKind(
-            encoding: encoding,
-            projectedVectorCount: projectedCount,
-            preference: preference,
-            allowEmptySelection: false
-        )
+        let selectedKind = try resolveKind(projectedVectorCount: projectedCount, preference: preference)
+        let committed = try await committedRead
 
         switch selectedKind {
         case .accelerate:
-            return .accelerate(try await AccelerateVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .accelerate(try await AccelerateVectorEngine.load(
+                from: wax,
+                committed: committed,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #if canImport(Metal) && canImport(MetalANNS)
         case .metalANNS:
-            return .metalANNS(try await MetalANNSVectorEngine.load(from: wax, metric: metric, dimensions: dimensions))
+            return .metalANNS(try await MetalANNSVectorEngine.load(
+                from: wax,
+                committed: committed,
+                metric: metric,
+                dimensions: dimensions
+            ))
         #endif
         }
     }
+
+    /// Starts creating the system Metal device on a background thread and returns at once,
+    /// so a later ``load(from:metric:dimensions:preference:)`` finds it made. The first
+    /// creation in a process takes 30–45 ms; opening a store with vectors does it anyway, and
+    /// started before the store opens it overlaps reading the table of contents. Does
+    /// nothing for `.cpuOnly`, without Metal, or after the first call in a process.
+    package static func prepareGPU(for preference: VectorEnginePreference) {
+        #if canImport(Metal) && canImport(MetalANNS)
+        guard preference != .cpuOnly else { return }
+        _ = gpuPreparation
+        #endif
+    }
+
+    #if canImport(Metal) && canImport(MetalANNS)
+    /// A static `let` initializes once per process, on the first `prepareGPU` call.
+    private static let gpuPreparation: Void = {
+        DispatchQueue(label: "com.wax.metal-device-preparation").async {
+            _ = MetalANNSVectorEngine.isAvailable
+        }
+    }()
+    #endif
 
     package static func preferredKind(
         for wax: Wax,
@@ -129,54 +172,27 @@ package enum LoadedVectorSearchEngine: Sendable {
             snapshot = await wax.pendingEmbeddingMutations(since: nil)
         }
         let hasPending = snapshot.embeddings.contains { embedding in embedding.dimension == UInt32(queryEmbeddingDimensions) }
-        let hasStaged = await wax.stagedVecIndexStamp() != nil
         let hasCommitted = await wax.committedVecIndexManifest() != nil
-        let hasCommittedOrStaged = hasStaged || hasCommitted
-        guard hasPending || hasCommittedOrStaged else { return nil }
+        guard hasPending || hasCommitted else { return nil }
 
-        let encoding = try await currentEncoding(for: wax)
         let projectedCount = try await projectedVectorCount(
             for: wax,
             fallbackDimensions: queryEmbeddingDimensions,
             pendingSnapshot: snapshot
         )
-        return try resolveKind(
-            encoding: encoding,
-            projectedVectorCount: projectedCount,
-            preference: preference,
-            allowEmptySelection: false
-        )
+        return try resolveKind(projectedVectorCount: projectedCount, preference: preference)
     }
 
-    package static func currentEncoding(for wax: Wax) async throws -> VectorSerializer.VecEncoding? {
-        if let staged = await wax.readStagedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: staged.bytes)
-        }
-        if let bytes = try await wax.readCommittedVecIndexBytes() {
-            return try validatedCurrentEncoding(from: bytes)
-        }
-        return nil
-    }
-
-    private static func validatedCurrentEncoding(from data: Data) throws -> VectorSerializer.VecEncoding {
-        let encoding = try VectorSerializer.detectEncoding(from: data)
-        guard encoding != .uSearch else {
-            throw WaxError.invalidToc(reason: VectorSerializer.legacyUSearchUnsupportedReason)
-        }
-        return encoding
-    }
-
+    /// Committed vectors plus pending embeddings of `fallbackDimensions`: an upper bound, since
+    /// a pending embedding can replace a committed vector.
     package static func projectedVectorCount(
         for wax: Wax,
         fallbackDimensions: Int,
         pendingSnapshot: PendingEmbeddingSnapshot? = nil
     ) async throws -> Int {
-        var committedOrStaged = 0
-        if let staged = await wax.readStagedVecIndexBytes() {
-            let decoded = try VectorSerializer.decodeVecSegment(from: staged.bytes)
-            committedOrStaged = try segmentVectorCount(for: decoded)
-        } else if let manifest = await wax.committedVecIndexManifest() {
-            committedOrStaged = try checkedVectorCount(
+        var committedCount = 0
+        if let manifest = await wax.committedVecIndexManifest() {
+            committedCount = try checkedVectorCount(
                 manifest.vectorCount,
                 context: "committed vec index manifest"
             )
@@ -194,16 +210,14 @@ package enum LoadedVectorSearchEngine: Sendable {
             }
         }
         return try checkedProjectedVectorCount(
-            committedOrStaged: committedOrStaged,
+            committedOrStaged: committedCount,
             pendingCount: pendingCount
         )
     }
 
     private static func resolveKind(
-        encoding: VectorSerializer.VecEncoding?,
         projectedVectorCount: Int,
-        preference: VectorEnginePreference,
-        allowEmptySelection: Bool
+        preference: VectorEnginePreference
     ) throws -> Kind {
         switch preference {
         case .cpuOnly:
@@ -220,18 +234,11 @@ package enum LoadedVectorSearchEngine: Sendable {
         case .auto, .metalPreferred:
             #if canImport(Metal) && canImport(MetalANNS)
             if MetalANNSVectorEngine.isAvailable,
-               (allowEmptySelection || projectedVectorCount >= MetalANNSVectorEngine.autoThreshold) {
+               projectedVectorCount >= MetalANNSVectorEngine.autoThreshold {
                 return .metalANNS
             }
             #endif
             return .accelerate
-        }
-    }
-
-    private static func segmentVectorCount(for payload: VectorSerializer.VecSegmentPayload) throws -> Int {
-        switch payload {
-        case .metal(let info, _, _):
-            return try checkedVectorCount(info.vectorCount, context: "Metal vec segment")
         }
     }
 

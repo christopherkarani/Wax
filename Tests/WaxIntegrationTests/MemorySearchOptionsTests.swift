@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Wax
+import WaxTestSupport
 
 @Test
 func memorySearchOptionsExposeVectorOnlyAndHybridAlpha() async throws {
@@ -23,7 +24,7 @@ func memoryFacadeRunsVectorOnlySearch() async throws {
             config: .init(
                 enableTextSearch: false,
                 enableVectorSearch: true,
-                embedding: .custom(DeterministicEmbeddingProvider())
+                embedding: .custom(ConstantEmbedder(vector: [1, 0], provider: "Test", model: "Deterministic"))
             )
         )
 
@@ -149,7 +150,7 @@ func memorySearchReportsVectorDiagnosticsWithEmbedder() async throws {
             config: .init(
                 enableTextSearch: true,
                 enableVectorSearch: true,
-                embedding: .custom(DeterministicEmbeddingProvider())
+                embedding: .custom(ConstantEmbedder(vector: [1, 0], provider: "Test", model: "Deterministic"))
             )
         )
 
@@ -169,20 +170,5 @@ func memorySearchReportsVectorDiagnosticsWithEmbedder() async throws {
         #expect(stats.embedderIdentity?.model == "Deterministic")
 
         try await memory.close()
-    }
-}
-
-private struct DeterministicEmbeddingProvider: EmbeddingProvider, Sendable {
-    let dimensions: Int = 2
-    let normalize: Bool = true
-    let identity: EmbeddingIdentity? = EmbeddingIdentity(
-        provider: "Test",
-        model: "Deterministic",
-        dimensions: 2,
-        normalized: true
-    )
-
-    func embed(_ text: String) async throws -> [Float] {
-        [1.0, 0.0]
     }
 }

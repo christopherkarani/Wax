@@ -22,9 +22,6 @@ func rememberAndRecallSchemasAdvertiseCWD() throws {
 
 @Test(.serialized)
 func projectScopedRememberWithoutAttributionReturnsProjectUnresolvedAndBindsNothing() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     try await withAttributionBroker { broker in
         let hint = MCPClientSessionHint(
             connectionKey: "attr-unresolved",
@@ -57,9 +54,6 @@ func projectScopedRememberWithoutAttributionReturnsProjectUnresolvedAndBindsNoth
 
 @Test(.serialized)
 func projectUnresolvedPayloadEchoesReceivedRoots() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     try await withAttributionBroker { broker in
         let hint = MCPClientSessionHint(
             connectionKey: "attr-received",
@@ -92,10 +86,8 @@ func projectUnresolvedPayloadEchoesReceivedRoots() async throws {
 
 @Test(.serialized)
 func singleMCPRootResolvesAttributionWithoutExplicitCWD() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
     MCPStickyAttributionRegistry.shared.remove(for: "attr-root")
     defer {
-        MCPBoundSessionRegistry.shared.resetForTests()
         MCPStickyAttributionRegistry.shared.remove(for: "attr-root")
     }
 
@@ -125,11 +117,9 @@ func singleMCPRootResolvesAttributionWithoutExplicitCWD() async throws {
 
 @Test(.serialized)
 func lazyRootsProviderHealsUnresolvedAttribution() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
     MCPStickyAttributionRegistry.shared.remove(for: "attr-lazy")
     MCPRootsProviderRegistry.shared.remove(key: "attr-lazy")
     defer {
-        MCPBoundSessionRegistry.shared.resetForTests()
         MCPStickyAttributionRegistry.shared.remove(for: "attr-lazy")
         MCPRootsProviderRegistry.shared.remove(key: "attr-lazy")
     }
@@ -161,10 +151,8 @@ func lazyRootsProviderHealsUnresolvedAttribution() async throws {
 
 @Test(.serialized)
 func stickyAttributionLetsRepeatCallsOmitCWD() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
     MCPStickyAttributionRegistry.shared.remove(for: "attr-sticky")
     defer {
-        MCPBoundSessionRegistry.shared.resetForTests()
         MCPStickyAttributionRegistry.shared.remove(for: "attr-sticky")
     }
 
@@ -223,9 +211,6 @@ func stickyAttributionLetsRepeatCallsOmitCWD() async throws {
 
 @Test(.serialized)
 func syntheticRecoveryIdentityIsNeverUsedAsHostIdentity() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     try await withAttributionBroker { broker in
         let repo = try makeAttributionGitRepo(named: "recover-id")
         defer { try? FileManager.default.removeItem(at: repo) }
@@ -266,9 +251,6 @@ func syntheticRecoveryIdentityIsNeverUsedAsHostIdentity() async throws {
 
 @Test(.serialized)
 func projectScopedWriteIsRecalledByNewConnectionInSameRepoOnly() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     try await withAttributionBroker { broker in
         let sameRepo = try makeAttributionGitRepo(named: "ac002b-same")
         let otherRepo = try makeAttributionGitRepo(named: "ac002b-other")
@@ -340,9 +322,6 @@ func projectScopedWriteIsRecalledByNewConnectionInSameRepoOnly() async throws {
 
 @Test(.serialized)
 func advertisedCWDDoesNotUseServerProcessCWD() async throws {
-    MCPBoundSessionRegistry.shared.resetForTests()
-    defer { MCPBoundSessionRegistry.shared.resetForTests() }
-
     try await withAttributionBroker { broker in
         let hint = MCPClientSessionHint(
             connectionKey: "attr-process-cwd",

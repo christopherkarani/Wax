@@ -304,3 +304,73 @@ import Testing
     #expect(SurrogateTierSelector.extractTier(from: data, tier: .gist) == plainText)
     #expect(SurrogateTierSelector.extractTier(from: data, tier: .micro) == plainText)
 }
+
+// MARK: - Date literal prefilter
+
+@Test func fourDigitPrefilterAgreesWithICUDecimalDigits() throws {
+    // dateLiterals skips its regexes unless this holds; it must hold wherever ICU's \d{4}
+    // matches, including non-ASCII decimal digits.
+    let icuFourDigits = try NSRegularExpression(pattern: #"\d{4}"#)
+    let samples = [
+        "", "no digits here", "123", "12 34", "1234", "x2024y", "May 1, 2024",
+        "２０２４", "٢٠٢٤", "२०२४-01-02", "𝟐𝟎𝟐𝟒", "１２３", "12٣4", "²⁰²⁴", "Ⅻ 2 0 2 4",
+    ]
+    for sample in samples {
+        let range = NSRange(location: 0, length: sample.utf16.count)
+        let expected = icuFourDigits.firstMatch(in: sample, range: range) != nil
+        #expect(QueryAnalyzer.containsFourConsecutiveDecimalDigits(sample) == expected, "\(sample)")
+    }
+}
+
+@Test func dateLiteralsStillFoundAfterPrefilter() {
+    let analyzer = QueryAnalyzer()
+    let twoDates: [String] = analyzer.dateLiterals(in: "Shipped on March 3, 2024 and 2024-05-06.")
+    let expectedTwoDates: [String] = ["March 3, 2024", "2024-05-06"]
+    #expect(twoDates == expectedTwoDates)
+    let dayFirst: [String] = analyzer.dateLiterals(in: "met on 3 Jan 2025")
+    let expectedDayFirst: [String] = ["3 Jan 2025"]
+    #expect(dayFirst == expectedDayFirst)
+    #expect(analyzer.dateLiterals(in: "March 3, 24 and 12/5/24").isEmpty)
+}
+
+@Test func uppercaseLetterCheckMatchesFoundationForEveryScalar() {
+    var mismatches: [String] = []
+    for value in UInt32(0)...0x10FFFF {
+        guard let scalar = Unicode.Scalar(value) else { continue }
+        let expected: Bool = CharacterSet.uppercaseLetters.contains(scalar)
+        if QueryAnalyzer.isUppercaseLetter(scalar) != expected {
+            mismatches.append(String(value, radix: 16))
+        }
+    }
+    #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
+}
+
+@Test func alphanumericRunsSplitLikeCharacterProperties() {
+    func expected(_ text: String) -> [Substring] {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+    }
+    let fixed = [
+        "", "abc", "Hello, world! 2026", "a\r\nb", "\r\n", "  x--y__z9 ", "@[`{~\u{7F}\u{0}",
+        "café naïve", "東京 tower", "e\u{301}x", "١٢٣ abc", "½ⅫA", "a\u{200D}b",
+    ]
+    for text in fixed {
+        #expect(QueryAnalyzer.alphanumericRuns(text) == expected(text), "\(text.debugDescription)")
+    }
+    var state: UInt64 = 0xA1_FA_17
+    var mismatches: [String] = []
+    let extras: [Character] = ["é", "\u{301}", "東", "½", "\r\n", " "]
+    for round in 0..<20_000 {
+        var text = ""
+        for _ in 0..<(1 + round % 40) {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let pick = Int(state >> 33)
+            if round % 4 == 0, pick % 7 == 0 {
+                text.append(extras[pick % extras.count])
+            } else if let scalar = Unicode.Scalar(UInt32(pick % 128)) {
+                text.unicodeScalars.append(scalar)
+            }
+        }
+        if QueryAnalyzer.alphanumericRuns(text) != expected(text) { mismatches.append(text.debugDescription) }
+    }
+    #expect(mismatches.isEmpty, "first mismatches: \(mismatches.prefix(5))")
+}

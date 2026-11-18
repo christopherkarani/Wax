@@ -1,0 +1,7 @@
+torch==2.7.1
+transformers==4.57.6
+coremltools==9.0
+safetensors==0.7.0
+tokenizers==0.22.2
+huggingface_hub==0.36.2
+numpy==2.4.3

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Wax
+import WaxTestSupport
 
 @Test
 func embeddingReadinessCustomIsActiveImmediately() async throws {
@@ -169,7 +170,7 @@ func hostEmbeddingReadinessMapsExistingFlags() throws {
             noEmbedder: false,
             requireVector: false,
             embedderChoice: "auto"
-        ) == .automatic(.miniLM, .default)
+        ) == .automatic(HostNewStoreEmbedder.provider(servedStores: []), .default)
     )
     #expect(
         try HostEmbeddingReadiness.request(
@@ -192,6 +193,21 @@ func hostEmbeddingReadinessMapsExistingFlags() throws {
             embedderChoice: "arctic"
         ) == .builtIn(.arctic, .default)
     )
+    #expect(
+        try HostEmbeddingReadiness.request(
+            noEmbedder: false,
+            requireVector: true,
+            embedderChoice: "E5"
+        ) == .builtIn(.e5, .default)
+    )
+}
+
+@Test
+func builtInE5ProviderParsesAndNamesItsTrait() {
+    #expect(BuiltInEmbeddingProvider(rawValue: "e5") == .e5)
+    #expect(BuiltInEmbeddingProvider.e5.commandLineChoice == "e5")
+    let message = BuiltInEmbeddingProviderError.unavailable(.e5).localizedDescription
+    #expect(message.contains("`E5Embeddings` package trait"))
 }
 
 @Test
@@ -203,23 +219,12 @@ func memoryRetrievalModeAliasesCanonicalSearchMode() {
     #expect(Memory.RetrievalMode.vectorOnly == SearchMode.vectorOnly)
 }
 
-private struct RecordingEmbedder: EmbeddingProvider {
-    let dimensions = 2
-    let normalize = true
-    let identity: EmbeddingIdentity?
+/// `[1, 0]` for every input, identified as provider `Test` with the given model.
+private typealias RecordingEmbedder = ConstantEmbedder
 
+private extension ConstantEmbedder {
     init(model: String) {
-        identity = EmbeddingIdentity(
-            provider: "Test",
-            model: model,
-            dimensions: 2,
-            normalized: true
-        )
-    }
-
-    func embed(_ text: String) async throws -> [Float] {
-        _ = text
-        return [1, 0]
+        self.init(vector: [1, 0], provider: "Test", model: model)
     }
 }
 

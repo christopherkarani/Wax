@@ -6,7 +6,7 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         case cl100kBase = "cl100k_base"
     }
 
-    private static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
+    static let cl100kBasePattern = #"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
 
     private static let cl100kBaseRegex: NSRegularExpression = {
         do {
@@ -34,6 +34,11 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
     }
 
     private let encoder: [Data: UInt32]
+    /// `encoder` restricted to pieces of at most `shortPieceMaxBytes` bytes, keyed by
+    /// `shortKey`: most pieces are short single tokens, and an integer key hashes far
+    /// faster than `Data`.
+    private let shortEncoder: [UInt64: UInt32]
+    private static let shortPieceMaxBytes = 7
     private let decoder: [UInt32: Data]
     private let regex: NSRegularExpression
     private let bpeCache = LockedCache<Data, [UInt32]>()
@@ -42,6 +47,11 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
         let (encoder, decoder) = try Self.loadEncoding(encoding)
         self.encoder = encoder
         self.decoder = decoder
+        var shortEncoder: [UInt64: UInt32] = [:]
+        for (bytes, rank) in encoder where bytes.count <= Self.shortPieceMaxBytes {
+            shortEncoder[Self.shortKey(bytes)] = rank
+        }
+        self.shortEncoder = shortEncoder
         self.regex = Self.cl100kBaseRegex
     }
 
@@ -51,35 +61,64 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
 
     package func encode(_ text: String) -> [UInt32] {
         guard !text.isEmpty else { return [] }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         var tokens: [UInt32] = []
         tokens.reserveCapacity(text.utf8.count)
 
+        // Text splits without ICU, which was about half of a short save's CPU time, unless
+        // it holds a scalar ICU may class differently.
+        let scanned = text.utf8.withContiguousStorageIfAvailable { bytes -> Bool in
+            guard let ranges = Cl100kPreTokenizer.pieceRanges(bytes) else { return false }
+            for range in ranges {
+                appendTokens(forPiece: UnsafeBufferPointer(rebasing: bytes[range]), to: &tokens)
+            }
+            return true
+        } ?? false
+        if scanned { return tokens }
+
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in matches {
             guard let range = Range(match.range, in: text) else { continue }
-            let piece = text[range]
-            let bytes = Array(piece.utf8)
-            if bytes.isEmpty { continue }
-
-            let data = Data(bytes)
-            if let cached = bpeCache.get(data) {
-                tokens.append(contentsOf: cached)
-                continue
-            }
-
-            if let token = encoder[data] {
-                let encoded = [token]
-                bpeCache.set(data, encoded)
-                tokens.append(token)
-                continue
-            }
-
-            let encoded = bpeEncode(bytes)
-            bpeCache.set(data, encoded)
-            tokens.append(contentsOf: encoded)
+            let piece = Array(text[range].utf8)
+            piece.withUnsafeBufferPointer { appendTokens(forPiece: $0, to: &tokens) }
         }
 
         return tokens
+    }
+
+    /// The piece's bytes in the low bytes and its length in the top byte, so pieces of
+    /// different lengths never collide. Only for pieces of at most `shortPieceMaxBytes`.
+    private static func shortKey<Bytes: Collection<UInt8>>(_ bytes: Bytes) -> UInt64 {
+        var key = UInt64(bytes.count) << 56
+        for (index, byte) in bytes.enumerated() {
+            key |= UInt64(byte) << (8 * UInt64(index))
+        }
+        return key
+    }
+
+    private func appendTokens(forPiece bytes: UnsafeBufferPointer<UInt8>, to tokens: inout [UInt32]) {
+        if bytes.isEmpty { return }
+        if bytes.count <= Self.shortPieceMaxBytes, let token = shortEncoder[Self.shortKey(bytes)] {
+            tokens.append(token)
+            return
+        }
+
+        let data = Data(buffer: bytes)
+        // Most pieces are one token. The vocabulary is immutable, so looking it up first
+        // takes no lock: chunkers encoding in parallel queued on the cache lock for every
+        // piece, and ran slower than one chunker alone.
+        if let token = encoder[data] {
+            tokens.append(token)
+            return
+        }
+
+        if let cached = bpeCache.get(data) {
+            tokens.append(contentsOf: cached)
+            return
+        }
+
+        let encoded = bpeEncode(Array(bytes))
+        bpeCache.set(data, encoded)
+        tokens.append(contentsOf: encoded)
     }
 
     package func decode(_ tokens: [UInt32]) -> String {
@@ -91,7 +130,35 @@ package final class NativeBpeTokenizer: @unchecked Sendable {
                 data.append(bytes)
             }
         }
+        // Byte-level BPE can split a multi-byte scalar across tokens. A token
+        // prefix (truncation) may end mid-scalar; drop that partial tail rather
+        // than decoding it to U+FFFD.
+        data.removeLast(Self.incompleteUTF8SuffixLength(data))
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Length (0...3) of a trailing UTF-8 sequence whose lead byte promises
+    /// more continuation bytes than are present.
+    static func incompleteUTF8SuffixLength(_ data: Data) -> Int {
+        var continuationCount = 0
+        var index = data.endIndex
+        while index > data.startIndex, continuationCount < 4 {
+            index = data.index(before: index)
+            let byte = data[index]
+            if byte & 0b1100_0000 == 0b1000_0000 {
+                continuationCount += 1
+                continue
+            }
+            let expected: Int
+            switch byte {
+            case 0b1100_0000...0b1101_1111: expected = 1
+            case 0b1110_0000...0b1110_1111: expected = 2
+            case 0b1111_0000...0b1111_0111: expected = 3
+            default: return 0
+            }
+            return continuationCount < expected ? continuationCount + 1 : 0
+        }
+        return 0
     }
 
     private func bpeEncode(_ bytes: [UInt8]) -> [UInt32] {

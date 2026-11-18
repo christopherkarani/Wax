@@ -139,7 +139,8 @@ private func harvestLiveSession(
         manifest: state.manifest,
         events: events,
         scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
-        nowMs: VirtualSessionStore.nowMs()
+        retention: .default,
+        nowMs: BrokerClock.nowMs()
     )
 }
 
@@ -461,6 +462,124 @@ func zombieActiveLeaseIsEndedAndHarvestedByMaintain() async throws {
     }
 }
 
+/// Maintain runs under `commandMutex` only. A remember that rebinds a zombie
+/// session while maintain is harvesting it must win: maintain must not mark the
+/// now-live session `.ended` underneath it.
+@Test(.timeLimit(.minutes(2)))
+func maintainDoesNotEndZombieReboundByConcurrentRemember() async throws {
+    let rootURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("wax-zombie-race-\(UUID().uuidString)", isDirectory: true)
+    let storeURL = rootURL.appendingPathComponent("memory.wax")
+    let sessionRootURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: rootURL) }
+
+    let sessionID: String
+    let first = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        sessionID = try await startHarvestSession(first, runID: "zombie-race")
+        try await rememberSession(first, sessionID: sessionID, content: "Working note before the race.", memoryType: "note")
+        try await first.close()
+    } catch {
+        try? await first.close()
+        throw error
+    }
+    let uuid = try #require(UUID(uuidString: sessionID))
+    var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: uuid)
+    // Freshly expired, not abandoned: startup maintain leaves it for explicit maintain.
+    manifest.leaseExpiresAtMs = BrokerClock.nowMs() - 1_000
+    try BrokerSessionPersistence.saveManifest(
+        manifest,
+        to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: uuid)
+    )
+
+    let second = try await AgentBrokerService(
+        storePath: storeURL.path,
+        sessionRootPath: sessionRootURL.path,
+        noEmbedder: true,
+        embedderChoice: "auto",
+        requireVector: false
+    )
+    do {
+        let (reached, reachedSignal) = AsyncStream<Void>.makeStream()
+        let (release, releaseSignal) = AsyncStream<Void>.makeStream()
+        await second.setPersistedHarvestHookForTesting { _ in
+            reachedSignal.yield()
+            for await _ in release { break }
+        }
+        let maintainDone = RaceFlag()
+        let maintain = Task {
+            defer { maintainDone.set() }
+            return await second.handle(.init(command: "memory_maintain", arguments: ["apply": .bool(true)]))
+        }
+        for await _ in reached { break }
+
+        // Maintain is parked between harvest and mark-ended. Remember must not
+        // wait for it, and its rebind must survive maintain finishing.
+        let remember = Task {
+            await second.handle(.init(
+                command: "remember",
+                arguments: [
+                    "content": .string("Working note written during maintain."),
+                    "session_id": .string(sessionID),
+                    "memory_type": .string("note"),
+                    "durability": .string("working"),
+                    "scope": .string("session"),
+                    "project": .string(harvestProject),
+                    "repo": .string(harvestProject),
+                ]
+            ))
+        }
+        // Maintain stays parked until released, so remember returning here shows it
+        // did not queue behind maintain. Wait for the event, not a wall-clock
+        // window: a remember that wrongly queues never returns and the time limit
+        // fails the test; its cancellation releases maintain so nothing is left parked.
+        let written = await withTaskCancellationHandler {
+            await remember.value
+        } onCancel: {
+            releaseSignal.finish()
+        }
+        let rememberFinishedFirst = !maintainDone.isSet
+        releaseSignal.yield()
+        releaseSignal.finish()
+        let applied = await maintain.value
+
+        #expect(rememberFinishedFirst, "remember waited on memory_maintain")
+        #expect(applied.ok, "memory_maintain failed: \(applied.error ?? "nil")")
+        #expect(written.ok, "remember failed: \(written.error ?? "nil")")
+        let after = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: uuid)
+        #expect(after.status == .active, "maintain ended a session a concurrent remember rebound")
+        #expect(await second.activeSessions[uuid] != nil)
+        try await second.close()
+    } catch {
+        try? await second.close()
+        throw error
+    }
+}
+
+private final class RaceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        value = true
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 @Test
 func harvestErrorBlocksReclaimUntilForce() async throws {
     let rootURL = FileManager.default.temporaryDirectory
@@ -627,6 +746,63 @@ func maintainApplySoftDeletesAgedWorkingNotes() async throws {
         #expect(applied.ok == true, "quarantine apply failed: \(applied.error ?? "nil")")
         let after = try await projectRecall(service, query: needle)
         #expect(!firstHitText(after).contains(needle))
+    }
+}
+
+@Test
+func maintainApplyReportsPartialQuarantineAndKeepsWhatItDeleted() async throws {
+    struct InjectedFailure: Error {}
+    let needles = (0..<2).map { _ in "WAXQPART-\(UUID().uuidString.prefix(8))" }
+    let created = Int64(Date().timeIntervalSince1970 * 1000) - 31 * 24 * 60 * 60 * 1000
+    try await withHarvestBroker { service, _ in
+        for needle in needles {
+            _ = try await service.longTermMemory.remember(
+                "Working scratch \(needle) should be quarantined after 30 days.",
+                metadata: [
+                    MemoryMetadataKeys.type: MemoryType.note.rawValue,
+                    MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                    MemoryMetadataKeys.project: harvestProject,
+                    MemoryMetadataKeys.repo: harvestProject,
+                    MemoryMetadataKeys.createdAtMs: String(created),
+                ]
+            )
+        }
+        try await service.longTermMemory.flush()
+
+        // Let the first soft-delete through, fail every later one.
+        let firstDeleted = FirstCallFlag()
+        await service.longTermMemory.setDeleteStepHookForTesting { step, _ in
+            guard step == .softDelete else { return }
+            if firstDeleted.testAndSet() { throw InjectedFailure() }
+        }
+        let applied = await service.handle(.init(
+            command: "memory_maintain",
+            arguments: ["apply": .bool(true)]
+        ))
+        await service.longTermMemory.setDeleteStepHookForTesting(nil)
+
+        #expect(applied.ok == false)
+        #expect((applied.error ?? "").contains("deleted 1 of 2"), "error: \(applied.error ?? "nil")")
+        var remaining = 0
+        for needle in needles {
+            let recall = try await projectRecall(service, query: needle)
+            if firstHitText(recall).contains(needle) { remaining += 1 }
+        }
+        #expect(remaining == 1, "remaining: \(remaining)")
+    }
+}
+
+/// Returns false on the first call and true afterwards.
+private final class FirstCallFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set = false
+
+    func testAndSet() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let was = set
+        set = true
+        return was
     }
 }
 
@@ -930,7 +1106,9 @@ func findActiveConversationRequiresMatchingAgentProjectAndRepo() throws {
     #expect(repoMiss == nil)
 }
 
-@Test(.timeLimit(.minutes(1)))
+/// Wall time under `swift test --parallel` tracks the whole run, not this test;
+/// the limit is only a hang backstop for a close that never drains.
+@Test(.timeLimit(.minutes(2)))
 func sessionEndHarvestsAdmittedInFlightRemember() async throws {
     let needle = "WAXDRAIN-\(UUID().uuidString.prefix(8))"
     let rootURL = FileManager.default.temporaryDirectory
@@ -966,6 +1144,9 @@ func sessionEndHarvestsAdmittedInFlightRemember() async throws {
             command: "session_end",
             arguments: ["session_id": .string(sessionID)]
         ))
+        // Release only once teardown is parked behind the in-flight remember, so
+        // the drain is exercised on every run instead of racing the release.
+        await service.rememberMutex.waitUntilWaiting(atLeast: 1)
 
         await embedder.release()
         let remembered = await remembering
@@ -989,7 +1170,9 @@ func sessionEndHarvestsAdmittedInFlightRemember() async throws {
     }
 }
 
-@Test(.timeLimit(.minutes(1)))
+/// Wall time under `swift test --parallel` tracks the whole run, not this test;
+/// the limit is only a hang backstop for a close that never drains.
+@Test(.timeLimit(.minutes(2)))
 func sessionCloseHarvestsAdmittedInFlightRemember() async throws {
     let needle = "WAXCLOSEDRAIN-\(UUID().uuidString.prefix(8))"
     let rootURL = FileManager.default.temporaryDirectory
@@ -1029,6 +1212,9 @@ func sessionCloseHarvestsAdmittedInFlightRemember() async throws {
                 "project": .string(harvestProject),
             ]
         ))
+        // Release only once teardown is parked behind the in-flight remember, so
+        // the drain is exercised on every run instead of racing the release.
+        await service.rememberMutex.waitUntilWaiting(atLeast: 1)
 
         await embedder.release()
         let remembered = await remembering
