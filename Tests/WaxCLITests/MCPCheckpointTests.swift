@@ -369,6 +369,40 @@ struct MCPCheckpointTests {
         #expect(capturedContent.value == "ship the stale-prime fix")
         #expect(capturedRecord.value != false)
     }
+
+    @Test(arguments: ["", "  \n\t \n"])
+    func checkpointWithBlankContentFileRecordsNoHandoff(blank: String) throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root.url) }
+        let file = root.url.appendingPathComponent("handoff.txt")
+        try blank.write(to: file, atomically: true, encoding: .utf8)
+        let capturedRecord = LockBox<Bool?>(nil)
+        let outcome = MCPCheckpointRunner.run(
+            MCPCheckpointRunner.Request(
+                sessionID: UUID().uuidString,
+                host: nil,
+                conversationID: nil,
+                cwd: nil,
+                contentFile: file.path,
+                strict: false,
+                timeoutSeconds: 1.5,
+                storePath: root.store.path,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: root.configuration,
+                probe: { request, _, _ in
+                    capturedRecord.value = request.arguments["record_handoff"]?.boolValue
+                    #expect(request.command == "session_close")
+                    return AgentBrokerResponse.success(
+                        payload: .object(["already_ended": .bool(false)])
+                    )
+                },
+                sessionRootURL: root.sessions
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(capturedRecord.value == false)
+    }
 }
 
 private final class LockBox<Value>: @unchecked Sendable {

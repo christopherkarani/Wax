@@ -247,9 +247,9 @@ enum MCPCheckpointRunner {
             )
         }
 
-        // No content file means no human-authored handoff: close the session
-        // without recording a stub (mirrors transport teardown).
-        let recordHandoff = request.contentFile != nil
+        // No content file, or a blank one, means no human-authored handoff:
+        // close the session without recording a stub (mirrors transport teardown).
+        let recordHandoff = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let response = try probe(
             AgentBrokerRequest(
                 command: "session_close",
