@@ -104,6 +104,12 @@ to one doc id, so a small top-k yields fewer than 50 distinct sessions. 419 of 5
 are scored (30 abstention questions and 51 without user-side evidence are skipped, as in
 the official code).
 
+`longmemeval_prepare.py --observed-at` gives each doc its session date (`haystack_dates`) as
+`observed_at`, which `retrieve` saves as `wax.observed_at`, so `Memory` resolves relative
+dates against it ("yesterday" → "yesterday (19 May 2023)"). Without it, jobs carry no dates
+and texts are stored as given. `retrieve --relative-dates off` turns the resolution off for
+dated jobs too.
+
 ## 2. LongMemEval-S QA
 
 Reader `claude-haiku-5-5`, judge `claude-sonnet-5-5`, both through `claude -p` with no tools,
@@ -136,6 +142,11 @@ python3 -I $S/locomo.py reader --data $DATA/locomo/locomo10.json --gold $RUNS/lo
 ```
 
 Categories 1-4 only (1,540 questions); category 5 has no gold answer.
+
+`prepare` gives each turn its session date as `observed_at`, so `retrieve` resolves relative
+dates in it (`--relative-dates off` keeps the raw turns). To show the reader the stored,
+annotated text, retrieve with `--emit-text` and build the reader prompts with
+`reader ... --hit-text`.
 
 ### mem0 on LoCoMo
 

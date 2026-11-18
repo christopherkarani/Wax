@@ -22,6 +22,13 @@ struct Job: Decodable {
     struct Doc: Decodable {
         let id: String
         let text: String
+        /// When the text was observed (`yyyy-MM-dd` or ISO 8601), saved as `wax.observed_at`.
+        let observedAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, text
+            case observedAt = "observed_at"
+        }
     }
 
     struct Query: Decodable {
@@ -47,6 +54,8 @@ struct Hit: Encodable {
     let sources: [String]
     /// Reranker explanations ("rerank: score S, retrieval rank R"); omitted without reranking.
     let explanations: [String]?
+    /// The hit's text as `Memory` returned it; only with `--emit-text`.
+    let text: String?
 }
 
 struct JobResult: Encodable {
@@ -91,6 +100,10 @@ struct Options {
     var rerankOptions = RerankingOptions.default
     var rerankComputeUnit: BuiltInEmbeddingComputeUnit = .cpuOnly
     var storeDir = FileManager.default.temporaryDirectory.appendingPathComponent("wax-bench").path
+    /// `--relative-dates on|off`: ``Memory/Config/resolvesRelativeDates`` (default on).
+    var resolvesRelativeDates = true
+    /// `--emit-text`: write each hit's text.
+    var emitText = false
 
     static func parse(_ args: ArraySlice<String>) throws -> Options {
         var options = Options()
@@ -106,6 +119,13 @@ struct Options {
             case "--top-k": options.topK = Int(try value(flag)) ?? options.topK
             case "--concurrency": options.concurrency = max(1, Int(try value(flag)) ?? options.concurrency)
             case "--store-dir": options.storeDir = try value(flag)
+            case "--emit-text": options.emitText = true
+            case "--relative-dates":
+                switch try value(flag) {
+                case "on": options.resolvesRelativeDates = true
+                case "off": options.resolvesRelativeDates = false
+                case let other: throw BenchError.usage("relative dates must be on or off, got \(other)")
+                }
             case "--embedder":
                 let raw = try value(flag)
                 if raw.hasPrefix("http://") {
@@ -210,6 +230,7 @@ func runJob(
     var config = Memory.Config.default
     config.embedding = .custom(embedder)
     config.enableVectorSearch = options.mode != .some(.textOnly)
+    config.resolvesRelativeDates = options.resolvesRelativeDates
     if let reranker {
         config.reranking = .custom(reranker, options.rerankOptions)
     } else if options.rerankDisabled {
@@ -219,7 +240,9 @@ func runJob(
 
     let ingestStart = ContinuousClock.now
     for doc in job.docs {
-        try await memory.save(doc.text, metadata: ["doc_id": doc.id])
+        var metadata = ["doc_id": doc.id]
+        metadata[Memory.RelativeDates.observedAtKey] = doc.observedAt
+        try await memory.save(doc.text, metadata: metadata)
     }
     try await memory.flush()
     let ingestMs = elapsedMs(since: ingestStart)
@@ -242,14 +265,22 @@ func runJob(
             results: results,
             ingestMs: ingestMs,
             searchMs: searchMs,
-            docCount: job.docs.count
+            docCount: job.docs.count,
+            emitText: options.emitText
         ))
     }
     try await memory.close()
     return jobResults
 }
 
-func rankedResult(qid: String, results: Memory.Results, ingestMs: Double, searchMs: Double, docCount: Int) -> JobResult {
+func rankedResult(
+    qid: String,
+    results: Memory.Results,
+    ingestMs: Double,
+    searchMs: Double,
+    docCount: Int,
+    emitText: Bool = false
+) -> JobResult {
     var ranked: [String] = []
     var seen: Set<String> = []
     var hits: [Hit] = []
@@ -264,7 +295,8 @@ func rankedResult(qid: String, results: Memory.Results, ingestMs: Double, search
             id: id,
             score: item.score,
             sources: item.sources.map { "\($0)" },
-            explanations: rerank.isEmpty ? nil : rerank
+            explanations: rerank.isEmpty ? nil : rerank,
+            text: emitText ? item.text : nil
         ))
         if seen.insert(id).inserted {
             ranked.append(id)

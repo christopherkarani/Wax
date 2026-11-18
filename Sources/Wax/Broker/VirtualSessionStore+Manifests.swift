@@ -44,22 +44,24 @@ extension VirtualSessionStore {
         report: SessionHarvest.Report,
         markEnded: Bool,
         nowMs: Int64? = nil
-    ) throws -> BrokerSessionManifest {
+    ) async throws -> BrokerSessionManifest {
         let timestamp = nowMs ?? self.nowMs()
-        var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
-        if markEnded, manifest.status != .ended {
-            manifest.status = .ended
-            manifest.endedAtMs = timestamp
-            manifest.brokerLeaseOwnerID = nil
-            manifest.leaseExpiresAtMs = nil
+        return try await onFileQueue(for: sessionID) { [self] in
+            var manifest = try BrokerSessionPersistence.loadManifest(rootURL: sessionRootURL, sessionID: sessionID)
+            if markEnded, manifest.status != .ended {
+                manifest.status = .ended
+                manifest.endedAtMs = timestamp
+                manifest.brokerLeaseOwnerID = nil
+                manifest.leaseExpiresAtMs = nil
+            }
+            manifest.updatedAtMs = timestamp
+            Self.applyHarvest(report, to: &manifest, nowMs: timestamp)
+            try writeManifest(
+                manifest,
+                to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
+            )
+            return manifest
         }
-        manifest.updatedAtMs = timestamp
-        Self.applyHarvest(report, to: &manifest, nowMs: timestamp)
-        try BrokerSessionPersistence.saveManifest(
-            manifest,
-            to: BrokerSessionPersistence.manifestURL(rootURL: sessionRootURL, sessionID: sessionID)
-        )
-        return manifest
     }
 
     package static func applyHarvest(
