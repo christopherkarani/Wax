@@ -11,6 +11,8 @@ import Wax
 // `Memory` API, runs the searches, and writes one line per query with the ranked doc ids:
 //   {"qid": "...", "ranked": ["doc-id", ...], "hits": [...], "ingest_ms": 0, "search_ms": 0, ...}
 //
+// Without `--mode`, searches are hybrid with the store's default text weight (0.4 for e5,
+// 0.5 otherwise); `--mode hybrid` means exactly 0.5.
 // Without `--rerank`, searches use `Memory`'s default reranking (the built-in cross-encoder on
 // hybrid searches). `--rerank none` turns it off; `--rerank minilm` reranks every
 // search with the built-in cross-encoder and these settings: `--rerank-candidates N`,
@@ -81,7 +83,9 @@ struct JobResult: Encodable {
 struct Options {
     var input = ""
     var output = ""
-    var mode: Memory.RetrievalMode = .hybrid()
+    /// `nil` (no `--mode`) leaves the mode to the store: hybrid with its default text weight
+    /// (0.4 for e5-small-v2, 0.5 otherwise). `--mode hybrid` is exactly `.hybrid()` (0.5).
+    var mode: Memory.RetrievalMode?
     var topK = 50
     var embedder: BuiltInEmbeddingProvider = .miniLM
     /// Set by `--embedder http://...`: embed through scripts/embed_server.py instead.
@@ -225,7 +229,7 @@ func runJob(
 
     var config = Memory.Config.default
     config.embedding = .custom(embedder)
-    config.enableVectorSearch = options.mode != .textOnly
+    config.enableVectorSearch = options.mode != .some(.textOnly)
     config.resolvesRelativeDates = options.resolvesRelativeDates
     if let reranker {
         config.reranking = .custom(reranker, options.rerankOptions)
