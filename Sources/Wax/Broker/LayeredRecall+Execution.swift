@@ -360,7 +360,8 @@ extension LayeredRecall {
                     )
                     continue
                 }
-                let ageMs: Int64 = max(0, stores.nowMs() - manifest.updatedAtMs)
+                // The manifest is read from disk, so its time can be anything.
+                let ageMs = TimestampAge.elapsedMs(since: manifest.updatedAtMs, nowMs: stores.nowMs())
                 let recencyBoost: Float = ageMs < Int64(7 * 24 * 60 * 60 * 1000) ? 0.15 : 0.05
                 for laneHit in laneHits {
                     guard let canonicalFrameID = laneHit.canonicalFrameID else { continue }

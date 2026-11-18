@@ -42,6 +42,24 @@ struct EpisodicStoreFailureTests {
         }
     }
 
+    /// A manifest's `updatedAtMs` comes from a file on disk. However far from now it is,
+    /// episodic search ranks the store's hits instead of trapping on the age arithmetic.
+    @Test(arguments: [Int64.min, Int64.max])
+    func memorySearchSurvivesAnEndedManifestWithAnExtremeUpdateTime(updatedAtMs: Int64) async throws {
+        try await withEpisodicFailureStores(sessionCount: 2, updatedAtMs: updatedAtMs) { stores, _, token in
+            let hits = try await LayeredRecall.search(
+                request: LayeredRecall.SearchRequest(
+                    query: token,
+                    mode: .textOnly,
+                    topK: 5,
+                    identity: try MemorySearchIdentity.unscoped([.episodic, .durable])
+                ),
+                stores: stores
+            )
+            #expect(hits.contains { $0.text.contains("episodic \(token)") && $0.horizon == .episodic })
+        }
+    }
+
     /// `memory_search` opens at most six ended stores per call; compact must
     /// not open every unreclaimed ended store on every call.
     @Test
@@ -126,6 +144,7 @@ private struct FailingStoreError: Error {}
 
 private func withEpisodicFailureStores(
     sessionCount: Int,
+    updatedAtMs: Int64? = nil,
     _ body: (LayeredRecall.Stores, FailingEndedSessionStore, String) async throws -> Void
 ) async throws {
     let url = FileManager.default.temporaryDirectory
@@ -159,7 +178,7 @@ private func withEpisodicFailureStores(
                 brokerLeaseOwnerID: nil,
                 leaseExpiresAtMs: nil,
                 createdAtMs: 0,
-                updatedAtMs: Int64(sessionCount - index),
+                updatedAtMs: updatedAtMs ?? Int64(sessionCount - index),
                 endedAtMs: 0
             )
         }
