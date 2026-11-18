@@ -3,6 +3,7 @@ import Logging
 import MCP
 
 import struct Foundation.Data
+import class Foundation.JSONDecoder
 
 #if canImport(System)
 import System
@@ -19,13 +20,19 @@ import Musl
 #endif
 
 #if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
-/// StdIO transport with a short EOF grace period so already-received requests can
-/// finish sending their responses before the server tears down the connection.
+/// StdIO transport that, at stdin EOF, keeps the connection up until every request it
+/// delivered has been answered (bounded by `eofDrainTimeout`), then waits a short grace period
+/// before the server tears the connection down. The server handles each request in its own
+/// task and stops once the receive stream ends, so ending it earlier dropped a request still
+/// being handled, such as a remember that started the broker.
 actor GracefulStdioTransport: Transport {
     private let input: FileDescriptor
     private let output: FileDescriptor
     nonisolated let logger: Logger
     private let eofGracePeriod: Duration
+    private let eofDrainTimeout: Duration
+    /// Requests delivered to the server whose response has not been sent yet.
+    private var unansweredRequests: Set<RequestKey> = []
 
     private var isConnected = false
     private let messageStream: AsyncThrowingStream<Data, Swift.Error>
@@ -35,11 +42,13 @@ actor GracefulStdioTransport: Transport {
         input: FileDescriptor = .standardInput,
         output: FileDescriptor = .standardOutput,
         eofGracePeriod: Duration = .milliseconds(250),
+        eofDrainTimeout: Duration = .seconds(30),
         logger: Logger? = nil
     ) {
         self.input = input
         self.output = output
         self.eofGracePeriod = eofGracePeriod
+        self.eofDrainTimeout = eofDrainTimeout
         self.logger =
             logger
             ?? Logger(
@@ -101,6 +110,9 @@ actor GracefulStdioTransport: Transport {
                 throw MCPError.transportError(error)
             }
         }
+        for envelope in Self.envelopes(of: message) where envelope.method == nil {
+            if let id = envelope.id { unansweredRequests.remove(id) }
+        }
     }
 
     func receive() -> AsyncThrowingStream<Data, Swift.Error> {
@@ -137,8 +149,9 @@ actor GracefulStdioTransport: Transport {
                     }
                     // A final message without a trailing newline is still a message.
                     if pendingData.contains(where: { !Self.isWhitespace($0) }) {
-                        messageContinuation.yield(Data(pendingData))
+                        deliver(Data(pendingData))
                     }
+                    await waitForUnansweredRequests()
                     try? await Task.sleep(for: eofGracePeriod)
                     break
                 }
@@ -164,8 +177,58 @@ actor GracefulStdioTransport: Transport {
             let messageData = pendingData[..<newlineIndex]
             pendingData = pendingData[(newlineIndex + 1)...]
             guard !messageData.isEmpty else { continue }
-            messageContinuation.yield(Data(messageData))
+            deliver(Data(messageData))
         }
+    }
+
+    private func deliver(_ message: Data) {
+        for envelope in Self.envelopes(of: message) where envelope.method != nil {
+            if let id = envelope.id { unansweredRequests.insert(id) }
+        }
+        messageContinuation.yield(message)
+    }
+
+    /// Suspends the read loop (other calls, such as `send`, still run) until every delivered
+    /// request is answered or `eofDrainTimeout` passes.
+    private func waitForUnansweredRequests() async {
+        let deadline = ContinuousClock.now + eofDrainTimeout
+        while !unansweredRequests.isEmpty, isConnected, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if !unansweredRequests.isEmpty {
+            logger.warning("Closing stdio transport with unanswered requests", metadata: [
+                "count": "\(unansweredRequests.count)",
+            ])
+        }
+    }
+
+    /// A JSON-RPC message's id and method, or each element's for a batch. Requests carry
+    /// both, responses only an id, notifications only a method.
+    private struct MessageEnvelope: Decodable {
+        let id: RequestKey?
+        let method: String?
+    }
+
+    private enum RequestKey: Decodable, Hashable {
+        case number(Int64)
+        case string(String)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let number = try? container.decode(Int64.self) {
+                self = .number(number)
+            } else {
+                self = .string(try container.decode(String.self))
+            }
+        }
+    }
+
+    private static func envelopes(of message: Data) -> [MessageEnvelope] {
+        let decoder = JSONDecoder()
+        if let single = try? decoder.decode(MessageEnvelope.self, from: message) {
+            return [single]
+        }
+        return (try? decoder.decode([MessageEnvelope].self, from: message)) ?? []
     }
 
     private static func isWhitespace(_ byte: UInt8) -> Bool {
