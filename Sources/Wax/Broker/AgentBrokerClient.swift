@@ -146,22 +146,12 @@ package enum AgentBrokerClient {
         onBrokerLaunched: (@Sendable (pid_t) -> Void)? = nil
     ) async throws -> Bool {
         let pingTimeout = min(5.0, responseTimeoutSeconds)
-        if let response = try await sendOffPool(
-            AgentBrokerRequest(id: "__ping__", command: "stats"),
-            socketPath: configuration.socketPath,
-            timeoutSeconds: pingTimeout,
-            treatTimeoutAsUnavailable: true
-        ), response.ok {
+        if try await answersReadinessProbe(socketPath: configuration.socketPath, timeoutSeconds: pingTimeout) {
             return false
         }
 
         if await isSocketLiveOffPool(socketPath: configuration.socketPath) {
-            if let response = try await sendOffPool(
-                AgentBrokerRequest(id: "__ping__", command: "stats"),
-                socketPath: configuration.socketPath,
-                timeoutSeconds: pingTimeout,
-                treatTimeoutAsUnavailable: true
-            ), response.ok {
+            if try await answersReadinessProbe(socketPath: configuration.socketPath, timeoutSeconds: pingTimeout) {
                 return false
             }
             if try await restartMuteOwnedBroker(configuration: configuration) {
@@ -181,6 +171,31 @@ package enum AgentBrokerClient {
             timeoutSeconds: startTimeoutSecondsOverride ?? startTimeoutSeconds,
             onBrokerLaunched: onBrokerLaunched
         )
+    }
+
+    /// `ping` is answered without waiting for running commands, so a broker busy
+    /// with a long one is not taken for a mute one and killed. A broker that
+    /// replies but rejects `ping` is an older build without it, so it is probed
+    /// with `stats` as before, which does wait behind running commands.
+    private static func answersReadinessProbe(socketPath: String, timeoutSeconds: TimeInterval) async throws -> Bool {
+        guard let response = try await sendOffPool(
+            AgentBrokerRequest(id: "__ping__", command: "ping"),
+            socketPath: socketPath,
+            timeoutSeconds: timeoutSeconds,
+            treatTimeoutAsUnavailable: true
+        ) else {
+            return false
+        }
+        if response.ok {
+            return true
+        }
+        let fallback = try await sendOffPool(
+            AgentBrokerRequest(id: "__ping__", command: "stats"),
+            socketPath: socketPath,
+            timeoutSeconds: timeoutSeconds,
+            treatTimeoutAsUnavailable: true
+        )
+        return fallback?.ok == true
     }
 
     private static func startBrokerIfNeeded(

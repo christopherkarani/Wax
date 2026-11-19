@@ -780,7 +780,9 @@ extension Wax {
     /// synced while the vector and lex runs its commit wrote were not, so it counts only when
     /// those runs (`addedGeneration` equal to its generation) match their checksums; otherwise
     /// the next newest candidate is taken, and that commit's WAL records replay as pending. Runs
-    /// of older generations were synced by their own commits.
+    /// of older generations were synced by their own commits. Frame payloads are not synced
+    /// before the commit that names them either, so the frames such a footer adds beyond the
+    /// header's commit must match their stored checksums too.
     /// `decoded` is a candidate's TOC that the caller already decoded, used instead of
     /// decoding that candidate again (the footer, which holds the TOC hash, must match).
     /// Internal only because of the file split; call from `open` and `verify` only.
@@ -792,6 +794,7 @@ extension Wax {
         decoded: (slice: FooterSlice, toc: WaxTOC)? = nil
     ) throws -> (footer: FooterSlice, toc: WaxTOC) {
         var remaining = candidates
+        var durableFrameCount: Int??
         while let first = remaining.first {
             let newest = remaining.dropFirst().reduce(first) {
                 newerFooter($0, $1, headerFooterOffset: headerFooterOffset)
@@ -802,12 +805,68 @@ extension Wax {
             let toc = try reusable ?? WaxTOC.decode(from: newest)
             let namedByHeader = newest.footerOffset == headerFooterOffset
                 && newest.footer.generation == headerGeneration
-            if namedByHeader || indexRunsWritten(by: newest.footer.generation, in: toc, file: file) {
+            if namedByHeader {
+                return (newest, toc)
+            }
+            if durableFrameCount == nil {
+                durableFrameCount = .some(headerCommitFrameCount(
+                    candidates,
+                    headerFooterOffset: headerFooterOffset,
+                    headerGeneration: headerGeneration,
+                    decoded: decoded
+                ))
+            }
+            if indexRunsWritten(by: newest.footer.generation, in: toc, file: file),
+               payloadsWritten(in: toc, beyond: durableFrameCount ?? nil, file: file) {
                 return (newest, toc)
             }
             remaining.removeAll { $0.footerOffset == newest.footerOffset }
         }
         throw WaxError.invalidFooter(reason: "no valid footer found within max_footer_scan_bytes")
+    }
+
+    /// Frames in the commit the header names, or nil when that footer is not among `candidates`
+    /// or its TOC does not decode (then nothing older is known whole, and no payload is checked).
+    private static func headerCommitFrameCount(
+        _ candidates: [FooterSlice],
+        headerFooterOffset: UInt64,
+        headerGeneration: UInt64,
+        decoded: (slice: FooterSlice, toc: WaxTOC)?
+    ) -> Int? {
+        guard let durable = candidates.first(where: {
+            $0.footerOffset == headerFooterOffset && $0.footer.generation == headerGeneration
+        }) else { return nil }
+        if let decoded, decoded.slice.footerOffset == durable.footerOffset, decoded.slice.footer == durable.footer {
+            return decoded.toc.frames.count
+        }
+        return (try? WaxTOC.decode(from: durable))?.frames.count
+    }
+
+    /// Whether every frame payload `toc` holds past the first `durableFrameCount` frames matches
+    /// its stored checksum. Frame ids are dense, so those are the frames added since that commit.
+    private static func payloadsWritten(in toc: WaxTOC, beyond durableFrameCount: Int?, file: FDFile) -> Bool {
+        guard let durableFrameCount else { return true }
+        for frame in toc.frames.dropFirst(durableFrameCount) where frame.payloadLength > 0 {
+            guard let digest = try? sha256(file: file, offset: frame.payloadOffset, length: frame.payloadLength),
+                  digest == frame.storedChecksum
+            else { return false }
+        }
+        return true
+    }
+
+    private static func sha256(file: FDFile, offset: UInt64, length: UInt64) throws -> Data {
+        let chunkSize: UInt64 = 1024 * 1024
+        var hasher = SHA256Checksum()
+        var cursor: UInt64 = 0
+        while cursor < length {
+            let count = Int(min(chunkSize, length - cursor))
+            let bytes = try file.readExactly(length: count, at: offset + cursor)
+            bytes.withUnsafeBytes { raw in
+                hasher.update(raw)
+            }
+            cursor += UInt64(count)
+        }
+        return hasher.finalize()
     }
 
     /// Whether every vector and lex run `generation` wrote matches its checksum.

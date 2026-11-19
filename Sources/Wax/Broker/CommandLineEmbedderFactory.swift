@@ -38,8 +38,9 @@ package enum CommandLineEmbedderFactory {
         return options
     }
 
-    private static func lockWaitTimeout() -> Duration? {
-        let env = ProcessInfo.processInfo.environment
+    package static func lockWaitTimeout(
+        _ env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Duration? {
         guard let raw = env["WAX_LOCK_TIMEOUT_SECS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty
         else {
@@ -49,7 +50,10 @@ package enum CommandLineEmbedderFactory {
             return .milliseconds(Int64(defaultLockTimeoutSeconds * 1000))
         }
         guard secs > 0 else { return nil }
-        return .milliseconds(Int64(secs * 1000))
+        // `inf` or a huge value would trap the Int64 conversion; saturate instead.
+        let ms = secs * 1000
+        guard ms < Double(Int64.max) else { return .milliseconds(Int64.max) }
+        return .milliseconds(Int64(ms))
     }
 }
 

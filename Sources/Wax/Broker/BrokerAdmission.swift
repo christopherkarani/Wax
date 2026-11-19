@@ -10,6 +10,8 @@ package enum BrokerAdmission: Sendable, Equatable {
     case embedderThenCommand
     /// `commandMutex` only. Also the lock for a failed decode.
     case command
+    /// No lock: the readiness probe must not wait behind a running command.
+    case unlocked
 
     /// Remember-drain wins over an embedder wait. No current command is in both
     /// sets. If a future command were, drain skips the embedder wait so teardown
@@ -37,6 +39,8 @@ package enum BrokerAdmission: Sendable, Equatable {
                 return .command
             }
             return .embedderThenCommand
+        case .ping:
+            return .unlocked
         default:
             return .command
         }

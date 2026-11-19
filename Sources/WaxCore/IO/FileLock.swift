@@ -187,7 +187,10 @@ package final class FileLock {
         let pollIntervalMicros: useconds_t = 50_000
         let deadline: UInt64? = {
             guard let timeoutNanoseconds else { return nil }
-            return DispatchTime.now().uptimeNanoseconds &+ timeoutNanoseconds
+            // A timeout too long to represent means wait without a deadline, not one already past.
+            let (deadline, overflowed) = DispatchTime.now().uptimeNanoseconds
+                .addingReportingOverflow(timeoutNanoseconds)
+            return overflowed ? nil : deadline
         }()
 
         while true {

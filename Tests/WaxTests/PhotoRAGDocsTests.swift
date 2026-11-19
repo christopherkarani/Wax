@@ -65,7 +65,7 @@ func photoRAGFullLibrarySyncFetchesImagesOnly() throws {
         encoding: .utf8
     )
     let fullLibraryStart = try #require(source.range(of: "case .fullLibrary:"))
-    let ingestStart = try #require(source[fullLibraryStart.upperBound...].range(of: "try await ingest(assetIDs: ids)"))
+    let ingestStart = try #require(source[fullLibraryStart.upperBound...].range(of: "ingestUnderLock(assetIDs: ids)"))
     let fullLibraryBody = source[fullLibraryStart.lowerBound..<ingestStart.lowerBound]
 
     #expect(fullLibraryBody.contains("PHAsset.fetchAssets(with: .image, options: opts)"))

@@ -70,7 +70,7 @@ package struct ImportanceScorer: Sendable {
         nowMs: Int64
     ) -> ImportanceScore {
         // Age component: newer = higher importance (exponential decay)
-        let ageMs = Float(max(0, nowMs - frameTimestamp))
+        let ageMs = Float(TimestampAge.elapsedMs(since: frameTimestamp, nowMs: nowMs))
         let ageHours = ageMs / (1000 * 60 * 60)
         let ageComponent = exp(-ageHours / config.ageHalfLifeHours)
         
@@ -86,7 +86,7 @@ package struct ImportanceScorer: Sendable {
         // Recency component: recently accessed = higher importance
         let recencyComponent: Float
         if let stats = accessStats {
-            let hoursSinceAccess = Float(max(0, nowMs - stats.lastAccessMs)) / (1000 * 60 * 60)
+            let hoursSinceAccess = Float(TimestampAge.elapsedMs(since: stats.lastAccessMs, nowMs: nowMs)) / (1000 * 60 * 60)
             recencyComponent = exp(-hoursSinceAccess / config.recencyHalfLifeHours)
         } else {
             recencyComponent = 0.0

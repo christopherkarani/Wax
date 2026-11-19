@@ -75,6 +75,9 @@ struct IndexCommand: ParsableCommand {
             since: sinceHash
         )
 
+        // Empty means git succeeded with nothing to index: GitLogParser throws
+        // when git printed output it could not parse. A full reindex of an
+        // empty history clears the old index rather than keep stale commits.
         guard !commits.isEmpty else {
             try resetFullReindexOutputsIfNeeded(
                 full: full,
@@ -127,24 +130,30 @@ private func ensureGitignore(repoRoot: String) {
     let entry = ".wax-repo/"
 
     // Best effort: indexing goes on without it, but an existing file is never replaced unless it was read.
-    let contents: String
-    if FileManager.default.fileExists(atPath: gitignorePath.path) {
+    guard FileManager.default.fileExists(atPath: gitignorePath.path) else {
         do {
-            contents = try String(contentsOf: gitignorePath, encoding: .utf8)
+            try (entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
         } catch {
-            writeStderr("warning: could not read .gitignore as UTF-8 (\(error.localizedDescription)); add \(entry) to it manually")
-            return
+            writeStderr("warning: could not create .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
         }
-        let lines = contents.components(separatedBy: .newlines)
-        if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == entry }) {
-            return // already present
-        }
-    } else {
-        contents = ""
+        return
     }
-    let separator = contents.isEmpty || contents.hasSuffix("\n") ? "" : "\n"
+    let bytes: Data
     do {
-        try (contents + separator + entry + "\n").write(to: gitignorePath, atomically: true, encoding: .utf8)
+        bytes = try Data(contentsOf: gitignorePath)
+    } catch {
+        writeStderr("warning: could not read .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
+        return
+    }
+    // Decode only to look for the entry. The file may not be UTF-8, so the
+    // original bytes are kept verbatim and the entry is appended after them.
+    let lines = String(decoding: bytes, as: UTF8.self).components(separatedBy: .newlines)
+    if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == entry }) {
+        return // already present
+    }
+    let separator = bytes.isEmpty || bytes.last == UInt8(ascii: "\n") ? "" : "\n"
+    do {
+        try (bytes + Data((separator + entry + "\n").utf8)).write(to: gitignorePath, options: .atomic)
     } catch {
         writeStderr("warning: could not update .gitignore (\(error.localizedDescription)); add \(entry) to it manually")
     }

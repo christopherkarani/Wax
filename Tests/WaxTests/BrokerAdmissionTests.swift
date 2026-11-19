@@ -107,6 +107,12 @@ struct BrokerAdmissionTests {
             [:],
             BrokerAdmission.command
         ),
+        (
+            "ping",
+            "ping",
+            [:],
+            BrokerAdmission.unlocked
+        ),
     ])
     func admissionFollowsDecodedCommand(
         _ name: String,

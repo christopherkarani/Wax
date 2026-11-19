@@ -52,6 +52,9 @@ package enum BrokerCommand: Sendable, Equatable {
     case factAssert(FactAssert)
     case corpusSearch(CorpusSearch)
     case memoryMaintain(MemoryMaintain)
+    /// Readiness probe. Answered without waiting for running commands, so a
+    /// broker busy with a long one is not taken for a mute one.
+    case ping
 
     package struct Remember: Sendable, Equatable {
         package var content: String
@@ -369,6 +372,8 @@ package enum BrokerCommand: Sendable, Equatable {
             return .corpusSearch(try CorpusSearch.decode(args))
         case "memory_maintain":
             return .memoryMaintain(try MemoryMaintain.decode(args))
+        case "ping":
+            return .ping
         default:
             throw BrokerValidationError.invalid("Unknown broker command '\(command)'.")
         }

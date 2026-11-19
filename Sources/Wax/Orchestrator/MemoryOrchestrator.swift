@@ -25,6 +25,10 @@ package actor MemoryOrchestrator {
 
     let wax: Wax
     let config: OrchestratorConfig
+    /// Set for `.automatic` embedding: when the built-in provider cannot load, saves write
+    /// text-only (as while it loads) instead of throwing ``WaxError/missingEmbedder``.
+    /// Internal only because of the file split; immutable after init.
+    let savesTextOnlyWhenEmbedderUnavailable: Bool
     /// The built-in chosen for this store when it was opened for `.automatic` embedding.
     package let automaticProvider: BuiltInEmbeddingProvider?
     /// Internal only because of the file split; immutable after init.
@@ -48,6 +52,9 @@ package actor MemoryOrchestrator {
     var committedVectorCoverage: CommittedVectorCoverage?
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var isClosed = false
+    /// Writes admitted by ``beginWrite()`` that have not finished; `close()` waits for them.
+    private var inFlightWriteCount = 0
+    private var writeDrainWaiters: [CheckedContinuation<Void, Never>] = []
     /// Internal only because of the file split; use only from MemoryOrchestrator's own extensions.
     var readinessFollowTask: Task<Void, Never>?
     private var automaticEmbeddingBackfillEnabled = false
@@ -73,6 +80,11 @@ package actor MemoryOrchestrator {
     /// ``delete(frameIds:)``; throwing there simulates that step failing.
     /// Internal only because of the file split; set it through `setDeleteStepHookForTesting(_:)`.
     var deleteStepHookForTesting: (@Sendable (DeleteStep, UInt64) throws -> Void)? = nil
+
+    /// Test seam: called with the batch index before a multi-chunk remember
+    /// writes each chunk batch; throwing there simulates that write failing.
+    /// Internal only because of the file split; set it through `setRememberBatchWriteHookForTesting(_:)`.
+    var rememberBatchWriteHookForTesting: (@Sendable (Int) throws -> Void)? = nil
     /// Internal only because of the file split; immutable after init.
     let enrichmentPipeline: EnrichmentPipeline?
     /// Internal only because of the file split; immutable after init.
@@ -133,8 +145,10 @@ package actor MemoryOrchestrator {
         waxOptions: WaxOptions = .init(),
         initialEmbeddingStatus: EmbeddingStatus? = nil,
         automaticNewStoreProvider: BuiltInEmbeddingProvider? = nil,
+        savesTextOnlyWhenEmbedderUnavailable: Bool = false,
         nowMsProvider: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) async throws {
+        self.savesTextOnlyWhenEmbedderUnavailable = savesTextOnlyWhenEmbedderUnavailable
         // Prewarm the tokenizer without waiting for it: only chunking and token
         // budgets need it, and they wait for the same load. In a debug build the
         // load is most of a broker's startup CPU, and a broker that waited for it
@@ -278,7 +292,12 @@ package actor MemoryOrchestrator {
             vectorDimensions: embedder?.dimensions,
             catchUpTextIndexOnOpen: resolvedConfig.catchUpTextIndexOnOpen
         )
-        self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        do {
+            self.session = try await wax.openSession(.readWrite(.wait), config: sessionConfig)
+        } catch {
+            try? await wax.close()
+            throw error
+        }
         // A superseded-vectors reason outranks the coverage one, so skip the scan then. The
         // session's engine already holds every embedded frame ID, so the scan reuses them
         // instead of reading and decoding the vector segment again.
@@ -290,6 +309,20 @@ package actor MemoryOrchestrator {
             self.embedderLifecycle = .ready(attached: attached, degradedReason: degradedReason)
         }
 
+        // Before the pipeline starts: its handler retains the session, so a throw
+        // after that would leave the store's file lock held.
+        if resolvedConfig.enableAccessStatsScoring {
+            do {
+                try await loadPersistedAccessStatsIfNeeded()
+            } catch {
+                // No caller can close an orchestrator whose init threw. Without this the lock
+                // lasts until the last reference to the store drops, and the session's deinit
+                // hands one to an unstructured Task that a loaded machine runs late.
+                await session.close()
+                try? await wax.close()
+                throw error
+            }
+        }
         if let enrichmentPipeline {
             let session = self.session
             await enrichmentPipeline.start { task in
@@ -305,9 +338,6 @@ package actor MemoryOrchestrator {
             } resultHandler: { result in
                 try await Self.persistEnrichmentResult(result, in: session)
             }
-        }
-        if resolvedConfig.enableAccessStatsScoring {
-            try await loadPersistedAccessStatsIfNeeded()
         }
         if supersededReason != nil {
             // Apps that only ever call remember must still finish the re-embed.
@@ -426,6 +456,11 @@ package actor MemoryOrchestrator {
             try await embeddingBackfillStoreMutex.withLock { [self] in
                 try Task.checkCancellation()
                 guard !(await isClosed) else { throw CancellationError() }
+                try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                    searchTexts: [String?](repeating: nil, count: batch.count),
+                    metadata: [:],
+                    embeddingDimensions: vectors.first?.count
+                ))
                 try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                 if let identity = embedder.identity {
                     try await ensureMemoryBindingIfNeeded(
@@ -497,6 +532,13 @@ package actor MemoryOrchestrator {
                     try await embeddingBackfillStoreMutex.withLock { [self] in
                         try Task.checkCancellation()
                         guard !(await isClosed) else { throw CancellationError() }
+                        // A commit here keeps the last committed marker, so a resume redoes
+                        // these frames; it never skips one.
+                        try await commitIfWalPressure(incomingBytes: Self.estimatedWalBytes(
+                            searchTexts: [String?](repeating: nil, count: batch.count),
+                            metadata: [:],
+                            embeddingDimensions: vectors.first?.count
+                        ))
                         try await wax.putEmbeddingBatch(frameIds: batch.map(\.id), vectors: vectors)
                     }
                     reembedded += UInt64(batch.count)
@@ -629,7 +671,9 @@ package actor MemoryOrchestrator {
         sessionId: UUID? = nil,
         commit: Bool = true
     ) async throws -> UInt64 {
-        try await handoffWriteMutex.withLock { [self] in
+        try beginWrite()
+        defer { endWrite() }
+        return try await handoffWriteMutex.withLock { [self] in
             try await rememberHandoffSerialized(
                 content: content,
                 project: project,
@@ -704,6 +748,34 @@ package actor MemoryOrchestrator {
     }
 
     // MARK: - Persistence lifecycle
+
+    /// Admits one write, or throws the closed-session error once `close()` has begun.
+    /// Pair every successful call with ``endWrite()``.
+    /// Internal only because of the file split.
+    func beginWrite() throws {
+        guard !isClosed else { throw WaxError.io("session is closed") }
+        inFlightWriteCount += 1
+    }
+
+    /// Internal only because of the file split.
+    func endWrite() {
+        inFlightWriteCount -= 1
+        guard inFlightWriteCount == 0 else { return }
+        let waiters = writeDrainWaiters
+        writeDrainWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForInFlightWrites() async {
+        while inFlightWriteCount > 0 {
+            await withCheckedContinuation { writeDrainWaiters.append($0) }
+        }
+    }
+
+    /// Internal only because of the file split.
+    var isWaitingForInFlightWrites: Bool {
+        !writeDrainWaiters.isEmpty
+    }
 
     package func flush() async throws {
         try await flushMutex.withLock { [self] in
@@ -802,7 +874,16 @@ package actor MemoryOrchestrator {
                 )
             }
         }
-        try await flush()
+        // New writes are refused from here on; the flush must include the admitted ones.
+        await waitForInFlightWrites()
+        // A failed flush must not keep the store open: the file lock is only released by
+        // `wax.close()`, and a flush that keeps failing (an I/O error) would hold it for good.
+        var flushError: (any Error)?
+        do {
+            try await flush()
+        } catch {
+            flushError = error
+        }
         if let enrichmentPipeline {
             do {
                 try await enrichmentPipeline.stop(timeout: config.enrichmentStopTimeout)
@@ -815,9 +896,15 @@ package actor MemoryOrchestrator {
             }
         }
         let sourceURL = await wax.fileURL()
-        let maintenanceReport = await closeTimeLiveSetMaintenanceReport()
+        let maintenanceReport = flushError == nil ? await closeTimeLiveSetMaintenanceReport() : nil
+        let sourceWalLastSequence = await wax.walStats().lastSeq
         await session.close()
-        try await wax.close()
+        do {
+            try await wax.close()
+        } catch {
+            throw flushError ?? error
+        }
+        if let flushError { throw flushError }
         if let maintenanceReport {
             do {
                 // File swaps, fsyncs and a footer scan of up to 32 MiB: blocking work that
@@ -825,7 +912,8 @@ package actor MemoryOrchestrator {
                 try await BlockingWork.run {
                     try Self.promoteValidatedLiveSetCandidateIfNeeded(
                         maintenanceReport,
-                        sourceURL: sourceURL
+                        sourceURL: sourceURL,
+                        sourceWalLastSequence: sourceWalLastSequence
                     )
                 }
             } catch {

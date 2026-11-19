@@ -104,3 +104,37 @@ private enum WalPressure {
         try await memory.close()
     }
 }
+
+@Test func memoryBackfillPastWalCapacityWithoutFlush() async throws {
+    try await TempFiles.withTempFile { url in
+        try await WalPressure.createSmallWalStore(at: url)
+        let count = 600
+        do {
+            let textOnly = try await Memory(
+                at: url,
+                config: Memory.Config(enableVectorSearch: false, requireOnDeviceProviders: false)
+            )
+            for index in 0..<count {
+                try await textOnly.save(WalPressure.passage(index), metadata: ["row": String(index)])
+            }
+            try await textOnly.close()
+        }
+
+        let memory = try await Memory(at: url, config: WalPressure.config())
+        #expect(try await memory.backfillUnembedded() == UInt64(count))
+        try await memory.close()
+
+        let reopened = try await Memory(at: url, config: WalPressure.config())
+        let stats = await reopened.stats()
+        #expect(stats.frameCount == UInt64(count))
+        #expect(stats.framesWithoutVectors == 0)
+        for index in [0, 1, count / 2, count - 1] {
+            let results = try await reopened.search(
+                WalPressure.passage(index),
+                options: .init(topK: 1, mode: .vectorOnly)
+            )
+            #expect(results.items.first?.metadata["row"] == String(index))
+        }
+        try await reopened.close()
+    }
+}

@@ -29,10 +29,7 @@ extension VideoRAGOrchestrator {
             // the typed ingest error so callers can handle malformed media uniformly.
             throw VideoIngestError.invalidVideo(reason: "unreadable video file: \(error.localizedDescription)")
         }
-        let durationMs = Int64(duration.seconds * 1000)
-        if durationMs <= 0 {
-            throw VideoIngestError.invalidVideo(reason: "duration must be > 0")
-        }
+        let durationMs = try Self.durationMilliseconds(from: duration)
 
         let segments = Self.makeSegments(
             durationMs: durationMs,
@@ -57,6 +54,22 @@ extension VideoRAGOrchestrator {
         }
 
         return (durationMs: durationMs, keyframes: images)
+    }
+
+    /// Converts an asset duration to whole milliseconds. An invalid, indefinite, infinite or
+    /// out-of-range duration is reported as an unreadable video instead of trapping.
+    static func durationMilliseconds(from duration: CMTime) throws -> Int64 {
+        guard duration.isNumeric else {
+            throw VideoIngestError.invalidVideo(reason: "unreadable video file: duration is not numeric")
+        }
+        let milliseconds = duration.seconds * 1000
+        guard milliseconds.isFinite, milliseconds < Double(Int64.max) else {
+            throw VideoIngestError.invalidVideo(reason: "unreadable video file: duration is out of range")
+        }
+        guard milliseconds >= 1 else {
+            throw VideoIngestError.invalidVideo(reason: "duration must be > 0")
+        }
+        return Int64(milliseconds)
     }
     #else
     func buildKeyframes(url: URL) async throws -> (durationMs: Int64, keyframes: [CGImage]) {

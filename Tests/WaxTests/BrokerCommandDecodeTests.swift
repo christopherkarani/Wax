@@ -529,6 +529,8 @@ struct BrokerCommandDecodeTests {
         #expect(try BrokerCommand.decode(command: "shutdown", arguments: [:]) == .shutdown)
         #expect(try BrokerCommand.decode(command: "exit", arguments: [:]) == .shutdown)
         #expect(try BrokerCommand.decode(command: "quit", arguments: [:]) == .shutdown)
+        #expect(try BrokerCommand.decode(command: "ping", arguments: [:]) == .ping)
+        #expect(!BrokerCommandCatalog.isPublicCommand("ping"))
     }
 
     @Test

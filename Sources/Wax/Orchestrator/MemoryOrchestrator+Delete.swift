@@ -65,8 +65,15 @@ extension MemoryOrchestrator {
     /// and live, while its already-deleted descendants stay hidden.
     package func delete(frameIds: [UInt64]) async throws {
         guard !frameIds.isEmpty else { return }
+        try beginWrite()
+        defer { endWrite() }
         lastWriteActivityAt = .now
+        try await deleteAdmitted(frameIds: frameIds)
+    }
 
+    /// ``delete(frameIds:)`` for a caller that is already an admitted write.
+    /// Internal only because of the file split.
+    func deleteAdmitted(frameIds: [UInt64]) async throws {
         let metas = await wax.frameMetasIncludingPending()
         let statusById = Dictionary(metas.map { ($0.id, $0.status) }, uniquingKeysWith: { _, last in last })
         if let unknown = frameIds.first(where: { statusById[$0] == nil }) {

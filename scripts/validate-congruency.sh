@@ -22,6 +22,8 @@ OPENCODE_PKG="$ROOT/.pi/extensions/wax-agents"
 HOMEBREW_FORMULA="$ROOT/Resources/npm/waxmcp/homebrew-wax/Formula/wax.rb"
 HERMES_README="$ROOT/Resources/hermes/README.md"
 HERMES_PLUGIN="$ROOT/Resources/hermes/wax-memory-plugin"
+HERMES_NPM_PLUGIN="$ROOT/Resources/npm/waxmcp/plugins/hermes"
+OPENCLAW_NPM_PKG="$ROOT/Resources/npm/waxmcp/plugins/openclaw"
 
 JSON=false
 QUIET=false
@@ -53,6 +55,11 @@ read_cli_version() {
 # Read waxmcp dependency from OpenClaw plugin
 read_openclaw_dep() {
   node -p "require('$OPENCLAW_PKG/package.json').dependencies.waxmcp" 2>/dev/null || echo "NOT_FOUND"
+}
+
+# Read the "version" field of any JSON manifest
+read_json_version() {
+  node -p "require('$1').version" 2>/dev/null || echo "NOT_FOUND"
 }
 
 # Read version from Homebrew formula URL
@@ -137,6 +144,32 @@ if [[ -f "$HERMES_PLUGIN/plugin.yaml" ]]; then
   fi
 fi
 
+# Surfaces inside the shipped plugin trees (canonical and npm copies): the Hermes
+# client version sent to the server and pip metadata, the OpenClaw manifests,
+# and the bundled OpenClaw package and its waxmcp dependency.
+PLUGIN_SURFACES=()
+for tree in "$HERMES_PLUGIN" "$HERMES_NPM_PLUGIN"; do
+  label="hermes"
+  [[ "$tree" == "$HERMES_NPM_PLUGIN" ]] && label="hermes-npm"
+  PLUGIN_SURFACES+=(
+    "$label-client:$(sed -nE 's/^PLUGIN_VERSION = "([^"]+)"$/\1/p' "$tree/hermes_wax_memory.py" 2>/dev/null | head -n1 || true)"
+    "$label-pyproject:$(sed -nE 's/^version = "([^"]+)"$/\1/p' "$tree/pyproject.toml" 2>/dev/null | head -n1 || true)"
+  )
+done
+PLUGIN_SURFACES+=(
+  "hermes-npm-plugin:$(grep -oE 'version: [0-9]+\.[0-9]+\.[0-9]+' "$HERMES_NPM_PLUGIN/plugin.yaml" 2>/dev/null | sed 's/version: //' | head -n1 || true)"
+  "openclaw-manifest:$(read_json_version "$OPENCLAW_PKG/openclaw.plugin.json")"
+  "openclaw-npm-manifest:$(read_json_version "$OPENCLAW_NPM_PKG/openclaw.plugin.json")"
+  "openclaw-npm:$(read_pkg_version "$OPENCLAW_NPM_PKG")"
+  "openclaw-npm-dep:$(node -p "require('$OPENCLAW_NPM_PKG/package.json').dependencies.waxmcp" 2>/dev/null || echo "NOT_FOUND")"
+)
+for surface in "${PLUGIN_SURFACES[@]}"; do
+  if [[ "${surface#*:}" != "$CANONICAL" ]]; then
+    CONGRUENT=false
+    MISMATCHES+=("$surface")
+  fi
+done
+
 # ── Output ──────────────────────────────────────────────────────────────────
 if [[ "$JSON" == true ]]; then
   # Build JSON output
@@ -187,6 +220,7 @@ else
         surfaces+=("opencode:$OPENCODE_VERSION")
       fi
       surfaces+=("hermes-readme:${HERMES_VERSION:-NOT_FOUND}" "hermes-plugin:${HERMES_PLUGIN_VERSION:-NOT_FOUND}")
+      surfaces+=("${PLUGIN_SURFACES[@]}")
       for surface in "${surfaces[@]}"; do
         name="${surface%%:*}"
         version="${surface#*:}"

@@ -38,7 +38,7 @@ extension MemorySemantics {
             reasons.append("constraint memory")
         case .handoff:
             if let createdAtMs = info.createdAtMs {
-                let ageDays = max(0, nowMs - createdAtMs) / (1000 * 60 * 60 * 24)
+                let ageDays = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs) / (1000 * 60 * 60 * 24)
                 if ageDays <= 3 {
                     adjustment += 0.80
                     reasons.append("recent handoff")
@@ -55,7 +55,7 @@ extension MemorySemantics {
             }
         case .taskState:
             if let createdAtMs = info.createdAtMs {
-                let ageHours = max(0, nowMs - createdAtMs) / (1000 * 60 * 60)
+                let ageHours = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs) / (1000 * 60 * 60)
                 if ageHours <= 48 {
                     adjustment += 0.50
                     reasons.append("recent task state")
@@ -93,7 +93,7 @@ extension MemorySemantics {
         }
 
         if let createdAtMs = info.createdAtMs {
-            let ageDays = max(0, nowMs - createdAtMs) / (1000 * 60 * 60 * 24)
+            let ageDays = TimestampAge.elapsedMs(since: createdAtMs, nowMs: nowMs) / (1000 * 60 * 60 * 24)
             if ageDays <= 3 {
                 adjustment += 0.15
                 reasons.append("recent")
@@ -128,7 +128,7 @@ extension MemorySemantics {
         if cappedCount >= 3 {
             reasons.append("repeated use")
         }
-        let hoursSinceAccess = max(0, nowMs - rankingLast) / (1000 * 60 * 60)
+        let hoursSinceAccess = TimestampAge.elapsedMs(since: rankingLast, nowMs: nowMs) / (1000 * 60 * 60)
         if hoursSinceAccess <= 24 {
             reasons.append("recently used")
         }

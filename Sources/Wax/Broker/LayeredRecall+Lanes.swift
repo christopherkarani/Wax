@@ -162,22 +162,34 @@ extension LayeredRecall {
 
         var episodicHits: [Hit] = []
         if horizons.contains(.episodic) {
+            // The same cap as episodic memory_search: each manifest opens a store.
             let selected = episodicManifests(
                 from: try stores.endedSessions.listManifests(),
                 currentSessionID: request.sessionID,
                 currentAgentID: working?.agentID
             )
+            .prefix(maxEpisodicStores)
             for manifest in selected {
-                let hits = try await stores.endedSessions.recall(
-                    EndedSessionRecallQuery(
-                        manifest: manifest,
-                        query: request.query,
-                        mode: request.mode ?? .hybrid(),
-                        topK: max(1, episodicTopK),
-                        frameFilter: scopedFrameFilter
+                do {
+                    let hits = try await stores.endedSessions.recall(
+                        EndedSessionRecallQuery(
+                            manifest: manifest,
+                            query: request.query,
+                            mode: request.mode ?? .hybrid(),
+                            topK: max(1, episodicTopK),
+                            frameFilter: scopedFrameFilter
+                        )
                     )
-                )
-                episodicHits.append(contentsOf: hits)
+                    episodicHits.append(contentsOf: hits)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "episodic recall of an ended session store",
+                        fallback: "skip that session's episodic hits"
+                    )
+                }
             }
         }
 

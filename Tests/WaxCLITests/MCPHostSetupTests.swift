@@ -184,6 +184,58 @@ struct MCPHostSetupTests {
         }
     }
 
+    /// Hand-written spellings of an existing `wax` server that the bare
+    /// `[mcp_servers.wax]` match misses. Appending a second table to any of
+    /// them yields invalid TOML, so every one must fail closed.
+    static let alternateServerSpellings: [String] = [
+        "[mcp_servers.\"wax\"]\ncommand = \"/elsewhere\"\n",
+        "[mcp_servers.'wax']\ncommand = \"/elsewhere\"\n",
+        "[mcp_servers . wax]\ncommand = \"/elsewhere\"\n",
+        "[ \"mcp_servers\" . \"wax\" ]\ncommand = \"/elsewhere\"\n",
+        "[mcp_servers.wax.env]\nK = \"v\"\n",
+        "[mcp_servers]\nwax = { command = \"/elsewhere\", args = [] }\n",
+        "[mcp_servers]\n\"wax\" = { command = \"/elsewhere\" }\n",
+        "[mcp_servers]\nwax.command = \"/elsewhere\"\n",
+        "mcp_servers.wax.command = \"/elsewhere\"\n",
+        "mcp_servers = { wax = { command = \"/elsewhere\" } }\n",
+    ]
+
+    @Test(arguments: MCPHostSetupTests.alternateServerSpellings)
+    func codexWriteFailsClosedOnAlternateServerSpelling(_ existing: String) throws {
+        try withHostTempRoot { root in
+            let config = root.appendingPathComponent("config.toml")
+            // Trailing table, so root-table keys in `existing` stay in the root.
+            let original = Data((existing + "\n[other]\nkey = 1\n").utf8)
+            try original.write(to: config)
+            #expect(try CodexSetup.hasEntry(name: "wax", at: config))
+            #expect(throws: CodexSetupError.differs(config.path)) {
+                try CodexSetup.write(entry: hostSampleEntry(), at: config)
+            }
+            #expect(try Data(contentsOf: config) == original)
+        }
+    }
+
+    @Test(arguments: MCPHostSetupTests.alternateServerSpellings)
+    func grokWriteFailsClosedOnAlternateServerSpelling(_ existing: String) throws {
+        try withHostTempRoot { root in
+            let config = root.appendingPathComponent("config.toml")
+            let original = Data(existing.utf8)
+            try original.write(to: config)
+            #expect(try GrokSetup.hasEntry(name: "wax", at: config))
+            #expect(throws: GrokSetupError.differs(config.path)) {
+                try GrokSetup.write(entry: hostSampleEntry(), at: config)
+            }
+            #expect(try Data(contentsOf: config) == original)
+        }
+    }
+
+    @Test func tomlEntryDetectionIgnoresOtherServers() {
+        #expect(!TOMLServerBlock.blockExists("[mcp_servers.waxy]\ncommand = \"x\"\n", name: "wax"))
+        #expect(!TOMLServerBlock.blockExists("[mcp_servers]\nwaxy = { command = \"x\" }\n", name: "wax"))
+        #expect(!TOMLServerBlock.blockExists("[other]\nwax = 1\n", name: "wax"))
+        #expect(!TOMLServerBlock.blockExists("wax = 1\n[mcp_servers.other]\nwax = 2\n", name: "wax"))
+    }
+
     @Test func grokSnippetRendersInlineEnvAndEnabled() {
         let snippet = GrokSetup.snippet(for: hostSampleEntry())
         #expect(snippet.contains("[mcp_servers.wax]"))

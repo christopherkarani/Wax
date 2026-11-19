@@ -83,10 +83,47 @@ enum TOMLServerBlock {
         return blockExists(text, name: name)
     }
 
+    /// True when `text` defines server `name` under `mcp_servers` in any
+    /// spelling: a `[mcp_servers.<name>]` header (quoted, spaced, or a
+    /// subtable of it), a `<name>` key in the `[mcp_servers]` table, or a
+    /// dotted or inline `mcp_servers` key in the root table. Appending a
+    /// block to any of these duplicates the server, so `write` treats every
+    /// match it cannot verbatim-compare as `differs`.
     static func blockExists(_ text: String, name: String) -> Bool {
-        let escaped = NSRegularExpression.escapedPattern(for: name)
-        let pattern = #"(?m)^\s*\[\s*mcp_servers\.\#(escaped)\s*\]"#
-        return text.range(of: pattern, options: .regularExpression) != nil
+        let server = keyPattern(name)
+        let servers = keyPattern("mcp_servers")
+        let serverHeader = #"^\s*\[\[?\s*"# + servers + #"\s*\.\s*"# + server + #"\s*[.\]]"#
+        let serversHeader = #"^\s*\[\s*"# + servers + #"\s*\]"#
+        let serverKey = #"^\s*"# + server + #"\s*[.=]"#
+        let rootKey = #"^\s*"# + servers
+            + #"\s*(\.\s*"# + server + #"\s*[.=]|=.*[{,]\s*"# + server + #"\s*[.=])"#
+
+        var inRootTable = true
+        var inServersTable = false
+        for line in text.components(separatedBy: "\n") {
+            if matches(line, serverHeader) {
+                return true
+            }
+            if matches(line, #"^\s*\["#) {
+                inRootTable = false
+                inServersTable = matches(line, serversHeader)
+            } else if inRootTable, matches(line, rootKey) {
+                return true
+            } else if inServersTable, matches(line, serverKey) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Regex for a TOML key spelled bare, "basic" or 'literal'.
+    private static func keyPattern(_ key: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: key)
+        return #"(?:\#(escaped)|"\#(escaped)"|'\#(escaped)')"#
+    }
+
+    private static func matches(_ line: String, _ pattern: String) -> Bool {
+        line.range(of: pattern, options: .regularExpression) != nil
     }
 
     static func string(_ value: String) -> String {

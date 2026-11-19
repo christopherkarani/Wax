@@ -274,6 +274,21 @@ package enum BrokerCorpusStoreBuilder {
         if fileManager.fileExists(atPath: buildURL.path) {
             try fileManager.removeItem(at: buildURL)
         }
+        // A failed build must not leave its full-size store behind: a missing
+        // target is rebuilt on every corpus_search. On success it was moved away.
+        defer {
+            if fileManager.fileExists(atPath: buildURL.path) {
+                do {
+                    try fileManager.removeItem(at: buildURL)
+                } catch {
+                    WaxDiagnostics.logSwallowed(
+                        error,
+                        context: "corpus build cleanup",
+                        fallback: "leave the temporary build store on disk"
+                    )
+                }
+            }
+        }
 
         var storesIndexed = 0
         var storesSkipped = 0
@@ -287,9 +302,8 @@ package enum BrokerCorpusStoreBuilder {
             embedderTuning: embedderTuning,
             structuredMemoryEnabled: false
         )
-        try await memory.waitUntilReadyForRemember()
-
         do {
+            try await memory.waitUntilReadyForRemember()
             for storeURL in storeURLs {
                 let outcome: IngestOutcome
                 do {

@@ -288,7 +288,8 @@ package enum EmbeddingReadinessBinding {
                 embedder: nil,
                 waxOptions: waxOptions,
                 initialEmbeddingStatus: .loading,
-                automaticNewStoreProvider: newStoreProvider
+                automaticNewStoreProvider: newStoreProvider,
+                savesTextOnlyWhenEmbedderUnavailable: true
             )
             let provider = orchestrator.automaticProvider ?? newStoreProvider
             let factory = factoryOverride ?? {

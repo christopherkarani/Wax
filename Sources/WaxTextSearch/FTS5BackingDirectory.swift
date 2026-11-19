@@ -1,4 +1,5 @@
 import Foundation
+import WaxCore
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -28,7 +29,12 @@ enum FTS5BackingDirectory {
             removeOrphans(in: parent)
         }
         let directory = parent.appendingPathComponent("\(getpid())-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        // The copy holds the full text of every memory: owner-only from the moment it exists,
+        // since a shared /tmp (Linux) is readable by other local users.
+        guard mkdir(directory.path, 0o700) == 0 else {
+            throw WaxError.io("failed to create text index directory: errno \(errno)")
+        }
         return directory
     }
 

@@ -52,3 +52,17 @@ func matchPlanTreatsFTSPunctuationAsLiteralTokens() {
     #expect(primary.contains("\"quote\""))
     #expect(primary.contains("NEAR") == false)
 }
+
+@Test
+func matchPlanTreatsControlCharactersAsSeparators() throws {
+    for query in ["abc\u{0}def", "\"abc\u{0}def\"", "abc\u{7}def\u{1B}"] {
+        let plan = try #require(MatchPlan.plan(query: query))
+        let expressions: [String] = [plan.primaryMatch] + (plan.fallbackMatch.map { [$0] } ?? [])
+        for expression in expressions {
+            #expect(!expression.unicodeScalars.contains { $0.properties.generalCategory == .control })
+        }
+        #expect(plan.primaryMatch.contains("\"abc\""))
+        #expect(plan.primaryMatch.contains("\"def\""))
+    }
+    #expect(MatchPlan.plan(query: "\u{0}") == nil)
+}

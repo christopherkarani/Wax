@@ -35,7 +35,10 @@ jobs:
           cache: npm
           cache-dependency-path: Resources/website/package-lock.json
 
+      # Pull requests only check that the site builds: Pages setup fails unless Pages is
+      # enabled on the repository, and the artifact is used only by the deploy job.
       - name: Setup Pages
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
       - name: Install dependencies
@@ -45,6 +48,7 @@ jobs:
         run: cd Resources/website && npm run build
 
       - name: Upload artifact
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: Resources/website/build

@@ -72,6 +72,43 @@ private final class SlowTeardownProbe: @unchecked Sendable {
     }
 }
 
+/// Teardown that blocks until `release()`, recording which sessions it has finished.
+private final class HeldTeardownProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var finishedKeys: Set<String> = []
+
+    func hold(_ key: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow: Bool = lock.withLock {
+                guard !released else { return true }
+                waiting.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        markFinished(key)
+    }
+
+    private func markFinished(_ key: String) {
+        lock.withLock { _ = finishedKeys.insert(key) }
+    }
+
+    func release() {
+        let held: [CheckedContinuation<Void, Never>] = lock.withLock {
+            released = true
+            defer { waiting.removeAll() }
+            return waiting
+        }
+        for continuation in held { continuation.resume() }
+    }
+
+    func finished(_ key: String) -> Bool {
+        lock.withLock { finishedKeys.contains(key) }
+    }
+}
+
 @Test
 func loopbackServerWithConfiguredTokenRequiresIt() async throws {
     let app = MCPHTTPApplication(
@@ -99,13 +136,17 @@ func loopbackServerWithoutTokenStaysOpenToLocalClients() async throws {
     await app.stop()
 }
 
-@Test
+/// The victim's teardown is held until the test releases it, so a new session that
+/// returns at all has not waited on it. If eviction regresses to awaiting teardown, the
+/// time limit cancels the test and the cancellation handler releases the teardown, so
+/// the run ends with a failure instead of hanging.
+@Test(.timeLimit(.minutes(1)))
 func sessionCapDoesNotWaitForTheEvictedSessionsTeardown() async throws {
-    let probe = SlowTeardownProbe(delay: .seconds(3))
+    let probe = HeldTeardownProbe()
     let app = MCPHTTPApplication(
         configuration: .init(maxSessions: 1, shutdownDeadline: .milliseconds(100)),
         onTransportTeardown: { key, _ in
-            await probe.record(key)
+            await probe.hold(key)
             return .skipped("test")
         },
         serverFactory: { _, _ in makeTestServer() }
@@ -113,12 +154,17 @@ func sessionCapDoesNotWaitForTheEvictedSessionsTeardown() async throws {
     let first = await app.handleHTTPRequest(try initializeRequest())
     let firstID = try #require(first.headers[HTTPHeaderName.sessionID])
 
-    let clock = ContinuousClock()
-    let started = clock.now
-    let second = await app.handleHTTPRequest(try initializeRequest())
+    let secondRequest = try initializeRequest()
+    let second = await withTaskCancellationHandler {
+        await app.handleHTTPRequest(secondRequest)
+    } onCancel: {
+        probe.release()
+    }
     #expect(second.statusCode == 200)
-    #expect(clock.now - started < .seconds(1), "a new session must not wait on the victim's teardown")
+    #expect(!probe.finished(firstID), "a new session must not wait on the victim's teardown")
     #expect(!(await app.liveSessionIDs().contains(firstID)))
+
+    probe.release()
     await app.stop()
 }
 
@@ -191,6 +237,52 @@ private func toolsListRequest(sessionID: String) -> HTTPRequest {
 
 private func makeTestServer() -> Server {
     Server(name: "wax-mcp", version: "test", capabilities: .init(tools: .init(listChanged: false)))
+}
+
+/// Counts server builds per session id. Each build waits (bounded) until a
+/// second build has started, so concurrent creators overlap inside it.
+private actor CountingServerFactory {
+    private var builds: [String: Int] = [:]
+
+    func build(_ sessionID: String) async -> Server {
+        builds[sessionID, default: 0] += 1
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while builds.values.reduce(0, +) < 2, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return makeTestServer()
+    }
+
+    func buildCount(for sessionID: String) -> Int {
+        builds[sessionID] ?? 0
+    }
+}
+
+@Test
+func concurrentInitializeAndToolCallForOneUnknownSessionBuildOneServer() async throws {
+    let factory = CountingServerFactory()
+    let app = MCPHTTPApplication(serverFactory: { sessionID, _ in await factory.build(sessionID) })
+    // A client reconnecting after a server restart with its cached id.
+    let sessionID = "cached-\(UUID().uuidString)"
+    let initialize = try initializeRequest(sessionID: sessionID)
+    let toolCall = HTTPRequest(
+        method: "POST",
+        headers: [
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Host": "127.0.0.1:3000",
+            HTTPHeaderName.sessionID: sessionID,
+        ],
+        body: Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stats","arguments":{}}}"#.utf8),
+        path: "/mcp"
+    )
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask { _ = await app.handleHTTPRequest(initialize) }
+        group.addTask { _ = await app.handleHTTPRequest(toolCall) }
+    }
+    #expect(await factory.buildCount(for: sessionID) == 1, "a second server was built and orphaned")
+    #expect(await app.liveSessionIDs() == [sessionID])
+    await app.stop()
 }
 
 private final class TeardownProbe: @unchecked Sendable {

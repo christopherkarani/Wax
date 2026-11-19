@@ -752,6 +752,12 @@ package enum BrokerCommandCatalog {
             arguments: [],
             exposure: .control
         ),
+        Entry(
+            canonicalName: "ping",
+            summary: "Answer at once, without waiting for running commands.",
+            arguments: [],
+            exposure: .control
+        ),
     ]
 
     private static let lookup: [String: Entry] = {

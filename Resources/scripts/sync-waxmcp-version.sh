@@ -36,4 +36,17 @@ RELEASE_VERSION="$(node -p "require('$PKG_DIR/package.json').version")"
 
 perl -0pi -e 's/static let version\s*=\s*"[^"]+"/static let version = "'"$RELEASE_VERSION"'"/' "$VERSION_SWIFT"
 
+# Plugin trees shipped in (or alongside) the npm package track the release:
+# Hermes client info and pip/plugin metadata, OpenClaw manifest and package.
+# Each pair of trees gets identical edits, so byte-identical copies stay so.
+for tree in "$ROOT/Resources/hermes/wax-memory-plugin" "$PKG_DIR/plugins/hermes"; do
+  perl -pi -e 's/^PLUGIN_VERSION = "[^"]+"$/PLUGIN_VERSION = "'"$RELEASE_VERSION"'"/' "$tree/hermes_wax_memory.py"
+  perl -pi -e 's/^version = "[^"]+"$/version = "'"$RELEASE_VERSION"'"/' "$tree/pyproject.toml"
+  perl -pi -e 's/^version: \S+$/version: '"$RELEASE_VERSION"'/' "$tree/plugin.yaml"
+done
+for tree in "$ROOT/Resources/openclaw/wax-memory-plugin" "$PKG_DIR/plugins/openclaw"; do
+  perl -0pi -e 's/"version": "[^"]+"/"version": "'"$RELEASE_VERSION"'"/' "$tree/openclaw.plugin.json" "$tree/package.json"
+  perl -0pi -e 's/"waxmcp": "[^"]+"/"waxmcp": "'"$RELEASE_VERSION"'"/' "$tree/package.json"
+done
+
 echo "$RELEASE_VERSION"

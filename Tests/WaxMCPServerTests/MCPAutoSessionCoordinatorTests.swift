@@ -159,6 +159,80 @@ struct MCPAutoSessionCoordinatorTests {
     }
 
     @Test
+    func twoStdioProcessesGetSeparateAutoSessionsAndTeardownLeavesTheOtherActive() async throws {
+        try await withAutoSessionBroker { broker in
+            let repoA = try makeAutoSessionRepo(named: "stdio-window-a")
+            let repoB = try makeAutoSessionRepo(named: "stdio-window-b")
+            defer {
+                try? FileManager.default.removeItem(at: repoA)
+                try? FileManager.default.removeItem(at: repoB)
+            }
+            // Each stdio wax-mcp process mints its key once at startup.
+            let keyA = MCPServedTransport.makeStdioConnectionKey()
+            let keyB = MCPServedTransport.makeStdioConnectionKey()
+            let perform: @Sendable (AgentBrokerRequest) async throws -> AgentBrokerResponse = { request in
+                await broker.handle(request)
+            }
+            func remember(_ content: String, key: String, repo: URL) async -> (MCPClientSessionHint, CallTool.Result) {
+                let hint = MCPClientSessionHint(
+                    connectionKey: key,
+                    context: MCPConnectionContext(transportKey: key, advertisedCWD: repo.path)
+                )
+                let result = await WaxMCPTools.handleCall(
+                    params: .init(
+                        name: "remember",
+                        arguments: [
+                            "content": .string(content),
+                            "memory_type": .string("lesson"),
+                            "cwd": .string(repo.path),
+                        ]
+                    ),
+                    broker: broker,
+                    sessionHint: hint
+                )
+                return (hint, result)
+            }
+
+            let (a, wroteA) = await remember("stdio window A memory", key: keyA, repo: repoA)
+            let (b, wroteB) = await remember("stdio window B memory", key: keyB, repo: repoB)
+            #expect(wroteA.isError != true)
+            #expect(wroteB.isError != true)
+            let sessionA = try #require(a.current())
+            let sessionB = try #require(b.current())
+            #expect(sessionA != sessionB)
+
+            let teardownA = await MCPTransportTeardown.checkpointBoundTransportSession(
+                connectionKey: keyA,
+                reason: .stdioEOF,
+                perform: perform
+            )
+            #expect(teardownA.status == "closed")
+            #expect(teardownA.sessionID == sessionA)
+
+            // Window B keeps writing into its own, still-active session.
+            let after = await WaxMCPTools.handleCall(
+                params: .init(
+                    name: "remember",
+                    arguments: [
+                        "content": .string("stdio window B after A exited"),
+                        "memory_type": .string("lesson"),
+                        "cwd": .string(repoB.path),
+                    ]
+                ),
+                broker: broker,
+                sessionHint: b
+            )
+            #expect(after.isError != true)
+            #expect(b.current() == sessionB)
+            _ = await MCPTransportTeardown.checkpointBoundTransportSession(
+                connectionKey: keyB,
+                reason: .stdioEOF,
+                perform: perform
+            )
+        }
+    }
+
+    @Test
     func explicitHostConversationIDsStayDistinct() async throws {
         try await withAutoSessionBroker { broker in
             let repo = try makeAutoSessionRepo(named: "host-ids")

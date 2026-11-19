@@ -109,6 +109,8 @@ package actor VideoRAGOrchestrator {
     private let queryEmbeddingCache: EmbeddingMemoizer?
 
     var index = IndexState()
+    /// Serializes calls that write trees or commit, from the first write through the index rebuild.
+    package let ingestMutex = AsyncMutex()
 
     package init(
         storeURL: URL,
@@ -158,6 +160,12 @@ package actor VideoRAGOrchestrator {
     // MARK: - Delete / flush
 
     package func delete(videoID: VideoID) async throws {
+        try await ingestMutex.withLock {
+            try await self.deleteUnderLock(videoID: videoID)
+        }
+    }
+
+    private func deleteUnderLock(videoID: VideoID) async throws {
         guard let rootId = index.rootByVideoID[videoID] else { return }
 
         var toDelete: [UInt64] = [rootId]
@@ -174,16 +182,29 @@ package actor VideoRAGOrchestrator {
     }
 
     package func flush() async throws {
-        try await session.commit()
+        try await ingestMutex.withLock {
+            try await self.session.commit()
+        }
     }
 
     /// Flush pending writes, then close the session and the underlying store.
     ///
     /// The orchestrator must not be used after `close()` returns.
     package func close() async throws {
-        try await flush()
+        // A failed flush must not keep the store open: only `wax.close()` releases the file lock.
+        var flushError: (any Error)?
+        do {
+            try await flush()
+        } catch {
+            flushError = error
+        }
         await session.close()
-        try await wax.close()
+        do {
+            try await wax.close()
+        } catch {
+            throw flushError ?? error
+        }
+        if let flushError { throw flushError }
     }
 
     /// Removes vector-index entries for a superseded root and its segment frames.
@@ -194,6 +215,41 @@ package actor VideoRAGOrchestrator {
             ids.append(contentsOf: segmentIds)
         }
         try await removeSearchIndexes(frameIds: ids)
+    }
+
+    /// Deletes a tree whose ingest failed before it superseded the previous version, so the
+    /// video keeps its previous version (or nothing) rather than a partial second live tree.
+    /// Best-effort: the ingest error is what the caller reports.
+    func discardPartialTree(rootId: UInt64) async {
+        let children = await wax.frameMetasIncludingPending().filter { $0.parentId == rootId }
+        let frameIds = [rootId] + children.map(\.id)
+        do {
+            for frameId in frameIds {
+                try await wax.delete(frameId: frameId)
+            }
+            try await removeSearchIndexes(frameIds: frameIds)
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "VideoRAG partial-tree discard",
+                fallback: "partial tree may stay live until the video is re-ingested"
+            )
+        }
+    }
+
+    /// Ends an ingest call that failed partway: commits the trees that completed and rebuilds
+    /// the index so it matches the store. Best-effort: the ingest error is what the caller reports.
+    func reconcileAfterFailedIngest() async {
+        do {
+            try await session.commit()
+            try await rebuildIndex()
+        } catch {
+            WaxDiagnostics.logSwallowed(
+                error,
+                context: "VideoRAG failed-ingest reconcile",
+                fallback: "completed trees stay pending until the next flush"
+            )
+        }
     }
 
     /// Drops vector and text postings so deleted/superseded segments cannot

@@ -1304,3 +1304,107 @@ private actor ControlledRememberEmbedder: EmbeddingProvider {
         for waiter in waiters { waiter.resume() }
     }
 }
+
+private func rememberDurable(
+    _ service: AgentBrokerService,
+    content: String,
+    project: String
+) async throws {
+    let write = await service.handle(.init(
+        command: "remember",
+        arguments: [
+            "content": .string(content),
+            "memory_type": .string("decision"),
+            "project": .string(project),
+            "repo": .string(project),
+        ]
+    ))
+    #expect(write.ok == true, "remember failed: \(write.error ?? "nil")")
+}
+
+// Project-scoped recall hides another project's durable memory, so a match
+// there must not count as a duplicate: the session store is reclaimed after harvest.
+@Test
+func harvestPromotesTextThatOnlyDuplicatesAnotherProjectsMemory() async throws {
+    let needle = "WAXHVXP-\(UUID().uuidString.prefix(8))"
+    let text = "Decision: keep \(needle) as the cross-project harvest token."
+    try await withHarvestBroker { service, _ in
+        try await rememberDurable(service, content: text, project: "harvest-elsewhere")
+        let sessionID = try await startHarvestSession(service, runID: "harvest-cross-project")
+        try await rememberSession(service, sessionID: sessionID, content: text, memoryType: "decision")
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.promotedCount == 1)
+        #expect(!report.leftoverReasons.contains("dup"), "reasons: \(report.leftoverReasons)")
+
+        let payload = try await projectRecall(service, query: needle)
+        #expect(firstHitText(payload).contains(needle), "project recall missed promoted memory")
+    }
+}
+
+@Test
+func harvestStillDedupesTextAlreadyDurableInTheSameProject() async throws {
+    let needle = "WAXHVSP-\(UUID().uuidString.prefix(8))"
+    let text = "Decision: keep \(needle) as the same-project harvest token."
+    try await withHarvestBroker { service, _ in
+        try await rememberDurable(service, content: text, project: harvestProject)
+        let sessionID = try await startHarvestSession(service, runID: "harvest-same-project")
+        try await rememberSession(service, sessionID: sessionID, content: text, memoryType: "decision")
+
+        let report = try await harvestLiveSession(service, sessionID: sessionID)
+        #expect(report.promotedCount == 0)
+        #expect(report.leftoverReasons == ["dup"])
+    }
+}
+
+@Test
+func memoryPromoteWritesTextThatOnlyDuplicatesAnotherProjectsMemory() async throws {
+    let needle = "WAXPRXP-\(UUID().uuidString.prefix(8))"
+    let text = "Decision: keep \(needle) as the cross-project promote token."
+    try await withHarvestBroker { service, _ in
+        try await rememberDurable(service, content: text, project: "harvest-elsewhere")
+        let sessionID = try await startHarvestSession(service, runID: "promote-cross-project")
+        let promoted = await service.handle(.init(
+            command: "memory_promote",
+            arguments: [
+                "session_id": .string(sessionID),
+                "content": .string(text),
+                "approve": .bool(true),
+                "memory_type": .string("decision"),
+                "project": .string(harvestProject),
+                "repo": .string(harvestProject),
+            ]
+        ))
+        #expect(promoted.ok == true, "memory_promote failed: \(promoted.error ?? "nil")")
+        #expect(promoted.payload?.objectValue?["written"]?.boolValue == true)
+    }
+}
+
+@Test
+func harvestReclaimDeadlineSaturatesForHugeRecentlyClosedWindow() async throws {
+    try await withHarvestBroker { service, _ in
+        let sessionID = try await startHarvestSession(service, runID: "harvest-huge-window")
+        try await rememberSession(
+            service,
+            sessionID: sessionID,
+            content: "Working note that stays behind as a low-recall leftover.",
+            memoryType: "note"
+        )
+        let state = try await liveHarvestState(service, sessionID: sessionID)
+        let retention = MemoryRetentionSettings.fromEnvironment([
+            "WAX_SESSION_RECENTLY_CLOSED_SECS": String(Int64.max / 1000),
+        ])
+        let report = await SessionHarvest.run(
+            sessionMemory: state.memory,
+            longTermMemory: service.longTermMemory,
+            sessionID: state.id,
+            manifest: state.manifest,
+            events: [],
+            scope: MemoryScopeContext(repoName: harvestProject, projectName: harvestProject),
+            retention: retention,
+            nowMs: BrokerClock.nowMs()
+        )
+        #expect(report.leftoverDocumentCount == 1)
+        #expect(report.reclaimAfterMs == Int64.max)
+    }
+}

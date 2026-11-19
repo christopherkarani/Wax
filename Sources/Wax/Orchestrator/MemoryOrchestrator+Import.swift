@@ -49,6 +49,8 @@ extension MemoryOrchestrator {
     @discardableResult
     package func importDocuments(_ documents: [(text: String, metadata: [String: String])]) async throws -> [UInt64] {
         guard !documents.isEmpty else { return [] }
+        try beginWrite()
+        defer { endWrite() }
         return try await flushMutex.withLock { [self] in
             try await importDocumentsSerialized(documents)
         }

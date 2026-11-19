@@ -1,5 +1,28 @@
+import CoreMedia
 import Testing
 @testable import Wax
+
+@Test
+func videoRAGDurationConversionRejectsNonNumericOrOutOfRangeDurations() throws {
+    let rejected: [CMTime] = [
+        .invalid,
+        .indefinite,
+        .positiveInfinity,
+        .negativeInfinity,
+        .zero,
+        CMTime(value: -1, timescale: 1),
+        CMTime(value: Int64.max, timescale: 1),
+        CMTime(value: -Int64.max, timescale: 1),
+        CMTime(value: 1, timescale: 10_000),
+    ]
+    for duration in rejected {
+        #expect(throws: VideoIngestError.self) {
+            try VideoRAGOrchestrator.durationMilliseconds(from: duration)
+        }
+    }
+
+    #expect(try VideoRAGOrchestrator.durationMilliseconds(from: CMTime(value: 1_500, timescale: 1_000)) == 1_500)
+}
 
 @Test
 func videoRAGSegmentationProducesFixedWindowSegments() {

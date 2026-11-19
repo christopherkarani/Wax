@@ -123,6 +123,8 @@ end
 %w[build publish homebrew].each do |job|
   abort "#{job} must depend on gates" unless needs.(job).include?("gates")
 end
+# A failed npm publish must not push a Homebrew formula for a version npm never shipped.
+abort "homebrew must depend on publish" unless needs.("homebrew").include?("publish")
 
 publish = jobs.fetch("publish")
 unless publish.dig("permissions", "id-token") == "write"

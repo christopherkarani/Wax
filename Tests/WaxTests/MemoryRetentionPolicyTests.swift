@@ -136,3 +136,24 @@ func retentionSettingsReadEnvSeconds() {
     #expect(settings.keepColdThreshold == 0.4)
     #expect(settings.coldMinAgeMs == 30_000)
 }
+
+@Test
+func retentionDoesNotTrapOnMinimumTimestamps() {
+    let nowMs: Int64 = 1_700_000_000_000
+    let metadata = [
+        MemoryMetadataKeys.type: MemoryType.note.rawValue,
+        MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+        MemoryMetadataKeys.createdAtMs: String(Int64.min),
+    ]
+    // Saturated age is "very old": a working note this old is a quarantine candidate.
+    #expect(MemoryRetention.isQuarantineCandidate(metadata: metadata, stats: nil, nowMs: nowMs))
+    #expect(MemoryRetention.isCold(metadata: metadata, stats: nil, nowMs: nowMs))
+}
+
+@Test
+func retentionSettingsSaturateHugeEnvSeconds() {
+    let settings = MemoryRetentionSettings.fromEnvironment([
+        "WAX_SESSION_RECENTLY_CLOSED_SECS": String(Int64.max),
+    ])
+    #expect(settings.recentlyClosedMs == Int64.max)
+}

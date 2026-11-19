@@ -164,6 +164,27 @@ class ConfigResolutionTests(unittest.TestCase):
         self.assertEqual(nested.get("auto_start"), True)
         self.assertEqual(nested.get("endpoint"), "http://127.0.0.1:3000/mcp")
 
+    def test_save_config_writes_owner_only_file_new_or_existing(self) -> None:
+        values = {"endpoint": "http://127.0.0.1:3000/mcp", "auth_token": "test-token"}
+        previous_umask = os.umask(0o022)
+        try:
+            for pre_existing in (False, True):
+                with self.subTest(pre_existing=pre_existing), tempfile.TemporaryDirectory() as home:
+                    path = Path(home) / "wax-memory.json"
+                    if pre_existing:
+                        path.write_text(json.dumps({"auto_start": True}), encoding="utf-8")
+                        os.chmod(path, 0o644)
+                    with mock.patch.dict(os.environ, {}, clear=False):
+                        os.environ.pop("WAX_MCP_HTTP_ENDPOINT", None)
+                        _provider().save_config(values, home)
+                    saved = json.loads(path.read_text(encoding="utf-8"))
+                    expected = {**values, "auto_start": True} if pre_existing else values
+                    self.assertEqual(saved, expected)
+                    if os.name == "posix":
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        finally:
+            os.umask(previous_umask)
+
 
 class AutoStartTests(unittest.TestCase):
     class Process:
@@ -1373,6 +1394,100 @@ class MemoryWriteAndBackupTests(unittest.TestCase):
         args = client.last_args("remember")
         self.assertEqual(args["memory_type"], "user_preference")
         self.assertEqual(args["content"], "Prefers Swift over Java")
+
+    def _write_hooks(self):
+        return {
+            "sync_turn": lambda p: p.sync_turn("What is the dock code?", "4412 Harbor"),
+            "on_delegation": lambda p: p.on_delegation("Audit Harbor", "4412 Harbor"),
+            "on_memory_write": lambda p: p.on_memory_write("add", "memory", "4412 Harbor"),
+        }
+
+    def test_background_write_session_gone_logs_warning_and_reopens_session(self) -> None:
+        for hook_name, hook in self._write_hooks().items():
+            with self.subTest(hook=hook_name):
+                client = FakeClient()
+                original = client.call_tool
+                opened = [WAX_SESSION_ID, WAX_SESSION_ID_2]
+                remembers: list[int] = []
+
+                def broker(tool_name: str, arguments: dict) -> dict:
+                    if tool_name == "session_open":
+                        with client.lock:
+                            client.calls.append((tool_name, dict(arguments)))
+                        return {
+                            "ok": True,
+                            "text": json.dumps({"session_id": opened.pop(0)}),
+                            "raw": {},
+                        }
+                    if tool_name == "remember":
+                        remembers.append(1)
+                        if len(remembers) == 1:
+                            with client.lock:
+                                client.calls.append((tool_name, dict(arguments)))
+                            return {
+                                "ok": False,
+                                "text": json.dumps({
+                                    "code": "session_ended",
+                                    "message": "session_id has ended and cannot be rebound",
+                                    "resumable": False,
+                                }),
+                                "raw": {},
+                            }
+                    return original(tool_name, arguments)
+
+                client.call_tool = broker  # type: ignore[method-assign]
+                provider = _provider(client)
+                provider.initialize("sess-1", platform="cli")
+                with self.assertLogs(plugin.logger, level="WARNING") as logs:
+                    hook(provider)
+                    provider._join_background()
+                self.assertIn("session_ended", "\n".join(logs.output))
+                self.assertNotIn("4412", "\n".join(logs.output))
+                self.assertIsNone(provider._session_id)
+
+                hook(provider)
+                provider._join_background()
+                self.assertEqual(provider._session_id, WAX_SESSION_ID_2)
+                self.assertEqual(client.last_args("remember")["session_id"], WAX_SESSION_ID_2)
+                self.assertEqual(client.tools_called().count("session_open"), 2)
+
+    def test_background_write_rejection_logs_warning_and_keeps_session(self) -> None:
+        for hook_name, hook in self._write_hooks().items():
+            with self.subTest(hook=hook_name):
+                client = FakeClient()
+                client.responses["remember"] = {
+                    "ok": False,
+                    "text": json.dumps({"code": "invalid_arguments", "message": "content 4412 Harbor rejected"}),
+                    "raw": {},
+                }
+                provider = _provider(client)
+                provider.initialize("sess-1", platform="cli")
+                with self.assertLogs(plugin.logger, level="WARNING") as logs:
+                    hook(provider)
+                    provider._join_background()
+                self.assertIn("invalid_arguments", "\n".join(logs.output))
+                self.assertNotIn("4412", "\n".join(logs.output))
+                self.assertEqual(provider._session_id, WAX_SESSION_ID)
+
+    def test_background_write_exception_logs_warning(self) -> None:
+        for hook_name, hook in self._write_hooks().items():
+            with self.subTest(hook=hook_name):
+                client = FakeClient()
+                original = client.call_tool
+
+                def broker(tool_name: str, arguments: dict) -> dict:
+                    if tool_name == "remember":
+                        raise plugin.WaxMCPError("broker unreachable")
+                    return original(tool_name, arguments)
+
+                client.call_tool = broker  # type: ignore[method-assign]
+                provider = _provider(client)
+                provider.initialize("sess-1", platform="cli")
+                with self.assertLogs(plugin.logger, level="WARNING") as logs:
+                    hook(provider)
+                    provider._join_background()
+                self.assertIn("broker unreachable", "\n".join(logs.output))
+                self.assertEqual(provider._session_id, WAX_SESSION_ID)
 
     def test_backup_paths_include_store_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

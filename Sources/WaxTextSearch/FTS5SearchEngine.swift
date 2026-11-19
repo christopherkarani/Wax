@@ -29,7 +29,12 @@ package actor FTS5SearchEngine {
     private var pendingOps: [Int64: PendingOp] = [:]
     private var pendingKeys: [Int64] = []
     var afterFlushWriteForTesting: (@Sendable () async throws -> Void)?
-    var pendingStructuredOps: [StructuredOp] = []
+    var pendingStructuredOps: [QueuedStructuredOp] = []
+    var nextStructuredOpId: UInt64 = 0
+    /// Ops whose caller is still waiting for the flush that applies them.
+    var awaitedStructuredOpIds: Set<UInt64> = []
+    /// Errors for awaited ops that a flush rejected and dropped, until their caller takes them.
+    var structuredOpRejections: [UInt64: WaxError] = [:]
     /// Bumped by every queued structured write; see `hasEntityAliases()`.
     var structuredWriteGeneration: UInt64 = 0
     /// Whether `sm_entity_alias` has a row, as of the last check with no structured write
@@ -91,6 +96,9 @@ package actor FTS5SearchEngine {
 
     deinit {
         guard let url = backingStoreDirectory else { return }
+        // Close before removing: SQLite reports deleting a file it still has open as an API violation.
+        // No closure on dbQueue's queue holds the engine, so this deinit never runs on that queue.
+        try? dbQueue.close()
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -120,7 +128,14 @@ package actor FTS5SearchEngine {
         let storeDirectory = try FTS5BackingDirectory.make()
         do {
             let dbURL = storeDirectory.appendingPathComponent("fts.sqlite")
-            FileManager.default.createFile(atPath: dbURL.path, contents: nil)
+            // The copy holds the full text of every memory, so it is owner-only from the start.
+            guard FileManager.default.createFile(
+                atPath: dbURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            ) else {
+                throw WaxError.io("failed to create text index file")
+            }
             let handle = try FileHandle(forWritingTo: dbURL)
             try handle.write(contentsOf: data)
             try handle.close()
@@ -377,6 +392,11 @@ package actor FTS5SearchEngine {
     private enum PendingOp: Sendable, Equatable {
         case upsert(String)
         case delete
+    }
+
+    struct QueuedStructuredOp: Sendable {
+        let id: UInt64
+        let op: StructuredOp
     }
 
     enum StructuredOp: Sendable, Equatable {

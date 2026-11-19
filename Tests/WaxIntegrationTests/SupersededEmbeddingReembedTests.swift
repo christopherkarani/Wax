@@ -76,8 +76,13 @@ private enum Fixture {
     }
 
     /// A store written by the pre-#257 MiniLM identity, in vector space `rotation: 0`.
-    static func writeLegacyStore(at url: URL, documents: [String] = documents, config: OrchestratorConfig = config()) async throws {
-        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: legacy())
+    static func writeLegacyStore(
+        at url: URL,
+        documents: [String] = documents,
+        config: OrchestratorConfig = config(),
+        legacy: KeywordEmbedder = legacy()
+    ) async throws {
+        let writer = try await MemoryOrchestrator(at: url, config: config, embedder: legacy)
         for document in documents {
             try await writer.remember(document)
         }
@@ -420,5 +425,32 @@ private enum Fixture {
 
         #expect(try await Fixture.boundModel(at: url) == "MiniLMAll")
         #expect(try await Fixture.activeProgressMarkers(at: url) == 0)
+    }
+}
+
+@Test func reembedPastWalCapacityBetweenCheckpointsCompletes() async throws {
+    try await TempFiles.withTempFile { url in
+        // 512 frames between checkpoints at 64 dimensions is far more than a 64 KiB WAL holds.
+        let wax = try await Wax.create(at: url, walSize: 64 * 1024)
+        try await wax.close()
+        let dimensions = 64
+        let documents = (0..<600).map { "\(KeywordEmbedder.keywords[$0 % 3]) note number \($0)" }
+        try await Fixture.writeLegacyStore(at: url, documents: documents, legacy: KeywordEmbedder(
+            model: "MiniLMAll",
+            rotation: 0,
+            dimensions: dimensions
+        ))
+
+        let current = KeywordEmbedder(model: "MiniLMAll-mean", rotation: 2, dimensions: dimensions)
+        let memory = try await MemoryOrchestrator(at: url, config: Fixture.config(), embedder: current)
+        #expect(await memory.runtimeStats().vectorsNeedReembed)
+        #expect(try await memory.backfillUnembedded() == UInt64(documents.count))
+        try await memory.close()
+
+        #expect(try await Fixture.boundModel(at: url) == "MiniLMAll-mean")
+        let reopened = try await MemoryOrchestrator(at: url, config: Fixture.config(), embedder: current)
+        #expect(!(await reopened.runtimeStats().vectorsNeedReembed))
+        try await Fixture.expectVectorHits(reopened)
+        try await reopened.close()
     }
 }

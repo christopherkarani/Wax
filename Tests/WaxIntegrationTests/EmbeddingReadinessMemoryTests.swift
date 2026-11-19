@@ -625,6 +625,80 @@ func framesWithoutVectorsCountsUnembeddedSourceFramesNotChunks() async throws {
     }
 }
 
+@Test
+func memoryAutomaticUnavailableSavesTextOnly() async throws {
+    try await TempFiles.withTempFile { url in
+        let readiness = EmbeddingReadiness()
+        let memory = try await Memory(
+            at: url,
+            config: .init(requireOnDeviceProviders: false, embedding: .automatic),
+            readiness: readiness
+        ) {
+            throw TestReadinessError.boom
+        }
+        try await waitForEmbeddingUnavailable(memory)
+
+        try await memory.save("hello from a store whose provider failed to load")
+        let results = try await memory.search(
+            "hello from a store whose provider failed to load",
+            options: .init(topK: 1, mode: .textOnly)
+        )
+        #expect(results.items.first?.text == "hello from a store whose provider failed to load")
+
+        try await memory.flush()
+        let stats = await memory.stats()
+        #expect(stats.framesWithoutVectors == 1, "\(stats)")
+        guard case .unavailable = stats.embeddingStatus else {
+            Issue.record("expected unavailable, got \(stats.embeddingStatus)")
+            try await memory.close()
+            return
+        }
+        try await memory.close()
+    }
+}
+
+@Test
+func memoryResavingSameTextWhileLoadingReturnsTheSameDocument() async throws {
+    try await TempFiles.withTempFile { url in
+        let gate = Gate()
+        let readiness = EmbeddingReadiness()
+        let memory = try await Memory(
+            at: url,
+            config: .init(requireOnDeviceProviders: false, embedding: .automatic),
+            readiness: readiness
+        ) {
+            await gate.wait()
+            return DeterministicTextEmbedder()
+        }
+        #expect(await memory.stats().embeddingStatus == .loading)
+
+        let first = try await memory.save("note")
+        let second = try await memory.save("note")
+        #expect(second == first)
+        #expect(await memory.stats().embeddingStatus == .loading)
+
+        await gate.open()
+        try await memory.close()
+    }
+}
+
+@Test
+func orchestratorUnavailableWithoutAutomaticSourceStillThrowsMissingEmbedder() async throws {
+    try await TempFiles.withTempFile { url in
+        let orchestrator = try await MemoryOrchestrator(
+            at: url,
+            config: TestHelpers.defaultMemoryConfig(vector: true),
+            embedder: nil,
+            initialEmbeddingStatus: .unavailable(reason: "provider requested by name failed")
+        )
+        do {
+            try await orchestrator.remember("needs the provider the caller asked for")
+            Issue.record("save must throw when a named provider is unavailable")
+        } catch WaxError.missingEmbedder {}
+        try await orchestrator.close()
+    }
+}
+
 private enum TestReadinessError: Error {
     case boom
 }

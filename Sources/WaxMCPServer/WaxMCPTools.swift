@@ -106,13 +106,14 @@ enum WaxMCPTools {
         on server: Server,
         brokerConfiguration: AgentBrokerConfiguration,
         structuredMemoryEnabled: Bool,
+        transport: MCPServedTransport,
         connectionKey: String? = nil,
         connectionContext: MCPConnectionContext? = nil
     ) async {
         let sessionHint = MCPClientSessionHint(connectionKey: connectionKey, context: connectionContext)
         let pathConfinement = MCPPathConfinement(
             configuration: brokerConfiguration,
-            includeProcessDirectory: connectionKey == "stdio"
+            includeProcessDirectory: transport.includesProcessDirectory
         )
         _ = await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(

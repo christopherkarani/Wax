@@ -99,7 +99,11 @@ package struct CommandLineEmbedderRuntimeTuning: Sendable, Equatable, Codable {
     }
 
     package var timeoutDuration: Duration {
-        .milliseconds(Int64(timeoutSeconds * 1000))
+        // A value past Int64 milliseconds (or infinity, which `init` accepts) saturates
+        // instead of trapping in the conversion.
+        let milliseconds = timeoutSeconds * 1000
+        guard milliseconds < Double(Int64.max) else { return .milliseconds(Int64.max) }
+        return .milliseconds(Int64(milliseconds))
     }
 
     package var brokerCacheKey: String {
@@ -152,7 +156,7 @@ package struct CommandLineEmbedderRuntimeTuning: Sendable, Equatable, Codable {
 
     private static func parsePositiveDouble(_ raw: String) -> Double? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value > 0 else { return nil }
+        guard let value = Double(trimmed), value.isFinite, value > 0 else { return nil }
         return value
     }
 

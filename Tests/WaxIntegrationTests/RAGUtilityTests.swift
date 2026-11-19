@@ -148,7 +148,29 @@ import Testing
     #expect(movingIntent.contains(.asksLocation))
 }
 
+// Frame timestamps and access stats are read back from the store file.
+@Test func scoreDoesNotTrapOnMinimumTimestamps() {
+    let scorer = ImportanceScorer()
+    let stats = FrameAccessStats(
+        frameId: 1,
+        impressionCount: 1,
+        engagementCount: 0,
+        lastImpressionMs: Int64.min,
+        lastEngagementMs: 0,
+        firstAccessMs: Int64.min
+    )
+    let result = scorer.score(frameTimestamp: Int64.min, accessStats: stats, nowMs: 1_700_000_000_000)
+    #expect(result.ageComponent == 0)
+    #expect(result.recencyComponent == 0)
+}
+
 // MARK: - SurrogateTierSelector Tests
+
+@Test func ageOnlyMinimumTimestampReturnsMicro() {
+    let selector = SurrogateTierSelector(policy: .ageOnly(AgeThresholds(recentDays: 7, oldDays: 30)))
+    let context = TierSelectionContext(frameTimestamp: Int64.min, nowMs: 1_700_000_000_000)
+    #expect(selector.selectTier(context: context) == .micro)
+}
 
 @Test func disabledPolicyAlwaysReturnsFull() {
     let selector = SurrogateTierSelector(policy: .disabled)

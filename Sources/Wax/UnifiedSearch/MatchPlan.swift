@@ -81,7 +81,11 @@ package struct MatchPlan: Equatable, Sendable {
         }
 
         for scalar in query.unicodeScalars {
-            if scalar.properties.isWhitespace || (scalar.isASCII && asciiPunctuationScalars.contains(scalar)) {
+            // Control scalars separate too: FTS5 reads MATCH as a C string, so a NUL inside a
+            // quoted token leaves it unterminated and the whole search throws.
+            if scalar.properties.isWhitespace
+                || scalar.properties.generalCategory == .control
+                || (scalar.isASCII && asciiPunctuationScalars.contains(scalar)) {
                 flush()
             } else {
                 buffer.append(scalar)

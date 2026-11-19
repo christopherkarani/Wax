@@ -231,3 +231,86 @@ import Testing
     #expect(stats.replaySnapshotHitCount > 0)
     try await reopened.close()
 }
+
+/// Distinct, recognisable payload bytes for frame `index`.
+private func autoCommitTestPayload(index: Int, count: Int) -> Data {
+    let prefix: [UInt8] = Array("frame-\(index)-".utf8)
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(count + prefix.count)
+    while bytes.count < count {
+        bytes.append(contentsOf: prefix)
+    }
+    return Data(bytes.prefix(count))
+}
+
+/// Puts frames one at a time on a small WAL until a put auto-commits, then `extraPuts` more.
+/// Returns the stored content keyed by frame id.
+private func putUntilAutoCommit(
+    _ wax: Wax,
+    payloadSize: Int,
+    extraPuts: Int
+) async throws -> [UInt64: Data] {
+    var expected: [UInt64: Data] = [:]
+    var remainingAfterAutoCommit: Int?
+    for index in 0..<512 {
+        let content = autoCommitTestPayload(index: index, count: payloadSize)
+        let frameId = try await wax.put(content, options: FrameMetaSubset(searchText: "auto-commit-\(index)"))
+        expected[frameId] = content
+
+        if let remaining = remainingAfterAutoCommit {
+            if remaining <= 1 { return expected }
+            remainingAfterAutoCommit = remaining - 1
+        } else if await wax.walStats().autoCommitCount > 0 {
+            if extraPuts == 0 { return expected }
+            remainingAfterAutoCommit = extraPuts
+        }
+    }
+    Issue.record("no auto-commit observed")
+    return expected
+}
+
+@Test func singlePutAfterAutoCommitKeepsFramesAndStagedLexIndexIntact() async throws {
+    let url = TempFiles.uniqueURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let lexBytes = Data((0..<4096).map { (value: Int) -> UInt8 in UInt8(truncatingIfNeeded: value &* 31 &+ 7) })
+    let expected: [UInt64: Data]
+    do {
+        let wax = try await Wax.create(at: url, walSize: 2 * 1024)
+        try await wax.stageLexIndexForNextCommit(bytes: lexBytes, docCount: 1)
+        expected = try await putUntilAutoCommit(wax, payloadSize: 200, extraPuts: 3)
+        try await wax.commit()
+        try await wax.close()
+    }
+
+    let reopened = try await Wax.open(at: url)
+    for (frameId, content) in expected {
+        #expect(try await reopened.frameContent(frameId: frameId) == content, "frame \(frameId)")
+    }
+    #expect(try await reopened.readCommittedLexIndexBytes() == lexBytes)
+    try await reopened.verify(deep: true)
+    try await reopened.close()
+}
+
+@Test func singlePutAfterAutoCommitLeavesCommittedTocRecoverable() async throws {
+    let url = TempFiles.uniqueURL()
+    let copyURL = TempFiles.uniqueURL()
+    defer {
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: copyURL)
+    }
+
+    // Payloads larger than the TOC plus footer, so a misplaced payload covers both.
+    let wax = try await Wax.create(at: url, walSize: 2 * 1024)
+    let expected = try await putUntilAutoCommit(wax, payloadSize: 16 * 1024, extraPuts: 1)
+
+    // Snapshot the store with puts still pending in the WAL, as a crash would leave it.
+    try FileManager.default.copyItem(at: url, to: copyURL)
+    try await wax.close()
+
+    let recovered = try await Wax.open(at: copyURL)
+    for (frameId, content) in expected {
+        #expect(try await recovered.frameContentIncludingPending(frameId: frameId) == content, "frame \(frameId)")
+    }
+    try await recovered.close()
+}

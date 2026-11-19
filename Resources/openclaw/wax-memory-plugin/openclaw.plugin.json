@@ -1,7 +1,7 @@
 {
   "id": "wax-memory",
   "name": "Wax Memory",
-  "version": "0.1.21",
+  "version": "0.1.50",
   "kind": "memory",
   "description": "Exclusive OpenClaw memory slot for the shared Wax MCP HTTP endpoint. Never spawns a second writer.",
   "configSchema": {

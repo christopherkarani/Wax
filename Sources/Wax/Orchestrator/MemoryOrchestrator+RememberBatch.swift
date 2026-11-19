@@ -35,6 +35,9 @@ extension MemoryOrchestrator {
     /// - Important: Not atomic. On a throw, earlier documents may already be saved.
     @discardableResult
     package func remember(batch documents: [(text: String, metadata: [String: String])]) async throws -> [UInt64] {
+        // Admitted as one write, so `close()` waits for the whole batch.
+        try beginWrite()
+        defer { endWrite() }
         lastWriteActivityAt = .now
         var ids: [UInt64] = []
         ids.reserveCapacity(documents.count)
@@ -48,7 +51,7 @@ extension MemoryOrchestrator {
             }
             ids += try await rememberSimpleRun(run)
             run.removeAll(keepingCapacity: true)
-            ids.append(try await remember(document.text, metadata: document.metadata).frameId)
+            ids.append(try await rememberAdmitted(document.text, metadata: document.metadata).frameId)
         }
         ids += try await rememberSimpleRun(run)
         lastWriteActivityAt = .now

@@ -274,4 +274,60 @@ struct MemorySemanticsRankingTests {
         #expect(staleLocked.adjustment == 0)
         #expect(staleLocked.reasons.contains("stale access") == false)
     }
+
+    // A client can store any Int64 as `wax.created_at_ms`; age math must not trap.
+    @Test(arguments: [MemoryType.handoff, .taskState, .note])
+    func rankingReasonsDoesNotTrapOnMinimumCreatedAt(type: MemoryType) {
+        let nowMs: Int64 = 2_000_000_000_000
+        let ranked = MemorySemantics.rankingReasons(
+            metadata: [
+                MemoryMetadataKeys.type: type.rawValue,
+                MemoryMetadataKeys.durability: MemoryDurability.working.rawValue,
+                MemoryMetadataKeys.createdAtMs: String(Int64.min),
+            ],
+            scope: nil,
+            nowMs: nowMs
+        )
+        #expect(ranked.reasons.contains("recent") == false)
+        #expect(ranked.reasons.contains("recent handoff") == false)
+        #expect(ranked.reasons.contains("recent task state") == false)
+    }
+
+    @Test
+    func accessReasonsDoesNotTrapOnMinimumEngagementTimestamp() {
+        let nowMs: Int64 = 2_000_000_000_000
+        let stats = FrameAccessStats(
+            frameId: 1,
+            impressionCount: 1,
+            engagementCount: 1,
+            lastImpressionMs: Int64.min,
+            lastEngagementMs: Int64.min,
+            firstAccessMs: Int64.min
+        )
+        let reasons = MemorySemantics.accessReasons(stats: stats, nowMs: nowMs)
+        #expect(reasons.reasons.contains("recently used") == false)
+    }
+
+    @Test
+    func normalizeWriteMetadataReplacesNonPositiveClientCreatedAt() {
+        let nowMs: Int64 = 2_000_000_000_000
+        for supplied in [String(Int64.min), "-1", "0", "not-a-number"] {
+            let metadata = MemorySemantics.normalizeWriteMetadata(
+                metadata: [MemoryMetadataKeys.createdAtMs: supplied],
+                semantics: MemoryWriteSemantics(type: .note),
+                sessionID: nil,
+                inferredScope: nil,
+                nowMs: nowMs
+            )
+            #expect(metadata[MemoryMetadataKeys.createdAtMs] == String(nowMs), "supplied \(supplied)")
+        }
+        let legitimate = MemorySemantics.normalizeWriteMetadata(
+            metadata: [MemoryMetadataKeys.createdAtMs: "1700000000000"],
+            semantics: MemoryWriteSemantics(type: .note),
+            sessionID: nil,
+            inferredScope: nil,
+            nowMs: nowMs
+        )
+        #expect(legitimate[MemoryMetadataKeys.createdAtMs] == "1700000000000")
+    }
 }

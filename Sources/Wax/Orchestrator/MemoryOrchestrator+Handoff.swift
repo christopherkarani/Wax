@@ -33,6 +33,8 @@ extension MemoryOrchestrator {
         commit: Bool = true
     ) async throws -> EntityRowID {
         try ensureStructuredMemoryEnabled()
+        try beginWrite()
+        defer { endWrite() }
         let nowMs = nowProvider()
         let entityID = try await session.upsertEntity(key: key, kind: kind, aliases: aliases, nowMs: nowMs)
         if commit {
@@ -52,6 +54,8 @@ extension MemoryOrchestrator {
         commit: Bool = true
     ) async throws -> FactRowID {
         try ensureStructuredMemoryEnabled()
+        try beginWrite()
+        defer { endWrite() }
         let nowMs = try nextStructuredSystemMs()
         let valid = StructuredTimeRange(fromMs: validFromMs ?? nowMs, toMs: validToMs)
         let system = StructuredTimeRange(fromMs: nowMs, toMs: nil)
@@ -72,6 +76,8 @@ extension MemoryOrchestrator {
 
     package func retractFact(factId: FactRowID, atMs: Int64? = nil, commit: Bool = true) async throws {
         try ensureStructuredMemoryEnabled()
+        try beginWrite()
+        defer { endWrite() }
         let timestamp = try atMs ?? nextStructuredSystemMs()
         try await session.retractFact(factId: factId, atMs: timestamp)
         if commit {

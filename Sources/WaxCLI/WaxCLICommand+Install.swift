@@ -223,6 +223,8 @@ extension WaxCLI.MCP {
                     // Remove the existing registration before re-adding. Exit code 1 is expected
                     // when the server is not yet registered (claude mcp remove returns 1 for ENOENT).
                     // Any other non-zero exit code indicates an unexpected error (e.g. permissions).
+                    // Snapshot the entry first so a failed add can put it back.
+                    let previousRegistration = ClaudeSetup.registrationJSON(name: name, scope: scope)
                     let removeStatus = try ProcessRunner.run(
                         command: claudePath,
                         arguments: removeArguments,
@@ -240,6 +242,14 @@ extension WaxCLI.MCP {
                         allowNonZeroExit: true
                     )
                     if addStatus != EXIT_SUCCESS {
+                        if removeStatus == EXIT_SUCCESS, let previousRegistration {
+                            ClaudeSetup.restore(
+                                name: name,
+                                scope: scope,
+                                registrationJSON: previousRegistration,
+                                claudePath: claudePath
+                            )
+                        }
                         if explicitOnly {
                             throw ExitCode(addStatus)
                         }
