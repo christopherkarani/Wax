@@ -1,11 +1,11 @@
 class Wax < Formula
   desc "On-device memory and RAG framework with MCP server for Claude Code"
   homepage "https://github.com/christopherkarani/Wax"
-  url "https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v0.1.50.tar.gz"
-  sha256 "fa6fcdf91235937bfa8fe51cd3c7290cc6aac78de709c27800fd1b0111a6a92b"
+  url "https://github.com/christopherkarani/Wax/archive/refs/tags/waxmcp-v0.1.51.tar.gz"
+  sha256 "222f3699510bcf648625d4e2417f0fbc59d5e4d733dfc72ce58fd0825cac96aa"
   license "MIT"
 
-  depends_on xcode: ["16.3", :build]
+  depends_on xcode: ["26.0", :build]
 
   def install
     # The upstream repo defines a `waxTests` target with a custom path of
