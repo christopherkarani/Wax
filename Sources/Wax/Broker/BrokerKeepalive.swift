@@ -27,7 +27,8 @@ package enum BrokerKeepalive {
 
     package static let intervalEnvKey = "WAX_BROKER_KEEPALIVE_SECS"
     private static let maximumIntervalSeconds: Double = 60
-    private static let minimumIntervalSeconds: Double = 1
+    /// Low enough to stay inside a 1s idle timeout, high enough to never spin.
+    private static let minimumIntervalSeconds: Double = 0.2
     /// Consecutive unanswered pings before the keepalive asks for recovery.
     package static let unansweredLimit = 2
 
@@ -62,6 +63,9 @@ package enum BrokerKeepalive {
         if reply != nil {
             return .answered
         }
+        // `try?` above swallows cancellation; a server that is exiting must not
+        // start a broker on its way out.
+        try Task.checkCancellation()
         if await AgentBrokerClient.isSocketLiveOffPool(socketPath: configuration.socketPath) {
             guard priorUnanswered + 1 >= unansweredLimit else {
                 return .unanswered

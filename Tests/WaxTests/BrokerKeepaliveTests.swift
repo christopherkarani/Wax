@@ -16,9 +16,12 @@ import Glibc
         #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_KEEPALIVE_SECS": "0"]) == nil)
         // An unusable override falls back to the derived interval.
         #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_KEEPALIVE_SECS": "inf"]) == 60)
-        // A tiny override or idle timeout must not turn into a hot ping loop.
-        #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_KEEPALIVE_SECS": "0.0001"]) == 1)
-        #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_IDLE_TIMEOUT_SECS": "1"]) == 1)
+        // A tiny override must not turn into a hot ping loop.
+        #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_KEEPALIVE_SECS": "0.0001"]) == 0.2)
+        // A short idle timeout still gets pings well inside it, or the broker
+        // idles out between them (test harnesses run with a 1s idle timeout).
+        #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_IDLE_TIMEOUT_SECS": "1"]) == 1.0 / 3)
+        #expect(BrokerKeepalive.intervalSeconds(environment: ["WAX_BROKER_IDLE_TIMEOUT_SECS": "0.3"]) == 0.2)
     }
 
     /// The broker idled out or crashed while servers still run: the next
