@@ -2383,6 +2383,9 @@ struct WaxCLIMemoryTests {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [command] + arguments
         var mergedEnvironment = ProcessInfo.processInfo.environment
+        // Servers leave the broker to its idle timeout; a test's throwaway
+        // store should not keep one running for minutes after the test.
+        mergedEnvironment["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
         if let environment {
             for (key, value) in environment {
                 mergedEnvironment[key] = value

@@ -197,8 +197,9 @@ if [ -n "$WAX_MCP" ]; then
     sleep 0.1
     waited=$((waited + 1))
   done
-  # wax-mcp checkpoints its session and stops its broker on the way out, so
-  # only the hang bound applies; the status proves the graceful path ran.
+  # wax-mcp checkpoints its session on the way out and leaves the shared broker
+  # to its idle timeout, so only the hang bound applies; the status proves the
+  # graceful path ran.
   terminate_and_expect_clean_exit "$MCP_PID" "$HANG_SECONDS" "wax-mcp"
   exec 3>&-
   echo "daemon_sigterm_smoke: wax-mcp ok"

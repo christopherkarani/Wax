@@ -97,6 +97,11 @@ extension WaxCLI.MCP {
                 if let key = normalizedKey(licenseKey) ?? normalizedKey(ProcessInfo.processInfo.environment["WAX_LICENSE_KEY"]) {
                     env["WAX_LICENSE_KEY"] = key
                 }
+                // Servers leave the shared broker to its idle timeout. The smoke
+                // server is the store's only user (doctor isolates a held store),
+                // so the broker it starts should go when it does.
+                env["WAX_BROKER_IDLE_TIMEOUT_SECS"] = "1"
+                env["WAX_BROKER_KEEPALIVE_SECS"] = "0"
 
                 var arguments = [
                     "--store-path", Pathing.expandPath(storePath),
