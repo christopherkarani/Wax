@@ -311,9 +311,27 @@ package enum AgentBrokerPathing {
     package static let defaultSessionRootPath = "~/.local/share/waxmcp/sessions"
     private static let unixSocketPathByteLimit = 100
 
+    /// Expands `~` and standardizes `raw`, giving the same result whether or not
+    /// the path exists yet. Foundation drops a leading `/private` only when the
+    /// shorter path exists, so a missing `/private/tmp/x/m.wax` would standardize
+    /// to itself but to `/tmp/x/m.wax` once created. Standardizing the nearest
+    /// existing ancestor instead yields the post-creation form in both cases, and
+    /// leaves every existing path exactly as before.
     package static func expandPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
-        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        let standardized = URL(fileURLWithPath: expanded).standardizedFileURL
+        var ancestor = standardized
+        var missingComponents: [String] = []
+        while !FileManager.default.fileExists(atPath: ancestor.path) {
+            let parent = ancestor.deletingLastPathComponent()
+            guard parent.path != ancestor.path else { return standardized.path }
+            missingComponents.insert(ancestor.lastPathComponent, at: 0)
+            ancestor = parent
+        }
+        guard !missingComponents.isEmpty else { return standardized.path }
+        return missingComponents
+            .reduce(ancestor.standardizedFileURL) { $0.appendingPathComponent($1) }
+            .path
     }
 
     package static func brokerSocketRoot(
