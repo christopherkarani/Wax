@@ -105,7 +105,7 @@ enum MCPRunHookRunner {
                 cwd: event.cwd,
                 includePerson: false,
                 format: format,
-                timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                timeoutSeconds: MCPPrimeRunner.hookTimeoutSeconds,
                 storePath: storePath,
                 noEmbedder: noEmbedder,
                 embedderChoice: embedderChoice
