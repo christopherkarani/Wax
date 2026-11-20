@@ -22,10 +22,18 @@ package enum AgentBrokerClient {
         )
     }
 
-    private static let idleTimeoutSeconds = configuredSeconds(
-        envKey: "WAX_BROKER_IDLE_TIMEOUT_SECS",
-        defaultValue: 300.0
-    )
+    private static let idleTimeoutSeconds = configuredIdleTimeoutSeconds()
+
+    /// Seconds a broker started by this client stays up with no clients.
+    package static func configuredIdleTimeoutSeconds(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Double {
+        configuredSeconds(
+            envKey: "WAX_BROKER_IDLE_TIMEOUT_SECS",
+            defaultValue: 300.0,
+            environment: environment
+        )
+    }
 
     private static let shutdownTimeoutSeconds = configuredSeconds(
         envKey: "WAX_BROKER_SHUTDOWN_TIMEOUT_SECS",

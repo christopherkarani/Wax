@@ -146,13 +146,27 @@ struct WaxMCPServerCommand: ParsableCommand {
         // Owned daemon prewarms the embedder in a background Task unless --no-embedder
         // (AgentBrokerClient no longer passes --skip-prewarm). First recall still waits
         // up to 30s if MiniLM is still loading.
-        let brokerStarted = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
-        let structuredMemoryEnabled = memoryConfig.enableStructuredMemory
-        defer {
-            if brokerStarted {
-                try? AgentBrokerClient.shutdownOwnedBrokerIfReachable(configuration: brokerConfiguration)
+        //
+        // A failed start is not fatal: a server that exits leaves its host with no
+        // memory tools for the whole session, while every tool call and the
+        // keepalive below retry the start.
+        do {
+            _ = try await AgentBrokerClient.ensureAvailable(configuration: brokerConfiguration)
+        } catch {
+            writeStderr("wax-mcp: broker unavailable at startup; tool calls will retry: \(error)")
+        }
+        // The broker is shared by every server on this store, so no server stops
+        // it on exit; it leaves on its own once idle. The keepalive holds it up
+        // while this server runs and restarts it if it dies.
+        let keepalive: Task<Void, Never>? = BrokerKeepalive.intervalSeconds().map { (interval: Double) in
+            Task {
+                await BrokerKeepalive.run(configuration: brokerConfiguration, intervalSeconds: interval) { (error: any Error) in
+                    writeStderr("wax-mcp: broker keepalive failed: \(error)")
+                }
             }
         }
+        defer { keepalive?.cancel() }
+        let structuredMemoryEnabled = memoryConfig.enableStructuredMemory
 
         let activeToolNames = ToolSchemas.tools(structuredMemoryEnabled: memoryConfig.enableStructuredMemory)
             .map(\.name)

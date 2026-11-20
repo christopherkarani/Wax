@@ -168,6 +168,10 @@ enum HostHookCommand {
 }
 
 enum HostHookInstaller {
+    /// Seconds a host gives each Wax hook before killing it. Hook work must
+    /// finish inside this, process start included.
+    static let hookTimeoutSeconds = 2
+
     static func desiredEntries(
         host: HostHookHost,
         wrapperPath: String,
@@ -191,7 +195,7 @@ enum HostHookInstaller {
                     role: .prime,
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: matcher,
-                    timeoutSeconds: 2,
+                    timeoutSeconds: hookTimeoutSeconds,
                     requiresLiveInjectionProbe: registry.requiresLiveInjectionProbeForPrime && policy.requiresLiveInjectionProbe,
                     includeOwnershipMarker: includeOwnershipMarker
                 )
@@ -205,7 +209,7 @@ enum HostHookInstaller {
                     role: .prime,
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .prime),
                     matcher: nil,
-                    timeoutSeconds: 2,
+                    timeoutSeconds: hookTimeoutSeconds,
                     requiresLiveInjectionProbe: false,
                     includeOwnershipMarker: includeOwnershipMarker
                 )
@@ -219,7 +223,7 @@ enum HostHookInstaller {
                     role: .checkpoint,
                     command: try HostHookCommand.line(wrapperPath: wrapperPath, host: host, role: .checkpoint),
                     matcher: nil,
-                    timeoutSeconds: 2,
+                    timeoutSeconds: hookTimeoutSeconds,
                     requiresLiveInjectionProbe: false,
                     includeOwnershipMarker: includeOwnershipMarker
                 )

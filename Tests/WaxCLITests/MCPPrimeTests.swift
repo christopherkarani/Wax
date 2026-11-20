@@ -66,6 +66,9 @@ struct MCPPrimeTests {
                 storePath: configuration.storePath,
                 noEmbedder: true,
                 embedderChoice: "minilm",
+                // The wait for a starting broker has its own tests; here it
+                // would only blur the no-start timing bound.
+                brokerStartGraceSeconds: 0,
                 configuration: configuration
             )
         )
@@ -133,6 +136,9 @@ struct MCPPrimeTests {
                     storePath: configuration.storePath,
                     noEmbedder: true,
                     embedderChoice: "minilm",
+                    // On a loaded runner the five primes can run one after
+                    // another, so a per-prime wait would add up past the bound.
+                    brokerStartGraceSeconds: 0,
                     configuration: configuration
                 )
             )
@@ -447,6 +453,151 @@ struct MCPPrimeTests {
         #expect(object["probe_reason"] == nil)
         #expect((object["project_memories"] as? [Any])?.count == 1)
         #expect(outcome.stdout.contains("Cold broker answered on retry."))
+    }
+
+    /// Hosts launch the MCP server, which starts the broker, alongside the
+    /// session-start hook. A prime that finds no listener must wait for that
+    /// broker to bind instead of reporting broker_down at once.
+    @Test func primeWaitsForBrokerStartingAlongsideTheSession() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-starting-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let project = root.lastPathComponent
+        let payload = AgentBrokerResponse.success(
+            payload: .object([
+                "project_miss": .bool(false),
+                "project": .string(project),
+                "repo": .string(project),
+                "results": .array([
+                    .object([
+                        "text": .string("Broker bound while the session started."),
+                        "memory_type": .string("lesson"),
+                        "project": .string(project),
+                        "score": .double(1.0),
+                        "created_at_ms": .int(1),
+                    ]),
+                ]),
+            ])
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/false",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("starting.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        // The broker binds on the fourth liveness check, a few polls in.
+        let livenessChecks = LockBox(0)
+        let listening = LockBox(false)
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: false,
+                format: .json,
+                timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                configuration: configuration,
+                probe: { request, _, _ in
+                    guard listening.value else { return nil }
+                    if request.command == "recall" {
+                        return payload
+                    }
+                    return AgentBrokerResponse.success(payload: .object(["found": .bool(false)]))
+                },
+                isBrokerListening: { _ in
+                    livenessChecks.mutate { $0 += 1 }
+                    if livenessChecks.value >= 4 {
+                        listening.value = true
+                    }
+                    return listening.value
+                }
+            )
+        )
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.stderr.isEmpty)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == false)
+        #expect(object["probe_reason"] == nil)
+        #expect(outcome.stdout.contains("Broker bound while the session started."))
+    }
+
+    /// A broker that never comes up costs the grace once, not once per lane,
+    /// and still reports broker_down.
+    @Test func primeWaitsForAMissingBrokerOnceWithinTheGrace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wax-prime-grace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let configuration = AgentBrokerConfiguration(
+            brokerExecutablePath: "/usr/bin/false",
+            storePath: root.appendingPathComponent("store.wax").path,
+            sessionRootPath: root.appendingPathComponent("sessions").path,
+            socketPath: root.appendingPathComponent("missing.sock").path,
+            embedderChoice: "minilm",
+            noEmbedder: true,
+            requireVector: false,
+            embedderTuning: CommandLineEmbedderRuntimeTuning()
+        )
+        let probeCalls = LockBox(0)
+        let livenessChecks = LockBox(0)
+        let started = Date()
+        let outcome = MCPPrimeRunner.run(
+            MCPPrimeRunner.Request(
+                host: "claude",
+                cwd: root.path,
+                includePerson: true,
+                format: .json,
+                timeoutSeconds: MCPPrimeRunner.defaultTimeoutSeconds,
+                storePath: configuration.storePath,
+                noEmbedder: true,
+                embedderChoice: "minilm",
+                brokerStartGraceSeconds: 0.4,
+                configuration: configuration,
+                probe: { _, _, _ in
+                    probeCalls.mutate { $0 += 1 }
+                    return nil
+                },
+                isBrokerListening: { _ in
+                    livenessChecks.mutate { $0 += 1 }
+                    return false
+                }
+            )
+        )
+        #expect(Date().timeIntervalSince(started) >= 0.4)
+        // One attempt per lane: project, person, handoff.
+        #expect(probeCalls.value == 3)
+        // Three attempt classifications plus one wait polling every 50ms for
+        // 0.4s. Polls only sleep longer on a loaded host, never shorter, so a
+        // wait per lane is the only way past this bound.
+        #expect(livenessChecks.value <= 13)
+        let raw = try JSONSerialization.jsonObject(with: Data(outcome.stdout.utf8))
+        let object = try #require(raw as? [String: Any])
+        #expect(object["probe_failed"] as? Bool == true)
+        #expect(object["probe_reason"] as? String == "broker_down")
+    }
+
+    /// Hosts kill a hook at the installed timeout; a prime still probing then
+    /// injects nothing. The hook budget, with the broker-start wait inside it,
+    /// must end first.
+    @Test func hookPrimeBudgetEndsBeforeTheHostKillsTheHook() {
+        #expect(MCPPrimeRunner.hookTimeoutSeconds > 1)
+        #expect(MCPPrimeRunner.hookTimeoutSeconds < TimeInterval(HostHookInstaller.hookTimeoutSeconds))
     }
 
     @Test func primeTimeoutReportsReasonClass() throws {

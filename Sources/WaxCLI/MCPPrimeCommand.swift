@@ -46,6 +46,15 @@ struct MCPPrimeOutcome: Sendable, Equatable {
 
 enum MCPPrimeRunner {
     static let defaultTimeoutSeconds: TimeInterval = 10
+    /// The hook prime's budget. Hosts kill a hook at
+    /// ``HostHookInstaller/hookTimeoutSeconds``; a prime still probing then
+    /// injects nothing, not even the failure line. The margin covers process
+    /// start and rendering.
+    static let hookTimeoutSeconds = TimeInterval(HostHookInstaller.hookTimeoutSeconds) - 0.3
+    /// Hosts start the MCP server, which starts the broker, alongside
+    /// session-start hooks. A prime that finds no listener waits this long
+    /// for one to bind before it reports the broker down.
+    static let defaultBrokerStartGraceSeconds: TimeInterval = 3
 
     struct Request: Sendable {
         var host: String
@@ -56,8 +65,10 @@ enum MCPPrimeRunner {
         var storePath: String
         var noEmbedder: Bool
         var embedderChoice: String
+        var brokerStartGraceSeconds: TimeInterval = MCPPrimeRunner.defaultBrokerStartGraceSeconds
         var configuration: AgentBrokerConfiguration? = nil
         var probe: (@Sendable (AgentBrokerRequest, AgentBrokerConfiguration, TimeInterval) throws -> AgentBrokerResponse?)? = nil
+        var isBrokerListening: @Sendable (String) -> Bool = { AgentBrokerClient.isSocketLive(socketPath: $0) }
     }
 
     static func run(_ request: Request) -> MCPPrimeOutcome {
@@ -134,6 +145,12 @@ enum MCPPrimeRunner {
         func remaining() -> TimeInterval {
             max(0.01, deadline.timeIntervalSinceNow)
         }
+        var brokerWait = BrokerStartWait(
+            socketPath: configuration.socketPath,
+            graceSeconds: request.brokerStartGraceSeconds,
+            budgetDeadline: deadline,
+            isListening: request.isBrokerListening
+        )
 
         var person: [MCPPrimeAssembly.Candidate] = []
         var project: [MCPPrimeAssembly.Candidate] = []
@@ -177,6 +194,7 @@ enum MCPPrimeRunner {
                 ),
                 configuration,
                 remaining(),
+                brokerWait: &brokerWait,
                 recordedError: &probeError,
                 recordedKind: &firstFailureKind
             )
@@ -203,6 +221,7 @@ enum MCPPrimeRunner {
                 ),
                 configuration,
                 remaining(),
+                brokerWait: &brokerWait,
                 recordedError: &probeError,
                 recordedKind: &firstFailureKind
             )
@@ -221,6 +240,7 @@ enum MCPPrimeRunner {
                 ),
                 configuration,
                 remaining(),
+                brokerWait: &brokerWait,
                 recordedError: &probeError,
                 recordedKind: &firstFailureKind
             )
@@ -268,6 +288,45 @@ enum MCPPrimeRunner {
     /// this the retry would expire immediately, so the first failure stands.
     private static let retryMinimumRemainingSeconds: TimeInterval = 0.5
 
+    /// One bounded wait per prime for a broker that has not bound yet. The
+    /// first unreachable lane spends it; later lanes see the outcome.
+    private struct BrokerStartWait {
+        let socketPath: String
+        let graceSeconds: TimeInterval
+        let budgetDeadline: Date
+        let isListening: @Sendable (String) -> Bool
+        private(set) var spent = false
+
+        init(
+            socketPath: String,
+            graceSeconds: TimeInterval,
+            budgetDeadline: Date,
+            isListening: @escaping @Sendable (String) -> Bool
+        ) {
+            self.socketPath = socketPath
+            self.graceSeconds = graceSeconds
+            self.budgetDeadline = budgetDeadline
+            self.isListening = isListening
+        }
+
+        /// Waits until a listener binds or the grace ends, leaving enough of
+        /// the prime budget for the retry. Returns whether a listener bound.
+        /// Only the first call waits; it never starts a broker.
+        mutating func waitForListener() -> Bool {
+            guard !spent else { return false }
+            spent = true
+            let waitDeadline = min(
+                Date().addingTimeInterval(max(0, graceSeconds)),
+                budgetDeadline.addingTimeInterval(-MCPPrimeRunner.retryMinimumRemainingSeconds)
+            )
+            while Date() < waitDeadline {
+                if isListening(socketPath) { return true }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            return isListening(socketPath)
+        }
+    }
+
     /// One probe call that never throws: failures record the first sanitized
     /// error and yield nil so sibling probes still run. A nil response means
     /// the broker never answered (missing/dead socket, timeout) — that is a
@@ -279,10 +338,16 @@ enum MCPPrimeRunner {
         _ request: AgentBrokerRequest,
         _ configuration: AgentBrokerConfiguration,
         _ timeout: @autoclosure () -> TimeInterval,
+        brokerWait: inout BrokerStartWait,
         recordedError: inout String?,
         recordedKind: inout ProbeFailureKind?
     ) -> AgentBrokerResponse? {
-        let first = attempt(probe, request, configuration, timeout())
+        var first = attempt(probe, request, configuration, timeout(), isListening: brokerWait.isListening)
+        // No listener yet: the host's MCP server may still be starting it. A
+        // broker that binds is asked again, with the cold-broker retry below.
+        if first.kind == .unreachable, first.response == nil, brokerWait.waitForListener() {
+            first = attempt(probe, request, configuration, timeout(), isListening: brokerWait.isListening)
+        }
         guard first.kind == .timeout, first.response == nil else {
             record(first, recordedError: &recordedError, recordedKind: &recordedKind)
             return first.response
@@ -291,7 +356,7 @@ enum MCPPrimeRunner {
             record(first, recordedError: &recordedError, recordedKind: &recordedKind)
             return nil
         }
-        let second = attempt(probe, request, configuration, timeout())
+        let second = attempt(probe, request, configuration, timeout(), isListening: brokerWait.isListening)
         if second.response != nil {
             // Retry rescued a cold broker: record only if it answered badly.
             record(second, recordedError: &recordedError, recordedKind: &recordedKind)
@@ -306,7 +371,8 @@ enum MCPPrimeRunner {
         _ probe: @Sendable (AgentBrokerRequest, AgentBrokerConfiguration, TimeInterval) throws -> AgentBrokerResponse?,
         _ request: AgentBrokerRequest,
         _ configuration: AgentBrokerConfiguration,
-        _ timeout: TimeInterval
+        _ timeout: TimeInterval,
+        isListening: @Sendable (String) -> Bool
     ) -> (response: AgentBrokerResponse?, kind: ProbeFailureKind?, message: String?) {
         do {
             let response = try probe(request, configuration, timeout)
@@ -318,7 +384,7 @@ enum MCPPrimeRunner {
             }
             // A live socket that never answered is a timeout (cold broker);
             // no listener at all means the broker is down.
-            if AgentBrokerClient.isSocketLive(socketPath: configuration.socketPath) {
+            if isListening(configuration.socketPath) {
                 return (nil, .timeout, "broker probe timed out")
             }
             return (nil, .unreachable, "broker did not respond")
